@@ -345,3 +345,111 @@ describe('tty_expect 剔除「刚提交命令的回显」命中（D75）', () =>
     expect(render[0].text).toContain('没有')
   })
 })
+
+/* ------------------------------------------------------------------ *
+ * D101：`tty_expect` 按 shell 集成的命令边界裁 live 窗口（2026-10-13 真机实测）
+ *
+ * 真机现场（Windows 11 ARM64：pwsh 7.6.6 / Windows PowerShell 5.1，以及 macOS/zsh）：
+ *   `tty_send "Start-Sleep -Seconds 2; echo PROBE_ECHO_QQQ\n"` 之后立刻
+ *   `tty_expect pattern="PROBE_ECHO_QQQ"` —— 命令还在睡，等待却分别在 **432ms / 446ms**
+ *   （zsh 上 **1ms**）返回 matched。命中的只能是命令行自己的回显。
+ *
+ * 根因：D75 的文本剔除在 `inCommand` 为真、或窗口里出现过任意 `B` 标记时**不启用**，而这两条
+ * 在真实会话里都是常态（回显与 `B` 常在同一 chunk 里，回显在前）—— 于是 live 路径拿整段原始
+ * 流匹配，回显就在里面。修法是零启发式的：live 窗口从最后一个 `B` 起切（回显在 B 之前），
+ * 没有 `B` 时按 `inCommand` 区分「正在跑的命令」（整段算输出）与「提示符/回显」（裁掉未闭合
+ * 的 A 段）。
+ *
+ * 这组用例正反两面都钉：**回显不算命中**，而**真输出（含与提示符同 chunk、TUI 重画、
+ * 后台输出）不许被误杀**。
+ * ------------------------------------------------------------------ */
+
+describe('tty_expect 按命令边界裁 live 窗口（D101）', () => {
+  it('真机反例：回显与 B 同 chunk（回显在前）→ 不结算，真输出到了才命中', async () => {
+    const rig = await setup()
+    await call(rig, 'tty_send', { data: 'sleep 2; echo PROBE_ECHO_QQQ\n' })
+    const pending = call(rig, 'tty_expect', { pattern: 'PROBE_ECHO_QQQ', timeoutSec: 3 })
+    // 命令行已被接受：回显与 B 一起回来（回显在 B 之前，所以它不属于 B..D 窗口）
+    await feed(rig.pty, 'sleep 2; echo PROBE_ECHO_QQQ\r\n' + B)
+    // 旧实现：这一 chunk 里 `lastCommandStart(acc) !== -1` → 不启用剔除 → 立刻 matched
+    expect(await Promise.race([pending, sleep(300).then(() => 'pending')])).toBe('pending')
+    await feed(rig.pty, 'PROBE_ECHO_QQQ\r\n' + D(0))
+    const result = await pending
+    expect(result.matched).toBe(true)
+    expect(result.matchedFrom).toBe('live')
+  })
+
+  it('真机时序（macOS/zsh 实测）：B 早于注册、回显晚于注册到达 → 回显不算命中', async () => {
+    const rig = await setup()
+    await call(rig, 'tty_send', { data: 'sleep 2; echo PROBE_ECHO_QQQ\n' })
+    // 命令已被接受（B 到了 → 注册这一刻 inCommand 已经是 true），而回显稍后才回到缓冲区：
+    // 真机上就是这个时序（zsh 上 0ms 命中、PowerShell 上 400+ms 命中）——窗口里没有 B，
+    // 只能靠「这次提交早于命令开始」把它认成回显（commandStartedAt vs lastInputAt）
+    await feed(rig.pty, B)
+    const pending = call(rig, 'tty_expect', { pattern: 'PROBE_ECHO_QQQ', timeoutSec: 3 })
+    await feed(rig.pty, 'sleep 2; echo PROBE_ECHO_QQQ\r\n')
+    expect(await Promise.race([pending, sleep(300).then(() => 'pending')])).toBe('pending')
+    await feed(rig.pty, 'PROBE_ECHO_QQQ\r\n' + D(0))
+    const result = await pending
+    expect(result.matched).toBe(true)
+    expect(result.matchedFrom).toBe('live')
+  })
+
+  it('回显行尾跟着转义序列（zsh 的 bracketed-paste 开关 `\\e[?2004l`）时也算回显', async () => {
+    const rig = await setup()
+    await call(rig, 'tty_send', { data: 'sleep 2; echo ESC_TAIL_QQQ\n' })
+    const pending = call(rig, 'tty_expect', { pattern: 'ESC_TAIL_QQQ', timeoutSec: 3 })
+    // 真机原始流就长这样（macOS/zsh）：回显后面紧跟 `\e[?2004l`，再是 CRLF。
+    // 若「按行尾削」不把控制字节当噪音、或只看未清洗的原始流，这一行就削不掉 → 1ms 假命中。
+    await feed(rig.pty, 'sleep 2; echo ESC_TAIL_QQQ\x1b[?2004l\r\n')
+    expect(await Promise.race([pending, sleep(300).then(() => 'pending')])).toBe('pending')
+    await feed(rig.pty, 'ESC_TAIL_QQQ\r\n' + D(0))
+    const result = await pending
+    expect(result.matched).toBe(true)
+    expect(result.matchedFrom).toBe('live')
+  })
+
+  it('提示符 + 回显同 chunk（A 在回显之前）→ 回显不算命中', async () => {
+    const rig = await setup()
+    await call(rig, 'tty_send', { data: 'echo MARK_ECHO\n' })
+    const pending = call(rig, 'tty_expect', { pattern: 'MARK_ECHO', timeoutSec: 3 })
+    await feed(rig.pty, A + 'echo MARK_ECHO\r\n' + B)
+    expect(await Promise.race([pending, sleep(300).then(() => 'pending')])).toBe('pending')
+    await feed(rig.pty, 'MARK_ECHO\r\n' + D(0))
+    const result = await pending
+    expect(result.matched).toBe(true)
+    expect(result.matchedFrom).toBe('live')
+  })
+
+  it('不误杀：输出与下一个提示符同在一个 chunk（B 输出 D A prompt）照旧命中', async () => {
+    const rig = await setup()
+    const pending = call(rig, 'tty_expect', { pattern: 'SAME_CHUNK_OK', timeoutSec: 3 })
+    await feed(rig.pty, A + 'run-me\r\n' + B + 'SAME_CHUNK_OK\r\n' + D(0) + A + 'PS C:\\> ')
+    const result = await pending
+    // 若按「最后一个 A 一刀切」裁剪，这段输出会被丢掉 → 超时
+    expect(result.matched).toBe(true)
+    expect(result.matchedFrom).toBe('live')
+  })
+
+  it('不误杀：B 早于注册（窗口里没有 B）时长任务的输出照旧命中', async () => {
+    const rig = await setup()
+    await call(rig, 'tty_send', { data: 'vim\n' })
+    await feed(rig.pty, A + 'vim\r\n' + B) // 命令开始、未结束 → inCommand
+    const pending = call(rig, 'tty_expect', { pattern: 'SCREEN_REDRAW_OK', timeoutSec: 3 })
+    await feed(rig.pty, 'SCREEN_REDRAW_OK\r\n') // 注册之后到达的屏上输出
+    const result = await pending
+    expect(result.matched).toBe(true)
+    expect(result.matchedFrom).toBe('live')
+  })
+
+  it('回溯路径：命令结束后的「提示符 + 回显」不进匹配窗口', async () => {
+    const rig = await setup()
+    await call(rig, 'tty_send', { data: 'echo M1\n' })
+    await feed(rig.pty, finished('echo M1', 'M1-OK\r\n', 0))
+    await call(rig, 'tty_send', { data: 'echo M2\n' })
+    await feed(rig.pty, A + 'echo M2\r\n') // 下一条命令的提示符与回显（B 还没到）
+    const result = await call(rig, 'tty_expect', { pattern: 'echo M2', timeoutSec: 1 })
+    expect(result.matched).toBe(false)
+    expect(result.timedOut).toBe(true)
+  })
+})

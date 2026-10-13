@@ -119,7 +119,8 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   **不补 `-NoProfile`** —— 用户的 profile 正是别名与函数的来源。TERM / COLORTERM 对 ConPTY
   没有意义，也不再注入；
 - **「跑一条命令」的标签**（docker exec、agent 起的命令标签）走 `cmd /c` 或
-  `PowerShell -Command`；
+  `PowerShell -Command`；**PowerShell 的 `-Command` 会把「末条命令非零」塌成进程退出码 1**
+  （`cmd /c exit 5` → 1，两版一致），要拿到具体码值就让命令自己 `exit 5`（POSIX 侧 `sh -c` 不会这样）；
 - **输入行尾归一化（D74，2026-09-27 真机报告）**：conhost 的 Enter 是 **CR**，裸 LF 只把光标
   下移一格、**不提交命令行**——`tty_send` 按工具描述发 `echo X\n` 时命令停在输入行上（没有输出、
   没有新提示符，看起来像「发出去了但没执行」）。**win32 的本地会话**上插件现在把裸 LF 补成 CRLF
@@ -127,9 +128,14 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 - **shell 集成（OSC 133/7）按家族分**：**PowerShell 家族支持**（`powershell.exe` / `pwsh.exe`）——
   注入走 `-File` 稳定桩（挂 `prompt` + `PSConsoleHostReadLine` 钩子），拿到 `tty_list.cwd` 跟随
   `cd`、退出码、`running` 三态与命令粒度的 `tty_expect`；**cmd 不支持**（没有命令开始/结束钩子），
-  设置卡片把开关置灰并指向「把 Shell 路径换成 PowerShell」。**已知限制**：PowerShell 7 上命令输出
-  在 ConPTY 里晚于 D 标记抵达（渲染重画是异步批量的，与 tmux 场景同根因），`tty_capture{last}`
-  可能取到空 —— 那里用 `tty_capture` 读尾部；Windows PowerShell 5.1 不受影响（两版都真机实测过）。
+  设置卡片把开关置灰并指向「把 Shell 路径换成 PowerShell」。**两版语法不同，提示文案按版本分支给**：
+  `&&` / `||` 只有 **PowerShell 7** 认，5.1 上写 `&&` 是解析错误（一条命令都不会跑）。
+  **已知限制（未复现）**：曾有记录说 PowerShell 7 上命令输出在 ConPTY 里晚于 D 标记抵达、
+  `tty_capture{last}` 可能取到空；2026-10-13 在 pwsh **7.6.6**（Win11 ARM64）上按三档输出量复测
+  （20 次小输出 / 2000 行大输出 / 2s 内分 20 次的慢输出）**0/20 空窗**，未复现 —— 真遇到就用
+  `tty_capture` 读尾部，并把当时的 pwsh 版本报回来。另有一条**退出码口径**：PowerShell 家族里
+  **解析错误**（5.1 上的 `&&`、两版上的 `echo (1`）命令一条都没跑，而 D 标记报 **0** —— 不能只看
+  退出码判成功，报错文本在输出里。
   桩靠 `-ExecutionPolicy Bypass`（进程级）才载得进来，两条边界如实记着：**组策略**把执行策略锁成
   Restricted / AllSigned 时该参数压不过 GPO，桩载不进去、标签照开而集成静默失效（与「用户关了
   PSReadLine」同一种降级）；这个参数还会把值写进 `$Env:PSExecutionPolicyPreference`，从该会话里

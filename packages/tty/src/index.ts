@@ -1109,6 +1109,14 @@ interface ShellIntegrationState {
   sawMark: boolean
   /** B..D 之间：命令输出捕获中。 */
   inCommand: boolean
+  /**
+   * 当前这条命令**开始的时刻**（见到那个 `B` 的 Date.now()；0 = 还没见过 B）。
+   *
+   * 用途只有一个（D101）：区分「命令行回显」与「往在跑的程序里敲的字」。命令行的回显是**在 B
+   * 之前**提交的那次 `tty_send`（`session.lastInputAt < commandStartedAt`），而 TUI 里的按键
+   * 一定晚于 B —— 后者在屏上出现是真实输出，不许当回显剔掉（D75 的边界）。
+   */
+  commandStartedAt: number
   cmdBuffer: string
   /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
   pendingT: string | null
@@ -1123,7 +1131,7 @@ interface ShellIntegrationState {
 }
 
 function createShellState(): ShellIntegrationState {
-  return { carry: '', sawMark: false, inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null, cmdSeq: 0 }
+  return { carry: '', sawMark: false, inCommand: false, commandStartedAt: 0, cmdBuffer: '', pendingT: null, lastCommand: null, cmdSeq: 0 }
 }
 
 /** OSC 133;T 的 base64 payload → utf8 文本（无效输入返回 null）。 */
@@ -1195,6 +1203,7 @@ export function feedShellIntegration(session: TtySession, text: string): void {
     const kind = match[1]
     if (kind === 'B') {
       state.inCommand = true
+      state.commandStartedAt = Date.now()
       state.cmdBuffer = ''
       state.pendingT = null
     } else if (kind === 'T') {
@@ -1596,6 +1605,62 @@ function lastCommandStart(text: string): number {
   return end
 }
 
+/**
+ * 从原始流里取出**命令输出**的部分（D101）：丢掉每个 `A`（prompt 开始）到其后第一个 `B`
+ * （命令开始）之间的文本，以及末尾那段还没等到 `B` 的 `A` 段。
+ *
+ * 为什么需要它：`A..B` 之间只有提示符与**命令行回显**——真实输出一定在 `B` 之后。这是
+ * shell 集成的硬边界（不是文本启发式）。回溯路径一直在用它（`lastCommandStart` 从最后一个
+ * `B` 起切），而 live 路径此前拿**整段原始流**去匹配，于是「字面出现在命令行里」的 pattern
+ * 会命中自己的回显、秒回 matched —— 命令其实还在跑（D75 的文本剔除在窗口里出现过任意 `B`
+ * 标记时也不启用，见 `echoStrippable`）。
+ *
+ * 真机实测（2026-10-13，Windows 11 ARM64 + pwsh 7.6.6 / Win PowerShell 5.1.26100）：命令
+ * `Start-Sleep -Seconds 2; echo PROBE_ECHO_QQQ` + 等 `PROBE_ECHO_QQQ`，两版分别在 **432ms /
+ * 446ms** 就返回 matched；macOS/zsh 上同类用例 **1ms**。修法即本函数：命中前先按边界裁掉
+ * 提示符/回显段。
+ *
+ * 没有标记的会话（cmd、集成被关、TUI 全屏重画）原样返回——降级语义不变。
+ *
+ * 用在两处：`unreadRegion`（回溯窗口，从最后一个 `B` 起切之后再做一次）与
+ * `liveOutputRegion` 的「窗口里没有 `B`」那一支。
+ */
+function commandOutputRegion(text: string): string {
+  let result = ''
+  let cursor = 0
+  let inPrompt = false
+  OSC133_RE.lastIndex = 0
+  for (const match of text.matchAll(OSC133_RE)) {
+    const index = match.index ?? 0
+    if (!inPrompt) result += text.slice(cursor, index)
+    if (match[1] === 'A') inPrompt = true
+    else if (match[1] === 'B') inPrompt = false
+    cursor = index + match[0].length
+  }
+  if (!inPrompt) result += text.slice(cursor)
+  OSC133_RE.lastIndex = 0 // 归位：这个正则是共用的（feedShellIntegration 也用它）
+  return result
+}
+
+/**
+ * `tty_expect` 的 live 窗口：从「本次等待期间到达的原始流」里取出**命令输出**（D101）。
+ *
+ * 三种现场分别处理，判据都是 shell 集成的边界，不做文本启发式：
+ *   1. 窗口里有 `B`（命令在本次等待期间开始了）→ 只取最后一个 `B` 之后。**命令行回显在 `B` 之前**
+ *      （真机上回显与 `B` 常在同一 chunk 里、回显在前），所以这一步就把回显丢掉了；
+ *   2. 窗口里没有 `B` 但 `inCommand`（`B` 早于注册）→ 整段都是那个命令的输出（TUI 全屏重画、
+ *      长任务刷屏），原样返回；
+ *   3. 都没有 → 没有集成（cmd / 集成被关）或正停在提示符上：此时可能只有提示符与回显，也可能
+ *      是没人发命令时自己冒出来的后台输出 —— 只能交给 `commandOutputRegion` 裁掉「未闭合的
+ *      `A` 段」（提示符 + 正在回显的命令行），其余照旧返回（后台输出不能被误杀）。
+ */
+function liveOutputRegion(text: string, state: TtySession['shellState']): string {
+  const fromB = lastCommandStart(text)
+  if (fromB !== -1) return text.slice(fromB)
+  if (state.inCommand) return text
+  return commandOutputRegion(text)
+}
+
 /** 首次被 agent 工具触达时把水位线落在当下——否则第一次回扫会把用户此前的历史输出当成「还没读过」。 */
 function ensureReadMark(session: TtySession): void {
   if (session.readSeq >= 0) return
@@ -1623,7 +1688,9 @@ function unreadRegion(session: TtySession): string {
   const bufferStart = session.outputSeq - session.buffer.length
   const text = session.buffer.slice(Math.max(0, session.readSeq - bufferStart))
   const start = lastCommandStart(text)
-  return start === -1 ? text : text.slice(start)
+  // D101：从最后一个 B 起切只解决了「回显在 B 之前」那一半；这段里还可能有一段**还没等到 B**
+  // 的 A 段（提示符 + 正在回显的命令行），同样要在匹配前裁掉。
+  return commandOutputRegion(start === -1 ? text : text.slice(start))
 }
 
 /**
@@ -1651,6 +1718,13 @@ function testPattern(re: RegExp, text: string): boolean {
  *   - 真实输出里也出现的标记照旧命中（不误杀）；
  *   - 只在回显行**末尾**匹配才削（cmd 的回显与提示符同行，所以按行尾切）；
  *   - 有 B 标记 / 命令正在跑（TUI 全屏重画里出现输入文本是正常输出）时不启用。
+ *
+ * **D101 补**：上面第三条让这条剔除在真实会话里几乎从不启用——窗口里出现**前一条命令**的
+ * `B` 标记就是常态，「命令正在跑」更是常态。真机实测（2026-10-13）：`Start-Sleep -Seconds 2;
+ * echo MARK` + 等 `MARK`，Windows PowerShell 5.1 / 7 分别 446ms / 432ms 就 matched，macOS/zsh
+ * 上 1ms。所以回显的**主防线**改成零启发式的 `commandOutputRegion`（按 `A..B` 边界裁，
+ * `tty_expect` 的 live 路径与 `unreadRegion` 都走它）；本函数退成没有标记那种壳（cmd /
+ * 集成被关——那里没有边界可用，只能按提交过的输入做文本剔除）的兜底。
  * ------------------------------------------------------------------ */
 
 /** 回显候选的行数上限（最近几条提交的输入）与单行长度上限。 */
@@ -1681,13 +1755,21 @@ function noteSubmittedInput(session: TtySession, data: string): void {
  */
 function echoStrippable(session: TtySession, text: string): boolean {
   if (session.recentInputs.length === 0) return false
-  if (session.shellState.inCommand) return false
+  /*
+   * 命令正在跑时（D101 修正）：启用与否**不能**只看 inCommand —— 真机现场是「命令已经被接受
+   * （B 早于注册）、回显稍后才回到缓冲区」，那时精确命中命令行文本的就是回显（Windows
+   * PowerShell 上 432ms 就 matched，而命令还在 Start-Sleep）。
+   *
+   * 判据换成「最近一次提交**早于本条命令的开始**」：那是命令行本身（回显就该剔掉）；提交晚于
+   * 命令开始的，是往在跑的程序里敲的键 —— 它在屏上出现属于**真实输出**，不许剔（D75 的边界）。
+   */
+  if (session.shellState.inCommand) return session.lastInputAt < session.shellState.commandStartedAt
   return lastCommandStart(text) === -1
 }
 
 /**
  * 把回显候选行从文本里削掉（保行结构）。按**行尾**匹配：cmd 的回显与提示符同行
- * （`C:\>echo X`），所以只削后缀、保留提示符前缀。行尾空白（含 `\r`）先归一。
+ * （`C:\>echo X`），所以只削后缀、保留提示符前缀。行尾空白与控制字节先归一。
  */
 function stripEchoLines(text: string, echoes: string[]): string {
   if (echoes.length === 0) return text
@@ -1695,7 +1777,12 @@ function stripEchoLines(text: string, echoes: string[]): string {
   return text
     .split('\n')
     .map((line) => {
-      const trimmed = line.replace(/[ \t\r]+$/, '')
+      /*
+       * 行尾的空白与**控制字节**都算噪音（D101 真机实测）：zsh 在命令行后面紧跟着写
+       * bracketed-paste 开关 `\e[?2004l`，不把它剥掉，「按行尾削」就永远削不掉那一行——
+       * 于是回显被当成真输出（macOS/zsh 上实测 1ms 命中）。
+       */
+      const trimmed = line.replace(/[\s\x00-\x1f\x7f]+$/, '')
       for (const echo of sorted) {
         if (trimmed.endsWith(echo)) return trimmed.slice(0, trimmed.length - echo.length)
       }
@@ -1706,13 +1793,15 @@ function stripEchoLines(text: string, echoes: string[]): string {
 
 /**
  * 命中是否**只**落在回显上（纯回显 → 不算命中）。
- * 原始流与清洗后文本各削一次：回显行里可能夹着 ANSI（zsh 的 zle / 彩色提示符）。
+ *
+ * D101 起只看**清洗后**的文本：原来原始流与清洗文本各削一次、要求「两边都不再命中」才算回显，
+ * 于是原始流里跟在命令行后面的转义序列（`\e[?2004l`、zle 的光标移动……）让 raw 变体削不干净、
+ * 照样命中 → 整条判据失效。清洗后的文本才是「agent 真正看得到的那一份」（`tty_capture` 与
+ * `tty_expect` 返回的也是它），按它判定既够用又不自相矛盾。
  */
 function echoOnlyMatch(re: RegExp, text: string, session: TtySession): boolean {
   if (!echoStrippable(session, text)) return false
-  const stripped = stripEchoLines(text, session.recentInputs)
-  const strippedClean = stripEchoLines(cleanAnsiTail(text), session.recentInputs)
-  return !testPattern(re, stripped) && !testPattern(re, strippedClean)
+  return !testPattern(re, stripEchoLines(cleanAnsiTail(text), session.recentInputs))
 }
 
 /** 宽松清洗一份 tunnels 输入；输入不是数组时返回 undefined（表示「未提供，保持原值」）。 */
@@ -6024,7 +6113,10 @@ const plugin = definePlugin<Config>({
                 // 的收窄，闭包里就得再判一次 undefined。
                 const onData = (chunk: Buffer): void => {
                   acc = (acc + decoder.write(chunk)).slice(-64 * 1024)
-                  const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc
+                  // D101：先按 shell 集成的命令边界裁掉提示符/回显段（见 liveOutputRegion），
+                  // 再取 16KB 尾部窗口。反过来（先切 16KB 再裁）会切掉段首那个 B，回显又漏回窗口里。
+                  const region = liveOutputRegion(acc, state)
+                  const hay = region.length > 16 * 1024 ? region.slice(-16 * 1024) : region
                   if (testPattern(re, hay)) {
                     // D75：命中的若**只是刚送进去那行命令的回显**，不算命中——继续等真输出
                     if (echoOnlyMatch(re, hay, session)) sawEchoOnly = true

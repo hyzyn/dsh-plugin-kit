@@ -129,7 +129,9 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
   banner) but deliberately **not `-NoProfile`** — the user’s profile is where aliases and functions come from.
   TERM / COLORTERM are meaningless for ConPTY and are no longer injected;
 - **“Run one command” tabs** (docker exec, command tabs opened by the agent) use `cmd /c` or
-  `PowerShell -Command`;
+  `PowerShell -Command`; **PowerShell’s `-Command` collapses a non-zero last command into process exit code
+  1** (`cmd /c exit 5` → 1, both versions), so to get a concrete code let the command `exit 5` itself (POSIX
+  `sh -c` does not behave this way);
 - **Input line-ending normalisation (D74, reported on real hardware 2026-09-27)**: conhost treats Enter as
   **CR**, so a bare LF only moves the cursor down and **does not submit the command line** — `tty_send`
   writing `echo X\n` as the tool description says leaves the command sitting on the input line (no output,
@@ -140,11 +142,16 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
   (`powershell.exe` / `pwsh.exe`) through a stable `-File` stub that hooks `prompt` and
   `PSConsoleHostReadLine` — this yields cwd tracking (`tty_list.cwd` following `cd`), exit codes, the
   `running` state and command-granular `tty_expect`. **cmd is not** (it has no command-boundary hooks), so
-  the settings card greys the switch out and points at “switch the shell path to PowerShell”. **Known
-  limit**: on PowerShell 7 the command output reaches ConPTY *after* the D marker (pane redraws are
-  asynchronous and batched — the same root cause as in the tmux case), so `tty_capture{last}` may come back
-  empty; use `tty_capture` to read the tail there. Windows PowerShell 5.1 is unaffected (both were measured
-  on a real machine). The stub only loads through `-ExecutionPolicy Bypass` (process-scoped); two boundaries
+  the settings card greys the switch out and points at “switch the shell path to PowerShell”. **The two
+  versions differ, and the syntax hint is branched by version**: `&&` / `||` are **PowerShell 7** only —
+  on 5.1 `&&` is a parse error and not a single command runs. **Known limit (not reproduced)**: it was
+  recorded that on PowerShell 7 the command output reaches ConPTY *after* the D marker, so
+  `tty_capture{last}` may come back empty; on 2026-10-13 this was re-measured on pwsh **7.6.6** (Win11
+  ARM64) across three output shapes (20 small outputs / a 2000-line burst / 20 writes over 2s) with
+  **0/20 empty windows** — not reproduced. If you do hit one, read the tail with `tty_capture` and report
+  the pwsh version. One more **exit-code rule**: in the PowerShell family a **parse error** (`&&` on 5.1,
+  `echo (1` on both) runs nothing at all yet the D marker reports **0** — never judge success by the exit
+  code alone; the error text is in the output. The stub only loads through `-ExecutionPolicy Bypass` (process-scoped); two boundaries
   are recorded as they are: when **Group Policy** locks the execution policy to Restricted / AllSigned that
   parameter does **not** override GPO, so the stub fails to load and the tab opens with integration silently
   absent (the same degradation as “the user turned PSReadLine off”); the parameter also writes the value into
@@ -1220,8 +1227,8 @@ verify things like “is there still a white panel after switching light/dark th
   (last 256KB) cannot be recovered.
 - **Shell integration covers zsh / bash on POSIX and the PowerShell family on Windows**: other shells
   (Windows cmd) are skipped automatically (`tty_capture{last}` reports a clear error rather than a wrong
-  one); on PowerShell 7 the command output can land after the D marker, so `tty_capture{last}` may be empty
-  there (read the tail with `tty_capture` instead). bash < 4.4 uses the DEBUG trap fallback: internal commands
+  one); a PowerShell 7 `tty_capture{last}` empty window was recorded but **not reproduced on pwsh 7.6.6**
+  on 2026-10-13 (0/20 across three output shapes) — if you see one, read the tail with `tty_capture`. bash < 4.4 uses the DEBUG trap fallback: internal commands
   of compound commands such as loops emit extra B markers, and `tty_capture{last}` captures only the output
   after the last internal command for those commands (exit codes and `tty_expect` are unaffected). If the
   user’s rc overrides `PROMPT_COMMAND`/the hook array, the integration may stop working — turn off

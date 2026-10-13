@@ -318,6 +318,36 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 > 标记都统一到 `0.30.0`（`0.28` / `0.29` 在 npm 上不存在，留着会指向没发生过的版本）。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
 
+### 2026-10-13：pwsh 真机验收（5.1 ↔ 7 对照），并修掉它挖出的「回显当命中」（→ [D101](./DEFECTS.md)，0.32.1）
+
+**为什么做**：README 里 PowerShell 的话是零散写下的，而 `windows-smoke` 的 W8 在**装了 pwsh 的机器上只跑 pwsh**、CI 的 windows-latest 又恰好预装 pwsh 7 —— 「5.1 与 7 的行为差异」这一整类事实此前从没被并排对照过。D100 定位完之后用户问「tty 对 pwsh 的支持度如何」，于是给 VM（Win11 ARM64）装上自包含 zip 版 **PowerShell 7.6.6**（解到 `C:\Program Files\PowerShell\7`，正好是 `resolvePowerShell()` 的首选路径），新建工作树 `C:\dsh-pwsh` 做真机对照。
+
+**探针（`scripts/pwsh-probe.mjs`，新增入库）**：P0 版本自述 / P1 桩载入 + OSC 133 生效 / P2 cwd 跟随（含含空格路径的 `%20` 解码）/ P3 `running` 三态 / P4 命令级与会话级退出码 / P5 `tty_expect` 早停与**回显剔除** / P6 `capture{last}` 窗口（20 次小输出 + 2000 行大输出 + 2s 内分 20 次慢输出）/ P7 `tty_run` / P8/P8b `&&` 与解析错误的退出码。两条设计上的自觉：pattern **不字面出现在命令行里**的用例用拼接造，耗时**有下界**（命令里带 2s 睡眠，早于 1.5s 命中就是命中回显）。
+
+**真机结果（每个 shell 都跑同一套）**：
+
+| 项 | pwsh 7.6.6 | Windows PowerShell 5.1 |
+| --- | --- | --- |
+| 桩载入 / cwd 跟随 / `running` 三态（含空格路径） | ✔ | ✔ |
+| 退出码：`cmd /c exit 7` → 7、`exit 3` → 3 | ✔ | ✔ |
+| `tty_expect` 命中**真实输出**即返回 | ✔ 2531ms | ✔ 2473ms |
+| `capture{last}`：20 次小输出 / 2000 行 / 慢输出 | ✔ 0/20 空窗 | ✔ 0/20 空窗 |
+| `tty_run`：成功路径 + `exit 5` → 5 | ✔ | ✔ |
+| **`tty_expect` 命中**命令行回显**（命令还在睡）** | ✘ **432ms** | ✘ **446ms** |
+| `&&` | ✔（7 支持） | ✘ 解析错误（符合预期） |
+
+`windows-smoke` 连跑 **3 轮 12/12 PASS**（W8 此时自动走 pwsh）。macOS/zsh 上另跑了一份同类对照（scratch，未入库）：回显假命中 **1ms** —— 所以 D101 不是 Windows 专有，是 live 路径的边界缺口。
+
+**同轮核掉的三处「文档与事实不符」**（都在这一版改掉）：
+
+1. 「PowerShell 7 上输出晚于 D 标记 → `tty_capture{last}` 可能取到空」：pwsh 7.6.6 上按三档输出量复测 **0/20 空窗**、大输出保尾、窗口里也没混进回显（0/20）——**未复现**，README 中英与 `shell-integration.ts` 的注释改成「未复现（附条件与复测方法）」，不当既成事实。
+2. **解析错误报 exitCode=0**（`echo (1` 在 7.6.6 与 5.1 上都是 0；5.1 上的 `echo A && echo B` 同样 0）：命令一条都没跑，退出码却像成功。`$?`/`$LASTEXITCODE` 都没变，没有可靠钩子能区分，如实写进 README 与桩注释：**PowerShell 上不能只看退出码判成功**。
+3. `commandShellHint()` 对 `pwsh.exe` 说「POSIX 的 `&&`、`$?`、单引号不是 PowerShell 5.1 的语法」——7 上 `&&` 是合法的（实测输出 A/B）。文案按版本分支（7 说 7 的、5.1 明说**没有** `&&`/`||` 并给 `if ($?)` 写法），`test/shell-spawn.test.ts` 加正反断言。顺带记下 `-Command` 的退出码塌陷（`cmd /c exit 5` → 1，要具体码值得让命令自己 `exit`），README 的「跑一条命令」一节写上。
+
+**D101 的修法与反向验证**：新增零启发式的 `liveOutputRegion()`（窗口里有 `B` 就从最后一个 `B` 起切；没有 `B` 但 `inCommand` 整段算输出——TUI / 长任务不许误杀；都没有才裁未闭合的 `A` 段），`unreadRegion` 补同一刀；`echoStrippable()` 在命令在跑时改判「最近一次提交是否早于本条命令开始」（新增 `commandStartedAt`），TUI 里敲的键照旧算真实输出；`stripEchoLines()` 把行尾控制字节当噪音、`echoOnlyMatch()` 只看清洗后的文本（zsh 在回显后面紧跟 `\e[?2004l`，否则那一行永远削不掉）。D75 的文本剔除保留为「没有标记那种壳」的兜底。回归 `test/expect-backlog.test.ts` 的 D101 组 6 条——**四条反例拿掉修法即红**（真机反例：回显与 `B` 同 chunk；B 早于注册、回显晚于注册到达；回显行尾跟转义序列；提示符 + 回显同 chunk），三条「不许误杀」（输出与下一个提示符同 chunk / `B` 早于注册的长任务 / 回溯区的提示符段）两侧都绿。
+
+**修后真机复验（同一台 VM，同一套探针）**：`pwsh-probe` **29 PASS / 0 FAIL / 10 INFO**——P5b 从「432ms / 446ms 命中回显」变成 **2475ms / 2343ms 命中真实输出**；`windows-smoke` 连跑 **3 轮 12/12 PASS**（W8 走 pwsh）。macOS/zsh 上同类对照从 **1ms** 变成 **2012ms**（拿到 2s 之后那条真实输出）。
+
 ### 2026-10-11（续）：「保存到连接簿」名称行常显 + 填名字自动勾上（纯客户端半体）
 
 **为什么是这一轮**：三段式外壳那一轮之后，用户贴了「保存到连接簿（同名覆盖）+ 连接簿名称」那一块的

@@ -540,6 +540,14 @@ interface ShellIntegrationState {
     sawMark: boolean;
     /** B..D 之间：命令输出捕获中。 */
     inCommand: boolean;
+    /**
+     * 当前这条命令**开始的时刻**（见到那个 `B` 的 Date.now()；0 = 还没见过 B）。
+     *
+     * 用途只有一个（D101）：区分「命令行回显」与「往在跑的程序里敲的字」。命令行的回显是**在 B
+     * 之前**提交的那次 `tty_send`（`session.lastInputAt < commandStartedAt`），而 TUI 里的按键
+     * 一定晚于 B —— 后者在屏上出现是真实输出，不许当回显剔掉（D75 的边界）。
+     */
+    commandStartedAt: number;
     cmdBuffer: string;
     /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
     pendingT: string | null;

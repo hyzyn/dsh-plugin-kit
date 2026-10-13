@@ -356,6 +356,11 @@ function ensureBashStubRc() {
  * `echo $LASTEXITCODE` 读到空值。代价：连续两次原生命令给出同一个非零码时，第二次降级
  * 报 1（仍如实标失败，只是丢了具体码值）。
  *
+ * **解析错误例外**（两版一致，2026-10-13 真机实测）：整行解析失败时命令一条都没跑，但
+ * `$?` 与 `$LASTEXITCODE` 都没变，于是 D 报 **0**（`echo (1` 在 7.6.6 与 5.1 上都是 0；
+ * 5.1 上 `echo A && echo B` 同样报 0）。没有可靠的钩子能区分「解析失败」与「命令成功但
+ * 无输出」，所以如实记着：**PowerShell 上不能只看退出码判成功**，报错文本就在输出里。
+ *
  * 只在原 `PSConsoleHostReadLine` 存在时才装钩子：用户若关掉了 PSReadLine，那个函数不
  * 存在，此时**一个标记都不发**（连 A/7 也不发）——只发 A/7 会让宿主 `sawMark=true` 而
  * `inCommand` 恒 false，`running` 就从「未知」退化成「没在跑」，正是 D77 警告的静默事故
@@ -367,11 +372,13 @@ function ensureBashStubRc() {
  * 失效。要修得先把失败态还原回去（例如按捕获到的状态补发一条错误记录），而那必须两版
  * PowerShell 都真机验过才能落。
  *
- * 已知限制（真机实测，见 README 的 Windows 一节）：PowerShell 7 上命令 stdout 在 ConPTY
- * 里晚于 D 标记抵达（渲染管线批量重画 vs 直通序列即时转发，与 tmux 场景同根因），于是
- * 宿主的 B..D 捕获窗口为空 —— cwd 跟随 / 退出码 / running 三态都正常，`capture{last}` 的
- * 输出在 PS 5.1 正常、PS 7 上可能为空（用 `tty_capture` 读尾部）。tmux 那边用 OSC 133;T
- * 快照绕过同一问题，Windows 侧暂无可用的等价快照源，故留作已知限制。
+ * 已知限制（**未复现**，见 README 的 Windows 一节）：曾有记录说 PowerShell 7 上命令 stdout
+ * 在 ConPTY 里晚于 D 标记抵达（渲染管线批量重画 vs 直通序列即时转发，与 tmux 场景同根因），
+ * 于是宿主的 B..D 捕获窗口为空 —— cwd 跟随 / 退出码 / running 三态都正常，只有 `capture{last}`
+ * 的输出在 PS 7 上可能为空。2026-10-13 在 pwsh **7.6.6**（Win11 ARM64）上按三档输出量复测
+ * （20 次小输出、2000 行大输出、2s 内分 20 次的慢输出）：**0/20 空窗**，大输出保尾、慢输出
+ * 完整，窗口里也没混进命令行回显 —— 未复现。留作待复现项（遇到空窗用 `tty_capture` 读尾部，
+ * 并把当时的 pwsh 版本报回来）；tmux 那边用 OSC 133;T 快照绕过同类问题。
  */
 function powershellHooks() {
     return [
@@ -517,7 +524,14 @@ export function commandShellHint(shell, platform = process.platform) {
         return `本地命令由 ${name} 执行：按 POSIX shell 语法（\`a; b\`、\`cd x && y\`、\`for …; do …; done\`、管道、单引号）`;
     }
     if (isPowerShellShell(name)) {
-        return `本地命令由 ${name} 执行：按 **PowerShell** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式；POSIX 的 \`&&\`、\`$?\`、单引号不是 PowerShell 5.1 的语法）`;
+        const kind = name.split(/[\\/]/).pop()?.toLowerCase() ?? '';
+        // PowerShell 7（pwsh）与 Windows PowerShell 5.1 的语法**不一样**，这句话每一轮都进
+        // systemPrompt，说错会直接把模型引到不存在的坑里（D101，2026-10-13 真机实测：
+        // 7.6.6 上 `echo A && echo B` 正常输出 A/B、5.1 上同一行是解析错误且一条都没跑）。
+        if (kind === 'pwsh' || kind === 'pwsh.exe') {
+            return `本地命令由 ${name} 执行：按 **PowerShell 7** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式、\`&&\`/\`||\` 链式、\`$?\` 判上一条是否成功、\`$LASTEXITCODE\` 取原生命令退出码；单引号是字面量、双引号才插值）`;
+        }
+        return `本地命令由 ${name} 执行：按 **Windows PowerShell 5.1** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式；**5.1 没有 \`&&\`/\`||\`**——条件执行写 \`if ($?) { … }\`，退出码用 \`$LASTEXITCODE\`；单引号是字面量）`;
     }
     const kind = name.split(/[\\/]/).pop()?.toLowerCase() ?? '';
     if (kind === 'bash.exe' || kind === 'bash' || kind === 'sh.exe' || kind === 'sh' || kind === 'zsh.exe' || kind === 'zsh') {
@@ -586,7 +600,14 @@ function buildWindowsShellSpawn(shell, integration) {
     }
     return { argv: [shell, '-NoLogo'], env: {} };
 }
-/** Windows 宿主的「跑一条命令」计划：按 shell 家族选参数（0.19.0 前一律 /c，Git Bash / WSL 静默失败）。 */
+/**
+ * Windows 宿主的「跑一条命令」计划：按 shell 家族选参数（0.19.0 前一律 /c，Git Bash / WSL 静默失败）。
+ *
+ * PowerShell 的退出码口径（2026-10-13 真机实测，两版一致）：`-Command` 会把**末条命令非零**的
+ * 情况塌成进程退出码 **1**，拿不到具体码值 —— `cmd /c exit 5` 经 `-Command` 出来是 1，而
+ * `exit 5` 出来是 5。POSIX 侧 `sh -c` 不会这样（`exit 5` → 5、末条命令是它自己）。所以
+ * `tty_run` 在 PowerShell 上要拿到具体退出码，命令得自己 `exit`（README 的「跑一条命令」一节记着）。
+ */
 function buildWindowsCommandSpawn(shell, command) {
     if (isPowerShellShell(shell)) {
         return { argv: [shell, '-NoLogo', '-Command', command], env: {} };

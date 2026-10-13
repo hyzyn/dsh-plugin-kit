@@ -281,6 +281,15 @@ describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () 
     const pwsh = commandShellHint('C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'win32')
     expect(pwsh).toContain('PowerShell')
     expect(pwsh).toContain('$env:VAR')
+    // D101：PowerShell 7 与 5.1 的语法**不一样**，这句话每轮都进 systemPrompt。
+    // 2026-10-13 真机实测（pwsh 7.6.6 / 5.1.26100）：`echo A && echo B` 在 7 上正常输出 A/B，
+    // 在 5.1 上是解析错误且一条都没跑——旧文案对 7 说「&& 不是语法」会把模型引到坑里。
+    expect(pwsh).toContain('PowerShell 7')
+    expect(pwsh).toContain('&&')
+    const ps51 = commandShellHint('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'win32')
+    expect(ps51).toContain('5.1')
+    expect(ps51).toContain('没有')
+    expect(ps51).not.toContain('PowerShell 7')
 
     expect(commandShellHint('C:\\Program Files\\Git\\bin\\bash.exe', 'win32')).toContain('POSIX')
     expect(commandShellHint('C:\\Windows\\System32\\wsl.exe', 'win32')).toContain('sh -c')
