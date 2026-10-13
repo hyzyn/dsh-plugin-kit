@@ -36,8 +36,8 @@
 > 是**同一个 PTY 被两个调用方各原生 kill 一次**（`conpty.cc` 的 `PtyKill` 不幂等，第二次把已释放的
 > HPCON 再交给 `ClosePseudoConsole` → `STATUS_HEAP_CORRUPTION`）。`installWindowsKillGate`
 > 已在 `wrapLocalPty` 里装上一次性闸门；真机 A/B 各 150 轮：无闸门第 75 轮崩、装闸门 150/150
-> 不崩。**CI 上那条「跳过 W8」的临时处置因此可以撤**（待一次 CI 运行确认，见该条目内
-> 的 2026-10-13 一节）。
+> 不崩。**CI 上那条「跳过 W8」的临时处置已撤并验过**（windows 腿 W8a/W8b PASS、`12/12 PASS`，
+> 见该条目内的 2026-10-13 一节）。
 
 - **机器级资源的 profile 维度（D60）** —— 复制 profile 会把固定端口（webserver / 隧道
   `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。**2026-10-06 部分落地**：
@@ -258,8 +258,11 @@ flush 屏障），而**原生崩溃没有「末尾」**，屏障来不及跑，�
   DSH 侧「`pid=0` ⇒ `rootIdentity` 恒 undefined ⇒ `stopShellWindows` 必走 `terminal.kill()` 兜底、
   且 `stopDescendants` 在 Windows 本地终端上是空转」按该仓库现有渠道（issues 关闭，只有 Discussions）
   发在 <https://github.com/deepseek-ai/deepseek-harness/discussions/9558>。
-- **下一步**：把 CI 上「默认跳过 W8」那条临时处置撤掉（它当初只是绕开未定性的根因），让 windows 腿
-  重新覆盖 PR #9 的 PowerShell 断言；撤之前先在临时分支上跑一次 CI 确认。
+- **已撤掉 CI 上「默认跳过 W8」的临时处置（2026-10-13）**：它是当初绕开未定性的根因用的，根因修好后
+  先在临时分支 `ci/win-smoke-w8-restore` 上让 CI 判（run `38327852724`）——windows 腿
+  **W8a/W8b 均 PASS、`12/12 PASS`、无 SKIP、整腿 success**，同一台 runner 在 2026-10-12 是
+  **含 W8 的树 10/10 崩**。撤掉后 windows 腿重新覆盖 PR #9 的 PowerShell 断言（本机没有 PowerShell 时
+  仍如实进 `SKIP` 一档）。
 
 **若将来确认是 flake 而非真 bug**：按项目级 ROADMAP 9.4 的口径处理（那条讲的是「争用强度
 不随机器漂」）；若确认是真 bug，另开 `Dxx` 编号进 [DEFECTS.md](./DEFECTS.md) 索引表
