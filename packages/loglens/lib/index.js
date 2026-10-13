@@ -305,7 +305,10 @@ const plugin = definePlugin({
             }, 'dsh-loglens: routes');
         });
         if (config.announce !== false) {
-            console.log('[dsh-loglens] mounted（来源 ' + String(live.targets.length) + ' / ' + String(MAX_TARGETS) + '，查询能力尚未实现）');
+            // 这句要跟得上能力：原先写的是「查询能力尚未实现」——查询区、四条路由与 agent 工具早就有了。
+            // 宿主日志是排查时第一眼看的东西，说少了同样误导（2026-10-13 真机验收时在启动日志里看到它）。
+            console.log('[dsh-loglens] mounted（来源 ' + String(live.targets.length) + ' / ' + String(MAX_TARGETS)
+                + '，路由 config / query / fields / facets，agent 工具 loglens_*）');
         }
     },
 });

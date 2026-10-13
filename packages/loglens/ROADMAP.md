@@ -1145,11 +1145,45 @@ P6 真要做 tail 时把 `stream()` 与消费者一起落地，再把这一位�
 | `check-i18n` | 本包 **96 条键**（原 80）zh/en 一致、用法命中、告警 0 条 |
 | 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿：**170 文件 / 2864 用例** |
 
-**证据的范围（明写，别读成真机验收）**：这一格的证据是**纯逻辑用例 + 无浏览器渲染回归**（与上一格直方图
-同一尺度）：断言的是渲染树、请求体与能力闸。**真机（真宿主 + 真 ES 的 terms 榜）这一轮没跑**——
-起 test profile 的宿主会写 `$DSH_HOME/profiles/*`（在 workspace 之外），本轮文件策略是 `workspace-write`，
-被沙箱拒（`EPERM … profiles/web/cordis.yml`）。要补真机就照 [real-test 车道](../../.dsh/skills/dsh-plugin-kit/references/real-test.md)
-复制一份 profile、用别的端口起宿主，再拿真浏览器点一次——那是**下一次真机验收**的活，不是这一格的判据。
+**证据的范围**：第一轮只有**纯逻辑用例 + 无浏览器渲染回归**（与上一格直方图同一尺度），断言的是渲染树、
+请求体与能力闸；**当晚补了一次真机验收**（真宿主 + 真 ES，见下 § 真机验收：真宿主 + 真 ES 的 terms 榜），
+结论 PASS，没验到的也逐条列在那一节。第一轮当时被沙箱挡住的那一步（起 test profile 的宿主会写
+`$DSH_HOME/profiles/*`，在 workspace 之外，`workspace-write` 会拒）在补验收时**逐条授权**后走通了：
+隔离靠的是**复制一份 profile**（真 `DSH_HOME`，设置与凭据都在），不是隔离 home——方案见
+[real-test 车道](../../.dsh/skills/dsh-plugin-kit/references/real-test.md)。
+
+#### 真机验收：真宿主 + 真 ES 的 terms 榜（2026-10-13）
+
+**环境**（跑完即关）：复制 `~/.dsh/profiles/test-logs` → 临时 profile，`dsh --profile <临时名> --port 3199`，
+真 Chrome（Playwright）点真界面。**源 profile 未动**（`test-logs/cordis.patch.yml` 的 mtime 仍是 10-11）；
+验收产物（截图 / DOM 快照）**没进仓库**（含内网标识，已移出工作区）。
+
+| 步骤 | 原始返回（**内网标识已脱敏**） | 判定 |
+|---|---|---|
+| 打开卡片 | `card.desc` = 「……来源清单、直连查询、时间分布与按字段分组。」 | **PASS**：这是**新版**文案（旧版写的是「当前只有来源清单与开关」）⇒ 页面确实加载了这次构建的 bundle |
+| 选来源 →「查询」（近 1h / 100 行 / 查询串空） | `返回 100 行`、`命中 26087`、`已截断：达到条数上限` | **PASS** |
+| 时间分布（同一次响应带 capabilities） | `每根柱子 1m`、`峰值 1214 条`、`共 26087 条`；**61 根柱子逐桶有数**（1h / 1m，首桶对齐到窗口起点那一分钟，末桶 18:10:00）——合计 26087 与上面 `命中 26087` 对得上 | **PASS**（上一格没被这一格弄坏） |
+| 点「有哪些字段」 | `/fields` → 200；`fields` **80 个**、`total: 102`、`truncated: true`；界面照抄宿主的「只列了前 80 个（这个来源共有 102 个字段）…」 | **PASS**（候选拿到了；截断警告没吞） |
+| 填 `container.name` → 点「分组」 | 请求体 `{"target":"<id>","q":"","from":…,"to":…,"by":"container.name"}`——**没有 `size`** | **PASS**：窗口是回显那一份、字段进了 `by`、面板没写死桶数 |
+| 榜渲染 | 10 个桶，**顺序与后端一致**（`app-svc-1` 13442 / `app-svc-2` 11493 / `app-svc-3` 312 / prometheus 240 / …）；标题回显 `container.name`；宿主警告「还有 32 条落在没列出来的桶里…」 | **PASS**（`otherCount` 那条路真机上走通了） |
+| 换 `log.level`（这台集群该字段整列是空的）再点「分组」 | 桶为空 → 界面写「这个窗口里没有可分组的数据」，**没有横条**、也没有静默无反应 | **PASS**（空榜如实说，不假装有数据） |
+
+**没验到的（明写，不混进 PASS）**
+
+- **空值键**（`（空值）` 那一支）：这台集群的字段要么有值、要么整列皆空（走了上面的空榜），没撞到
+  「部分文档缺字段」的中间态——它只有用例与渲染回归覆盖。
+- **Loki 的能力闸**：临时 profile 里没有 Loki 来源，真机没跑（用例与冒烟覆盖）。
+- **桶计数的近似性警告**（`countErrorUpperBound > 0`）：这台集群没报（报的是 `otherCount`），
+  界面上那条「计数是近似值」文案真机未验。
+
+**真机顺带抓到的一条**（同一次验收的副产品，已修）：宿主启动日志写着
+`[dsh-loglens] mounted（来源 2 / 32，查询能力尚未实现）`——**这句是过期的**（查询区、四条路由与
+agent 工具早就在了）。它与上一格修掉的三处头注释属同一类「说得比做的少」，宿主日志又是排查时
+第一眼看的东西，所以就地改对（[src/index.ts](../loglens/src/index.ts) 的 announce）：
+
+    [dsh-loglens] mounted（来源 N / 32，路由 config / query / fields / facets，agent 工具 loglens_*）
+
+这条**不占 `Dxx` 编号**（先例同上：文案与实现的对账记在 ROADMAP，不进缺陷台账）。
 
 #### 刻意不做的
 
