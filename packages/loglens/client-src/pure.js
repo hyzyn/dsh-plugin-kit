@@ -118,9 +118,15 @@ export function windowRange(preset, nowMs) {
   return { from: now - span, to: now }
 }
 
-/** 新查询的草稿：默认「最近 1 小时 / 100 条」。 */
+/**
+ * 新查询的草稿：默认「最近 1 小时 / 100 条」，没有筛选。
+ *
+ * 筛选**放在草稿里**（而不是组件另起一份 state）：它决定的是「这一次查的是哪个子集」，
+ * 与 `q` / 窗口 / 条数是同一件事——放一处，行、时间分布、分组榜才不可能查成三个不同的子集
+ * （`queryPayload` 与 `facetsEnvelope` 读的都是这一份）。
+ */
 export function emptyQuery() {
-  return { target: '', q: '', preset: '1h', limit: 100 }
+  return { target: '', q: '', preset: '1h', limit: 100, filters: [] }
 }
 
 /**
@@ -142,13 +148,100 @@ export function queryPayload(draft, targets, nowMs) {
   const range = windowRange(draft.preset, nowMs)
   const chosen = String(draft.target == null ? '' : draft.target).trim()
   const fallback = Array.isArray(targets) && targets.length === 1 ? targets[0].id : ''
-  return {
+  const payload = {
     target: chosen === '' ? fallback : chosen,
     q: String(draft.q == null ? '' : draft.q),
     from: range.from,
     to: range.to,
     limit: Number(draft.limit),
   }
+  // 没有筛选就**不带这个键**（不是带一个空对象）：线上形状与加筛选之前逐字节一致，
+  // 别让一次「顺手加个字段」把已有调用方的请求体也改了。
+  const filters = filtersOf(draft.filters)
+  if (filters !== undefined) payload.filters = filters
+  return payload
+}
+
+/* ============================ 结构化筛选（点桶下钻，P6 第三格） ============================ */
+
+/*
+ * 筛选状态是**有序的数组**（`[{ field, value }]`），界面上的那一串芯片就是它。
+ *
+ * 为什么线上是对象、这里却存数组：`filters` 在宿主那边是 `Record<字段, 值>`（src/query.ts 的
+ * `asFilters`），**一个字段只能有一个值**——同一个字段加两次，后一条会静默盖掉前一条。
+ * 数组只是为了芯片顺序稳定（对象键序在用户眼里是随机的），落成载荷时再折回对象（`filtersOf`）。
+ * 所以「同一个字段」的语义在这里就已经定死：**就地替换**，不是并存。
+ */
+
+/**
+ * 一条筛选能不能加：空串表示可以，否则是 i18n 键名后缀（needFilterField / needFilterValue）。
+ *
+ * **值不做 trim**（这条是判据，不是偷懒）：`log.level` 的值可能是 `"ERROR "`，键名里那个空格
+ * 是内容的一部分——裁掉就筛不到东西了（静默地筛不到，比报错更难查）。空值判定用 `trim()`，
+ * 但**进载荷的是原值**。
+ *
+ * 空值**表达不了**「字段缺失」：`filters` 只能说「这个字段 = 某个字符串」，而榜上「（空值）」
+ * 那一桶是「文档里根本没有这个字段」。所以那个值在这里被挡（界面也不给点，见
+ * client-src/index.js 的渲染）——给一个点得动、筛的却是别的东西的入口，比不给入口更坏。
+ */
+export function filterProblem(field, value) {
+  if (String(field == null ? '' : field).trim() === '') return 'needFilterField'
+  if (String(value == null ? '' : value).trim() === '') return 'needFilterValue'
+  return ''
+}
+
+/** 这个字段已经在筛的值（没在筛则 `undefined`）。 */
+export function filterOf(list, field) {
+  const wanted = String(field == null ? '' : field)
+  for (const row of Array.isArray(list) ? list : []) {
+    if (row != null && String(row.field) === wanted) return String(row.value)
+  }
+  return undefined
+}
+
+/** 这个「字段 = 值」在不在筛选里（与 `filterAdd` 的「已存在」判据**同源**，别各写一套）。 */
+export function filterHas(list, field, value) {
+  const current = filterOf(list, field)
+  return current !== undefined && current === String(value == null ? '' : value)
+}
+
+/**
+ * 加一条筛选，返回**新数组**。同一字段就地替换（位置不变——芯片跳位置会让人以为点了别的）；
+ * 已经在筛同一个「字段 = 值」时**原样返回入参**（同一个引用：调用方可以据此判断「什么都没变」）。
+ */
+export function filterAdd(list, field, value) {
+  const rows = Array.isArray(list) ? list : []
+  const name = String(field == null ? '' : field)
+  const wanted = String(value == null ? '' : value)
+  const at = rows.findIndex((row) => row != null && String(row.field) === name)
+  if (at === -1) return rows.concat([{ field: name, value: wanted }])
+  if (String(rows[at].value) === wanted) return rows
+  const next = rows.slice()
+  next[at] = { field: name, value: wanted }
+  return next
+}
+
+/** 去掉一个字段的筛选（没在筛则原样返回入参：与 `filterAdd` 同一条「没变就同一个引用」）。 */
+export function filterRemove(list, field) {
+  const rows = Array.isArray(list) ? list : []
+  const name = String(field == null ? '' : field)
+  const next = rows.filter((row) => row == null || String(row.field) !== name)
+  return next.length === rows.length ? rows : next
+}
+
+/**
+ * 筛选列表 → 线上那份 `filters`。空表回 `undefined`（**不发空对象**）——「没有筛选」与
+ * 「筛选了个空」在线上是两回事，虽然宿主两边都收，但形状该说实话。
+ */
+export function filtersOf(list) {
+  const rows = Array.isArray(list) ? list : []
+  if (rows.length === 0) return undefined
+  const out = {}
+  for (const row of rows) {
+    if (row == null) continue
+    out[String(row.field)] = String(row.value)
+  }
+  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /** 追加一页：按 id 去重（同一份快照翻页不该出现重复行；真出现也先挡住）。 */
@@ -249,12 +342,20 @@ function facetsEnvelope(draft, outcome) {
   const target = outcome !== null && typeof outcome === 'object' && outcome.target !== null && typeof outcome.target === 'object' ? outcome.target : {}
   if (typeof target.id !== 'string' || target.id === '') return null
   if (!Number.isFinite(echoed.from) || !Number.isFinite(echoed.to) || !(echoed.to > echoed.from)) return null
-  return {
+  const envelope = {
     target: target.id,
     q: String(draft == null || draft.q == null ? '' : draft.q),
     from: echoed.from,
     to: echoed.to,
   }
+  /*
+   * 筛选也要下发给聚合：聚合画的是**这一次查询的那个子集**。不带筛选的话，下钻之后
+   * 分布与榜会画在整个窗口上，而行是筛过的——同一屏上三个数字说的不是一件事。
+   * （直方图当年用「回显窗口」也是同一条判据，见上面那段。）
+   */
+  const filters = filtersOf(draft == null ? undefined : draft.filters)
+  if (filters !== undefined) envelope.filters = filters
+  return envelope
 }
 
 /** 时间分布的请求载荷（窗口 + 间隔）。 */
@@ -347,7 +448,8 @@ export function groupPayload(draft, outcome, by) {
  * - **不写合计**：列出来的桶加起来**不是**命中总数（没列出来的在 `otherCount` 里，由宿主用
  *   警告原话回报，面板照抄）。写一个「部分之和」会被读成「这个窗口一共这么多」。
  * - **空值键要标出来**：文档缺这个字段时 ES 给的 key 是空串——直接画出来是一条没有名字的横条，
- *   看起来像渲染丢了东西。标成空白键，由界面给一句「（空值）」。
+ *   看起来像渲染丢了东西。标成空白键，由界面给一句「（空值）」。这一位同时是**「不给下钻」的判据**：
+ *   筛选只能表达「字段 = 值」，表达不了「字段缺失」（见 `filterProblem`）。
  */
 export function groupBars(buckets) {
   const rows = []

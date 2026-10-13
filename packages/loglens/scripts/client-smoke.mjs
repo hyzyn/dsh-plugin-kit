@@ -670,6 +670,119 @@ await test('「有哪些字段」：拉一次 /fields 把候选填进 datalist�
 })
 
 /* ------------------------------------------------------------------ *
+ * 点桶下钻（结构化筛选）：点榜上一条 → 带 filters 重查一次
+ * ------------------------------------------------------------------ */
+
+/** className 里有没有这一类（节点上的 className 可能是 'a b c'）。 */
+function hasClass(node, name) {
+  return typeof node.props?.className === 'string' && node.props.className.split(' ').includes(name)
+}
+
+/** 一份带空值桶的榜：既用来测下钻，也用来测「空值那一条不给点」。 */
+const DRILL_BUCKETS = {
+  ok: true,
+  buckets: [{ key: 'app-svc-1', count: 8 }, { key: 'app-svc-2', count: 4 }, { key: '', count: 2 }],
+  warnings: [],
+}
+
+function drillRoutes() {
+  return {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/facets': facetsRoute(DRILL_BUCKETS, HIST_OK),
+  }
+}
+
+/** 榜上「app-svc-1」那一条（可点的按钮）。 */
+function drillRow(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_groupRowBtn') && treeText(node).includes('app-svc-1'))[0]
+}
+
+/** 点一下 + 让异步链跑完（重查 → 两份聚合）。 */
+async function clickAndSettle(runtime, node) {
+  node.props.onClick()
+  await runtime.update()
+  await runtime.update()
+  await runtime.update()
+}
+
+await test('点桶下钻：点榜上一条就**带 filters 重查一次**（行与两份聚合收窄到同一个子集）', async () => {
+  serverRoutes = drillRoutes()
+  const { runtime, tree } = await runPanelQueryFull('es', { groupBy: 'container.name' })
+  const row = drillRow(tree)
+  assert.ok(row !== undefined, '榜上第一条该是个可点的按钮——下钻的入口就是它')
+
+  calls.length = 0
+  await clickAndSettle(runtime, row)
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '下钻必须**真的重查一次**：拿已经到手的那一页在本地过一遍是假的（那一页被 limit 截断过）')
+  assert.deepEqual(query.body.filters, { 'container.name': 'app-svc-1' })
+  const facets = calls.filter((call) => call.path === '/api/dsh-loglens/facets')
+  assert.equal(facets.length, 2, '分布与榜都该重拉一次，实得：' + JSON.stringify(calls.map((call) => call.path)))
+  for (const call of facets) {
+    assert.deepEqual(call.body.filters, { 'container.name': 'app-svc-1' },
+      '聚合必须画在同一个子集上，否则同一屏三个数字说的不是一件事')
+  }
+
+  const after = runtime.tree
+  assert.ok(treeText(after).includes('container.name = app-svc-1'),
+    '该出一枚芯片写着现在筛的是什么：' + treeText(after).slice(0, 200))
+  assert.equal(treeFind(after, (node) => hasClass(node, 'll_groupRowActive')).length, 1,
+    '正在按它下钻的那一条该看得出来（不然用户不知道这一屏是筛过的）')
+})
+
+await test('再点一次就是取消：筛选清空（**不带 filters 键**，不是带个空对象），芯片与高亮都消失', async () => {
+  serverRoutes = drillRoutes()
+  const { runtime, tree } = await runPanelQueryFull('es', { groupBy: 'container.name' })
+  await clickAndSettle(runtime, drillRow(tree))
+  const queries = calls.filter((call) => call.path === '/api/dsh-loglens/query')
+  assert.deepEqual(queries[queries.length - 1].body.filters, { 'container.name': 'app-svc-1' })
+
+  // 重新从**这一轮的树**里找那一条：找得到本身也说明下钻之后榜重画了
+  const active = drillRow(runtime.tree)
+  assert.ok(active !== undefined, '下钻之后那一条还在榜上（这一屏是筛过的榜）')
+  calls.length = 0
+  await clickAndSettle(runtime, active)
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '取消也要重查一次（不能只把芯片抹掉，那一屏的行还是筛过的）')
+  assert.equal('filters' in query.body, false, '取消之后不许带一个空对象：请求形状要回到加筛选之前')
+  const text = treeText(runtime.tree)
+  assert.equal(text.includes('container.name = app-svc-1'), false, '芯片该没了')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_groupRowActive')).length, 0, '取消之后不该还有高亮')
+})
+
+await test('芯片上的 × 也能去掉筛选（同样真的重查一次，不是只动界面）', async () => {
+  serverRoutes = drillRoutes()
+  const { runtime, tree } = await runPanelQueryFull('es', { groupBy: 'container.name' })
+  await clickAndSettle(runtime, drillRow(tree))
+
+  const chipBtn = treeFind(runtime.tree, (node) => node.type === 'button' && hasClass(node, 'll_chipBtn'))[0]
+  assert.ok(chipBtn !== undefined, '芯片上该有个 × ')
+  calls.length = 0
+  await clickAndSettle(runtime, chipBtn)
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '点 × 之后要重查一次')
+  assert.equal('filters' in query.body, false, '去掉唯一一条筛选之后，请求里不该再出现 filters')
+  assert.equal(treeFind(runtime.tree, (node) => node.type === 'button' && hasClass(node, 'll_chipBtn')).length, 0, '芯片该没了')
+})
+
+await test('空值那一桶**不给点**：筛选表达不了「字段缺失」，给个点得动的入口就会筛出别的东西', async () => {
+  serverRoutes = drillRoutes()
+  const tree = await runPanelQuery('es', { groupBy: 'container.name' })
+
+  const blank = treeFind(tree, (node) => hasClass(node, 'll_groupRow') && treeText(node).includes('（空值）'))[0]
+  assert.ok(blank !== undefined, '空值那一桶该照旧画出来（不是渲染丢了东西）')
+  assert.equal(blank.type, 'div', '空值那一桶不该是按钮：点了会下发 {字段: ""}，那是「等于空串」不是「字段缺失」')
+  assert.ok(String(blank.props.title ?? '').includes('不能下钻'), '该在明面上说清为什么点不了')
+
+  // 其余两条仍是可点的按钮：空值桶的存在不该把整张榜变成死文字
+  assert.equal(treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_groupRowBtn')).length, 2,
+    '可点的应该只有有名字的那两条')
+})
+
+/* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
 

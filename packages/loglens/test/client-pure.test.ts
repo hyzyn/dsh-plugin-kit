@@ -10,6 +10,12 @@ import {
   draftProblem,
   emptyDraft,
   emptyQuery,
+  filterAdd,
+  filterHas,
+  filterOf,
+  filterProblem,
+  filterRemove,
+  filtersOf,
   groupBars,
   groupPayload,
   groupProblem,
@@ -108,8 +114,8 @@ describe('查询表单（P6 面板侧）', () => {
     expect(windowRange('1h', Number.NaN).to).toBeGreaterThan(0)   // now 不合法就取当前时刻
   })
 
-  it('新草稿是「最近 1 小时 / 100 条」', () => {
-    expect(emptyQuery()).toEqual({ target: '', q: '', preset: '1h', limit: 100 })
+  it('新草稿是「最近 1 小时 / 100 条」，且没有筛选', () => {
+    expect(emptyQuery()).toEqual({ target: '', q: '', preset: '1h', limit: 100, filters: [] })
   })
 
   it('必填项：多来源时必须选一个；条数必须是正整数', () => {
@@ -127,6 +133,8 @@ describe('查询表单（P6 面板侧）', () => {
     expect(payload).toEqual({ target: 'loki', q: ' level:error ', from: 1000 - 15 * 60 * 1000, to: 1000, limit: 20 })
     const chosen = queryPayload({ target: ' es ', q: '', preset: '1h', limit: 20 }, targets, 1000)
     expect(chosen.target).toBe('es')
+    // 没有筛选就**不带这个键**：线上形状与加筛选之前逐字节一致
+    expect('filters' in payload).toBe(false)
   })
 
   it('翻页：按 id 去重，脏输入不炸', () => {
@@ -460,5 +468,94 @@ describe('按字段分组：字段名能不能提交', () => {
     expect(groupProblem('')).toBe('needGroupBy')
     expect(groupProblem('   ')).toBe('needGroupBy')
     expect(groupProblem(undefined)).toBe('needGroupBy')
+  })
+})
+
+describe('结构化筛选（点桶下钻）', () => {
+  it('字段与值都不能空：空值**表达不了「字段缺失」**，所以也在这里挡（界面根本不给点）', () => {
+    expect(filterProblem('container.name', 'app-svc-1')).toBe('')
+    expect(filterProblem('', 'x')).toBe('needFilterField')
+    expect(filterProblem('   ', 'x')).toBe('needFilterField')
+    expect(filterProblem(undefined, 'x')).toBe('needFilterField')
+    expect(filterProblem('container.name', '')).toBe('needFilterValue')
+    expect(filterProblem('container.name', '   ')).toBe('needFilterValue')
+    expect(filterProblem('container.name', undefined)).toBe('needFilterValue')
+  })
+
+  it('值**不做 trim**：键名里的空格是内容的一部分，裁掉就静默筛不到东西（比报错更难查）', () => {
+    const draft = { target: 'es', q: '', preset: '1h', limit: 20, filters: [{ field: 'log.level', value: 'ERROR ' }] }
+    expect(queryPayload(draft, [{ id: 'es' }], 0).filters).toEqual({ 'log.level': 'ERROR ' })
+  })
+
+  it('同一个字段**就地替换**（线上是 Record，一个字段只有一个值；并存会静默盖掉一条）', () => {
+    const one = filterAdd([], 'container.name', 'a')
+    expect(one).toEqual([{ field: 'container.name', value: 'a' }])
+    expect(filterAdd(one, 'container.name', 'b')).toEqual([{ field: 'container.name', value: 'b' }])
+    expect(filterAdd(one, 'container.name', 'b').length).toBe(1)
+    // 已有的那条**位置不变**：芯片跳位置会让人以为点了别的
+    const mixed = filterAdd(one, 'host.name', 'h')
+    expect(filterAdd(mixed, 'container.name', 'c')).toEqual([
+      { field: 'container.name', value: 'c' },
+      { field: 'host.name', value: 'h' },
+    ])
+  })
+
+  it('「没变」时**原样返回同一个引用**（调用方据此知道什么都没变，不必白查一次）', () => {
+    const list = [{ field: 'container.name', value: 'a' }]
+    expect(filterAdd(list, 'container.name', 'a')).toBe(list)
+    expect(filterRemove(list, 'host.name')).toBe(list)
+    expect(filterRemove(list, 'container.name')).toEqual([])
+  })
+
+  it('filterHas 与 filterAdd 的「已存在」判据**同源**（点一下下钻、再点一下取消靠的就是它）', () => {
+    const list = [{ field: 'container.name', value: 'a' }]
+    expect(filterHas(list, 'container.name', 'a')).toBe(true)
+    expect(filterHas(list, 'container.name', 'b')).toBe(false)
+    expect(filterHas([], 'container.name', 'a')).toBe(false)
+    expect(filterHas(undefined, 'container.name', 'a')).toBe(false)
+    expect(filterOf(list, 'container.name')).toBe('a')
+    expect(filterOf(list, 'host.name')).toBeUndefined()
+    // 脏输入不炸
+    expect(filterAdd(undefined, 'a', 'b')).toEqual([{ field: 'a', value: 'b' }])
+    expect(filterRemove(undefined, 'a')).toEqual([])
+  })
+
+  it('载荷：有筛选才带 filters 这个键；空表回 undefined（不造一个空对象）', () => {
+    const targets = [{ id: 'es' }]
+    const none = queryPayload({ target: 'es', q: '', preset: '1h', limit: 20, filters: [] }, targets, 0)
+    expect('filters' in none).toBe(false)
+    const some = queryPayload(
+      { target: 'es', q: '', preset: '1h', limit: 20, filters: [{ field: 'container.name', value: 'app-svc-1' }] },
+      targets,
+      0,
+    )
+    expect(some.filters).toEqual({ 'container.name': 'app-svc-1' })
+    expect(filtersOf([])).toBeUndefined()
+    expect(filtersOf(undefined)).toBeUndefined()
+    expect(filtersOf([null, undefined])).toBeUndefined()
+    expect(filtersOf([{ field: 'a', value: 1 }])).toEqual({ a: '1' })
+  })
+
+  it('聚合载荷也带筛选：下钻之后分布与榜必须画在**同一个子集**上（不然同一屏三个数字说的不是一件事）', () => {
+    const outcome = { target: { id: 't1' }, window: { from: 10, to: 20 } }
+    const draft = { q: '', filters: [{ field: 'container.name', value: 'app-svc-1' }] }
+    expect(histogramPayload(draft, outcome, '1m')).toEqual({
+      target: 't1',
+      q: '',
+      from: 10,
+      to: 20,
+      interval: '1m',
+      filters: { 'container.name': 'app-svc-1' },
+    })
+    expect(groupPayload(draft, outcome, 'host.name')).toEqual({
+      target: 't1',
+      q: '',
+      from: 10,
+      to: 20,
+      by: 'host.name',
+      filters: { 'container.name': 'app-svc-1' },
+    })
+    // 没有筛选时聚合载荷跟从前一样**不带这个键**
+    expect('filters' in histogramPayload({ q: '' }, outcome, '1m')).toBe(false)
   })
 })

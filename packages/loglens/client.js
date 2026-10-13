@@ -7,7 +7,8 @@
  * 取值逐条对齐宿主（见 docs/conventions.md 的客户端半体六条硬规矩）。
  *
  * 卡片里现在是五块：来源清单、查询区（时间窗 / 条数 / 结果列表 / 下一页）、**时间分布**（直方图）、
- * **按字段分组**（terms 榜，回答「哪个服务在报错」）、Docker 容器日志区（选项 0 的面板半格）。
+ * **按字段分组**（terms 榜，回答「哪个服务在报错」）、Docker 容器日志区（选项 0 的面板半格）；
+ * 榜上的横条可以**点一下下钻**（加一条结构化筛选重查一次，再点一次取消）。
  * 两份聚合（分布 / 榜）都由宿主随 `/query` 响应下发的**能力自述**决定画不画——面板不按 kind 猜。
  * **跟随（tail）还没有**：来源的 `capabilities().follow` 因此声明为 `false`，卡片不画一个按下去会失败的入口。
  */
@@ -141,9 +142,15 @@ window.__ModuleLoader__.load({
       return { from: now - span, to: now }
     }
 
-    /** 新查询的草稿：默认「最近 1 小时 / 100 条」。 */
+    /**
+     * 新查询的草稿：默认「最近 1 小时 / 100 条」，没有筛选。
+     *
+     * 筛选**放在草稿里**（而不是组件另起一份 state）：它决定的是「这一次查的是哪个子集」，
+     * 与 `q` / 窗口 / 条数是同一件事——放一处，行、时间分布、分组榜才不可能查成三个不同的子集
+     * （`queryPayload` 与 `facetsEnvelope` 读的都是这一份）。
+     */
     function emptyQuery() {
-      return { target: '', q: '', preset: '1h', limit: 100 }
+      return { target: '', q: '', preset: '1h', limit: 100, filters: [] }
     }
 
     /**
@@ -165,13 +172,100 @@ window.__ModuleLoader__.load({
       const range = windowRange(draft.preset, nowMs)
       const chosen = String(draft.target == null ? '' : draft.target).trim()
       const fallback = Array.isArray(targets) && targets.length === 1 ? targets[0].id : ''
-      return {
+      const payload = {
         target: chosen === '' ? fallback : chosen,
         q: String(draft.q == null ? '' : draft.q),
         from: range.from,
         to: range.to,
         limit: Number(draft.limit),
       }
+      // 没有筛选就**不带这个键**（不是带一个空对象）：线上形状与加筛选之前逐字节一致，
+      // 别让一次「顺手加个字段」把已有调用方的请求体也改了。
+      const filters = filtersOf(draft.filters)
+      if (filters !== undefined) payload.filters = filters
+      return payload
+    }
+
+    /* ============================ 结构化筛选（点桶下钻，P6 第三格） ============================ */
+
+    /*
+     * 筛选状态是**有序的数组**（`[{ field, value }]`），界面上的那一串芯片就是它。
+     *
+     * 为什么线上是对象、这里却存数组：`filters` 在宿主那边是 `Record<字段, 值>`（src/query.ts 的
+     * `asFilters`），**一个字段只能有一个值**——同一个字段加两次，后一条会静默盖掉前一条。
+     * 数组只是为了芯片顺序稳定（对象键序在用户眼里是随机的），落成载荷时再折回对象（`filtersOf`）。
+     * 所以「同一个字段」的语义在这里就已经定死：**就地替换**，不是并存。
+     */
+
+    /**
+     * 一条筛选能不能加：空串表示可以，否则是 i18n 键名后缀（needFilterField / needFilterValue）。
+     *
+     * **值不做 trim**（这条是判据，不是偷懒）：`log.level` 的值可能是 `"ERROR "`，键名里那个空格
+     * 是内容的一部分——裁掉就筛不到东西了（静默地筛不到，比报错更难查）。空值判定用 `trim()`，
+     * 但**进载荷的是原值**。
+     *
+     * 空值**表达不了**「字段缺失」：`filters` 只能说「这个字段 = 某个字符串」，而榜上「（空值）」
+     * 那一桶是「文档里根本没有这个字段」。所以那个值在这里被挡（界面也不给点，见
+     * client-src/index.js 的渲染）——给一个点得动、筛的却是别的东西的入口，比不给入口更坏。
+     */
+    function filterProblem(field, value) {
+      if (String(field == null ? '' : field).trim() === '') return 'needFilterField'
+      if (String(value == null ? '' : value).trim() === '') return 'needFilterValue'
+      return ''
+    }
+
+    /** 这个字段已经在筛的值（没在筛则 `undefined`）。 */
+    function filterOf(list, field) {
+      const wanted = String(field == null ? '' : field)
+      for (const row of Array.isArray(list) ? list : []) {
+        if (row != null && String(row.field) === wanted) return String(row.value)
+      }
+      return undefined
+    }
+
+    /** 这个「字段 = 值」在不在筛选里（与 `filterAdd` 的「已存在」判据**同源**，别各写一套）。 */
+    function filterHas(list, field, value) {
+      const current = filterOf(list, field)
+      return current !== undefined && current === String(value == null ? '' : value)
+    }
+
+    /**
+     * 加一条筛选，返回**新数组**。同一字段就地替换（位置不变——芯片跳位置会让人以为点了别的）；
+     * 已经在筛同一个「字段 = 值」时**原样返回入参**（同一个引用：调用方可以据此判断「什么都没变」）。
+     */
+    function filterAdd(list, field, value) {
+      const rows = Array.isArray(list) ? list : []
+      const name = String(field == null ? '' : field)
+      const wanted = String(value == null ? '' : value)
+      const at = rows.findIndex((row) => row != null && String(row.field) === name)
+      if (at === -1) return rows.concat([{ field: name, value: wanted }])
+      if (String(rows[at].value) === wanted) return rows
+      const next = rows.slice()
+      next[at] = { field: name, value: wanted }
+      return next
+    }
+
+    /** 去掉一个字段的筛选（没在筛则原样返回入参：与 `filterAdd` 同一条「没变就同一个引用」）。 */
+    function filterRemove(list, field) {
+      const rows = Array.isArray(list) ? list : []
+      const name = String(field == null ? '' : field)
+      const next = rows.filter((row) => row == null || String(row.field) !== name)
+      return next.length === rows.length ? rows : next
+    }
+
+    /**
+     * 筛选列表 → 线上那份 `filters`。空表回 `undefined`（**不发空对象**）——「没有筛选」与
+     * 「筛选了个空」在线上是两回事，虽然宿主两边都收，但形状该说实话。
+     */
+    function filtersOf(list) {
+      const rows = Array.isArray(list) ? list : []
+      if (rows.length === 0) return undefined
+      const out = {}
+      for (const row of rows) {
+        if (row == null) continue
+        out[String(row.field)] = String(row.value)
+      }
+      return Object.keys(out).length === 0 ? undefined : out
     }
 
     /** 追加一页：按 id 去重（同一份快照翻页不该出现重复行；真出现也先挡住）。 */
@@ -272,12 +366,20 @@ window.__ModuleLoader__.load({
       const target = outcome !== null && typeof outcome === 'object' && outcome.target !== null && typeof outcome.target === 'object' ? outcome.target : {}
       if (typeof target.id !== 'string' || target.id === '') return null
       if (!Number.isFinite(echoed.from) || !Number.isFinite(echoed.to) || !(echoed.to > echoed.from)) return null
-      return {
+      const envelope = {
         target: target.id,
         q: String(draft == null || draft.q == null ? '' : draft.q),
         from: echoed.from,
         to: echoed.to,
       }
+      /*
+       * 筛选也要下发给聚合：聚合画的是**这一次查询的那个子集**。不带筛选的话，下钻之后
+       * 分布与榜会画在整个窗口上，而行是筛过的——同一屏上三个数字说的不是一件事。
+       * （直方图当年用「回显窗口」也是同一条判据，见上面那段。）
+       */
+      const filters = filtersOf(draft == null ? undefined : draft.filters)
+      if (filters !== undefined) envelope.filters = filters
+      return envelope
     }
 
     /** 时间分布的请求载荷（窗口 + 间隔）。 */
@@ -370,7 +472,8 @@ window.__ModuleLoader__.load({
      * - **不写合计**：列出来的桶加起来**不是**命中总数（没列出来的在 `otherCount` 里，由宿主用
      *   警告原话回报，面板照抄）。写一个「部分之和」会被读成「这个窗口一共这么多」。
      * - **空值键要标出来**：文档缺这个字段时 ES 给的 key 是空串——直接画出来是一条没有名字的横条，
-     *   看起来像渲染丢了东西。标成空白键，由界面给一句「（空值）」。
+     *   看起来像渲染丢了东西。标成空白键，由界面给一句「（空值）」。这一位同时是**「不给下钻」的判据**：
+     *   筛选只能表达「字段 = 值」，表达不了「字段缺失」（见 `filterProblem`）。
      */
     function groupBars(buckets) {
       const rows = []
@@ -549,6 +652,21 @@ window.__ModuleLoader__.load({
       '.ll_groupCount{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}',
       '.ll_groupTrack{height:8px;background:var(--dsw-alias-bg-layer-3);border-radius:var(--dsw-radius-sm);overflow:hidden}',
       '.ll_groupFill{height:100%;background:var(--dsw-alias-interactive-bg-hover);border-radius:var(--dsw-radius-sm)}',
+      // 榜上可点的那一行是个 <button>（键盘也能用），所以要把 UA 的按钮外观整条按掉，只留网格布局
+      '.ll_groupRowBtn{cursor:pointer;font:inherit;text-align:left;color:inherit;background:none;border:0;padding:2px 4px;margin:-2px -4px;border-radius:var(--dsw-radius-sm)}',
+      '.ll_groupRowBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      // 正在按它下钻的那一条：横条换个色，让人看得出「这一屏是筛过的」
+      '.ll_groupRowActive .ll_groupKey{font-weight:600}',
+      '.ll_groupRowActive .ll_groupFill{background:var(--dsw-alias-state-business-primary)}',
+      // 筛选芯片：查询区与结果列表之间那一行
+      '.ll_filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      '.ll_filtersLabel{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.ll_chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 4px 2px 8px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
+      '.ll_chipText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ll_chipBtn{flex:none;width:18px;height:18px;padding:0;background:none;border:0;border-radius:var(--dsw-radius-sm);cursor:pointer;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:1}',
+      '.ll_chipBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+      // 筛选那句说明自成一行（免得跟芯片挤在一起读不出哪是芯片哪是说明）
+      '.ll_filtersHint{flex-basis:100%}',
     ].join('\n')
 
     let styleEl
@@ -584,8 +702,15 @@ window.__ModuleLoader__.load({
       'meta.groupsBlankKey': '（空值）',
       'hint.histogram': '这张图来自后端按时间分桶（不是数这一页——这一页被条数截断过，数它只会得到一个假的分布）。',
       'hint.histogramTruncated': '窗口比这张图长，只画了前一部分。',
-      'hint.groups': '这张榜来自后端的 terms 聚合（不是数这一页——这一页被条数截断过，数它只会得到一个假的排名）。',
+      'hint.groups': '这张榜来自后端的 terms 聚合（不是数这一页——这一页被条数截断过，数它只会得到一个假的排名）。点一条即按它下钻（加一条筛选重查一次），再点一次取消。',
       'hint.groupsTruncated': '桶比这张榜长，只画了前一部分。',
+      'hint.groupBlankNoDrill': '空值那一条不能下钻：筛选只能表达「字段 = 某值」，表达不了「字段缺失」。',
+      'hint.groupDrillRow': '按 {field} = {value} 下钻（再点一次取消）',
+      'field.filters': '筛选',
+      'btn.filterRemove': '移除这条筛选',
+      'error.needFilterField': '这条筛选没有字段名',
+      'error.needFilterValue': '这条筛选没有值（空值那一桶筛不了：筛选只能表达「字段 = 某值」）',
+      'hint.filters': '筛选按「字段 = 值」下发（走宿主的结构化 filters）：行、时间分布与分组榜都跟着收窄。一个字段只有一条。Loki 不支持结构化筛选——用它时把条件写进查询串。',
       'hint.aggregationUnsupported': '当前来源不支持聚合（Loki 的指标查询还没接），所以这里没有时间分布与分组榜。',
       'error.histogram': '时间分布取不到：{message}',
       'error.groups': '分组取不到：{message}',
@@ -682,8 +807,15 @@ window.__ModuleLoader__.load({
       'meta.groupsBlankKey': '(empty value)',
       'hint.histogram': 'This chart comes from the backend time-bucketing (not from counting this page — the page is capped by the limit, so counting it would only give you a fake distribution).',
       'hint.histogramTruncated': 'The window is longer than this chart; only the first part is drawn.',
-      'hint.groups': 'This ranking comes from the backend terms aggregation (not from counting this page — the page is capped by the limit, so counting it would only give you a fake ranking).',
+      'hint.groups': 'This ranking comes from the backend terms aggregation (not from counting this page — the page is capped by the limit, so counting it would only give you a fake ranking). Click a row to drill into it (adds one filter and re-runs the query); click it again to undo.',
       'hint.groupsTruncated': 'There are more buckets than this ranking; only the first part is drawn.',
+      'hint.groupBlankNoDrill': 'The empty-value row cannot be drilled into: a filter can only say “field = some value”, not “the field is missing”.',
+      'hint.groupDrillRow': 'Drill into {field} = {value} (click again to undo)',
+      'field.filters': 'Filters',
+      'btn.filterRemove': 'Remove this filter',
+      'error.needFilterField': 'This filter has no field name',
+      'error.needFilterValue': 'This filter has no value (the empty-value bucket cannot be filtered: a filter can only say “field = some value”)',
+      'hint.filters': 'Filters go out as “field = value” (the host’s structured filters): the rows, the volume chart and the ranking all narrow with them. One filter per field. Loki does not support structured filters — put the condition into the query string there.',
       'hint.aggregationUnsupported': 'This source cannot aggregate (Loki metric queries are not wired yet), so there is no volume chart or group ranking here.',
       'error.histogram': 'Could not load the volume chart: {message}',
       'error.groups': 'Could not group by field: {message}',
@@ -1002,7 +1134,7 @@ window.__ModuleLoader__.load({
        *   它的失败不该把查询本身也变成失败；
        * - **翻下一页**：窗口与查询串都没变，分布也不会变，所以**不重拉**（省一次打后端的请求）。
        */
-      const loadHistogram = async (data, append) => {
+      const loadHistogram = async (data, append, draft = query) => {
         if (append) return
         // `!== true` 连同「不知道」（缺 capabilities）一起挡住：不知道就不发请求、也不画。
         if (supportsAggregation(data) !== true) {
@@ -1010,7 +1142,7 @@ window.__ModuleLoader__.load({
           return
         }
         const step = histogramInterval(data.window === undefined || data.window === null ? 0 : data.window.to - data.window.from)
-        const payload = histogramPayload(query, data, step.key)
+        const payload = histogramPayload(draft, data, step.key)
         // 回显不完整（拿不到窗口）：不发畸形的请求（见 pure.js histogramPayload）
         if (payload === null) {
           setHistogram(undefined)
@@ -1037,7 +1169,7 @@ window.__ModuleLoader__.load({
        * 榜是「哪个服务在报错」这个问题的直接答案（真机反馈第 2 条），所以它与直方图一样，
        * **只信后端聚合**：`terms` 的分组与计数都在 ES 那边算，面板只负责画。
        */
-      const loadGroups = async (data, append) => {
+      const loadGroups = async (data, append, draft = query) => {
         if (append) return
         if (supportsAggregation(data) !== true) {
           setGroups(undefined)
@@ -1047,7 +1179,7 @@ window.__ModuleLoader__.load({
           setGroups(undefined)
           return
         }
-        const payload = groupPayload(query, data, groupBy)
+        const payload = groupPayload(draft, data, groupBy)
         // 回显不完整（拿不到窗口）：不发畸形的请求（见 pure.js facetsEnvelope）
         if (payload === null) {
           setGroups(undefined)
@@ -1074,8 +1206,14 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const runQuery = async (append) => {
-        const problem = queryProblem(query, drafts.length)
+      /**
+       * 查一次。`override` 是「这一次要用哪份草稿」：默认用当前渲染的那一份，下钻 / 去掉筛选时
+       * 传**刚算出来的那一份**——`setQuery` 要到下一次渲染才生效，这里若还读闭包里的 `query`，
+       * 就会带着**旧的筛选**再查一遍（行收窄了、分布没收窄，或者干脆筛了个空气）。
+       */
+      const runQuery = async (append, override) => {
+        const draft = override === undefined ? query : override
+        const problem = queryProblem(draft, drafts.length)
         if (problem !== '') {
           setError(problem === 'needTarget' ? t('error.needTarget') : t('error.badLimit'))
           return
@@ -1084,7 +1222,7 @@ window.__ModuleLoader__.load({
         setError('')
         setOk('')
         try {
-          const payload = queryPayload(query, drafts, Date.now())
+          const payload = queryPayload(draft, drafts, Date.now())
           if (append && cursor !== undefined) payload.cursor = cursor
           const data = await api('/api/dsh-loglens/query', {
             method: 'POST',
@@ -1095,12 +1233,46 @@ window.__ModuleLoader__.load({
           setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
           setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
           // 两份聚合并行（互不依赖）：分布与榜都是附加信息，谁拿不到都不该拖住结果列表
-          await Promise.all([loadHistogram(data, append), loadGroups(data, append)])
+          await Promise.all([loadHistogram(data, append, draft), loadGroups(data, append, draft)])
         } catch (err) {
           setError(err.message)
         } finally {
           setQuerying(false)
         }
+      }
+
+      /**
+       * 点榜上的一行 = 按它下钻：把这个桶加成一条筛选（已经在筛同一个值 → 再点就是取消），
+       * 然后**带着新筛选立刻重查一遍**——行、时间分布、榜三处一起收窄。
+       *
+       * 为什么不「用已经拿到的行在本地过一遍」：那一页是被 `limit` 截断过的，数它只会得到一个
+       * 假的分布与假的排名（判据见 pure.js 的 histogramBars）。下钻只有真的重查一次才是诚实的。
+       */
+      const drillDown = async (field, key) => {
+        if (querying) return
+        // 兜底一道：榜上那一行**本来就不给点**（空值键，见渲染），但这条路上再来一道判据——
+        // 将来的改动不该能悄悄下发一条 `{字段: ""}`（那筛的是「等于空串」，不是「字段缺失」）。
+        const problem = filterProblem(field, key)
+        if (problem !== '') {
+          setError(problem === 'needFilterField' ? t('error.needFilterField') : t('error.needFilterValue'))
+          return
+        }
+        const current = Array.isArray(query.filters) ? query.filters : []
+        const next = {
+          ...query,
+          filters: filterHas(current, field, key) ? filterRemove(current, field) : filterAdd(current, field, key),
+        }
+        setQuery(next)
+        await runQuery(false, next)
+      }
+
+      /** 芯片上的 ×：去掉这条筛选，同样立刻重查（留下的那些照旧下发）。 */
+      const removeFilter = async (field) => {
+        if (querying) return
+        const current = Array.isArray(query.filters) ? query.filters : []
+        const next = { ...query, filters: filterRemove(current, field) }
+        setQuery(next)
+        await runQuery(false, next)
       }
 
       /**
@@ -1222,6 +1394,8 @@ window.__ModuleLoader__.load({
         ? (drafts.length === 1 ? drafts[0] : undefined)
         : drafts.find((draft) => draft.id === query.target)
       const isDocker = selectedDraft !== undefined && selectedDraft.kind === 'docker'
+      // 当前生效的筛选（芯片那一行、榜上「正在按它下钻」的高亮都用它）
+      const activeFilters = Array.isArray(query.filters) ? query.filters : []
 
       const rows = drafts.map((draft, index) => jsxs('div', {
         className: 'll_row',
@@ -1472,6 +1646,30 @@ window.__ModuleLoader__.load({
                         fieldsNote === '' ? null : jsx('span', { className: 'll_hint', children: fieldsNote }),
                       ],
                     }),
+                    // 生效中的筛选：一行芯片（每条一个 ×）。只在有筛选时出现——没有筛选时这一行
+                    // 不占位、也不说一句话（说「当前没有筛选」等于往界面上加噪音）。
+                    isDocker || activeFilters.length === 0 ? null : jsxs('div', {
+                      className: 'll_filters',
+                      children: [
+                        jsx('span', { className: 'll_filtersLabel', children: t('field.filters') }),
+                        ...activeFilters.map((chip) => jsxs('span', {
+                          className: 'll_chip',
+                          children: [
+                            // 值**原样**显示（与下发的那一份逐字相同：键名里的空格是内容的一部分）
+                            jsx('span', { className: 'll_chipText', title: chip.field + ' = ' + chip.value, children: chip.field + ' = ' + chip.value }),
+                            jsx('button', {
+                              type: 'button',
+                              className: 'll_chipBtn',
+                              title: t('btn.filterRemove'),
+                              disabled: saving || querying,
+                              onClick: () => { removeFilter(chip.field) },
+                              children: '×',
+                            }),
+                          ],
+                        }, 'll-filter-' + chip.field)),
+                        jsx('span', { className: 'll_hint ll_filtersHint', children: t('hint.filters') }),
+                      ],
+                    }),
                     isDocker ? jsxs('div', {
                       className: 'll_queryGrid',
                       children: [
@@ -1608,9 +1806,11 @@ window.__ModuleLoader__.load({
                         }),
                         groups.bars.length === 0 ? jsx('div', { className: 'll_empty', children: t('list.noBuckets') }) : jsx('div', {
                           className: 'll_groupRows',
-                          children: groups.bars.map((bar, at) => jsxs('div', {
-                            className: 'll_groupRow',
-                            children: [
+                          // 每条横条**点一下就是按它下钻**（加一条筛选重查一次，再点一次取消）。
+                          // 空值那一桶例外：它是一行死文字，因为筛选表达不了「字段缺失」
+                          // （判据在 pure.js 的 filterProblem）——给个点得动、筛的却是别的东西的入口更坏。
+                          children: groups.bars.map((bar, at) => {
+                            const cells = [
                               jsx('span', {
                                 className: bar.blank ? 'll_groupKey ll_groupKeyBlank' : 'll_groupKey',
                                 children: bar.blank ? t('meta.groupsBlankKey') : bar.key,
@@ -1624,8 +1824,20 @@ window.__ModuleLoader__.load({
                                   style: { width: String(Math.max(bar.ratio * 100, 2)) + '%' },
                                 }),
                               }),
-                            ],
-                          }, 'll-group-' + String(at))),
+                            ]
+                            if (bar.blank) {
+                              return jsx('div', { className: 'll_groupRow', title: t('hint.groupBlankNoDrill'), children: cells }, 'll-group-' + String(at))
+                            }
+                            const active = filterHas(activeFilters, groups.by, bar.key)
+                            return jsx('button', {
+                              type: 'button',
+                              className: active ? 'll_groupRow ll_groupRowBtn ll_groupRowActive' : 'll_groupRow ll_groupRowBtn',
+                              title: t('hint.groupDrillRow', { field: groups.by, value: bar.key }),
+                              disabled: querying,
+                              onClick: () => { drillDown(groups.by, bar.key) },
+                              children: cells,
+                            }, 'll-group-' + String(at))
+                          }),
                         }),
                         jsx('p', { className: 'll_hint', children: t('hint.groups') }),
                       ],
