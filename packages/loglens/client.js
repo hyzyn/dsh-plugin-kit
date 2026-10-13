@@ -491,6 +491,22 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 「点开候选」时要不要真的去拉一份字段清单。
+     *
+     * 判据只有两条：**还没拉过**，或者**换了来源**。同一个来源再点开就**不重拉**——`_field_caps` 虽小，
+     * 但「每次点输入框都打一枪后端」是白花别人的机器；要手动重拉的出口在浮层页脚那个「刷新」上
+     * （字段会随新数据长出来，所以必须留一个口子）。
+     *
+     * 空来源（还没选）不拉：那时候界面上该说的是「先选一个来源」（见 client-src/index.js 的 `openPick`）。
+     * 失败时**不写缓存**——那是调用方的事（`loadFields` 只在成功分支记 `fieldsSource`），所以下次点开重试。
+     */
+    function fieldFetchNeeded(cachedTargetId, targetId) {
+      const wanted = String(targetId == null ? '' : targetId)
+      if (wanted === '') return false
+      return String(cachedTargetId == null ? '' : cachedTargetId) !== wanted
+    }
+
+    /**
      * 分组的请求载荷（窗口同 `histogramPayload`，取响应回显的那一份）。
      * 字段为空、或回显不完整 → `null`：界面**不发这个请求**。
      */
@@ -662,8 +678,8 @@ window.__ModuleLoader__.load({
       '.ll_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
       '.ll_query{display:flex;flex-direction:column;gap:10px;border-top:.5px solid var(--dsw-alias-border-l1);padding-top:12px}',
       '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,2fr) minmax(96px,120px) minmax(64px,84px) auto;gap:8px;align-items:center}',
-      // 分组那一行只有「字段 / 两个按钮 / 一句回话」，列宽与查询行不同（宽输入 + 两个 auto + 说明）
-      '.ll_groupGrid{display:grid;grid-template-columns:minmax(180px,2fr) auto auto minmax(0,1fr);gap:8px;align-items:center}',
+      // 分组那一行只有「字段 / 一个按钮 / 一句回话」（字段候选改成点开即拉之后，没有独立的按钮了）
+      '.ll_groupGrid{display:grid;grid-template-columns:minmax(180px,2fr) auto minmax(0,1fr);gap:8px;align-items:center}',
       '.ll_queryMeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
       '.ll_resultRow{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:baseline;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
@@ -725,6 +741,14 @@ window.__ModuleLoader__.load({
       // 方向键停在那一行（与 hover 同一个底：两套输入说的是同一件事）
       '.ll_pickItemActive{background:var(--dsw-alias-interactive-bg-hover)}',
       '.ll_pickItem:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
+      // 浮层里的「不是候选」的几行：加载中 / 取不到 / 这个来源没有字段名 —— 都排成一条文字行
+      '.ll_pickState{padding:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
+      // 页脚：宿主那句截断警告（照抄）+「刷新」；与候选之间用一条发丝线分开
+      '.ll_pickFoot{display:flex;align-items:center;gap:8px;margin-top:4px;padding:4px 8px 2px;border-top:.5px solid var(--dsw-alias-border-l2)}',
+      '.ll_pickFoot .ll_pickState{flex:1;min-width:0;padding:0}',
+      '.ll_pickRefresh{flex:none;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}',
+      '.ll_pickRefresh:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.ll_pickRefresh:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
     ].join('\n')
 
     let styleEl
@@ -774,7 +798,7 @@ window.__ModuleLoader__.load({
       'error.groups': '分组取不到：{message}',
       'error.needGroupBy': '先填要分组的字段（不知道有哪些字段就点「有哪些字段」）',
       'list.noBuckets': '这个窗口里没有可分组的数据',
-      'hint.notImplemented': '下面可以直接查当前来源；「有哪些字段」列的是当前来源的字段名，用来挑分组字段。整份字段清单与「某一行前后」的上下文仍在 agent 侧的两个工具里（loglens_fields / loglens_context）。',
+      'hint.notImplemented': '下面可以直接查当前来源；「分组字段」那一格点开就是当前来源的字段名候选（点开即拉，同一个来源不重复拉，页脚有「刷新」）。整份字段清单与「某一行前后」的上下文仍在 agent 侧的两个工具里（loglens_fields / loglens_context）。',
       'field.kind': '类型',
       'field.label': '名称',
       'field.url': '地址',
@@ -798,8 +822,8 @@ window.__ModuleLoader__.load({
       'placeholder.url': 'http://127.0.0.1:3100',
       'msg.saved': '已保存',
       'msg.memoryOnly': '宿主没有 settings 服务，改动只在本次进程内有效',
-      'msg.fieldsLoaded': '字段清单 {count} 个（挑一个填进分组字段）',
       'msg.fieldsEmpty': '这个来源没有返回字段名（可以直接手填，比如 container.name）',
+      'error.fields': '字段清单取不到：{message}',
       'error.needUrl': '这个类型必须填地址',
       'error.badUrl': '地址必须是 http:// 或 https:// 开头的绝对地址',
       'error.badKind': '类型不认识（支持 Loki / Elasticsearch / OpenSearch / Docker）',
@@ -814,8 +838,7 @@ window.__ModuleLoader__.load({
       'btn.querying': '查询中…',
       'btn.group': '分组',
       'btn.grouping': '分组中…',
-      'btn.fields': '有哪些字段',
-      'btn.fieldsLoading': '加载中…',
+      'btn.refreshFields': '刷新',
       'btn.nextPage': '下一页',
       'btn.clear': '清空结果',
       'option.15m': '最近 15 分钟',
@@ -880,7 +903,7 @@ window.__ModuleLoader__.load({
       'error.groups': 'Could not group by field: {message}',
       'error.needGroupBy': 'Fill in a field to group by first (click “List fields” if you do not know them)',
       'list.noBuckets': 'No data to group by in this window',
-      'hint.notImplemented': 'You can query the selected source right below; “List fields” shows the field names of the current source so you can pick a grouping field. The full field list and per-line context still live in the agent tools (loglens_fields / loglens_context).',
+      'hint.notImplemented': 'You can query the selected source right below; clicking the “Group by field” box opens the field names of the current source as candidates (fetched on open; the same source is not re-fetched, and the footer has “Refresh”). The full field list and per-line context still live in the agent tools (loglens_fields / loglens_context).',
       'field.kind': 'Kind',
       'field.label': 'Name',
       'field.url': 'URL',
@@ -904,8 +927,8 @@ window.__ModuleLoader__.load({
       'placeholder.url': 'http://127.0.0.1:3100',
       'msg.saved': 'Saved',
       'msg.memoryOnly': 'The host has no settings service; changes last only in this process',
-      'msg.fieldsLoaded': '{count} field names loaded (pick one for the grouping field)',
       'msg.fieldsEmpty': 'This source returned no field names (you can type one, e.g. container.name)',
+      'error.fields': 'Could not load the field list: {message}',
       'error.needUrl': 'This kind needs a URL',
       'error.badUrl': 'The URL must be an absolute http:// or https:// address',
       'error.badKind': 'Unknown kind (Loki / Elasticsearch / OpenSearch / Docker)',
@@ -920,8 +943,7 @@ window.__ModuleLoader__.load({
       'btn.querying': 'Running…',
       'btn.group': 'Group',
       'btn.grouping': 'Grouping…',
-      'btn.fields': 'List fields',
-      'btn.fieldsLoading': 'Loading…',
+      'btn.refreshFields': 'Refresh',
       'btn.nextPage': 'Next page',
       'btn.clear': 'Clear',
       'option.15m': 'Last 15 minutes',
@@ -1050,6 +1072,9 @@ window.__ModuleLoader__.load({
       const [grouping, setGrouping] = React.useState(false)
       const [fields, setFields] = React.useState([])
       const [fieldsBusy, setFieldsBusy] = React.useState(false)
+      // 这份字段清单属于哪个来源（缓存键：同一个来源再点开就不重拉，见 pure.js fieldFetchNeeded）
+      const [fieldsSource, setFieldsSource] = React.useState('')
+      // 拉字段失败时宿主那句话（只落在浮层里，不动卡片顶部那条错误行）
       // 字段候选面板开着没有（自画的那个浮层；原生 datalist 的替身，见下面 fieldChoices 那一段）
       const [pickOpen, setPickOpen] = React.useState(false)
       // 浮层里「当前那一行」（方向键挪它、回车取它；打字时回到第一条）
@@ -1057,6 +1082,9 @@ window.__ModuleLoader__.load({
       // 此刻要摆的候选（纯判据在 pure.js 的 fieldChoices：子串过滤 / 保持宿主顺序 / 命中 0 个回空）
       const choices = pickOpen ? fieldChoices(fields, groupBy) : []
       const [fieldsNote, setFieldsNote] = React.useState('')
+      const [fieldsError, setFieldsError] = React.useState('')
+      // 在途闩：同一来源正在拉的途中不要再来一枪（一次点击会先 focus 再 click，见 loadFields）
+      const fieldsFlightRef = React.useRef('')
       const [querying, setQuerying] = React.useState(false)
       const [docker, setDocker] = React.useState(false)
       const [containers, setContainers] = React.useState([])
@@ -1361,38 +1389,61 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 拉「有哪些字段」：只用来给分组字段输入框做候选（自画的浮层，见 `fieldChoices`），
-       * 不做成字段表格。
-       * limit 不传——用宿主自己的默认值与它那句截断警告，别在浏览器侧抄一份会漂的默认值。
+       * 拉字段清单（分组字段那一格的候选）。**由「点开」触发**（`openPick`），不是另设一个按钮：
+       * 原生 `<datalist>` 就是点开就有，「先按按钮、再点输入框」是两步做一件事。
+       *
+       * `targetId` 由调用方给（当前选中的来源），不在这里读闭包：这样「拉回来的这份属于谁」是显式的，
+       * 缓存按它判（`fieldFetchNeeded`）。`limit` 不传——用宿主自己的默认值与它那句截断警告。
        */
-      const loadFields = async () => {
-        if (selectedDraft === undefined) {
-          setError(t('error.needTarget'))
-          return
-        }
+      const loadFields = async (targetId) => {
+        /*
+         * 在途闩（用 ref，不是 state）：**一次鼠标点击会先 focus 再 click**，两条路都走到 `openPick`，
+         * 而 `fieldsSource` / `fieldsBusy` 在这一轮渲染里都还是旧值——不闩就白打两枪同一份清单
+         * （真机上就是这么抓到的：第一次点开 `/fields` 打了 2 次）。
+         */
+        if (fieldsFlightRef.current === targetId) return
+        fieldsFlightRef.current = targetId
         setFieldsBusy(true)
-        setError('')
+        setFieldsError('')
         setFieldsNote('')
         try {
           const parsed = await api('/api/dsh-loglens/fields', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ target: selectedDraft.id }),
+            body: JSON.stringify({ target: targetId }),
           })
           const list = Array.isArray(parsed.fields) ? parsed.fields : []
           setFields(list)
+          // 记下「这份属于哪个来源」：同一个来源再点开就不重拉了（见 fieldFetchNeeded）
+          setFieldsSource(targetId)
           const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : []
           if (warnings.length > 0) setFieldsNote(warnings.join(' '))
-          else if (list.length > 0) setFieldsNote(t('msg.fieldsLoaded', { count: list.length }))
-          else setFieldsNote(t('msg.fieldsEmpty'))
-          // 拉到字段就**直接把候选摆出来**：按这个按钮要的就是这份清单，还要再点一下输入框才看得到
-          // 就成了「点了像没反应」（空清单则不开——那会开一个空盒子，见 pure.js fieldChoices）
-          if (list.length > 0) setPickOpen(true)
         } catch (err) {
-          setError(err.message)
+          /*
+           * 拉失败就**落在浮层里**（用户正看着那儿），不动卡片顶部那条错误行、也不动结果列表：
+           * 字段候选是附加信息，它失败不该把已经查到的日志也变成失败（与分布 / 榜同一条）。
+           * 失败时**不写缓存**（`fieldsSource` 不动），所以下一次点开会重试。
+           */
+          setFields([])
+          setFieldsError(err.message)
         } finally {
+          // 在途闩放开（失败也一样放开，好让下一次点开能重试）
+          fieldsFlightRef.current = ''
           setFieldsBusy(false)
         }
+      }
+
+      /**
+       * 点开候选浮层：**先开、再按需拉**——开是立刻的（浮层里已经有「加载中…」这一格），
+       * 拉是异步的，不会出现「点了没反应」。同一个来源已经拉过就不重拉。
+       */
+      const openPick = () => {
+        if (selectedDraft === undefined) {
+          setError(t('error.needTarget'))
+          return
+        }
+        setPickOpen(true)
+        if (fieldFetchNeeded(fieldsSource, selectedDraft.id)) loadFields(selectedDraft.id)
       }
 
       /** 拉 Docker 面板自己的目标清单（拿不到就退回手填，不把整张卡片带下去）。 */
@@ -1746,14 +1797,15 @@ window.__ModuleLoader__.load({
                                 setGroupBy(event.target.value)
                                 setPickIndex(0)
                               },
-                              onFocus: () => { setPickOpen(true) },
-                              onClick: () => { setPickOpen(true) },
+                              // 点开就拉（一个手势；原生 datalist 也是点开就有）
+                              onFocus: () => { openPick() },
+                              onClick: () => { openPick() },
                               onKeyDown: (event) => {
                                 // 方向键是原来那套原生浮层**自带**的能力：换成自画的就得自己接回来，
                                 // 否则是悄悄降级（鼠标能用、键盘只能一路 Tab）
                                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                                   event.preventDefault()
-                                  setPickOpen(true)
+                                  openPick()
                                   setPickIndex((current) => pickMove(current, event.key === 'ArrowDown' ? 1 : -1, choices.length))
                                   return
                                 }
@@ -1777,33 +1829,57 @@ window.__ModuleLoader__.load({
                               className: 'll_pickChevron',
                               children: jsx('path', { d: CHEVRON_PATH, stroke: 'currentColor' }),
                             }),
-                            // 没有候选就**不画**浮层：一个空盒子比不画更像坏了（见 pure.js fieldChoices）
-                            pickOpen && choices.length > 0 ? jsx('div', {
+                            /*
+                             * 浮层里的四种状态，各有各的一句话——**不许出现一个空盒子**：
+                             *   在途 → 「加载中…」；失败 → 宿主原话（只落这里）；空清单 → 「这个来源没有返回字段名…」；
+                             *   有候选但被输入的字筛成 0 个 → 不画（那是用户自己在收窄，原生浮层也是空列表）。
+                             */
+                            !pickOpen ? null : (fieldsBusy ? jsx('div', {
                               className: 'll_pickList',
-                              children: choices.map((item, at) => jsx('button', {
-                                type: 'button',
-                                // 当前那一行要高亮出来：方向键挪的是它，回车取的是它（不然键盘用户看不见自己停在哪）
-                                className: at === pickIndex ? 'll_pickItem ll_pickItemActive' : 'll_pickItem',
-                                title: item.name,
-                                // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
-                                onMouseDown: (event) => { event.preventDefault() },
-                                // 鼠标划到哪一行，方向键就从哪一行接着走（两套输入共用同一个「当前行」）
-                                onMouseEnter: () => { setPickIndex(at) },
-                                onClick: () => {
-                                  setGroupBy(item.name)
-                                  setPickOpen(false)
-                                },
-                                children: item.name,
-                              }, 'll-field-' + item.name)),
-                            }) : null,
+                              children: jsx('div', { className: 'll_pickState', children: t('list.loading') }),
+                            }) : fieldsError !== '' ? jsx('div', {
+                              className: 'll_pickList',
+                              children: jsx('div', { className: 'll_pickState ll_warn', children: t('error.fields', { message: fieldsError }) }),
+                            }) : fields.length === 0 ? jsx('div', {
+                              className: 'll_pickList',
+                              children: jsx('div', { className: 'll_pickState', children: t('msg.fieldsEmpty') }),
+                            }) : choices.length === 0 ? null : jsx('div', {
+                              className: 'll_pickList',
+                              children: [
+                                ...choices.map((item, at) => jsx('button', {
+                                  type: 'button',
+                                  // 当前那一行要高亮出来：方向键挪的是它，回车取的是它（不然键盘用户看不见自己停在哪）
+                                  className: at === pickIndex ? 'll_pickItem ll_pickItemActive' : 'll_pickItem',
+                                  title: item.name,
+                                  // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
+                                  onMouseDown: (event) => { event.preventDefault() },
+                                  // 鼠标划到哪一行，方向键就从哪一行接着走（两套输入共用同一个「当前行」）
+                                  onMouseEnter: () => { setPickIndex(at) },
+                                  onClick: () => {
+                                    setGroupBy(item.name)
+                                    setPickOpen(false)
+                                  },
+                                  children: item.name,
+                                }, 'll-field-' + item.name)),
+                                // 页脚：宿主的截断警告（照抄）+ 一个「刷新」——缓存的出口
+                                // （同一个来源不再每次都拉，但字段是会随新数据长的，得留个手动口子）
+                                jsxs('div', {
+                                  className: 'll_pickFoot',
+                                  children: [
+                                    jsx('span', { className: fieldsNote === '' ? 'll_pickState' : 'll_pickState ll_warn', children: fieldsNote }),
+                                    jsx('button', {
+                                      type: 'button',
+                                      className: 'll_pickRefresh',
+                                      disabled: fieldsBusy,
+                                      onMouseDown: (event) => { event.preventDefault() },
+                                      onClick: () => { if (selectedDraft !== undefined) loadFields(selectedDraft.id) },
+                                      children: t('btn.refreshFields'),
+                                    }),
+                                  ],
+                                }),
+                              ],
+                            })),
                           ],
-                        }),
-                        jsx('button', {
-                          type: 'button',
-                          className: 'll_btnGhost',
-                          disabled: saving || querying || fieldsBusy || selectedDraft === undefined,
-                          onClick: () => { loadFields() },
-                          children: fieldsBusy ? t('btn.fieldsLoading') : t('btn.fields'),
                         }),
                         jsx('button', {
                           type: 'button',
@@ -1812,7 +1888,6 @@ window.__ModuleLoader__.load({
                           onClick: () => { runGroups() },
                           children: grouping ? t('btn.grouping') : t('btn.group'),
                         }),
-                        fieldsNote === '' ? null : jsx('span', { className: 'll_hint', children: fieldsNote }),
                       ],
                     }),
                     // 生效中的筛选：一行芯片（每条一个 ×）。只在有筛选时出现——没有筛选时这一行

@@ -467,6 +467,22 @@ export function pickMove(current, delta, length) {
 }
 
 /**
+ * 「点开候选」时要不要真的去拉一份字段清单。
+ *
+ * 判据只有两条：**还没拉过**，或者**换了来源**。同一个来源再点开就**不重拉**——`_field_caps` 虽小，
+ * 但「每次点输入框都打一枪后端」是白花别人的机器；要手动重拉的出口在浮层页脚那个「刷新」上
+ * （字段会随新数据长出来，所以必须留一个口子）。
+ *
+ * 空来源（还没选）不拉：那时候界面上该说的是「先选一个来源」（见 client-src/index.js 的 `openPick`）。
+ * 失败时**不写缓存**——那是调用方的事（`loadFields` 只在成功分支记 `fieldsSource`），所以下次点开重试。
+ */
+export function fieldFetchNeeded(cachedTargetId, targetId) {
+  const wanted = String(targetId == null ? '' : targetId)
+  if (wanted === '') return false
+  return String(cachedTargetId == null ? '' : cachedTargetId) !== wanted
+}
+
+/**
  * 分组的请求载荷（窗口同 `histogramPayload`，取响应回显的那一份）。
  * 字段为空、或回显不完整 → `null`：界面**不发这个请求**。
  */

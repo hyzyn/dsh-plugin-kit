@@ -11,6 +11,7 @@ import {
   emptyDraft,
   emptyQuery,
   fieldChoices,
+  fieldFetchNeeded,
   filterAdd,
   filterHas,
   filterOf,
@@ -511,6 +512,16 @@ describe('字段候选（分组字段那一格的浮层）', () => {
     expect(pickMove(0, 1, 0)).toBe(0)
     expect(pickMove(undefined, 1, 2)).toBe(1)
     expect(pickMove(0, Number.NaN, 2)).toBe(0)
+  })
+
+  it('点开时要不要去拉：没拉过 / 换了来源要拉，同一个来源不重拉，空来源不拉', () => {
+    expect(fieldFetchNeeded('', 'es')).toBe(true)
+    expect(fieldFetchNeeded('es', 'es')).toBe(false)
+    expect(fieldFetchNeeded('es', 'local')).toBe(true)
+    // 还没选来源：那时候该说的是「先选一个来源」，不是去拉一份不知道属于谁的清单
+    expect(fieldFetchNeeded('', '')).toBe(false)
+    expect(fieldFetchNeeded('es', undefined)).toBe(false)
+    expect(fieldFetchNeeded(undefined, 'es')).toBe(true)
   })
 })
 

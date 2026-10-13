@@ -401,8 +401,13 @@ await test('刚进卡片（几个来源、还没选）：「来源」下拉显�
   assert.equal(first.props.disabled, true, '占位项不可选——它就是「还没选」这句话本身')
   assert.ok(treeText(select).includes('先选一个来源'), '占位项要写着人话，别是一个白板项')
 
-  // 这一眼看到的按钮状态得跟下拉一致
-  assert.equal(buttonByText(tree, '有哪些字段').props.disabled, true, '没选来源时它是灰的（与下拉显示的一致）')
+  // 没选来源时：点开字段框既不该拉字段，也不该开一个空浮层——该说的是「先选一个来源」
+  calls.length = 0
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/fields'), false, '没选来源不该去拉字段')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList')).length, 0, '没选来源不该开浮层')
+  assert.ok(treeText(runtime.tree).includes('先选一个来源'), '该说清为什么点不开')
 
   calls.length = 0
   buttonByText(tree, '查询').props.onClick()
@@ -521,7 +526,7 @@ function buttonByText(tree, text) {
 
 /**
  * 打开卡片 → 选来源 →（可选：填分组字段）→（默认）点「查询」；返回 `{ runtime, tree }`。
- * 需要自己接着点的用例把 `skipQuery` 打开（例如先点「有哪些字段」再点「分组」）。
+ * 需要自己接着点的用例把 `skipQuery` 打开（例如先点开字段框拉候选、再点「分组」）。
  */
 async function runPanelQueryFull(targetId, options = {}) {
   const runtime = createRuntime()
@@ -735,7 +740,7 @@ await test('按字段分组：**没填字段就不发**；点「分组」给一�
   assert.ok(treeText(runtime.tree).includes('先填要分组的字段'), '该给一句「先填字段」')
 })
 
-await test('「有哪些字段」：拉一次 /fields（不传 limit）并把候选**摆出来**（自画的浮层，不是原生 datalist）', async () => {
+await test('字段候选：**点开就拉**（一个手势，不另设按钮）——不传 limit，候选摆成自画的浮层', async () => {
   serverRoutes = {
     '/api/dsh-loglens/fields': {
       ok: true,
@@ -746,17 +751,22 @@ await test('「有哪些字段」：拉一次 /fields（不传 limit）并把候
     },
   }
   const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
-  const fieldsBtn = buttonByText(tree, '有哪些字段')
-  assert.ok(fieldsBtn !== undefined, '找不到「有哪些字段」按钮')
-  fieldsBtn.props.onClick()
+  calls.length = 0
+  pickInput(tree).props.onFocus()
+  // 先 tick（不让异步链推进）：这一刻浮层里该是「加载中…」，而不是一个空白或干脆没开
+  runtime.tick()
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList')).length, 1, '点开就该有浮层（不能等请求回来才画）')
+  assert.ok(treeText(runtime.tree).includes('加载中'), '在途时该写「加载中…」')
   await runtime.update()
   await runtime.update()
   const after = runtime.tree
 
   const call = calls.find((item) => item.path === '/api/dsh-loglens/fields')
-  assert.ok(call !== undefined, '没打 /fields：' + JSON.stringify(calls))
+  assert.ok(call !== undefined, '点开没打 /fields：' + JSON.stringify(calls))
   assert.equal(call.body.target, 'es')
   assert.equal('limit' in call.body, false, 'limit 不传：用宿主自己的默认值，别在浏览器侧抄一份会漂的')
+  assert.equal(calls.filter((item) => item.path === '/api/dsh-loglens/fields').length, 1, '一次点开只拉一次')
+  assert.equal(buttonByText(after, '有哪些字段'), undefined, '不该再有「有哪些字段」按钮：点开就是那条路')
 
   // 候选是**自画**的浮层：一行一个按钮，名字逐字在那里
   assert.deepEqual(pickRows(after).map((node) => treeText(node)), ['container.name', 'host.name'])
@@ -768,7 +778,106 @@ await test('「有哪些字段」：拉一次 /fields（不传 limit）并把候
     && (node.props?.value === 'container.name' || node.props?.value === 'host.name')).length, 0,
   '字段名不该再作为 option 出现')
   assert.equal(pickInput(after).props.list, undefined, '输入框不该再挂 list 属性（那会引出浏览器自己那个浮层）')
-  assert.ok(treeText(after).includes('字段清单 2 个'), '该回一句「拉到了什么」，否则点了像没反应')
+})
+
+await test('字段候选：一次点击（focus 与 click 两条路）只打一枪 /fields', async () => {
+  // 真浏览器里点一下输入框会**先 focus 再 click**，两条路都走到 openPick；而 fieldsSource / fieldsBusy
+  // 在这一轮渲染里都还是旧值——真机上就是这么抓到「第一次点开打了 2 次 /fields」的。
+  serverRoutes = {
+    '/api/dsh-loglens/fields': { ok: true, fields: [{ name: 'container.name' }, { name: 'host.name' }], total: 2, truncated: false, warnings: [] },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  calls.length = 0
+  const box = pickInput(tree)
+  box.props.onFocus()
+  box.props.onClick()
+  await runtime.update()
+  await runtime.update()
+  const n = calls.filter((item) => item.path === '/api/dsh-loglens/fields').length
+  assert.equal(n, 1, '一次点击只该拉一枪，实得 ' + String(n))
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['container.name', 'host.name'])
+})
+
+await test('字段候选：同一个来源再点开**不重拉**（缓存），页脚「刷新」才重拉；换了来源要重拉', async () => {
+  const fieldsOf = (names) => ({ ok: true, fields: names.map((name) => ({ name })), total: names.length, truncated: false, warnings: [] })
+  serverRoutes = { '/api/dsh-loglens/fields': fieldsOf(['container.name', 'host.name']) }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  const fieldCalls = () => calls.filter((item) => item.path === '/api/dsh-loglens/fields').length
+
+  calls.length = 0
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+  assert.equal(fieldCalls(), 1, '第一次点开要拉')
+
+  // 关掉再点开：同一个来源 → 不再打后端
+  pickInput(runtime.tree).props.onKeyDown({ key: 'Escape' })
+  await runtime.update()
+  assert.equal(pickRows(runtime.tree).length, 0, 'Esc 收起')
+  pickInput(runtime.tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+  assert.equal(fieldCalls(), 1, '同一个来源再点开不该重拉（每次点输入框都打一枪后端是白花别人的机器）')
+  assert.equal(pickRows(runtime.tree).length, 2, '缓存里的候选照常摆出来')
+
+  // 页脚「刷新」：手动重拉的出口（字段会随新数据长出来）
+  const refresh = buttonByText(runtime.tree, '刷新')
+  assert.ok(refresh !== undefined, '浮层页脚该有一个「刷新」')
+  refresh.props.onClick()
+  await runtime.update()
+  await runtime.update()
+  assert.equal(fieldCalls(), 2, '「刷新」要真的重拉一次')
+
+  // 换来源 → 缓存失效，重新拉（这里把来源换成另一个真来源）
+  const select = treeFind(runtime.tree, (node) => node.type === 'select'
+    && Array.isArray(node.props?.children)
+    && node.props.children.some((child) => child?.props?.value === 'local'))[0]
+  select.props.onChange({ target: { value: 'local' } })
+  await runtime.update()
+  serverRoutes['/api/dsh-loglens/fields'] = fieldsOf(['job', 'instance'])
+  pickInput(runtime.tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+  assert.equal(fieldCalls(), 3, '换了来源要重新拉（那份缓存说的是上一个来源）')
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['job', 'instance'])
+})
+
+await test('字段候选：拉不到就把宿主那句话**落在浮层里**，不动卡片顶部那条错误行、也不动结果列表', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/fields': { ok: false, status: 400, body: { error: 'boom-fields' } },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  calls.length = 0
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+
+  const text = treeText(runtime.tree)
+  assert.ok(text.includes('字段清单取不到：boom-fields'), '该把宿主那句话显示出来，实得：' + text.slice(0, 300))
+  assert.ok(text.includes('boot'), '字段拉不到不该把已经查到的结果列表也带走')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickItem')).length, 0, '失败时不该画出半张候选')
+  // 失败**不写缓存**：再点开要重试（这里只断言又打了一枪）
+  calls.length = 0
+  pickInput(runtime.tree).props.onKeyDown({ key: 'Escape' })
+  await runtime.update()
+  pickInput(runtime.tree).props.onFocus()
+  await runtime.update()
+  assert.equal(calls.filter((item) => item.path === '/api/dsh-loglens/fields').length, 1, '失败不留缓存，再点开要重试')
+})
+
+await test('字段候选：这个来源一个字段名都不给时，浮层里写一句人话（不是一个空盒子）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/fields': { ok: true, fields: [], total: 0, truncated: false, warnings: [] },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList')).length, 1, '空清单也要开浮层说清楚')
+  assert.ok(treeText(runtime.tree).includes('没有返回字段名'), '该说清「这个来源没有字段名」，而不是一个空盒子')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickItem')).length, 0)
 })
 
 await test('候选浮层：输入框里的字**筛**候选，命中 0 个不画浮层；回车取第一条命中', async () => {
@@ -782,7 +891,7 @@ await test('候选浮层：输入框里的字**筛**候选，命中 0 个不画�
     },
   }
   const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
-  buttonByText(tree, '有哪些字段').props.onClick()
+  pickInput(tree).props.onFocus()
   await runtime.update()
   await runtime.update()
 
@@ -835,7 +944,7 @@ await test('候选浮层：点一行把字段填进去并收起；焦点离开�
     },
   }
   const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
-  buttonByText(tree, '有哪些字段').props.onClick()
+  pickInput(tree).props.onFocus()
   await runtime.update()
   await runtime.update()
 
@@ -872,7 +981,7 @@ await test('箭头用**官方那颗** chevron：卡头折叠箭头与字段框�
     '/api/dsh-loglens/fields': { ok: true, fields: [{ name: 'container.name' }], total: 1, truncated: false, warnings: [] },
   }
   const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
-  buttonByText(tree, '有哪些字段').props.onClick()
+  pickInput(tree).props.onFocus()
   await runtime.update()
   await runtime.update()
 
