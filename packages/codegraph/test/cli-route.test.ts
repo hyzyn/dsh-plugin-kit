@@ -1381,6 +1381,11 @@ describe('P1 索引生命周期：unlock 与过期信号', () => {
     const idle = stubCli('unlock-idle-cli', 'console.log("No stale lock files found — nothing to do")')
     const routes = mountRoutes(idle)
     const capture = await call(routes, '/api/dsh-codegraph/unlock', { method: 'POST', body: { path: project } })
+    // 只在失败时打响应体（ROADMAP「测试稳定性：cli-route.test.ts 在 Windows 上的负载敏感」那条）：
+    // 500 是 `run()` 失败的统称，原因（spawn 的 error 还是子进程非零退出）全在这一行体里，
+    // 不打印的话下次再红还是只有「expected 500 to be 200」——
+    // 这条用例的 stub 只 console.log、必然 exit 0，出现 500 就一定有话说。
+    if (capture.status !== 200) console.error('unlock-idle 非 200，响应体：' + JSON.stringify(capture.body))
     expect(capture.status).toBe(200)
     expect(String(capture.body?.output)).toContain('No stale lock files')
   })
