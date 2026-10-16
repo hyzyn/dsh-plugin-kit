@@ -52,10 +52,51 @@ export const ES_PIT_KEEP_ALIVE = '2m'
 export const ES_TIME_FIELD = '@timestamp'
 /** labels 的条数上限：日志文档的字段可能几十个，全塞进每行会把工具返回值撑爆。 */
 const LABEL_LIMIT = 20
-/** 列字段的默认上限（真机反馈：45KB 的字段表等于没给）。 */
-export const ES_DEFAULT_FIELD_LIMIT = 80
-/** 列字段的硬上限：工具面再要也不能越过它（一次返回值撑爆上下文比少列几个字段糟得多）。 */
-export const ES_MAX_FIELD_LIMIT = 200
+/*
+ * 列字段**没有默认上限、也没有硬上限**（2026-10-14 对齐 Kibana：`_field_caps` 拿全量，长度交给界面
+ * 的搜索框 / 分区 / 虚拟滚动去消化）。只有调用方显式传了 `limit` 才 slice——“要更多”不再是需要申请的事，
+ * “默认被砍”也不再发生。
+ */
+
+/**
+ * ES 原生类型 → **宽类型族**（Kibana `castEsToKbnFieldTypeName` 的同一条判据，只取我们需要的粒度）。
+ *
+ * 为什么要有这一层：`_field_caps` 对同一个名字会回**多个类型**（不同索引映射不同），而多类型并不都算问题——
+ * `text` 与 `keyword` 都是字符串，Kibana 的原话是「ignore the conflict and carry on」。真正要说的是
+ * **落到不同族**那一类：真机实测有个 `container.labels.*` 字段在部分索引是 `date`、部分是 `text`
+ * （`date` / `string`），拿它分组只会覆盖一部分索引。
+ *
+ * 认不出来的类型统一归到 `unknown`（与 Kibana 一致：两个都没见过的类型不算互相冲突）。
+ */
+const ES_TYPE_FAMILY: Record<string, string> = {
+  keyword: 'string', text: 'string', wildcard: 'string', constant_keyword: 'string',
+  match_only_text: 'string', search_as_you_type: 'string', version: 'string',
+  long: 'number', integer: 'number', short: 'number', byte: 'number', double: 'number',
+  float: 'number', half_float: 'number', scaled_float: 'number', unsigned_long: 'number',
+  token_count: 'number', rank_feature: 'number', rank_features: 'number', histogram: 'number',
+  boolean: 'boolean',
+  date: 'date', date_nanos: 'date',
+  ip: 'ip',
+  geo_point: 'geo', geo_shape: 'geo', point: 'geo', shape: 'geo',
+  binary: 'binary',
+  object: 'object', flattened: 'object', nested: 'nested',
+}
+
+/** 宽类型族；认不出来的一律 `unknown`。 */
+export function esTypeFamily(esType: string): string {
+  const family = ES_TYPE_FAMILY[esType]
+  return family === undefined ? 'unknown' : family
+}
+
+/**
+ * 是不是 `object` / `nested` 这类**容器行**：它们自己没有值（值在子字段里），拿来分组或筛值只会打空。
+ * Kibana 收尾也把它们剔掉（`!['object', 'nested'].includes(field.type)`）；真机实测 `*,-.*` 的
+ * `_field_caps?fields=*` 会回 10 个这种行（`container` / `host` / `log` / `agent` / `ecs` … 200 个名字里）。
+ * 判据是「**所有**类型都是容器」——某个名字既当过容器又当过叶子，那是字段本身的问题，不能顺手藏掉。
+ */
+export function isContainerRow(esTypes: readonly string[]): boolean {
+  return esTypes.length > 0 && esTypes.every((type) => type === 'object' || type === 'nested')
+}
 
 /**
  * 「常用筛选项」：这些字段排在最前面（名单与 src/line.ts 的标签优先键同源，加几个 ES 侧的常见项）。
@@ -448,39 +489,60 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     },
 
     /**
-     * 列字段。**必须带上限与顺序**（真机反馈第 4 条）：这一版原来是裸的 _field_caps?fields=*，
-     * 在一台全集群通配的来源上回了 45KB 的字段表（还混着 .kibana / .infini_* 的系统索引字段），
-     * 而 agent 拿到的是一份**看不出被截断**的清单——等于没给。
+     * 列字段。**顺序与「看得出被截断」是硬要求**（真机反馈第 4 条）：这一版原来是裸的
+     * `_field_caps?fields=*`，在一台全集群通配的来源上回了 45KB 的字段表（还混着 `.kibana` /
+     * `.infini_*` 的系统索引字段），而 agent 拿到的是一份**看不出被截断**的清单——等于没给。
      *
-     * 现在：去掉 ES 内部字段（下划线开头）、优先键排前面、按上限截断，并把 total / truncated
-     * 一起回给调用方（设计 §3.2 的诚实口径同样适用于字段表）。
+     * 2026-10-14 修订（对齐 Kibana）：那时候的结论被读成了「所以砍到 80」，其实那条反馈要的是
+     * **看得出**，不是「一律砍」。现在这里**默认不截断**（`_field_caps` 回来多少列多少，与 Kibana 同），
+     * 只在调用方显式给了 `limit` 时才 slice；`total` / `truncated` 形状不变（设计 §3.2 的诚实口径）。
      */
     async fields(target: LoglensTarget, options: FieldsOptions = {}): Promise<FieldsResult> {
       const access = targetAccess(target)
       const index = targetIndex(target)
-      const limit = options.limit === undefined ? ES_DEFAULT_FIELD_LIMIT : options.limit
+      const limit = options.limit
       const body = await callJson(target, joinUrl(access.url, '/' + index + '/_field_caps?fields=*'), {
         method: 'GET',
         headers: access.headers,
       })
       const fields = (body as { fields?: unknown }).fields
       if (typeof fields !== 'object' || fields === null) return { fields: [], total: 0, truncated: false }
-      const all = Object.keys(fields as Record<string, unknown>).filter((name) => !name.startsWith('_'))
+      const caps = fields as Record<string, Record<string, { indices?: unknown } | undefined>>
+      const esTypesOf = (name: string): string[] => Object.keys(caps[name] ?? {})
+      const all = Object.keys(caps).filter((name) => !name.startsWith('_'))
       /*
        * 去掉 `X.keyword` 这类子字段行：**调用方根本不该写 .keyword**（适配器自己按 _field_caps 解析，
        * 见 filterClauses / facets）。真机实测：不过滤的话 187 个字段里有一串 .keyword 重复行，
        * 正是「字段表被污染」那一类噪声。
        */
-      const names = all.filter((name) => !(name.endsWith('.keyword') && all.includes(name.slice(0, -'.keyword'.length))))
+      const names = all
+        .filter((name) => !(name.endsWith('.keyword') && all.includes(name.slice(0, -'.keyword'.length))))
+        // 容器行（object / nested）也剔掉——它没有自己的值，见 isContainerRow
+        .filter((name) => !isContainerRow(esTypesOf(name)))
       const sorted = sortFieldNames(names)
+      // 不传 limit = 全列（Kibana 口径）；传了才截，且截了就说（total / truncated）
+      const shown = limit === undefined ? sorted : sorted.slice(0, limit)
       return {
-        fields: sorted.slice(0, limit).map((name) => ({
-          name,
-          kind: 'indexed' as const,
-          ...(PREFERRED_FIELDS.includes(name) ? { preferred: true } : {}),
-        })),
+        fields: shown.map((name) => {
+          const esTypes = esTypesOf(name)
+          const preferred = PREFERRED_FIELDS.includes(name) ? { preferred: true } : {}
+          /*
+           * 单类型不带 `esTypes`：那时候 `kind` 已经说完了。多类型才把类型摆出来，
+           * 并且只在**落到不同宽类型族**时打 `conflict`（Kibana 的 `type: 'conflict'`）；
+           * 同族的多类型（`text` + `keyword`）照样按普通字段列——Kibana 也不把它们当冲突。
+           */
+          if (esTypes.length <= 1) return { name, kind: 'indexed' as const, ...preferred }
+          const families = new Set(esTypes.map((type) => esTypeFamily(type)))
+          if (families.size <= 1) return { name, kind: 'indexed' as const, esTypes, ...preferred }
+          const conflictDescriptions: Record<string, string[]> = {}
+          for (const type of esTypes) {
+            const indices = caps[name][type]?.indices
+            conflictDescriptions[type] = Array.isArray(indices) ? indices.map((item) => String(item)) : []
+          }
+          return { name, kind: 'indexed' as const, esTypes, conflict: true, conflictDescriptions, ...preferred }
+        }),
         total: names.length,
-        truncated: sorted.length > limit,
+        truncated: limit !== undefined && sorted.length > limit,
       }
     },
 

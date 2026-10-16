@@ -88,6 +88,19 @@ export interface FieldInfo {
     label?: string;
     /** 这个字段是不是「常用筛选项」（优先键名单里的，排在前面）。 */
     preferred?: boolean;
+    /**
+     * **多类型才有**：同名在不同索引里出现过的原生 ES 类型（对应 Kibana `FieldDescriptor.esTypes`）。
+     * 只有一个类型时不带它——那时候 `kind` 已经说完了，带上只是把载荷撑大。
+     */
+    esTypes?: string[];
+    /**
+     * **多类型且落到不同宽类型族时才有**：这个字段在不同索引里类型不一致（Kibana 的 `type: 'conflict'`）。
+     * 拿它分组 / 筛值可能只覆盖一部分索引，调用方必须看得见这一点（真机实例：某字段在部分索引是 `date`、
+     * 部分是 `text`）。
+     */
+    conflict?: boolean;
+    /** 冲突时：每个原生类型各出现在哪些索引里（对应 Kibana `FieldDescriptor.conflictDescriptions`）。 */
+    conflictDescriptions?: Record<string, string[]>;
 }
 /**
  * 列字段的结果。**为什么不是裸数组**（2026-10-11 真机反馈第 4 条）：agent 拿到的是一份
@@ -101,7 +114,7 @@ export interface FieldsResult {
     /** true = fields 被上限截断了，还有 total - fields.length 个没列。 */
     truncated: boolean;
 }
-/** 列字段的选项：上限由调用方给（工具面默认 80，硬上限 200）。 */
+/** 列字段的选项：**不传 limit = 不截断**（来源有多少字段列多少，与 Kibana 的 `_field_caps` 同口径）；给了就只列前 limit 个。 */
 export interface FieldsOptions {
     limit?: number;
 }

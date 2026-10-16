@@ -140,7 +140,12 @@ export type FieldsOutcome = {
     truncated: boolean;
     warnings: string[];
 };
-/** 列字段的默认上限与硬上限（工具面直接取用；适配器那边还有一份自己的默认值）。 */
-export declare const FIELDS_DEFAULT_LIMIT = 80;
-export declare const FIELDS_MAX_LIMIT = 200;
+/**
+ * 列字段的**长度处理**（2026-10-14，对齐 Kibana）：**不传 limit 就是不截断**，来源有多少字段列多少。
+ *
+ * 原来这里是「默认 80 + 硬上限 200」。真机反馈第 4 条要的是**看得出被截断**（45KB 那份清单被当成全部），
+ * 不是「一律砍到 80」——Kibana 的 `_field_caps` 从来不 slice，长度交给界面（字段名搜索 + 分区 + 虚拟滚动）。
+ * 所以这层同理：默认给全，要收窄是调用方**显式**说的事；只有真截了才带上 total / truncated 与那句警告
+ * （形状不变，信号仍然跟着结果走）。工具面的成本提示写在工具描述里，不靠这里的默认值替调用方做决定。
+ */
 export declare function runFields(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FieldsOutcome>;

@@ -221,6 +221,34 @@ function pickInput(tree) {
   return treeFind(tree, (node) => node.type === 'input' && node.props?.placeholder === 'container.name')[0]
 }
 
+/*
+ * 占位文案的**宽度预算**（2026-10-14 真机：来源下拉里的「（先选一个来源）」被原生箭头切掉一半，
+ * 画出来是「（先选一个来源」）。
+ *
+ * 预算从样式算出来，不是拍脑袋：`.ll_queryGrid` 第一列 `minmax(110px,130px)`（最窄 110px），
+ * `.ll_input` 左右各 12px 内边距 → 86px，原生 `<select>` 的箭头再占约 20px → **文字区最窄约 66px**。
+ * `.ll_input` 的 font-size 是 13px，全角字正好一字 13px，所以预算是 **5 个汉字**（65px ≤ 66px）。
+ *
+ * 为什么值得一条守卫：文案是**最容易在下次改动里长胖**的东西——它只要读起来通顺就行，没人会去量，
+ * 而长胖的代价只有真机上那一眼能看见。这条守卫让「放不下」在提交前就红。
+ */
+const NARROW_LABEL_UNITS = 5
+
+/** 一个字占几个「汉字宽」：全角 / CJK / 中文标点（含 ……）算 1，拉丁字母与空格算 0.5。 */
+function labelUnits(text) {
+  let units = 0
+  for (const ch of String(text)) units += /[\u2000-\u2BFF\u3000-\u9FFF\uFF00-\uFFEF]/u.test(ch) ? 1 : 0.5
+  return units
+}
+
+/** 断言一句界面文案放得进最窄那一列（`where` 写清是哪一格的文案）。 */
+function assertNarrowLabel(text, where) {
+  const units = labelUnits(text)
+  assert.ok(units <= NARROW_LABEL_UNITS,
+    where + '的文案「' + String(text) + '」放不进最窄那一列：预算 ' + String(NARROW_LABEL_UNITS)
+    + ' 个汉字，实得 ' + String(units))
+}
+
 /* ------------------------------------------------------------------ *
  * 桩：fetch / window
  * ------------------------------------------------------------------ */
@@ -399,7 +427,8 @@ await test('刚进卡片（几个来源、还没选）：「来源」下拉显�
   const first = select.props.children[0]
   assert.equal(first.props.value, '', '第一项该是那个空 value 的占位项')
   assert.equal(first.props.disabled, true, '占位项不可选——它就是「还没选」这句话本身')
-  assert.ok(treeText(select).includes('先选一个来源'), '占位项要写着人话，别是一个白板项')
+  assert.equal(treeText(first), '选择来源', '占位项是一句**短标签**（旧文案「（先选一个来源）」9 字放不下，被原生箭头切掉一半）')
+  assertNarrowLabel(treeText(first), '「来源」下拉的占位项')
 
   // 没选来源时：点开字段框既不该拉字段，也不该开一个空浮层——该说的是「先选一个来源」
   calls.length = 0
@@ -528,6 +557,13 @@ function buttonByText(tree, text) {
  * 打开卡片 → 选来源 →（可选：填分组字段）→（默认）点「查询」；返回 `{ runtime, tree }`。
  * 需要自己接着点的用例把 `skipQuery` 打开（例如先点开字段框拉候选、再点「分组」）。
  */
+/** 「来源」下拉：它的选项值就是来源 id（行的类型下拉用的是 loki / elasticsearch…，不会撞上）。 */
+function sourceSelect(tree, targetId) {
+  return treeFind(tree, (node) => node.type === 'select'
+    && Array.isArray(node.props?.children)
+    && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === targetId))[0]
+}
+
 async function runPanelQueryFull(targetId, options = {}) {
   const runtime = createRuntime()
   const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
@@ -542,9 +578,7 @@ async function runPanelQueryFull(targetId, options = {}) {
   // 「刚进卡片、还没选来源」那个状态本身也要能测（那是第一眼看到的画面）
   if (options.skipTarget === true) return { runtime, tree }
   // 「来源」下拉：它的选项值就是来源 id（行的类型下拉用的是 loki / elasticsearch…，不会撞上）
-  const targetSelect = treeFind(tree, (node) => node.type === 'select'
-    && Array.isArray(node.props?.children)
-    && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === targetId))[0]
+  const targetSelect = sourceSelect(tree, targetId)
   assert.ok(targetSelect !== undefined, '找不到「来源」下拉')
   targetSelect.props.onChange({ target: { value: targetId } })
   runtime.tick()
@@ -600,6 +634,164 @@ await test('时间分布：有聚合能力的来源，按窗口画柱子，**空
   assert.ok(text.includes('每根柱子 30s'), '没说清一根柱子是多长时间')
   assert.ok(text.includes('峰值 5 条'), '没报峰值')
   assert.ok(text.includes('共 8 条'), '没截断时该报合计')
+})
+
+/* ------------------------------------------------------------------ *
+ * 时间分布：点柱放大（P6 第五格）
+ * ------------------------------------------------------------------ */
+
+/** 有数据的柱子（可点的那几根；空桶是静态 div，不在这个名单里）。 */
+function clickableBars(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && tokensOf(node).includes('ll_histBarClick'))
+}
+
+function tokensOf(node) {
+  return typeof node.props?.className === 'string' ? node.props.className.split(' ') : []
+}
+
+/** 窗口下拉（`value` 是 preset 键的那一个）。 */
+function windowSelect(tree) {
+  return treeFind(tree, (node) => node.type === 'select'
+    && Array.isArray(node.props?.children)
+    && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === '1h'))[0]
+}
+
+/** 一档分桶的毫秒数（桩用：把桶摆在**这次请求的窗口里**，与真后端一样）。 */
+const INTERVAL_MS = { '10s': 10_000, '30s': 30_000, '1m': 60_000 }
+
+const ZOOM_ROUTES = () => ({
+  /*
+   * 1 小时窗 → 1m 一档（**故意选比下限粗的档**：30s 档本来就窄于 1 分钟，点下去必被夹，
+   * 那样测到的就一直是「被夹」那一支，测不到「窗口就是这一档」这条主判据）。
+   *
+   * `/query` 用**函数**：窗口按请求回显——真宿主就是这么做的（`runSearch` 回的是归一化之后
+   * 真正生效的那一段），而两份聚合的窗口取自**这份回显**（`facetsEnvelope` 的判据）。桩若回一个
+   * 固定窗口，聚合那两条断言测的就是桩而不是代码。
+   */
+  '/api/dsh-loglens/query': (body) => ({
+    ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    window: { from: body.from, to: body.to },
+  }),
+  /*
+   * 分布也按**这次请求的窗口**摆桶（真后端只在查的那段里有数据）：两根有数据、中间留一个空档。
+   * 桶起点按 `histogramBars` 的对齐规则算（`floor(from/step)*step` + 整数倍），否则柱子按 ts 取值
+   * 会对不上——那样测到的是桩没摆对，而不是代码。
+   */
+  '/api/dsh-loglens/facets': (body) => {
+    const step = INTERVAL_MS[body.interval] ?? 60_000
+    const first = Math.floor(Number(body.from) / step) * step
+    return { ok: true, overTime: [{ ts: first, count: 3 }, { ts: first + 2 * step, count: 5 }], interval: body.interval, warnings: [] }
+  },
+})
+
+/** 一根柱子代表的桶起点（渲染的 key 就是 `ll-hist-<ts>`）。 */
+function barTs(bar) {
+  return Number(String(bar.props.key).replace('ll-hist-', ''))
+}
+
+await test('点柱放大：点一根有数据的柱 = 把时间窗夹到**这一档**重查一次（不是整个旧窗口）', async () => {
+  serverRoutes = ZOOM_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  const bars = clickableBars(tree)
+  assert.equal(bars.length, 2, '只有有数据的柱子才可点（空桶点进去只会得到「没有命中」），实得 ' + String(bars.length))
+
+  calls.length = 0
+  await clickAndSettle(runtime, bars[1])
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '点柱必须**真的重查一次**（不拿本地行数糊一个结果）')
+  // 点的第二根有数据的柱：窗口就该是**那一档**。少了「窗口随草稿走」那一改，发出去的会是整个旧
+  // 窗口（[now-1h, now]）——断言当场红，这正是这条用例存在的理由
+  const picked = barTs(bars[1])
+  assert.equal(query.body.from, picked, '窗口该夹到这一根柱的起点，实得 ' + String(query.body.from))
+  assert.equal(query.body.to, picked + 60_000, '窗口该夹到这一根柱的终点，实得 ' + String(query.body.to))
+  assert.notEqual(query.body.to - query.body.from, 60 * 60 * 1000, '不许把整个旧窗口再查一遍')
+  // 聚合跟着同一个窗口（行、分布、榜说的必须是同一段）。这一轮没填分组字段，所以只有分布那一次；
+  // 判据是「凡发出去的聚合，窗口都必须与这一枪相同」——按条数断言反而会把「榜没拉」当成失败。
+  const facets = calls.filter((call) => call.path === '/api/dsh-loglens/facets')
+  assert.ok(facets.length >= 1, '分布该重拉一次，实得：' + JSON.stringify(calls.map((call) => call.path)))
+  for (const call of facets) {
+    assert.equal(call.body.from, picked, '聚合必须画在同一段上，否则同一屏三个数字说的不是一件事')
+    assert.equal(call.body.to, picked + 60_000, '聚合必须画在同一段上')
+  }
+
+  const after = runtime.tree
+  assert.equal(treeFind(after, (node) => hasClass(node, 'll_histBarActive')).length, 1,
+    '正在放大的那一档该看得出来（与榜上「正在按它下钻」同一条判据）')
+  const select = windowSelect(after)
+  assert.equal(select.props.value, 'custom', '窗口下拉该显示「自定义」那一档')
+  assert.ok(treeText(select).includes('→'), '下拉文案该是**真实范围**，不是裸键名 custom：' + treeText(select))
+  assert.ok(String(bars[1].props.title).includes('点一下放大到这一段'), '悬停该说清这根柱子能点：' + String(bars[1].props.title))
+  assert.ok(String(bars[1].props.title).includes('5 条'), '悬停仍要说清这一段有多少条')
+})
+
+await test('点柱放大：空桶是**静态**的，点不动（给个点得动、结果却是空窗口的入口更坏）', async () => {
+  serverRoutes = ZOOM_ROUTES()
+  const { tree } = await runPanelQueryFull('es')
+  const all = treeFind(tree, (node) => tokensOf(node).includes('ll_histBar'))
+  const empties = treeFind(tree, (node) => tokensOf(node).includes('ll_histBarEmpty'))
+  // 柱数按窗口对齐算（1 小时 / 1 分钟 = 60，落在桶边界上时是 61）——按「补了几个 0」断，
+  // 不写死 60：写死了会在换一个对齐的 now 时变成假红
+  assert.ok(all.length >= 60 && all.length <= 61, '1 小时窗 / 1 分钟一档该是 60（或 61）根，实得 ' + String(all.length))
+  assert.equal(all.length - empties.length, 2, '只有两个桶有数据（其余都补 0）')
+  for (const bar of empties) {
+    assert.notEqual(bar.type, 'button', '空桶不许是可点的按钮')
+    assert.equal(typeof bar.props?.onClick, 'undefined', '空桶不许挂 onClick')
+  }
+})
+
+await test('点柱放大：换预设档 = 把这一段撤掉（下拉、草稿与高亮一起回落，不留第二份真相）', async () => {
+  serverRoutes = ZOOM_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  await clickAndSettle(runtime, clickableBars(tree)[1])
+  assert.equal(windowSelect(runtime.tree).props.value, 'custom', '先得真的进到自定义档')
+  assert.equal(windowChoicesHasCustom(runtime.tree), true, 'custom 该在下拉里（否则浏览器回落显示第一项，下拉就在说谎）')
+
+  calls.length = 0
+  windowSelect(runtime.tree).props.onChange({ target: { value: '15m' } })
+  runtime.tick()
+  await runtime.update()
+
+  assert.equal(windowSelect(runtime.tree).props.value, '15m')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_histBarActive')).length, 0, '换档后高亮该撤掉')
+  assert.equal(windowChoicesHasCustom(runtime.tree), false, 'custom 不该再留在下拉里（它不是能挑的一档）')
+
+  // 再查一次：窗口必须是**预设窗**（now-15m → now），不是上一次那段自定义
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '查询'))
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '该发出这一次查询')
+  assert.equal(query.body.to - query.body.from, 15 * 60 * 1000, '换档后该按 15 分钟查，实得 ' + String(query.body.to - query.body.from))
+})
+
+/** 下拉里还有没有 custom 那一项（它只在放大期间才该出现）。 */
+function windowChoicesHasCustom(tree) {
+  const select = windowSelect(tree)
+  return select.props.children.some((option) => option !== null && option !== undefined && option.props?.value === 'custom')
+}
+
+await test('点柱放大：被下限夹过时**说出来**（10 秒档夹到 1 分钟，窗不是他点的那么宽）', async () => {
+  // 造一个 2 分钟窗：10s 档 = 12 根，点其中一根（10 秒 < 1 分钟）→ 必须被夹到 1 分钟
+  serverRoutes = {
+    '/api/dsh-loglens/query': {
+      ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+      window: { from: 0, to: 120_000 },
+    },
+    '/api/dsh-loglens/facets': { ok: true, overTime: [{ ts: 10_000, count: 4 }], interval: '10s', warnings: [] },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  const bars = clickableBars(tree)
+  assert.ok(bars.length >= 1, '该画出可点的柱子')
+  assert.ok(treeText(tree).includes('每根柱子 10s'), '这一档该是 10s，实得：' + treeText(tree).slice(0, 200))
+  assert.equal(treeText(tree).includes('已放大到最短 1 分钟'), false, '还没点就不该说这句')
+
+  calls.length = 0
+  await clickAndSettle(runtime, bars[0])
+  const text = treeText(runtime.tree)
+  assert.ok(text.includes('已放大到最短 1 分钟'),
+    '被下限夹过必须**说出来**（静默收窄比报错更难查）：' + text.slice(0, 300))
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '该发出这一次查询')
+  assert.equal(query.body.to - query.body.from, 60_000, '夹到下限后窗口该是 1 分钟，实得 ' + String(query.body.to - query.body.from))
 })
 
 await test('时间分布：Loki（聚合为假）**不画、也不发那个请求**，只在界面上说清为什么', async () => {
@@ -796,6 +988,92 @@ await test('字段候选：一次点击（focus 与 click 两条路）只打一�
   const n = calls.filter((item) => item.path === '/api/dsh-loglens/fields').length
   assert.equal(n, 1, '一次点击只该拉一枪，实得 ' + String(n))
   assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['container.name', 'host.name'])
+})
+
+await test('候选浮层页脚：报**宿主给的**字段总数（不是本地清单的长度），不截断时没有任何截断警告', async () => {
+  // 2026-10-14 对齐 Kibana 之后，页脚说「有多长」：不传 limit = 不截断，所以宿主给的 total 就是全部。
+  // 这里故意让 total（102）与清单（2 条）不相等——页脚必须照宿主的权威数字说，**不许自己数本地行数**：
+  // 否则哪天又截起来，界面会把「你看到的这 2 个」说成「一共就这些」。
+  serverRoutes = {
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [{ name: 'container.name' }, { name: 'host.name' }],
+      total: 102,
+      truncated: false,
+      warnings: [],
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+  const foot = treeText(runtime.tree)
+  assert.ok(foot.includes('共 102 个字段'), '页脚该报宿主的 total（102），实得：' + foot.slice(0, 300))
+  assert.ok(foot.includes('刷新'), '页脚该有「刷新」（缓存的出口）')
+  assert.equal(foot.includes('只列了前'), false, '没被截断就不许出现截断警告（警告是信号，不是常驻噪声）')
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['container.name', 'host.name'])
+  /*
+   * 不截断之后候选可能有上百行，所以浮层拆成两层：候选自己滚（`.ll_pickScroll`），页脚在它**外面**。
+   * 页脚要是落进滚动层里，就得先滚到底才看得见「共 N 个字段」——那等于没报（Kibana 把计数放在分区头上，
+   * 也是同一个判据：长度信息不该被长度本身埋掉）。这条守卫谁把页脚挪回滚动层就红。
+   */
+  const scroll = treeFind(runtime.tree, (node) => hasClass(node, 'll_pickScroll'))[0]
+  assert.ok(scroll !== undefined, '候选该有一层自己滚的容器（.ll_pickScroll）')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickFoot')).length, 1, '页脚该在浮层里（恰好一处）')
+  assert.equal(treeFind(scroll, (node) => hasClass(node, 'll_pickFoot')).length, 0, '页脚不许在滚动层里：那样会被埋在几百行底下，滚到底才看得见')
+  assert.equal(treeFind(scroll, (node) => hasClass(node, 'll_pickRefresh')).length, 0, '「刷新」同理，也不许在滚动层里')
+  assert.equal(treeFind(scroll, (node) => hasClass(node, 'll_pickItem')).length, 2, '候选本身才在滚动层里')
+})
+
+await test('候选浮层页脚：宿主真报截断时，照抄那句警告（警告优先于条数，不许两句话说反）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [{ name: 'container.name' }, { name: 'host.name' }],
+      total: 102,
+      truncated: true,
+      warnings: ['只列了前 2 个（这个来源共有 102 个字段）：去掉 limit 就是全部'],
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+  const foot = treeText(runtime.tree)
+  assert.ok(foot.includes('只列了前 2 个'), '宿主那句警告要照抄，实得：' + foot.slice(0, 300))
+  assert.equal(foot.includes('共 102 个字段'), false, '警告已经说了总数，别再说一遍条数（两句话会被读成互相打架）')
+})
+
+await test('候选浮层：类型冲突的字段**在行上**标出来（同名在不同索引里类型不一致），普通候选不标', async () => {
+  // 真机实例：`container.labels.org_label-schema_build-date` 在部分索引是 date、部分是 text。
+  // 拿它分组只会覆盖一部分索引，而它在候选里的名字跟别人长得一模一样——不标就等于没说。
+  serverRoutes = {
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [
+        { name: 'host.name' },
+        { name: 'container.labels.org_label-schema_build-date', conflict: true, esTypes: ['date', 'text'] },
+      ],
+      total: 2,
+      truncated: false,
+      warnings: [],
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  pickInput(tree).props.onFocus()
+  await runtime.update()
+  await runtime.update()
+
+  const rows = pickRows(runtime.tree)
+  assert.equal(rows.length, 2)
+  const tags = treeFind(rows[1], (node) => hasClass(node, 'll_pickConflict'))
+  assert.equal(tags.length, 1, '冲突字段该有一个标记，实得 ' + String(tags.length) + ' 个')
+  assert.equal(treeText(tags[0]), '类型冲突')
+  assert.equal(treeFind(rows[0], (node) => hasClass(node, 'll_pickConflict')).length, 0, '普通字段不许标')
+  // 行上只放得下一小截标记，两种类型写在 title 里
+  assert.ok(String(rows[1].props.title).includes('类型冲突'), 'title 该说清是冲突：' + String(rows[1].props.title))
+  assert.ok(String(rows[1].props.title).includes('date / text'), 'title 该把两种类型都摆出来：' + String(rows[1].props.title))
+  assert.equal(rows[0].props.title, 'host.name', '普通行 title 还是名字本身')
 })
 
 await test('字段候选：同一个来源再点开**不重拉**（缓存），页脚「刷新」才重拉；换了来源要重拉', async () => {
@@ -1110,8 +1388,319 @@ await test('空值那一桶**不给点**：筛选表达不了「字段缺失」�
 })
 
 /* ------------------------------------------------------------------ *
+ * Docker 区（容器清单自动拉，2026-10-14）
+ * ------------------------------------------------------------------ */
+
+/** Docker 区的容器下拉：按 title 找（`field.container` = 「容器」）。 */
+function containerSelect(tree) {
+  return treeFind(tree, (node) => node.type === 'select' && node.props?.title === '容器')[0]
+}
+
+/** 来源行里那条「Docker 目标名」下拉。 */
+function dockerTargetSelect(tree) {
+  return treeFind(tree, (node) => node.type === 'select' && node.props?.title === 'Docker 目标名')[0]
+}
+
+const containerCalls = () => calls.filter((call) => call.path === '/api/dsh-docker/containers')
+const optionsOf = (select) => select.props.children.filter((node) => node !== null && node !== undefined)
+
+await test('Docker 区：选中 Docker 来源就**自动拉容器**（不需要点按钮），第一条自动选中', async () => {
+  serverRoutes = {
+    '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }, { id: 'gateway', name: 'gateway' }] },
+  }
+  const { runtime, tree } = await runPanelQueryFull('target', { skipQuery: true })
+  await runtime.update()
+  await runtime.update()
+
+  assert.equal(containerCalls().length, 1, '选中 Docker 来源该自动拉一次，实得 ' + String(containerCalls().length))
+  assert.equal(containerCalls()[0].body.target, '目标2', '请求要带这一行的 Docker 目标名')
+  assert.equal(buttonByText(runtime.tree, '拉取容器'), undefined, '不该再有「拉取容器」按钮：选中就拉')
+
+  const select = containerSelect(runtime.tree)
+  assert.ok(select !== undefined, '找不到容器下拉')
+  assert.equal(select.props.value, 'upms', '第一条该被自动选中（不然「看日志」只会回一句「先选容器」）')
+  // 占位项（第一项）在**有清单**时就是那句「容器」、而且可选：它只在没选中时露出来（见 containerSlotState）
+  const slot = optionsOf(select)[0]
+  assert.equal(treeText(slot), '容器', '清单已经到手了，占位项该回到默认那句')
+  assert.equal(slot.props.disabled, false, '默认态的占位项保持原来那样（能选空）')
+  assert.deepEqual(optionsOf(select).slice(1).map((node) => treeText(node)), ['upms-service', 'gateway'])
+})
+
+await test('Docker 区：同一目标不重拉；换目标重拉（选中项跟着新清单走），在途时多一条「加载中…」且不谎报选中', async () => {
+  // 每条目标回**不同的**容器：换目标之后原来那个 id 不在新清单里，必须换成新的第一条
+  // （留着旧 id 就是 D04 那一类不一致：原生下拉回落显示第一项，面板状态里还是旧值）
+  serverRoutes = {
+    '/api/dsh-docker/containers': (body) => ({
+      ok: true,
+      containers: body.target === 'local' ? [{ id: 'nginx', name: 'nginx' }] : [{ id: 'upms', name: 'upms-service' }],
+    }),
+  }
+  const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
+  await runtime.update()
+  await runtime.update()
+  assert.equal(containerCalls().length, 1)
+  assert.equal(containerSelect(runtime.tree).props.value, 'upms')
+  // 同一个键：再来几轮渲染也不该重拉（缓存判据就是 containersKey）
+  await runtime.update()
+  await runtime.update()
+  assert.equal(containerCalls().length, 1, '同一个目标不该重拉')
+
+  const targetSelect = dockerTargetSelect(runtime.tree)
+  assert.ok(targetSelect !== undefined, '找不到 Docker 目标下拉')
+  targetSelect.props.onChange({ target: { value: 'local' } })
+  runtime.tick()
+  /*
+   * 这一刻清单还没回来，但**旧清单还在**（上一条目标拉回来的 upms）。所以占位项仍该是「容器」：
+   * 显示哪一项由 `value` 决定，而下拉的 value 此刻就是 upms——把占位项改成「加载中…」等于
+   * 替用户扔掉看得见的东西（那几秒里他不是没有选项，是有**上一条目标**的选项）。
+   * 「正在拉」这句话落在「刷新」按钮上（与旁边「看日志」同一个写法）。
+   */
+  assert.equal(treeText(optionsOf(containerSelect(runtime.tree))[0]), '容器', '有旧清单时占位项不该改口')
+  assert.equal(buttonByText(runtime.tree, '刷新'), undefined, '在途时「刷新」自己写着「加载中…」')
+  assert.ok(buttonByText(runtime.tree, '加载中…') !== undefined, '在途时该看得见「正在拉」这句（落在「刷新」上）')
+
+  await runtime.update()
+  await runtime.update()
+  assert.equal(containerCalls().length, 2, '换了目标要重拉一次')
+  assert.equal(containerCalls()[1].body.target, 'local', '重拉要带新目标')
+  assert.equal(containerSelect(runtime.tree).props.value, 'nginx', '原来的 upms 不在新清单里：选中项要换成新清单的第一条，不许留一个下拉里没有的 id')
+  assert.ok(buttonByText(runtime.tree, '刷新') !== undefined, '拉完了按钮要长回「刷新」')
+})
+
+await test('Docker 区：清单还没到的那几秒，占位项说的是「加载中…」（不是看起来没事的空下拉）', async () => {
+  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }] } }
+  /*
+   * 这一条**不用 runPanelQueryFull**：那个助手会把每件事都 settle 到稳定，正好吃掉我们要看的那一帧
+   * （选中 Docker 来源、请求还在路上的那一刻）。所以手动挂载，自己控制 tick 与让位的时机。
+   */
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  calls.length = 0
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  const tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  await runtime.update()
+  sourceSelect(runtime.tree, 'target').props.onChange({ target: { value: 'target' } })
+  runtime.tick()
+
+  const slot = optionsOf(containerSelect(runtime.tree))[0]
+  assert.equal(treeText(slot), '加载中…', '清单没到的时候这一格就该说「在拉」，实得：' + treeText(slot))
+  assert.equal(slot.props.value, '', '过渡态仍然挂在那个空 value 的占位项上')
+  assert.equal(slot.props.disabled, true, '过渡态不是可选项：那一刻没有一个真容器值得选')
+  assertNarrowLabel(treeText(slot), '容器下拉的过渡态')
+
+  await runtime.update()
+  await runtime.update()
+  assert.equal(treeText(optionsOf(containerSelect(runtime.tree))[0]), '容器', '清单到手后该回到默认那句')
+})
+
+await test('Docker 区：拉回来是空清单 → 占位项说「没有容器」，hint 说清「只列运行中的」', async () => {
+  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [] } }
+  const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
+  await runtime.update()
+  await runtime.update()
+
+  const slot = optionsOf(containerSelect(runtime.tree))[0]
+  assert.equal(treeText(slot), '没有容器', '拉空了要说清是空的（不然就是一个看不出所以然的空下拉）')
+  assert.equal(slot.props.disabled, true, '没有可选项时占位项也不该能被选中')
+  assertNarrowLabel(treeText(slot), '容器下拉的空清单态')
+  const text = treeText(runtime.tree)
+  assert.ok(text.includes('没有运行中的容器'), '「没有容器」得有一句解释：这里只列运行中的，实得：' + text.slice(0, 300))
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_error')).length, 0, '空清单不是错误：不动卡片顶部那条错误行')
+})
+
+await test('Docker 区：拉容器失败只落在那一格（不动卡片顶部错误行），失败不写缓存→下次触发仍会重试', async () => {
+  serverRoutes = { '/api/dsh-docker/containers': { ok: false, status: 400, body: { error: 'boom-containers' } } }
+  const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
+  await runtime.update()
+  await runtime.update()
+
+  assert.equal(containerCalls().length, 1)
+  const text = treeText(runtime.tree)
+  assert.ok(text.includes('容器清单取不到：boom-containers'), '该把宿主那句话显示在这一格，实得：' + text.slice(0, 300))
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_error')).length, 0, '自动拉失败不该把整张卡片染成「出错了」')
+
+  /*
+   * 下拉那一格此刻也**不能装作没事**：失败时清单是空的，占位项若还写着「容器」，画出来就是一个
+   * 空下拉——用户看不出「它试过了、没成」。而失败**不写缓存**（见下面那段），于是 `pending` 一直为真；
+   * 若判据把「在途」排在「失败」前面，这一格会永远写着「加载中…」——那才是更坏的谎。
+   */
+  const slot = optionsOf(containerSelect(runtime.tree))[0]
+  assert.equal(treeText(slot), '加载失败', '失败时占位项该说「加载失败」，实得：' + treeText(slot))
+  assert.equal(slot.props.disabled, true, '失败态不是可选项')
+  assertNarrowLabel(treeText(slot), '容器下拉的失败态')
+  assert.ok(buttonByText(runtime.tree, '刷新') !== undefined, '失败之后「刷新」要长回来：那是重试的出口')
+
+  /*
+   * 失败**不许写缓存**：走开再回来必须重新试（判据是 `containersSource` 在失败分支里不动）。
+   * 为什么这么测：在「换 Docker 目标」上验等于没验——换目标本来就换了键，缓存写没写都会重拉。
+   * 只有**回到同一个键**（换来源走开、再选回这条 Docker 来源）才能把「记住了失败」和「没记住」分开。
+   */
+  dockerTargetSelect(runtime.tree) // 存在性：目标下拉在这条来源上
+  sourceSelect(runtime.tree, 'es').props.onChange({ target: { value: 'es' } })
+  await runtime.update()
+  await runtime.update()
+  sourceSelect(runtime.tree, 'target').props.onChange({ target: { value: 'target' } })
+  await runtime.update()
+  await runtime.update()
+  assert.equal(containerCalls().length, 2, '回到同一个目标仍要重试一次：失败不留缓存')
+})
+
+await test('Docker 区：「刷新」强制重拉一次（容器会变，自动拉之外要留手动出口）', async () => {
+  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }] } }
+  const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
+  await runtime.update()
+  await runtime.update()
+  assert.equal(containerCalls().length, 1)
+
+  const refresh = buttonByText(runtime.tree, '刷新')
+  assert.ok(refresh !== undefined, 'Docker 区该有一个「刷新」')
+  refresh.props.onClick()
+  await runtime.update()
+  await runtime.update()
+  assert.equal(containerCalls().length, 2, '「刷新」要真的重拉一次')
+})
+
+/* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * 行上的标签：看得见「谁写的」+ 点值即筛（P6 第六刀）
+ * ------------------------------------------------------------------ */
+
+/** 带标签的一行（真机上就是 filebeat 那份嵌套文档摊平后的样子）。 */
+const TAG_LINE = {
+  ts: 1_700_000_000_000,
+  level: 'error',
+  levelInferred: true,
+  message: 'boom',
+  source: '0',
+  labels: {
+    'container.name': 'app-svc-1',
+    'host.name': 'node-7',
+    'log.file.path': '/var/log/app.log',
+    'stream': 'stderr',
+    'kubernetes.pod.name': 'app-1-abc',
+  },
+  raw: '{"message":"boom","container":{"name":"app-svc-1"}}',
+  id: '0:0',
+}
+
+/** 结果行里可点的那些标签（类名不带 btn，所以用 ll_resultTagHit 找）。 */
+function tagChips(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_resultTagHit'))
+}
+
+await test('行上的标签：摆出前 3 个（宿主顺序）、超出的在悬停里、可点的每个都带「按它加筛选」的悬停', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), lines: [TAG_LINE] },
+    '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
+  }
+  const { tree } = await runPanelQueryFull('es')
+  const chips = tagChips(tree)
+  assert.equal(chips.length, 3, '行上直接摆的该是 3 个（ROW_LABEL_MAX），实得 ' + String(chips.length))
+  // **顺序就是宿主给的顺序**（LABEL_PRIORITY 排的是「排查时先问什么」）；
+  // 这里若自己挑一次（比如挑最短的），容器名就可能被挤掉——那正是这一格要解决的事
+  assert.deepEqual(chips.map((node) => treeText(node)), ['container.nameapp-svc-1', 'host.namenode-7', 'log.file.path/var/log/app.log'])
+  assert.ok(String(chips[0].props.title).includes('按 container.name = app-svc-1 加一条筛选'),
+    '可点的标签必须说清点它会做什么：' + String(chips[0].props.title))
+  // 摆不下的收进悬停：行 title 里有**全部**标签与原文
+  const row = treeFind(tree, (node) => hasClass(node, 'll_resultRow'))[0]
+  assert.ok(String(row.props.title).includes('kubernetes.pod.name = app-1-abc'), '悬停该有摆不下那些标签')
+  assert.ok(String(row.props.title).includes('{"message":"boom"'), '悬停该有原文（raw）')
+  assert.ok(String(row.props.title).includes('error（从正文推断）'), '推断出来的级别必须标出来（两种可信度）')
+  assert.ok(treeText(tree).includes('另有 2 个标签'), '行尾该说还有几个没摆出来：' + treeText(tree).slice(0, 300))
+  // 敏感字段那句话在场（raw 原样来自后端）
+  assert.ok(treeText(tree).includes('可能有敏感字段'), '行详情里可能有敏感字段，这句话该在')
+})
+
+await test('行上的标签：点一下 = 按「字段 = 值」加一条筛选并**立刻重查**（判据只有一份：与点榜下钻同一个 drillDown）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), lines: [TAG_LINE] },
+    '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  const chip = tagChips(tree)[1]
+  assert.equal(treeText(chip), 'host.namenode-7', '第二格是 host.name')
+
+  calls.length = 0
+  await clickAndSettle(runtime, chip)
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '点标签必须真的重查一次（不拿这一页在本地过一遍——那一页被 limit 截断过）')
+  assert.deepEqual(query.body.filters, { 'host.name': 'node-7' }, '筛选该是「字段 = 值」：' + JSON.stringify(query.body.filters))
+  // 聚合跟着同一份筛选（同一屏三个数字说的必须是同一件事）
+  const facets = calls.filter((call) => call.path === '/api/dsh-loglens/facets')
+  assert.ok(facets.length >= 1, '聚合该重拉')
+  for (const call of facets) assert.deepEqual(call.body.filters, { 'host.name': 'node-7' }, '聚合必须带同一份筛选')
+  // 芯片行出现，且它和榜上那条高亮说的是同一件事（可断言：筛选进了 activeFilters）
+  assert.ok(treeText(runtime.tree).includes('host.name = node-7'), '芯片行该出现这条筛选')
+})
+
+await test('行上的标签：空值那类**不给点**（筛选表达不了「字段缺失」），但仍然摆出来', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': {
+      ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+      lines: [{ ...TAG_LINE, labels: { 'container.name': '', 'host.name': 'node-7' } }],
+    },
+    '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
+  }
+  const { tree } = await runPanelQueryFull('es')
+  // 空值那一个**不摆**（没有值的标签占位会把有值的挤掉）——所以这一行只有 1 格，且它是可点的
+  const chips = tagChips(tree)
+  assert.equal(chips.length, 1, '空值不占位：实得 ' + String(chips.length))
+  assert.equal(treeText(chips[0]), 'host.namenode-7')
+})
+
+/* ------------------------------------------------------------------ *
+ * 级别筛选（宿主既有入参；页内筛必须说出来）
+ * ------------------------------------------------------------------ */
+
+/** 级别下拉（它的选项里有一个空 value 的「不限级别」）。 */
+function levelSelect(tree) {
+  return treeFind(tree, (node) => node.type === 'select'
+    && Array.isArray(node.props?.children)
+    && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === ''
+      && treeText(child).includes('不限级别')))[0]
+}
+
+await test('级别筛选：下拉六档 + 不限；选中后请求体带 level，且**明说这是页内筛**', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), level: 'error' },
+    '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  const select = levelSelect(tree)
+  assert.ok(select !== undefined, '找不到级别下拉')
+  assert.equal(select.props.value, '', '默认是「不限」')
+  assert.equal(treeText(tree).includes('级别是在'), false, '不限级别时不该说那句边界声明')
+
+  calls.length = 0
+  select.props.onChange({ target: { value: 'error' } })
+  runtime.tick()
+  await runtime.update()
+  // 改下拉**不自动重查**（与改查询串同一条：都在草稿里，由「查询」那一下一起发）
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/query').length, 0, '改级别不该自己打一枪')
+
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '查询'))
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.equal(query.body.level, 'error', '载荷里该带 level：' + JSON.stringify(query.body))
+  // 边界声明必须在场：宿主是在**这一页**上筛的，counts / truncation 仍是未筛的整页
+  assert.ok(treeText(runtime.tree).includes('级别是在'), '页内筛那句必须说出来：' + treeText(runtime.tree).slice(0, 400))
+
+  // 换回「不限」→ 载荷里**不带这个键**（形状回到加它之前）
+  calls.length = 0
+  levelSelect(runtime.tree).props.onChange({ target: { value: '' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '查询'))
+  const again = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.equal('level' in again.body, false, '回到不限之后不许带一个空的 level：' + JSON.stringify(again.body))
+  assert.equal(treeText(runtime.tree).includes('级别是在'), false, '不限级别时那句该撤掉')
+})
 
 let failed = 0
 for (const result of results) {

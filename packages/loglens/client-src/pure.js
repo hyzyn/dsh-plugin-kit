@@ -108,6 +108,29 @@ export function windowOptions() {
 }
 
 /**
+ * 下拉里**实际**要摆的那几档：预设几档，外加当前选中的 `custom`（点柱放大）那一档。
+ *
+ * 为什么非要这一支（loglens D04，同一判据在「来源」下拉上栽过）：`<select value={x}>` 在没有任何
+ * 选项的 value 等于 `x` 时，浏览器会**回落显示第一项**——于是下拉写着「最近 15 分钟」，而真正
+ * 发出去的是一段自定义窗口。那是源码里看不见的谎。所以选中的档必须真的在选项里。
+ *
+ * `custom` 只在自己**正被选中**时补进去：它不是用户能挑的一档（没有「自定义」这个预设，
+ * 只有「点某根柱放大到那一段」这个动作），凭空摆一个空的自定义项等于给一个点了没反应的入口。
+ */
+export function windowChoices(preset) {
+  const keys = windowOptions()
+  return String(preset == null ? '' : preset) === 'custom' ? [...keys, 'custom'] : keys
+}
+
+/**
+ * 直方图放大（点一根柱）的最小窗口：1 分钟。
+ *
+ * 一档分桶最细是 10 秒（见 HISTOGRAM_STEPS），点它夹出来的窗只有 10 秒——那种窗在日志里
+ * 通常空手而归，而界面上只看见「没有命中」，看不出「是你把窗缩得太小了」。
+ */
+const ZOOM_MIN_MS = 60 * 1000
+
+/**
  * 预设 → 具体时间窗（epoch 毫秒）。认不出的预设回落 1 小时——界面上永远有一个选中项，
  * 不该因为传错一个字符串就查出一个空窗口（那就成了静默无操作）。
  */
@@ -119,33 +142,154 @@ export function windowRange(preset, nowMs) {
 }
 
 /**
- * 新查询的草稿：默认「最近 1 小时 / 100 条」，没有筛选。
+ * 新查询的草稿：默认「最近 1 小时 / 100 条」，没有筛选、没有自定义窗口、不限级别。
  *
- * 筛选**放在草稿里**（而不是组件另起一份 state）：它决定的是「这一次查的是哪个子集」，
- * 与 `q` / 窗口 / 条数是同一件事——放一处，行、时间分布、分组榜才不可能查成三个不同的子集
- * （`queryPayload` 与 `facetsEnvelope` 读的都是这一份）。
+ * 筛选、**自定义窗口**与**级别**都放在草稿里（而不是组件另起一份 state）：它们决定的是「这一次
+ * 查的是哪一段、哪个子集」，与 `q` / 条数是同一件事——放一处，行、时间分布、分组榜才不可能查成
+ * 三个不同的子集（`queryPayload` 与 `facetsEnvelope` 读的都是这一份）。
+ *
+ * `level: ''` = 不限（等于「没给」）：载荷里**不带这个键**，线上形状与加它之前逐字节一致
+ * （与 `filters` 空数组同一条判据）。
  */
 export function emptyQuery() {
-  return { target: '', q: '', preset: '1h', limit: 100, filters: [] }
+  return { target: '', q: '', preset: '1h', limit: 100, filters: [], level: '' }
+}
+
+/* ============================ 级别筛选（宿主既有入参，P6 第六刀） ============================ */
+
+/*
+ * 级别是**宿主早就有**的入参（`loglens_search` 的 `level`，语义 warn = warn 及以上），面板只是
+ * 没暴露。零契约改动——但**页内筛**这件事必须一路带到底（见 `levelFiltered` 与界面那句提示）：
+ * 宿主在返回的这一页上过滤，`counts` / `truncation` 仍是**未筛的整页**，所以「只看 error」得到的是
+ * 「这一页里的 error」，不是「窗口里一共多少 error」。不写出来就是另一种「说的和做的不一样」。
+ */
+
+/**
+ * 级别下拉的选项：空串（不限）+ 归一化的六档。
+ *
+ * 顺序从轻到重，与 `src/line.ts` 的 `CANONICAL_LEVELS` 逐字一致。**为什么不从宿主 import**：
+ * 浏览器半体不许引宿主模块（`src/line.ts` 进不了 client.js），所以这里是一份**对偶**——
+ * 与纯模块文件头写的那条同一条规矩（类型清单的对偶，漂了在真机里露出来）。
+ */
+const LEVEL_OPTIONS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal']
+
+/** 级别下拉要摆的键（含表示「不限」的空串）。 */
+export function levelChoices() {
+  return [''].concat(LEVEL_OPTIONS)
+}
+
+/**
+ * 把草稿里的级别收成「能下发的那一个」：空串 / 不认识的一律当**不限**。
+ *
+ * 为什么要收一道（而不是直接把草稿值塞进载荷）：`level` 是**枚举**，宿主收到认不出的值会**报错**
+ * （`readLevel` 的原话：「level 只能是 trace / debug / …」）。界面上的值只有下拉能改，但草稿也可能
+ * 从别处来（会话记忆、将来的 UI），所以这里当**边界**：宁可不下发，也不发一个会被打回、把整次查询
+ * 变成错误的枚举值。「不认识 = 不限」在下拉里也说得通（所选值不在选项里时原生 `<select>` 会回落显示
+ * 第一项，而第一项就是「不限」）。
+ */
+export function levelFilterOf(draft) {
+  const raw = draft === null || draft === undefined ? '' : draft.level
+  const value = String(raw == null ? '' : raw).trim().toLowerCase()
+  return LEVEL_OPTIONS.includes(value) ? value : ''
+}
+
+/**
+ * 这一次查询的级别**是不是真的在页内筛过**：载荷里带了 `level` 才算。
+ *
+ * 界面拿它决定说不说那句「只筛了本页」——与 `outcome.level` 同真同假（宿主只在真筛时才回显它），
+ * 但**不依赖回显**：查询还在途时（回显还没到）那句话就该在场，否则会出现「界面说没筛、其实筛了」
+ * 的那几秒。判据只有一处，就是这里。
+ */
+export function levelFiltered(draft) {
+  return levelFilterOf(draft) !== ''
+}
+
+/**
+ * 一段明确的窗口能不能用：空串表示可以，否则是 i18n 键名后缀（badWindow）。
+ *
+ * 判据只有「两端都是有限数、且 to 晚于 from」——单位与上限由宿主判（别在浏览器侧复制一套
+ * 会漂的规则），这里挡的是**形状不对**：那种窗口发出去要么被宿主打回，要么更坏——被当成
+ * 「没给窗口」兜底成最近 15 分钟，于是界面写着「自定义」而查的是别的时段（D04 那一类）。
+ */
+export function windowProblem(window) {
+  if (window === null || window === undefined || typeof window !== 'object') return 'badWindow'
+  if (!Number.isFinite(window.from) || !Number.isFinite(window.to)) return 'badWindow'
+  return window.to > window.from ? '' : 'badWindow'
+}
+
+/**
+ * 点直方图某一根柱 → 这一步把时间窗夹到那一档，返回**新草稿**（窗口变了，筛选与查询串不动）。
+ *
+ * **为什么窗口住在草稿里（`draft.window`）而不是另存一份组件状态**（2026-10-15 修）：
+ * 面板的查询一律经 `runQuery(append, override)` 发出去，`override` 是「这一次要用哪份草稿」
+ * ——下钻、去筛选都靠它绕开「`setState` 要到下一次渲染才生效」。窗口若另存一份状态，点柱子
+ * 那一枪读到的就还是**上一轮的窗口**（`preset` 已写成 `custom`，发出去的却是旧窗口），
+ * 那正是 D04 那一类「说的和查的不是一件事」。放进草稿后，窗口与筛选、查询串一起被同一条
+ * override 线带着走，**没有第二种传法**。
+ *
+ * 为什么还要一个「自定义」预设键（`custom`）：下拉显示的值必须与**真正会用的那一项**逐字相同。
+ * 若沿用旧键（点 15 分钟里的一根柱，下拉还写着「最近 1 小时」），界面就在谎报。所以放大这一步
+ * 显式落在 `custom` 上，而那一档的文案由界面按真实范围现算（见 index.js 的 `windowLabel`）。
+ *
+ * 下限（`ZOOM_MIN_MS`）是判据，不是装饰：一根柱 = 一个分桶档位（10 秒档就是 10 秒），
+ * 点它夹出来的窗口可能只有 10 秒——宿主侧多数来源有窗口下限，而 10 秒窗在日志里
+ * 通常一行都没有，界面上只会看到「没有命中」而看不出「你把窗缩得太小了」。
+ * 夹到下限时如实说 `clamped: true`，界面要在那一行上讲出来（又是一处不许静默的收窄）。
+ *
+ * @param draft 当前草稿（只读它的 preset / filters / q，窗口由参数给）
+ * @param barTs 这一根柱代表的桶起点（epoch 毫秒）
+ * @param barStepMs 这一根柱的宽度（分桶档位，见 histogramInterval）
+ * @returns `{ query, clamped }`；入参不对时回 `null`（界面不发请求）
+ */
+export function zoomToBar(draft, barTs, barStepMs) {
+  if (draft === null || draft === undefined) return null
+  const ts = Number(barTs)
+  const step = Number(barStepMs)
+  if (!Number.isFinite(ts) || !Number.isFinite(step) || step <= 0) return null
+  const raw = { from: ts, to: ts + step }
+  const clampedFrom = raw.to - raw.from < ZOOM_MIN_MS ? raw.to - ZOOM_MIN_MS : raw.from
+  const window = { from: clampedFrom, to: raw.to }
+  return {
+    query: { ...draft, preset: 'custom', window },
+    clamped: clampedFrom !== raw.from,
+  }
 }
 
 /**
  * 表单能不能提交：空串表示可以，否则是 i18n 键名后缀。
  *
- * 这里只校验**面板自己知道的事**（选没选来源、条数是不是正整数）；时间戳单位、窗口上限、
- * limit 夹取都由宿主判，并且会以原话回给面板显示——**不要在浏览器侧复制一套会漂的规则**。
+ * 这里只校验**面板自己知道的事**（选没选来源、条数是不是正整数、自定义窗口的形状）；时间戳
+ * 单位、窗口上限、limit 夹取都由宿主判，并且会以原话回给面板显示——**不要在浏览器侧复制一套
+ * 会漂的规则**。
+ *
+ * `custom` 档**必须**带一段能用的窗口：缺了它不该静默落回 1 小时（那会让「说的窗口」与
+ * 「查的窗口」变成两件事），所以在这里挡下、由界面说清（`error.badWindow`）。
  */
 export function queryProblem(draft, targetCount) {
   const chosen = String(draft.target == null ? '' : draft.target).trim()
   if (chosen === '' && targetCount !== 1) return 'needTarget'
   const limit = Number(draft.limit)
   if (!Number.isInteger(limit) || limit < 1) return 'badLimit'
+  if (String(draft.preset == null ? '' : draft.preset) === 'custom' && windowProblem(draft.window) !== '') return 'badWindow'
   return ''
 }
 
-/** 提交载荷：面板只传来源 id / 查询串 / 时间窗 / 条数（游标由「下一页」单独带）。 */
+/**
+ * 提交载荷：面板只传来源 id / 查询串 / 时间窗 / 条数（游标由「下一页」单独带）。
+ *
+ * `custom` 档（直方图上点一根柱放大到那一档）不是「一个预设」而是**一段明确的时间范围**，
+ * 它由草稿自带的 `window` 给（见 `zoomToBar`）；**不能塞回 `windowRange` 猜**。少了这一支，
+ * 点柱子只会把下拉显示成「自定义」，真正发出去的却还是整个旧窗口——「说的与查的不是一件事」。
+ *
+ * 窗口不合法时**回落预设档**（而不是发一段畸形的）：这条回落是给「调用方绕过了
+ * `queryProblem`」兜底的，正常路径上 `custom` 缺窗口会在那一层就被挡下。
+ */
 export function queryPayload(draft, targets, nowMs) {
-  const range = windowRange(draft.preset, nowMs)
+  const preset = String(draft == null || draft.preset == null ? '' : draft.preset)
+  const custom = draft == null ? undefined : draft.window
+  const range = preset === 'custom' && windowProblem(custom) === ''
+    ? { from: custom.from, to: custom.to }
+    : windowRange(preset, nowMs)
   const chosen = String(draft.target == null ? '' : draft.target).trim()
   const fallback = Array.isArray(targets) && targets.length === 1 ? targets[0].id : ''
   const payload = {
@@ -159,6 +303,9 @@ export function queryPayload(draft, targets, nowMs) {
   // 别让一次「顺手加个字段」把已有调用方的请求体也改了。
   const filters = filtersOf(draft.filters)
   if (filters !== undefined) payload.filters = filters
+  // 同理：不限级别时**不带这个键**（收成枚举值之后仍为空 = 不限，见 levelFilterOf）
+  const level = levelFilterOf(draft)
+  if (level !== '') payload.level = level
   return payload
 }
 
@@ -242,6 +389,95 @@ export function filtersOf(list) {
     out[String(row.field)] = String(row.value)
   }
   return Object.keys(out).length === 0 ? undefined : out
+}
+
+/* ============================ 行上的标签（P6 第六刀） ============================ */
+
+/*
+ * 行的 `labels` / `raw` **早就随 `/query` 响应回来了**（`SearchOutcome.lines` 直接透传），面板却一行
+ * 都没渲染——于是「这行是谁写的」（`container.name` / `host.name` / `log.file.path`）在卡片里根本
+ * 看不到，想按它筛还得先去填「分组字段」再看榜，三步。这一节把「行上该摆哪几个标签、摆成什么样」
+ * 的判据从组件闭包里拿出来（规矩 ②：要判对错的逻辑留在闭包里等于没有测试入口）。
+ */
+
+/** 行上直接摆出来的标签最多几个（其余的收进悬停的 title 里）。 */
+export const ROW_LABEL_MAX = 3
+
+/** 单个标签值在行上显示的长度上限（与 `src/line.ts` 的 `LABEL_VALUE_MAX` 同一口径，多留 40 给省略号）。 */
+export const ROW_LABEL_VALUE_MAX = 160
+
+/**
+ * 一行上直接摆哪几个标签：**按宿主给的顺序取前 N 个**。
+ *
+ * 为什么不自己挑（比如挑最短的、或挑「看起来像身份」的）：顺序**已经是判据**——`src/line.ts` 的
+ * `LABEL_PRIORITY` 已经把它排成「排查时先问什么」（容器 → 机器 → 服务 → 文件 → 流），`flattenLabels`
+ * 就是按这个顺序装进 `labels` 的。这里再挑一次就是第二份会漂的判据（一边说容器名最先，一边把它藏起来）。
+ *
+ * 空值的键**不摆**（没有值的标签占了行上的位子，反而把有值的挤掉）；值按 `ROW_LABEL_VALUE_MAX` 截断
+ * ——`raw` 里永远有全文，行上不该被一段堆栈撑爆。
+ */
+export function rowLabels(line, max) {
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : ROW_LABEL_MAX
+  const labels = line === null || line === undefined || typeof line !== 'object' ? undefined : line.labels
+  if (labels === null || typeof labels !== 'object') return []
+  const rows = []
+  for (const [key, value] of Object.entries(labels)) {
+    if (rows.length >= limit) break
+    const text = String(value == null ? '' : value)
+    // 空串不是「有值」：摆一个 `host.name=` 只是占位（与 `filterProblem` 挡空值是同一条）
+    if (text === '') continue
+    rows.push({
+      field: String(key),
+      value: text,
+      // 截断要**看得出来**（`…`）：行上只显示前面一段时必须说明后面还有
+      display: text.length > ROW_LABEL_VALUE_MAX ? text.slice(0, ROW_LABEL_VALUE_MAX) + '…' : text,
+    })
+  }
+  return rows
+}
+
+/**
+ * 这一行有没有「还有标签没摆出来」（摆不下的那些只在悬停里看得到）。
+ *
+ * 数的口径必须与 `rowLabels` **逐字一致**：只数**有值的**。空值那些本来就不该占位——
+ * 把它们算进来，行尾就会写「还有 2 个」，而点开悬停只有两行空值，那句话就成了假的。
+ */
+export function rowLabelOverflow(line, max) {
+  const labels = line === null || line === undefined || typeof line.labels !== 'object' || line.labels === null ? {} : line.labels
+  const withValue = Object.values(labels).filter((value) => String(value == null ? '' : value) !== '').length
+  return Math.max(withValue - rowLabels(line, max).length, 0)
+}
+
+/**
+ * 行的悬停文案：时间 + 级别（**推断出来的标出来**）+ 全部标签 + 原文。
+ *
+ * `levelInferred` 必须写出来：`level` 是筛选项，「文档说它是 error」与「我从正文看着像 error」是两种
+ * 可信度（`src/backends/types.ts` 对这一位有专门的口径）。界面拿这个 level 筛之前有权知道是哪种。
+ */
+export function lineTitle(line) {
+  if (line === null || line === undefined || typeof line !== 'object') return ''
+  const parts = []
+  const ts = Number(line.ts)
+  parts.push(Number.isFinite(ts) ? new Date(ts).toLocaleString() : '')
+  if (typeof line.level === 'string' && line.level !== '') {
+    parts.push(line.level + (line.levelInferred === true ? '（从正文推断）' : ''))
+  }
+  const labels = line.labels === null || typeof line.labels !== 'object' || line.labels === undefined ? {} : line.labels
+  for (const [key, value] of Object.entries(labels)) parts.push(key + ' = ' + String(value == null ? '' : value))
+  const raw = String(line.raw == null ? '' : line.raw)
+  if (raw !== '') parts.push('', raw)
+  return parts.join('\n')
+}
+
+/**
+ * 行上的标签值能不能直接变成一条筛选（不能则回 i18n 键名后缀，界面据此不给那个按钮）。
+ *
+ * 判据就是 `filterProblem` 那一条：**值不做 trim**（`log.level` 的值可能是 `"ERROR "`，键名里那个
+ * 空格是内容的一部分——裁掉就静默筛不到东西），空值表达不了「字段缺失」。
+ */
+export function rowFilterProblem(label) {
+  if (label === null || label === undefined || typeof label !== 'object') return 'needFilterField'
+  return filterProblem(label.field, label.value)
 }
 
 /** 追加一页：按 id 去重（同一份快照翻页不该出现重复行；真出现也先挡住）。 */
@@ -446,6 +682,15 @@ export function fieldChoices(fields, typed) {
     const name = String(item.name == null ? '' : item.name)
     if (name === '') continue
     if (needle !== '' && name.toLowerCase().indexOf(needle) === -1) continue
+    /*
+     * **冲突信息要一路带到行上**（宿主标了 `conflict: true` 的那些字段：同名在不同索引里类型不一致，
+     * 拿它分组可能只覆盖一部分索引）。只在真有信息时才加这两个键——普通候选照旧是 `{ name }`，
+     * 免得每一行都挂一对空字段（也让「加了什么」这件事在用例里一眼看得出来）。
+     */
+    if (item.conflict === true) {
+      rows.push({ name, conflict: true, esTypes: Array.isArray(item.esTypes) ? item.esTypes.map((type) => String(type)) : [] })
+      continue
+    }
     rows.push({ name })
   }
   return rows
@@ -525,6 +770,56 @@ export function groupBars(buckets) {
 }
 
 /* ============================ Docker 目标（P6 面板半格，选项 0） ============================ */
+
+/**
+ * 「这份容器清单属于谁」的缓存键：loglens 来源 id + Docker 目标名（空串 = 让 Docker 面板自己回落）。
+ *
+ * 为什么要有键（2026-10-14 面板改成**自动拉**容器，不再有点按钮那一步）：自动拉必须自己回答
+ * 「现在这份清单还算不算数」——换来源、换 Docker 目标都要重拉（不同机器上的容器当然不一样），
+ * 同一个目标不能每渲染一次就拉一次。缓存与在途判据都按它比（配合 `fieldFetchNeeded` 那条「不同才拉」）。
+ * 拿不到 id（还没选来源）回空串：**空键永远不算「已缓存」**，也就不会有请求打出去。
+ */
+export function containersKey(draft) {
+  if (draft === null || draft === undefined) return ''
+  const id = String(draft.id == null ? '' : draft.id)
+  if (id === '') return ''
+  return id + '|' + String(draft.dockerTarget == null ? '' : draft.dockerTarget)
+}
+
+/**
+ * 容器下拉**第一项**（那个空 value 的占位项）现在该说哪一种状态。
+ *
+ * 真机（2026-10-14）：选中 Docker 来源之后要好几秒才拿到清单（走 SSH 的目标 7 秒），这段时间下拉里
+ * 写的是「容器」——看起来就是一个没人碰过的空下拉，看不出**是在拉、还是拉空了、还是拉挂了**。
+ * 三种「还没有选项」都得说清是哪一种，这就是这一格的全部职责。
+ *
+ * 优先级：**有清单 > 失败 > 在途 > 空清单**。
+ *
+ * - **有清单一律回默认**：那一刻显示哪一项由 `<select value>` 决定，占位项只在没选中时露出来。
+ *   重拉（换目标 / 点「刷新」）时旧清单还摆在眼前，把占位项改成「加载中…」等于替用户扔掉看得见的东西。
+ * - **失败要压在「在途」前面**：失败时**故意不写缓存**（见 `loadContainers` 的 catch），于是
+ *   `pending` 在失败之后**一直为真**——它说的是「这笔账还欠着」，不是「请求已经在路上」。
+ *   顺序放反，一次失败会让这一格永远写着「加载中…」。
+ * - **`available`（Docker 面板插件在不在）压过一切**：插件不在时那个请求根本发不出去
+ *   （`loadContainers` 一进门就 return），写「加载中…」就是一句永远不落地的谎；此刻这一格是灰的，
+ *   下面那句 hint 才是解释的人。
+ *
+ * 返回的是**状态名**而不是文案：pure 层不认识 i18n（文案在 index.js 里查表），也就不存在
+ * 「在没有 locale 的老宿主上漏出一串键名」这回事。
+ *
+ * @param {{available?: boolean, pending?: boolean, busy?: boolean, error?: string, count?: number}} options
+ *   `pending` = 这个键还没拿到清单（用 `fieldFetchNeeded(containersSource, containersKey(draft))` 算）；
+ *   它比 `busy` 早一帧为真——effect 还没跑的那一帧就已经是「在拉」了，靠它才不会先闪一下「没有容器」。
+ * @returns {'default' | 'loading' | 'error' | 'empty'}
+ */
+export function containerSlotState(options) {
+  const source = options === undefined || options === null ? {} : options
+  if (source.available !== true) return 'default'
+  if (Number.isFinite(source.count) && source.count > 0) return 'default'
+  if (typeof source.error === 'string' && source.error !== '') return 'error'
+  if (source.busy === true || source.pending === true) return 'loading'
+  return 'empty'
+}
 
 /** Docker 面板那条路径的 since 取值：直接复用时间窗预设（docker --since 认 15m / 1h 这类写法）。 */
 export function dockerSince(preset) {

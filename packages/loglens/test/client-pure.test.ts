@@ -29,14 +29,28 @@ import {
   queryPayload,
   queryProblem,
   supportsAggregation,
+  windowChoices,
   windowOptions,
+  windowProblem,
   windowRange,
+  zoomToBar,
   dockerFlagOf,
   dockerLogLines,
   dockerProblem,
   dockerLogTextOf,
   dockerSince,
   dockerTargetChoices,
+  containersKey,
+  containerSlotState,
+  levelChoices,
+  levelFiltered,
+  levelFilterOf,
+  lineTitle,
+  ROW_LABEL_MAX,
+  ROW_LABEL_VALUE_MAX,
+  rowFilterProblem,
+  rowLabelOverflow,
+  rowLabels,
 } from '../client-src/pure.js'
 
 describe('draft 形状', () => {
@@ -118,7 +132,7 @@ describe('查询表单（P6 面板侧）', () => {
   })
 
   it('新草稿是「最近 1 小时 / 100 条」，且没有筛选', () => {
-    expect(emptyQuery()).toEqual({ target: '', q: '', preset: '1h', limit: 100, filters: [] })
+    expect(emptyQuery()).toEqual({ target: '', q: '', preset: '1h', limit: 100, filters: [], level: '' })
   })
 
   it('必填项：多来源时必须选一个；条数必须是正整数', () => {
@@ -128,6 +142,78 @@ describe('查询表单（P6 面板侧）', () => {
     expect(queryProblem({ target: 'a', limit: 0 }, 1)).toBe('badLimit')
     expect(queryProblem({ target: 'a', limit: 1.5 }, 1)).toBe('badLimit')
     expect(queryProblem({ target: 'a', limit: 'many' }, 1)).toBe('badLimit')
+  })
+
+  it('custom 档必须带一段能用的窗口：缺了它不静默落回预设（那会让「说的窗口」与「查的窗口」变成两件事）', () => {
+    const ok = { target: 'a', limit: 10, preset: 'custom', window: { from: 100, to: 200 } }
+    expect(queryProblem(ok, 1)).toBe('')
+    // 缺 window / 形状不对 / 空窗 / 反向窗：四种都在这里挡下，由界面说清（error.badWindow）
+    for (const broken of [undefined, null, {}, { from: 1 }, { from: 'a', to: 'b' }, { from: 200, to: 100 }, { from: 5, to: 5 }]) {
+      expect(queryProblem({ target: 'a', limit: 10, preset: 'custom', window: broken }, 1), JSON.stringify(broken)).toBe('badWindow')
+    }
+    // 非 custom 档不看窗口：预设档本来就没有这一段（空 window 不该把它打回）
+    expect(queryProblem({ target: 'a', limit: 10, preset: '1h' }, 1)).toBe('')
+    expect(queryProblem({ target: 'a', limit: 10, preset: '1h', window: undefined }, 1)).toBe('')
+  })
+
+  it('下拉里实际要摆的档：预设四档；custom **只在自己被选中时**补进去', () => {
+    expect(windowChoices('1h')).toEqual(['15m', '1h', '6h', '24h'])
+    expect(windowChoices(undefined)).toEqual(['15m', '1h', '6h', '24h'])
+    // 少了它浏览器会回落显示第一项（下拉写着「最近 15 分钟」而查的是自定义段）——loglens D04 那个坑
+    expect(windowChoices('custom')).toEqual(['15m', '1h', '6h', '24h', 'custom'])
+  })
+
+  it('点柱放大：窗口**落进草稿**（preset=custom + window），筛选与查询串原样不动', () => {
+    const draft = { target: 'es', q: 'level:error', preset: '1h', limit: 50, filters: [{ field: 'a', value: 'b' }] }
+    const zoomed = zoomToBar(draft, 1_000_000, 60_000)
+    expect(zoomed.clamped).toBe(false)
+    expect(zoomed.query).toEqual({
+      target: 'es',
+      q: 'level:error',
+      limit: 50,
+      filters: [{ field: 'a', value: 'b' }],
+      preset: 'custom',
+      window: { from: 1_000_000, to: 1_060_000 },
+    })
+    // 原草稿不被改（纯函数；界面靠新对象触发重渲染）
+    expect(draft.preset).toBe('1h')
+    expect('window' in draft).toBe(false)
+  })
+
+  it('点柱放大：比下限还窄的档夹到 1 分钟，并**如实说 clamped**（不许静默收窄）', () => {
+    // 10 秒档（HISTOGRAM_STEPS 最细那一档）：点它夹出来的窗只有 10 秒
+    const zoomed = zoomToBar({ target: 'es', q: '', preset: '15m', limit: 100, filters: [] }, 5_000_000, 10_000)
+    expect(zoomed.clamped).toBe(true)
+    expect(zoomed.query.window).toEqual({ from: 5_000_000 - (60_000 - 10_000), to: 5_010_000 })
+    expect(zoomed.query.window.to - zoomed.query.window.from).toBe(60_000)
+    // 恰好 1 分钟不算被夹（边界不是「小于等于」）
+    expect(zoomToBar({ target: 'es', q: '', preset: '1h', limit: 1, filters: [] }, 0, 60_000).clamped).toBe(false)
+  })
+
+  it('点柱放大：垃圾入参回 null（界面据此不发请求），别造一段畸形的窗口', () => {
+    const draft = { target: 'es', q: '', preset: '1h', limit: 100, filters: [] }
+    // 草稿本身缺席（还没进卡片就点到了柱子）：这一支回 null
+    for (const bad of [undefined, null]) expect(zoomToBar(bad, 0, 1000)).toBeNull()
+    // 柱子的坐标 / 宽度不是数、宽度非正：一律不发请求
+    expect(zoomToBar(draft, Number.NaN, 1000)).toBeNull()
+    expect(zoomToBar(draft, 0, 0)).toBeNull()
+    expect(zoomToBar(draft, 0, -5)).toBeNull()
+    expect(zoomToBar(draft, 0, Number.NaN)).toBeNull()
+  })
+
+  it('载荷：custom 档用**草稿自带的那一段**，不是从「现在」倒推的预设窗', () => {
+    const targets = [{ id: 'es' }]
+    const draft = { target: 'es', q: '', preset: 'custom', limit: 20, window: { from: 1_000, to: 2_000 } }
+    // nowMs 给一个完全不相干的值：它只对预设档有意义（这段窗口是绝对的）
+    expect(queryPayload(draft, targets, 9_999_999)).toEqual({ target: 'es', q: '', from: 1_000, to: 2_000, limit: 20 })
+  })
+
+  it('载荷：custom 但窗口不合法时回落预设档——那是**兜底**（正常路径上 queryProblem 已经挡下）', () => {
+    const targets = [{ id: 'es' }]
+    for (const broken of [undefined, {}, { from: 200, to: 100 }]) {
+      const payload = queryPayload({ target: 'es', q: '', preset: 'custom', limit: 20, window: broken }, targets, 1000)
+      expect(payload).toEqual({ target: 'es', q: '', from: 1000 - 60 * 60 * 1000, to: 1000, limit: 20 })
+    }
   })
 
   it('载荷：只有一个来源时补上它的 id；查询串原样传（不 trim 掉用户想查的空格语义）', () => {
@@ -198,6 +284,69 @@ describe('dockerFlagOf：缺字段时保留上一次的判断', () => {
     expect(dockerFlagOf(true, { ok: true, config: {} })).toBe(true)
     expect(dockerFlagOf(false, undefined)).toBe(false)
     expect(dockerFlagOf(true, { plugins: 'nope' })).toBe(true)
+  })
+})
+
+describe('containersKey：这份容器清单属于谁（自动拉的缓存键）', () => {
+  it('来源 id + Docker 目标名；同一个目标两次算同一个键', () => {
+    expect(containersKey({ id: 'target', kind: 'docker', dockerTarget: '目标2' })).toBe('target|目标2')
+    expect(containersKey({ id: 'target', kind: 'docker', dockerTarget: '目标2' })).toBe(containersKey({ id: 'target', dockerTarget: '目标2' }))
+  })
+
+  it('换目标 / 换来源都是不同的键（容器清单跟着目标走，必须重拉）', () => {
+    expect(containersKey({ id: 'target', dockerTarget: '目标2' })).not.toBe(containersKey({ id: 'target', dockerTarget: 'local' }))
+    expect(containersKey({ id: 'target', dockerTarget: '目标2' })).not.toBe(containersKey({ id: 'other', dockerTarget: '目标2' }))
+  })
+
+  it('目标留空（让 Docker 面板自己回落）也算一个确定的键，空串与缺字段同形', () => {
+    expect(containersKey({ id: 'target', dockerTarget: '' })).toBe('target|')
+    expect(containersKey({ id: 'target' })).toBe('target|')
+    expect(containersKey({ id: 'target', dockerTarget: null })).toBe('target|')
+  })
+
+  it('还没选来源就没有键（空键永远不算「已缓存」，也就不会发请求）', () => {
+    expect(containersKey({ dockerTarget: '目标2' })).toBe('')
+    expect(containersKey({ id: '' })).toBe('')
+    expect(containersKey(undefined)).toBe('')
+    expect(containersKey(null)).toBe('')
+  })
+})
+
+describe('containerSlotState：容器下拉第一项此刻该说哪一种状态', () => {
+  const base = { available: true, pending: true, busy: true, error: '', count: 0 }
+
+  it('清单到手就回默认：显示哪一项交给 <select value>，占位项只在没选中时露出来', () => {
+    expect(containerSlotState({ ...base, count: 2 })).toBe('default')
+    // 有清单时**连错误都要让位**：上一次失败之后又拉成功了，眼前这份是好的（不许还写着「加载失败」）
+    expect(containerSlotState({ ...base, count: 2, error: 'boom' })).toBe('default')
+  })
+
+  it('还没到手：失败 > 在途 > 空清单', () => {
+    expect(containerSlotState(base)).toBe('loading')
+    expect(containerSlotState({ ...base, busy: false })).toBe('loading')
+    // pending 单独也够（effect 还没跑的那一帧就该是「在拉」，不许先闪一下「没有容器」）
+    expect(containerSlotState({ available: true, pending: true, count: 0 })).toBe('loading')
+    expect(containerSlotState({ available: true, pending: false, busy: false, count: 0 })).toBe('empty')
+  })
+
+  it('失败压在「在途」前面：失败不写缓存，pending 会一直为真——顺序反了就永远写着「加载中…」', () => {
+    // 这就是 loadContainers 失败之后那一帧的真实入参：busy 已经落回 false，但缓存没写、pending 仍是真
+    expect(containerSlotState({ available: true, pending: true, busy: false, error: '容器清单取不到：boom', count: 0 })).toBe('error')
+  })
+
+  it('Docker 面板插件不在时回默认：请求根本发不出去，写「加载中…」就是永远不落地的谎', () => {
+    expect(containerSlotState({ ...base, available: false })).toBe('default')
+    expect(containerSlotState({ available: false, pending: true, error: 'boom' })).toBe('default')
+  })
+
+  it('缺参数 / 垃圾入参不炸（这个函数每一帧都被调用）', () => {
+    expect(containerSlotState(undefined)).toBe('default')
+    expect(containerSlotState(null)).toBe('default')
+    expect(containerSlotState({})).toBe('default')
+    // count 不是有限数就当没有清单（`NaN` / 字符串都不算「有」）
+    expect(containerSlotState({ available: true, pending: true, count: Number.NaN })).toBe('loading')
+    expect(containerSlotState({ available: true, pending: true, count: '3' })).toBe('loading')
+    expect(containerSlotState({ available: true, error: 5 })).toBe('empty')
   })
 })
 
@@ -502,6 +651,26 @@ describe('字段候选（分组字段那一格的浮层）', () => {
     expect(fieldChoices([null, { name: '' }, { name: 'ok' }, {}], '')).toEqual([{ name: 'ok' }])
   })
 
+  it('冲突字段把冲突信息带到行上（宿主标了 conflict 的）；普通候选照旧只有 name', () => {
+    // 宿主回的 conflict 是 ES 侧「同名在不同索引里类型不一致」的判据，行上要标出来——
+    // 字段候选这一层是唯一能把这句话带到界面的地方（面板不自己去读 _field_caps）
+    const mixed = [
+      { name: 'host.name' },
+      { name: 'container.labels.x', conflict: true, esTypes: ['date', 'text'] },
+      { name: 'container.labels.y', conflict: true },
+    ]
+    expect(fieldChoices(mixed, '')).toEqual([
+      { name: 'host.name' },
+      { name: 'container.labels.x', conflict: true, esTypes: ['date', 'text'] },
+      { name: 'container.labels.y', conflict: true, esTypes: [] },
+    ])
+    // 冲突标记不参与过滤：按名字筛，该命中还是命中
+    expect(fieldChoices(mixed, 'labels')).toEqual([
+      { name: 'container.labels.x', conflict: true, esTypes: ['date', 'text'] },
+      { name: 'container.labels.y', conflict: true, esTypes: [] },
+    ])
+  })
+
   it('当前那一行上下挪：**到头就停**（不绕回），空列表明明说是 0', () => {
     expect(pickMove(0, 1, 3)).toBe(1)
     expect(pickMove(1, -1, 3)).toBe(0)
@@ -611,5 +780,137 @@ describe('结构化筛选（点桶下钻）', () => {
     })
     // 没有筛选时聚合载荷跟从前一样**不带这个键**
     expect('filters' in histogramPayload({ q: '' }, outcome, '1m')).toBe(false)
+  })
+})
+
+describe('级别筛选（宿主既有入参，页内筛）', () => {
+  it('下拉是「不限 + 六档」，顺序与宿主的 CANONICAL_LEVELS 逐字一致', () => {
+    // 对偶关系：src/line.ts 的 CANONICAL_LEVELS 是宿主的真相源，这里是浏览器侧那一份。
+    // 两边漂了不会编译报错（浏览器半体引不了宿主模块），只会让某一档在界面上消失。
+    expect(levelChoices()).toEqual(['', 'trace', 'debug', 'info', 'warn', 'error', 'fatal'])
+  })
+
+  it('levelFilterOf 只认那六档：空 / 不认识 / 大小写 / 垃圾一律当「不限」', () => {
+    expect(levelFilterOf({ level: 'error' })).toBe('error')
+    // 大小写与空白收进来（用户可见的值只有下拉能给，但草稿也可能从别处来）
+    expect(levelFilterOf({ level: ' ERROR ' })).toBe('error')
+    // **不认识 = 不限**：直接把草稿值塞进载荷会被宿主打回（level 是枚举），
+    // 整次查询变成错误；「不下发」比「发一个必被打回的值」好
+    expect(levelFilterOf({ level: 'critical' })).toBe('')
+    expect(levelFilterOf({ level: 'info; DROP' })).toBe('')
+    expect(levelFilterOf({ level: '' })).toBe('')
+    expect(levelFilterOf({})).toBe('')
+    expect(levelFilterOf(undefined)).toBe('')
+    expect(levelFilterOf(null)).toBe('')
+    expect(levelFilterOf({ level: 42 })).toBe('')
+  })
+
+  it('levelFiltered 与「载荷里带不带 level」同真同假（界面那句边界声明就靠它）', () => {
+    expect(levelFiltered({ level: 'warn' })).toBe(true)
+    expect(levelFiltered({ level: '' })).toBe(false)
+    expect(levelFiltered({ level: 'critical' })).toBe(false)
+    expect(levelFiltered({})).toBe(false)
+  })
+
+  it('载荷：不限级别时**不带这个键**（线上形状与加它之前逐字节一致）', () => {
+    const targets = [{ id: 'es' }]
+    const none = queryPayload({ target: 'es', q: '', preset: '1h', limit: 20, level: '' }, targets, 0)
+    expect('level' in none).toBe(false)
+    expect('level' in queryPayload({ target: 'es', q: '', preset: '1h', limit: 20 }, targets, 0)).toBe(false)
+    // 垃圾值也不带（收成「不限」之后仍是空）
+    expect('level' in queryPayload({ target: 'es', q: '', preset: '1h', limit: 20, level: 'nope' }, targets, 0)).toBe(false)
+  })
+
+  it('载荷：选了档就原样下发（宿主 readLevel 认这六档）', () => {
+    const targets = [{ id: 'es' }]
+    const payload = queryPayload({ target: 'es', q: 'x', preset: '15m', limit: 50, level: 'error' }, targets, 0)
+    expect(payload.level).toBe('error')
+    // 与筛选、窗口共存（三者都是「这一次查的是哪个子集」，一次请求一起发）
+    const both = queryPayload({
+      target: 'es', q: '', preset: '1h', limit: 20, level: 'fatal', filters: [{ field: 'a', value: 'b' }],
+    }, targets, 0)
+    expect(both.level).toBe('fatal')
+    expect(both.filters).toEqual({ a: 'b' })
+  })
+})
+
+describe('行上的标签（谁写的）', () => {
+  const line = {
+    ts: 1_700_000_000_000,
+    level: 'error',
+    levelInferred: true,
+    message: 'boom',
+    source: '0',
+    labels: { 'container.name': 'app-1', 'host.name': 'node-7', 'log.file.path': '/var/log/app.log', 'stream': 'stderr', 'kubernetes.pod.name': 'app-1-abc' },
+    raw: '{"message":"boom"}',
+    id: '0:0',
+  }
+
+  it('按**宿主给的顺序**取前 3 个（顺序已是判据，不在这里重挑）', () => {
+    expect(rowLabels(line, ROW_LABEL_MAX).map((row) => row.field)).toEqual([
+      'container.name', 'host.name', 'log.file.path',
+    ])
+    // max 可调（界面上是常量，用例给 2 验它真的按参数走）
+    expect(rowLabels(line, 2).map((row) => row.field)).toEqual(['container.name', 'host.name'])
+  })
+
+  it('空值不摆（没有值的标签占位，会把有值的挤掉）', () => {
+    const sparse = { labels: { 'container.name': '', 'host.name': 'node-7', 'stream': 'stdout' } }
+    expect(rowLabels(sparse, 3).map((row) => row.field)).toEqual(['host.name', 'stream'])
+  })
+
+  it('超长值截断并带省略号（后面的还有——原文永远在 raw / 悬停里）', () => {
+    const long = 'x'.repeat(ROW_LABEL_VALUE_MAX + 50)
+    const [row] = rowLabels({ labels: { 'stack.trace': long } }, 1)
+    expect(row.display.length).toBe(ROW_LABEL_VALUE_MAX + 1)
+    expect(row.display.endsWith('…')).toBe(true)
+    // **值本身不截**：下发给筛选的必须是原值（截过的值筛不到东西——与 filterProblem 不 trim 同一条）
+    expect(row.value).toBe(long)
+    expect(rowFilterProblem(row)).toBe('')
+  })
+
+  it('垃圾入参不炸：没有 labels / labels 不是对象 / line 本身缺席', () => {
+    expect(rowLabels(undefined, 3)).toEqual([])
+    expect(rowLabels(null, 3)).toEqual([])
+    expect(rowLabels({}, 3)).toEqual([])
+    expect(rowLabels({ labels: 'nope' }, 3)).toEqual([])
+    expect(rowLabels({ labels: null }, 3)).toEqual([])
+    // max 垃圾时回默认 3（它每一行都被调用，不许抛）
+    expect(rowLabels(line, 0).length).toBe(3)
+    expect(rowLabels(line, Number.NaN).length).toBe(3)
+  })
+
+  it('rowLabelOverflow 报「还有几个没摆出来」（0 = 全摆下了）', () => {
+    expect(rowLabelOverflow(line, 3)).toBe(2)
+    expect(rowLabelOverflow(line, 5)).toBe(0)
+    // 空值的那些不算「没摆出来」——它们本来就不该占位（否则悬停说「还有 2 个」而点开只有空值）
+    expect(rowLabelOverflow({ labels: { a: '', b: '', c: 'v' } }, 3)).toBe(0)
+    expect(rowLabelOverflow({}, 3)).toBe(0)
+    expect(rowLabelOverflow(undefined, 3)).toBe(0)
+  })
+
+  it('悬停文案：时间 + 级别（**推断出来的要标出来**）+ 全部标签 + 原文', () => {
+    const title = lineTitle(line)
+    expect(title).toContain('error（从正文推断）')
+    expect(title).toContain('container.name = app-1')
+    expect(title).toContain('kubernetes.pod.name = app-1-abc')   // 摆不下 3 个的那些也在悬停里
+    expect(title).toContain('{"message":"boom"}')
+    // 有级别但没推断 → 不标那句（两种可信度只有后者要写）
+    expect(lineTitle({ ts: 0, level: 'warn', labels: {}, raw: '' })).not.toContain('推断')
+    expect(lineTitle(undefined)).toBe('')
+  })
+
+  it('可点性判据就是 filterProblem 那条：空值不给入口（表达不了「字段缺失」）', () => {
+    expect(rowFilterProblem({ field: 'host.name', value: 'node-7' })).toBe('')
+    expect(rowFilterProblem({ field: 'host.name', value: '   ' })).toBe('needFilterValue')
+    expect(rowFilterProblem({ field: '', value: 'x' })).toBe('needFilterField')
+    expect(rowFilterProblem(undefined)).toBe('needFilterField')
+  })
+
+  it('**值不做 trim**（与芯片 / 下钻同一条）：空格是内容的一部分，裁掉就静默筛不到', () => {
+    const row = { field: 'log.level', value: 'ERROR ' }
+    expect(rowFilterProblem(row)).toBe('')
+    expect(rowLabels({ labels: { 'log.level': 'ERROR ' } }, 1)[0].value).toBe('ERROR ')
+    expect(rowLabels({ labels: { 'log.level': 'ERROR ' } }, 1)[0].display).toBe('ERROR ')
   })
 })

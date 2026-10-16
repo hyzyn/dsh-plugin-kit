@@ -190,6 +190,15 @@
 | **P5** | Docker 作为来源（**选项 0**，零新机制） | ✅ |
 | **P6** | Loki `tail`（`ws`）**已决定暂缓**（2026-10-12）；直方图与浏览器视图（**口径已拍板 = 选项 1**）**已落地**（2026-10-12）；面板的**按字段分组榜**（terms）**已落地**（2026-10-13，见文末）；design.md §5 | — |
 | **P7** | 需要**跨后端统一查询**时才申请宿主半体插件间服务 | — |
+| **P8-甲** | **工作台承载**：新增右侧栏标签挂载点（`sidebarRightTabs.register` + `sidebar.right.pane.tab`，key 用实现 id）+ guide 入口 + 卡片里一个「打开查询台」按钮；拿不到服务**安静退回卡片**。**零契约改动**，四条既有路由原样 | ✅ |
+| **P8-乙** | **左栏 + 结果表**：字段侧栏（「这一页命中」/「其余可用字段」/「有类型冲突」三分区，复用 `/fields`）+ 结果表列集与行展开（`labels` 表 + `raw`）。**零契约改动**（`raw` 与 `labels` 本就随响应回来）。**已提前落地一部分**（2026-10-16 的「面板第六刀」）：行上摆标签 + 悬停给全部标签与 `raw`；**列集与行展开还没做** | ✅ |
+| **P8-丙** | **查询栏收口**：绝对时间输入（复用宿主 `asTime` 的既有口径）+ 自动刷新（相对档随当前时刻重算、绝对档不跟）+ 筛选芯片两格（从行上取值加筛选 / 界面侧 mute）+ 直方图放大补「再点一次取消」+ localStorage 记忆（列集 / 间隔 / 最近查询）。**零契约改动**。**已提前落地一部分**（2026-10-16）：从行上取值加筛选（与点榜下钻同一个 `drillDown`）+ 级别下拉（复用宿主既有 `level`，页内筛已如实标注）；**自动刷新 / mute / 绝对时间输入 / 取消放大 / localStorage 还没做** | ✅ |
+| **P8-丁** | **要先问的一期**：`NormalizedQuery` 加 `sort`（服务端排序）、`FacetsSpec` 加 `min`/`max`/`cardinality`（字段统计的另一半）、`capabilities().queryLanguage` 分档到 ES\|QL（要 ES 8.11+ 真机）。**每处都要同步 `capabilities()` ↔ 实现的对账守卫** | ✅（**但做之前单独一轮确认 + 真机验收**） |
+
+**P8 的设计交底在 [design.md §9](./docs/design.md#9-查询工作台借-kibana-的核心不做-11-复刻)**——
+「借什么 / 不借什么 / 承载 / 契约影响 / 边界与失败模式 / 验收口径」都在那一节，**本表只放判据与落点**
+（不复制设计正文：复制即第二真相源）。P8-甲…丙 一条共同的前提：**零宿主改动**，
+全走既有 `/config` `/query` `/fields` `/facets` 与既有形状，新增的只有浏览器侧状态与 `pure.js` 纯函数。
 
 **P1 的前置**（2026-10-11 已定稿，见 [design.md §3.2 / §3.3](./docs/design.md) 的「P1 定稿」两段）：
 §3.3 的 `cursor_expired` 与 `hit_limit` 分家、`track_total_hits` 归适配器、Loki 顺序稳定性的保守退路
@@ -221,7 +230,8 @@
 4. ✅ **建包方式**：`packages/loglens/` 里已有当天新建的两份文档 → 先挪到 `/tmp`、跑 `create-plugin`、再挪回
    （两份文档内容一字未改；`pnpm aggregate` 与 `pnpm install --lockfile-only` 随后跑）。
 
-**仍未拍板 1 项**（落在 P7；5 与 6 都已拍板，保留原编号与结论）：
+**仍未拍板 2 项**（第 7 项落在 P7；第 8 项是 2026-10-15 新加的查询工作台前置。5 与 6 都已拍板，
+保留原编号与结论）：
 
 5. **私网语义** ✅ **已拍板（2026-10-11，常规做法）**：**连接面 = 你配置的来源**——回环 / 私网 / 公网
    一律放行，只有**链路本地 / 云元数据**被无条件拒绝（外加：只认 http(s)、不跟随重定向、解析后的 IP 判定、
@@ -233,6 +243,14 @@
    而选项 2 要抽的正是那件工作台、改的是 ~9200 行的客户端 bundle——**不是做不到，是不值得**；
    将来真要时按 docker 消费 `ttyTerminal` 那个现成形状反过来做即可（不需要新机制）。
 7. **宿主服务**：只在 P7 需要时再批（本仓第一条宿主半体插件间服务）。
+8. **查询工作台（P8）的三件事**（定于 2026-10-15，设计见 [design.md §9](./docs/design.md#9-查询工作台借-kibana-的核心不做-11-复刻)）：
+   ① **新增右侧栏标签挂载点**（`sidebarRightTabs.register` + `sidebar.right.pane.tab`）——跨包观感，
+   **老宿主 / 拿不到服务的回退路径要一起定**（我们的口径：卡片保留今天的查询区，行为一点不减）；
+   ② **改 [search/src/index.ts](../search/src/index.ts) 的 loglens 面板描述**（跨包一行；描述现在写着
+   「面板侧只有来源清单与开关」，工作台落地后过期，而 `panel-registry-names.test.ts` 只查 `registryName`、
+   **抓不到描述过期**）；③ **P8-丁 的契约改动**（`NormalizedQuery.sort` / 新聚合 / `queryLanguage` 分档到
+   ES\|QL）——单独一轮 + 真机验收，且每处都要同步 `capabilities()` ↔ 实现的对账守卫。
+   前两件在 P8-甲 / 乙 之前定；第三件是 P8-丁 的前置。
 
 ---
 
@@ -889,6 +907,10 @@ interval 形态与硬上限、无能力来源的指路）、`tier-gate.test.ts`�
 | 顺序：**常用筛选项排前面**（container.name / pod / host.name / service.name / log.file.path / log.level …），其余按字母 | `elastic.ts` 的 `PREFERRED_FIELDS` + `sortFieldNames`；被标 `preferred: true` |
 | 去掉 ES 内部字段（下划线开头：`_id` / `_index` 这类） | 同上，列之前过滤 |
 
+> **2026-10-14 修订**：上面那张表里的「上限」一栏**已被推翻**——默认不再截断（见文末
+> 「字段清单不再截断（对齐 Kibana 的长度处理）」）。当时那条反馈要的是**看得出被截断**，
+> 「所以砍到 80」是被读歪了的一步；顺序、去内部字段、去 `.keyword` 子行这三条仍然作数。
+
 **顺带修一句假话**：卡片的 `hint.notImplemented` 还写着「查询能力还没实现，这张卡片现在只管来源清单」——
 面板里早就有查询区了（P6 第二刀），工具也早就有了。改成「下面可以直接问当前来源；字段清单与上下文在
 agent 侧的两个工具里」。界面文案说的是**做不到什么**，说错了比不说更糟。
@@ -1447,3 +1469,345 @@ mtime（18:21:39）跑前跑后逐字一致）：
 `onClick` 是被分开调的，只有**真浏览器**才会一口气把两条都发出来。修法与用例都在：
 `client-smoke` 新增「一次点击（focus 与 click 两条路）只打一枪 /fields」（拆掉在途闩 → 红）。
 产物（截图 / DOM 快照）含内网标识，**移出仓库**到 `/tmp/loglens-open-20261013/`。
+
+> 上面那一节记的是 2026-10-13 那一刻的界面（不截断之前：候选 80 行、页脚是宿主那句截断警告）。
+> 要照现在的界面写用例，看下面这一节。
+
+### 字段清单不再截断（对齐 Kibana 的长度处理）（2026-10-14）
+
+维护者问「字段不放全是出于什么考虑的」，把 Kibana / Elasticsearch 的做法摆出来对比之后，指令是
+**「对齐 长度处理」**。查 Kibana 那一侧（`data_views` 的 `_field_caps` 通路）读到的口径是：
+
+| Kibana 侧 | 事实（读了它的源码与文档） |
+|---|---|
+| 请求 | `fieldCaps({ fields: ['*']（默认）, include_empty_fields: true, ignore_unavailable: true, … })`——要全量，还主动要「空字段」 |
+| 响应 | `readFieldCapsResponse` 里**没有 slice**：一条不漏地读成 `FieldDescriptor`；同名不同类型标 `type: 'conflict'` + `conflictDescriptions`；收尾剔掉 `object` / `nested` 容器行 |
+| 规模兜底 | 不是 Kibana 兜的，是 ES 的 `index.mapping.total_fields.limit`（默认 **1000** 个 mapper/索引，含 object 中间节点、`.keyword`、别名、runtime field） |
+| 界面 | 字段清单分 Selected / Available / Popular / Empty / Unmapped 区 + 字段名搜索 + 虚拟滚动；「空不空」是**数据侧**信号（来自命中样本），与映射清单分开 |
+| 它真截的地方 | 文档摘要（`discover:maxDocFieldsDisplayed`）超了会打 badge 告知（PR #119744，v8.1.0）——与我们的 `total` / `truncated` + warning 同一条判据 |
+
+**结论与落地**：`_field_caps` 从来不 slice，长度交给界面消化。我们这边对应的是
+「默认不截断 + 本地子串筛 + 滚动 + 把总数钉在页脚」——**只有调用方显式给 `limit` 才截**：
+
+| 动作 | 落点 |
+|---|---|
+| 不传 `limit` = 不截断（来源有多少列多少）；`limit` 退化成**可选的显式收窄**，正整数校验仍在、**硬上限取消** | `execute.ts` 的 `runFields`（删掉 `FIELDS_DEFAULT_LIMIT` / `FIELDS_MAX_LIMIT`） |
+| ES 适配器同样不 slice（`ES_DEFAULT_FIELD_LIMIT` / `ES_MAX_FIELD_LIMIT` 一并删掉）；顺序、去内部字段、去 `.keyword` 子行三条不变 | `elastic.ts` 的 `fields()` |
+| Loki 侧显式 `limit` 才截（形状与 ES 同）；`FieldsOptions` 的注释改为「不传 = 不截断（Kibana 同口径）」 | `loki.ts` / `types.ts` |
+| 工具面：描述里写明**默认全列**，并给出成本提示（通配全集群可能上千个字段、响应几十 KB，要窄自己传 `limit`） | `tools.ts` 的 `loglens_fields` |
+| 面板：依旧是**不传 limit**（拿全量）；页脚报**宿主的 `total`**「共 N 个字段」+「刷新」 | `client-src/index.js`（新键 `hint.fieldsCount`） |
+| 面板浮层改成**两段式**：候选那层自己滚（`.ll_pickScroll`），页脚在它外面钉住 | 同上；`.ll_pickFoot{flex:none}` |
+
+**为什么把页脚钉出来**：不截断之后候选可能有上百行（真机 102 行、滚动区 3468px）。页脚要是跟着滚，
+就得先滚到底才看得见「共 102 个字段」——那等于没报，正是这一格最怕的那类「看着像全的」。页脚钉住 +
+候选自滚，长度信息就不被长度本身埋掉（Kibana 把计数放在分区头上，是同一个判据）。
+
+**用例**：`elastic.test.ts` **+1**（120 个字段、不传 limit 全列、truncated 恒 false——谁把默认上限加回来就红）；
+`tools.test.ts` 那两条重写（不传 = 120 个全给且**无警告**；显式 `limit: 50` 才截、`total`/`truncated`/警告都在，
+`limit: 0` 与 `1.5` 仍拒绝）；`client-smoke` **+2**（页脚报宿主的 `total` 而不是本地行数、不截断时没有任何截断警告；
+宿主真报截断时照抄那句警告、且不再重复条数）+ 页脚两段式守卫（页脚/「刷新」不许落在 `.ll_pickScroll` 里）。
+
+**反例（拆掉判据必须变红，逐条实跑过）**：
+
+| 拆法 | 变红的用例 |
+|---|---|
+| ES 适配器装回「默认 80」 | `elastic.test.ts > 不传 limit 就是不截断：120 个字段全列` |
+| 执行层恢复「默认 80」 | `tools.test.ts > 不传 limit 就是不截断：120 个字段全给` |
+| 页脚改成本地清单长度（丢掉宿主的 `total`） | `client-smoke > 候选浮层页脚：报宿主给的字段总数` |
+| 页脚永远显示条数（吞掉宿主警告） | `client-smoke > 宿主真报截断时，照抄那句警告` |
+| 警告里去掉「去掉 limit 就是全部」 | `tools.test.ts > 传了 limit 才截` |
+
+**门槛**：本包单测 **319 条**（原 317）；`client-smoke` **29/29**（原 27）；`client-lint` 通过
+（样式变量 113 / 自定义属性 114 / 中性边框 10 处仍全是 0.5px）；`check-i18n` 本包 **104 条键**（+`hint.fieldsCount`）；
+全仓 `typecheck && build && test && aggregate` 绿：**170 文件 / 2879 用例**（原 2877）。
+
+**真机验收**（真宿主 + 真 Chrome，端口 3199；临时 profile `loglens-len-20261014` 跑完即删；
+源 profile `test-logs/cordis.patch.yml` 的 sha256 `d79097fc…` 与 mtime（2026-10-13 18:21:39）跑前跑后逐字一致）：
+
+| 步骤 | 实测 | 判定 |
+|---|---|---|
+| 选来源后点一下那一格（冷启动第一次） | `.ll_pickItem` **102 个**（此前是 80）；`/fields` 资源计数 **1**（在途闩仍然只让打一枪） | PASS |
+| 响应本体（页面内直接 fetch） | `{fields: 102, total: 102, truncated: false, warnings: [], bytes: 6029}`——**不再有截断警告** | PASS |
+| 页脚 | `{text:"共 102 个字段\n刷新"}`；`footRect` 887→916 在 `.ll_pickScroll`（708→883，scrollHeight 3468）**外面**，不滚就能看见 | PASS |
+| 输入框里打 `name` | 候选 102 → **11**（本地子串筛），**没有新请求**（计数仍 1）；页脚仍「共 102 个字段」 | PASS |
+| 关掉再点开（同来源） | `/fields` 计数**不变**（缓存生效） | PASS |
+| 点页脚「刷新」 | 计数 **+1** | PASS |
+| 显式收窄（页面内 fetch `{limit: 5}`） | `{fields: 5, total: 102, truncated: true}` + 警告「只列了前 5 个（这个来源共有 102 个字段）：…去掉 limit 就是全部…」——截断信号只在**真截**时出现 | PASS |
+
+**产品代价（写下来，别当没有）**：这台来源的字段表是 6.0KB / 102 个字段，全量拉没有感知；
+真机历史上那台「全集群通配」的来源是 **45KB**（`elastic.ts` 注释里那份读数），那种来源现在每次点开会
+实打实拉 45KB——与 Kibana 付的是同一笔账，换来的是「候选里不会少字段」。真要收，可以给面板加一个
+「只拉前 200 个」的开关（`limit` 通路已经在了），但那得先有人提。
+
+### 追加：冲突字段与容器行（对齐 Kibana 的第二刀）（2026-10-14）
+
+上一节末尾列了「没对齐的两处」（类型冲突 / `object`·`nested` 容器行），维护者回「1、2 也对齐」。
+先把**事实**量出来再动手（直接打那台来源的 ES，`*,-.*`）：
+
+| 探测 | 实测 |
+|---|---|
+| `_field_caps?fields=*` 回来的名字 | **200 个** |
+| 其中 `object` 容器行 | **10 个**：`input` · `container` · `container.labels` · `agent` · `host.os` · `log.file` · `container` · `container.image` · `ecs` · `host`——**它们没有自己的值**，配对时列出来只会让人选一个「点了没结果」的字段 |
+| 多类型字段 | **1 个**：`container.labels.org_label-schema_build-date` = `date` + `text`，且两种类型都带 `indices`（`_field_caps` 的 `indices` 只在多类型时出现——Kibana 的注释也是这么写的） |
+
+落点：
+
+| 动作 | 落点 |
+|---|---|
+| ES 原生类型 → **宽类型族**（Kibana `castEsToKbnFieldTypeName` 的判据，认不出的归 `unknown`）：**同族的多类型不算冲突**（`text` + `keyword` 都是字符串，Kibana 原话 "ignore the conflict and carry on"）；**异族才算**，标 `conflict: true` + `esTypes` + `conflictDescriptions`（每个类型各在哪些索引） | `elastic.ts` 的 `ES_TYPE_FAMILY` / `esTypeFamily()` + `fields()` |
+| `object` / `nested` **容器行不列**（Kibana 收尾也剔）：判据是「**所有**类型都是容器」——既当过容器又当过叶子的名字不剔（那是字段本身的问题，不能顺手藏掉）；`total` 只数可列的 | `elastic.ts` 的 `isContainerRow()` + `fields()` |
+| 契约加三个**可选**字段（只有一个类型时不带 `esTypes`/`conflict`：那时候 `kind` 已经说完了，带上只是把载荷撑大） | `types.ts` 的 `FieldInfo`；`execute.ts` 的 `runFields` **原样搬运**（在这一层丢过就不是原样） |
+| 工具面：output schema + 渲染 + 描述——冲突字段逐行标「**类型冲突**：date / text」，末尾再给一句合计 | `tools.ts`（渲染抽成 `renderFields`，与 `renderLines` 并排，可直接测） |
+| 面板：候选行尾标「类型冲突」（宿主 warn 色），`title` 列两种类型；`fieldChoices` 把冲突信息一路带到行上（普通候选仍只有 `{ name }`） | `pure.js` / `client-src/index.js`（新键 `badge.conflict`，用的是**已有的** `badge.` 域——`tag.` 域不在白名单里，闸门当场拦下了） |
+
+**真机验收**（同一台来源、同一临时 profile，改动前后各跑一次；源 profile 指纹同上一节）：
+
+| 读数 | 改动前 | 改动后 | 判定 |
+|---|---|---|---|
+| 候选行数 | **102**（含 10 个容器行） | **92**；`containerRowsLeft` 为空数组 | PASS |
+| 页脚 | 共 102 个字段 | **共 92 个字段** + 刷新（`total` 与列举一致） | PASS |
+| 冲突字段 | 长得跟别的候选一样 | `container.labels.org_label-schema_build-date` 行尾标 **类型冲突**，`title` = `…（类型冲突：date / text）` | PASS |
+| 输入框打 `build-date` | — | 两行并排：`container.labels.build-date`（不标）与上面那个（标）——同族/异族的差别一眼可见 | PASS |
+| `/fields` 调用次数 | 1 | 1（缓存与在途闩都没被这次改动碰坏） | PASS |
+
+**用例**：`elastic.test.ts` **+3**（异族标冲突 + 同族不标 + 容器行不列且 `total` 一致）；`tools.test.ts` **+4**（执行层不许丢 esTypes/conflict/conflictDescriptions；`renderFields` 三条：标记 + 无冲突不多说 + 截断与警告照旧）；
+`client-pure.test.ts` **+1**（`fieldChoices` 带冲突信息、普通候选只有 name）；`client-smoke` **+1**（冲突行有标记、普通行没有、`title` 说全两种类型）。
+
+**反例（拆掉判据必须变红，逐条实跑过）**：
+
+| 拆法 | 变红的用例 |
+|---|---|
+| 同族多类型也算冲突（判据过宽） | `elastic.test.ts > 同族的多类型**不算**冲突` |
+| 从不标冲突（判据整条失效） | `elastic.test.ts > 类型不一致时标 conflict…` |
+| 容器行不剔 | `elastic.test.ts > object / nested 容器行不列…` |
+| 执行层丢掉冲突信息 | `tools.test.ts > …在**执行层不许丢**，一路到渲染` |
+| 渲染不标冲突 | `tools.test.ts > renderFields > 冲突字段逐个标出来…` |
+| 面板行不标 | `client-smoke > 类型冲突的字段**在行上**标出来…` |
+| `fieldChoices` 不带冲突 | `client-pure.test.ts > 冲突字段把冲突信息带到行上…` |
+
+**门槛**：本包单测 **327 条**（原 319）；`client-smoke` **30/30**（原 29）；`client-lint` 通过
+（样式变量 114 / 自定义属性 115 / 排版 26 处均已配对）；`check-i18n` 本包 **105 条键**（+`badge.conflict`）；
+全仓 `typecheck && build && test && aggregate` 绿：**170 文件 / 2887 用例**（原 2879）。
+
+**仍然没对齐的**（写下来，别当成已经齐了）：Kibana 还会把 `searchable` / `aggregatable` / `readFromDocValues` /
+TSDB 维度等一起带下来，我们只带了「类型」这一轴；它的字段清单还分 Selected / Popular / Empty / Unmapped 区
+（那是**数据侧**信号，来自命中样本），我们的「空不空」只有 `loglens_facets` 那一条路可看。
+
+### 容器下拉也自动拉（面板第三刀）（2026-10-14）
+
+维护者：「容器的下拉也做成自动加载。」——与字段候选「点开即拉」同一条判据：**别把「做一件事」拆成两步**
+（原来要先点「拉取容器」，容器下拉里才有东西）。
+
+| 判据 | 落点 |
+|---|---|
+| 缓存键 = 来源 id + Docker 目标名（空目标也算一个确定的键；**没选来源 = 空键，永远不算已缓存**） | `pure.js` 的 `containersKey` |
+| 选中 Docker 来源即自动拉（`React.useEffect` + `fieldFetchNeeded`）；依赖里放**键的三个来源**（id / kind / dockerTarget）而不是整个对象——对象每次渲染都是新的，用它当依赖会变成「渲染一次拉一次」 | `client-src/index.js`；`selectedDraft` / `isDocker` 两行**挪到 `view === 'summary'` 那个提前返回之前**（挂 hook 就不能在提前返回之后，否则是条件调用 hook） |
+| 去掉「拉取容器」按钮，加「刷新」（容器会变：起停一个清单就旧了）；在途那条 option **排在最后**且 disabled（`value` 与占位项同为空的，排在最前面就等于在加载期间谎报「已经选中了它」——与 D04 同一个坑） | 同上 |
+| 失败**落在那一格**（新键 `error.containers`，不动卡片顶部那条错误行）、**不写缓存**（下次触发仍会重试）、并清掉清单与选中项（留着一个下拉里没有的 id 就是 D04 那一类） | 同上 |
+| 换目标后选中项**跟着新清单走**：旧 id 还在就留着，不在就换成第一条 | 同上 |
+| i18n：删 `btn.containers`（「拉取容器」），加 `btn.refresh` / `error.containers` | 105 → **106** 键 |
+
+**真机验收**（真宿主 + 真 Chrome；临时 profile 同前，源 profile 指纹跑前跑后逐字一致）：
+
+| 步骤 | 实测 | 判定 |
+|---|---|---|
+| 选中 Docker 来源 | **不用点任何按钮**就开始拉；下拉当场是「容器 / 加载中…」（在途那条在最末） | PASS |
+| 约 7 秒后 | 下拉 **35 项**（34 个容器 + 占位），**第一条自动选中**；`/api/dsh-docker/containers` **1 次**、7.1s、18.2KB——走 SSH 的目标本来就慢，界面在途有话可说比快慢重要 | PASS |
+| 页面上 | 没有「拉取容器」按钮；有「刷新」 | PASS |
+| 点「刷新」 | 点下去 200ms 读到「加载中…」；完成后请求数 **1 → 2**，仍是 35 项 | PASS |
+| Docker 目标下拉 | 5 个选项（占位 + 4 个目标） | PASS（换目标重拉在 smoke 里逐条钉住，真机没再花一次 7 秒 SSH） |
+
+容器名是内网标识，**不落仓库**（真机截图移到 `/tmp/loglens-dk-20261014/`）。
+
+**用例**：`client-pure.test.ts` **+4**（键的四种输入：同键 / 换目标 / 换来源 / 空键）；`client-smoke` **+4**
+（自动拉 + 第一条自动选中 + 没有按钮 / 同键不重拉 + 换目标重拉 + 在途那条不顶到最前 / 失败只落那一格且不留缓存 / 「刷新」强制重拉）。
+顺带把 harness 里「找来源下拉」那段抽成 `sourceSelect()`（新用例要用，别抄第二份）。
+
+**反例（拆掉判据必须变红）**——这一轮有两条**第一版没咬住**，值得记下来：
+
+| 拆法 | 结果 |
+|---|---|
+| effect 空转（不自动拉） | 红：`自动拉容器` |
+| 缓存判据失效（每次都拉） | 红：`自动拉容器`（同一目标被拉第二次） |
+| 失败也写缓存 | **第一版没咬住** → 改测法后红 |
+| 失败落到卡片顶部错误行 | 红：`失败只落在那一格` |
+| 在途那条挪到最前 | **第一版没咬住** → 改成整段替换后红 |
+| 「刷新」不重拉 | 红：`「刷新」强制重拉` |
+| 键忽略 Docker 目标 | 红：`换目标重拉`（+ `containersKey` 的 pure 用例） |
+| 换目标后不换选中项 | 红：`选中项跟着新清单走` |
+
+两条没咬住的原因（守卫的教训）：
+① 「失败也写缓存」第一版用**换目标**去验——换目标本来就换了键，缓存写没写都会重拉，等于没验；改成
+「换来源走开、再选回这条 Docker 来源」才把两种情况分开。
+② 「在途那条排到最前面」第一版只在**末尾前多插了一条**（原来那条还在）→ 断言仍然成立；要**整段替换**（真挪位）才咬得住。
+
+**门槛**：本包单测 **331 条**（原 327）；`client-smoke` **34/34**（原 30）；`client-lint` 通过；
+`check-i18n` 本包 **106 条键**；全仓 `typecheck && build && test && aggregate` 绿：**170 文件 / 2891 用例**（原 2887）。
+
+### 容器下拉：还没有选项的那几秒要有过渡（面板第四刀）（2026-10-14）
+
+维护者两句话：「这个文案优化一下」（真机截图中「（先选一个来源）」被原生箭头切成「（先选一个来源」），
+「下拉选没有拉取到容器选项的时候，要有过渡」。
+
+| 判据 | 落点 |
+|---|---|
+| **占位项 = 过渡态本身**：原先把「加载中…」挂在**最末一条** option 上，于是「正在拉」的那一秒下拉**依然显示上次那句占位**——看起来就是一个没人碰过的空下拉。现在第一项（那个空 value 的占位项）自己说状态：`加载中…` / `加载失败` / `没有容器` / 默认 `容器` | `client-src/index.js` 的 `containerSlotText()` + `containerSlot`；判据全在 `pure.js` 的 `containerSlotState` |
+| 优先级 **有清单 > 失败 > 在途 > 空清单**：有清单一律回默认（换目标 / 刷新时旧清单还摆在眼前，把占位项改成「加载中…」等于替用户扔掉看得见的东西，那几秒他是有**上一条目标**的选项的）；**失败压在在途前面**（失败时故意不写缓存，`pending` 一直为真——顺序放反，一次失败会让这一格永远写着「加载中…」）；插件不在时回默认（请求根本发不出去，写「加载中…」就是永远不落地的谎） | `pure.js` `containerSlotState` |
+| `pending` **自己算**（不是等 `busy`）：它在 `busy` 翻起来之前就为真（effect 还没跑、响应还没回来的那一帧），靠它这一格从**第一帧**起就是「加载中…」，而不是先闪一下「没有容器」再改口 | `index.js` `containersPending` |
+| 「正在拉」这句话另有一个落点：**「刷新」按钮自己在途时写「加载中…」**（与旁边「看日志」同一个写法）。占位项要留给「下拉此刻显示哪一项」 | 同上 |
+| 「（先选一个来源）」→ 「选择来源**: 占位项是一句话加括号（9 字 117px）放不进最窄那列（去 padding 与原生箭头只剩约 66px），被硬切成一半。改成 4 字短标签；「还要先做什么」由旁边那条错误行说（`error.needTarget` 就是原话） | i18n `option.pickTarget` |
+| 输入框 / 下拉加 `text-overflow:ellipsis`：装不下时**硬切**会切掉半个字，省略号至少说明「后面还有」 | `.ll_input` |
+| 空清单的 hint：`hint.containersEmpty`（**只列运行中的**——请求带的是 `all:false`）否则「没有容器」会被读成这个目标上什么都没有 | `index.js` + i18n |
+| i18n：加 `msg.containersEmpty` / `msg.containersFailed` / `hint.containersEmpty` | 106 → **109** 键 |
+
+**宽度预算的看守**（文案是下次改动里最长胖的东西，它只要读起来通顺就行，没人会去量）：
+
+| 判据 | 出处 |
+|---|---|
+| 一句占位 / 过渡文案放得进最窄那一列：预算 **5 个汉字**（`.ll_queryGrid` 第一列最窄 110px − 左右 12px padding − 约 20px 原生箭头 ≈ **66px**；`.ll_input` 13px 全角字一字 13px → 5 字 65px） | `client-smoke.mjs` `assertNarrowLabel` + `labelUnits`（全角 / CJK 标点算 1，拉丁与空格算 0.5） |
+| 「正在拉」这句话不许**只**落在占位项上：有旧清单时占位项保持回默认 | `Docker 区：同一目标不重拉…` 那条 |
+
+**真机验收**（临时 profile `loglens-len-20261014`，源 profile 指纹跑前跑后逐字一致）：
+
+| 步骤 | 实测 |
+|---|---|
+| 选中 Docker 来源的第一帧 | 占位项就是「**加载中…**」（不动一下再改口），下拉禁用、「刷新」显示「加载中…」 |
+| 约 7 秒后 | 占位项回到「**容器**」，第一条容器自动选中 |
+| 刚进卡片、未选来源 | 「来源」下拉四个字完整为「**选择来源**」，末尾不再缺半个字 |
+| 空清单目标 | 占位项「**没有容器**」，下面 hint：「这个 Docker 目标上没有运行中的容器（这里只列运行中的）」。真机上没有这种目标，这条**用语法夹具（`containers: []`）逐字钉住** |
+| 拉失败 | 占位项「**加载失败**」+ hint 里宿主原话。同样**只能用夹具**（真机上那条 SSH 目标是通的） |
+
+**用例**：`client-pure.test.ts` **+5**（`containerSlotState`：有清单 / 三态优先序 / 失败压倒在途 / 插件不在 / 垃圾入参）；
+`client-smoke` 36 条里 4 条在本轮新写或改写（过渡态那一帧**不用 `runPanelQueryFull`**——那个助手会把每件事 settle
+到稳定，正好吃掉要看的那一帧，所以手动挂载、自己控制 tick）。
+
+**反例（拆掉判据必须变红）**：
+
+| 拆法 | 结果 |
+|---|---|
+| `containerSlotState` 永远回 `'default'` | 红：占位项不写状态（`加载中…` / `没有容器` / `加载失败` 三条一起红） |
+| 优先级改成「在途 > 失败」 | 红：失败态写着「加载中…」（`containerSlotState` 单测里那条 `pending: true, busy: false, error`） |
+| 去掉 `pending`、只信 `busy` | 红：第一帧占位项还是「容器」（`清单还没到的那几秒…` 那条） |
+| 占位项只在**末尾**加过渡 option | 红：第一帧显示的仍是默认那句（`assert.equal(treeText(slot), '加载中…')`） |
+| 占位项长回「（先选一个来源）」 | 红：`assertNarrowLabel`（宽度预算） |
+| `flex`/`disabled` 判断丢掉 | 红：默认态被误禁用 / 过渡态反可选 |
+
+### 点柱放大：直方图上点一根柱 = 把窗口夹到那一档（面板第五刀）（2026-10-15 收口）
+
+维护者在乎的那句话是「点柱放大有接线与用例」——这一刀把上一轮**只写了一半**的实现收口：
+柱子已经改成 `<button>`、`zoomToBar` 已经有实现，但 `client-src/index.js` 的 import 表里
+**少了 `zoomToBar`**（`client-lint` 检查①当场红：`TS2552 Cannot find name 'zoomToBar'`），
+`changePreset` 是死代码（预设下拉仍走内联 `setQuery`），且产物 `client.js` 落后于源码。
+**收口前它是红的：`pnpm typecheck` 里 client-lint 报 1 处致命诊断。**
+
+| 判据 | 落点 |
+|---|---|
+| 补 import：`./pure.js` 的 import 表加 `zoomToBar`（就是那条致命诊断）；`windowOptions` 随之不再被这个文件用到，删掉（`pure.js` 仍导出它，`client-pure.test.ts` 仍在用） | `client-src/index.js` 的 import 表 |
+| **窗口随这一次查询走**（与 `filters` 的 override 同一条判据）：自定义窗口住在**草稿**里（`draft.window` + `preset: 'custom'`），经 `runQuery(append, override)` 的 override 参数进这一枪；**拆掉「闭包读旧值」那条路**——否则放大第一枪永远查 1 小时（`preset` 已写成 `custom`，发出去的还是旧窗口，`loglens D04` 那一类） | `runQuery` 读 `effective.window`，不再读任何组件状态；`zoomToBarAt` 把 `zoomed.query` 原样交给它 |
+| 下拉说实话：预设 `<select>` 的 `onChange` 接到 `changePreset`（原来内联 `setQuery` = 死代码，换了档还留着自定义段）；`windowLabel` 补 `custom` 分支，文案按**真实范围**现算（`option.custom` 带 `{from}` / `{to}` 占位符，跨天时连日期一起写） | `client-src/index.js` 的 `windowLabel` / `changePreset`；`pure.js` 的 `windowChoices`（选中的档必须**真的在选项里**，否则浏览器回落显示第一项——`D04` 同一个坑） |
+| 柱子可点：`count > 0` 的柱改成 `<button>`（`background:none;border:0` + hover 底 + `focus-visible` 焦点环）；类名刻意**不带 `btn`**——`scripts/client-style-spec.mjs` 的 `BUTTON_CLASS = /btn/i` 会把柱子卷进「同族几何一致」（柱高是内联的、每条都不一样，本来就谈不上同族）；`onClick` 调 `zoomToBarAt(bar.ts, histogram.stepMs)`；`stepMs` 跟着柱子一起存（不另算一份，两处各算必然漂） | `client-src/index.js` 的 `ll_histBars` 渲染段 + `.ll_histBarClick` 样式 |
+| **空桶不给点**：保持静态 `div` + 现有 `title`（点进一个 0 条的时间段只会得到「没有命中」，看不出是自己点的——与榜上「空值那一桶不给点」同一条判据） | 同上；守卫按 `bar.type !== 'button'` 断言 |
+| `zoomedBar` 给「正在放大在哪一档」加高亮（`.ll_histBarActive`，与 `.ll_groupRowActive` 同一条「这一屏是筛过的」判据）；`zoomClamped` 在直方图那一行如实说一句 | 同上；新键 `hint.zoomBar` / `hint.zoomClamped` / `option.custom` / `error.badWindow` |
+| 被夹过要说出来：`clamped: true`（低于 `ZOOM_MIN_MS` = 1 分钟）时显示「已放大到最短 1 分钟」，**不静默收窄** | `pure.js` 的 `zoomToBar` 返回 `{ query, clamped }`；`index.js` 据此渲染那一句 |
+| `custom` 档必须带一段能用的窗口：`queryProblem` 在 `preset === 'custom'` 且 `windowProblem` 非空时回 `badWindow`（缺了它**不静默落回 1 小时**——那会让「说的窗口」与「查的窗口」变成两件事） | `pure.js` 的 `windowProblem` / `queryProblem`；`queryPayload` 只把这段用在新档上（不合法才回落预设，那是给绕过 `queryProblem` 的兜底） |
+
+**用例**：`client-pure.test.ts` **+7**（`zoomToBar` 四条：正常档 / 被 `ZOOM_MIN_MS` 夹 / 垃圾入参回 `null` / 不动 `filters` 与 `q`；`queryPayload` 的 custom 两条：带 window 用那一段、custom 但 window 不合法走既有回落；`windowChoices` 一条：custom **只在自己被选中时**才补进下拉；`windowProblem`/`queryProblem` 的 custom 档一条）；
+`client-smoke` **+4**（点一根有数据的柱 → 请求体 `from`/`to` 恰是那一档 + 聚合同一窗口 + 下拉变「自定义」且文案是真范围 + 高亮在场 / 空桶是静态 `div` 且无 `onClick` / 换预设后 `customWindow` 清掉且再查是预设窗 / 被夹时那句提示在场）。
+
+**反例（拆掉判据必须变红，逐条实跑过）**——这一轮**11 条**，覆盖每一处新判据：
+
+| 拆法 | 变红的用例 |
+|---|---|
+| 拆掉 `zoomToBar` 的 import | `client-lint`（那条致命诊断当场回来） |
+| `runQuery` 读闭包里的旧草稿（拆 override） | smoke：点柱放大（两条）+ 点桶下钻（三条） |
+| 预设下拉不接 `changePreset`（换档留着自定义段） | smoke：`换预设档 = 把这一段撤掉` |
+| `queryPayload` 拆掉 custom 分支 | pure：`custom 档用**草稿自带的那一段**` |
+| `windowLabel` 拆掉 custom 分支 | smoke：`点一根有数据的柱`（下拉显示裸键 `custom`） |
+| 拆掉「正在放大哪一档」高亮 | smoke：`点一根有数据的柱` |
+| 拆掉「被夹过要说出来」 | smoke：`被下限夹过时**说出来**` |
+| 空桶也做成可点按钮 | smoke：`空桶是**静态**的，点不动` |
+| 拆掉 `ZOOM_MIN_MS` 夹取 | pure：`比下限还窄的档夹到 1 分钟` |
+| `windowChoices` 不补 custom | pure：`下拉里实际要摆的档` |
+| 拆掉 `queryProblem` 的 badWindow 挡板 | pure：`custom 档必须带一段能用的窗口` |
+
+**门槛**：本包单测 **343 条**（原 331；`client-pure.test.ts` 90 条）；`client-smoke` **40/40**（原 36）；
+`client-lint` 通过（样式变量 119 / 自定义属性 120 / 中性边框 10 处仍全是 0.5px / 按钮族 5 个类——
+柱子刻意不进这一族）；`check-i18n` 本包 **113 条键**（相对 `HEAD` 的 103 是**加 11 删 1**——
+本轮新增的 `option.custom` / `error.badWindow` / `hint.zoomBar` / `hint.zoomClamped`，以及同一批在途改动
+一并结清的 `hint.fieldsCount` / `badge.conflict` / `msg.containersEmpty` / `msg.containersFailed` /
+`error.containers` / `hint.containersEmpty` / `btn.refresh`；删掉的是被「刷新」取代的 `btn.containers`）；
+全仓 `typecheck && build && test && aggregate` 绿：**170 文件 / 2903 用例**（原 2891）。
+
+**产物闸门**：本批改动**尚未提交**，所以 `pnpm artifacts:check`（它比的是工作树 vs 索引，
+判据是「提交里的产物落后于源码」）对一批未提交改动必然报「落后」——那不是产物漂移的证据。
+本轮按**幂等**验：先记下 `lib/**` 与 `client.js` 的 md5，跑一次 `pnpm -r build`，再记一次——
+**两次逐字节相同**（构建后无残余 diff），即「源码 → 产物」这条变换在本批改动上是确定的。
+提交时按 [conventions § 提交](../../docs/conventions.md#提交) 把 `lib/` 与 `client.js` 一并提交，
+那时的 `artifacts:check` 才是真判据。
+
+**还没做的（如实记下，别当已经验过）**：这一刀**没跑真机验收**——覆盖是 `client-lint`（静态）、
+`client-pure.test.ts`（纯函数）、`client-smoke`（无浏览器的渲染树 + 请求体）三层。
+真机上还没看过的是**观感**那几项：柱子在真实宽度下的可点面积、hover 底与 `focus-visible` 焦点环、
+高亮色（`--dsw-alias-state-business-primary`）与旁边那两根「正在下钻」的条是否一致。
+要真机时按 [design.md §9.7](./docs/design.md#97-验收口径) 的口径跑（临时 profile + 真 ES + 真 Chrome，
+产物含内网标识移出仓库到 `/tmp/`）。
+
+### 面板操作流：行上看得见「谁写的」+ 点值即筛 + 级别下拉（面板第六刀）（2026-10-16）
+
+维护者两句话：「交互上还是不是很友好，操作麻烦」+「看看能优化吗」。先把**麻烦在哪**量出来（全部对着
+源码与产物核过，不是感觉），再挑两个"操作最贵"的做：
+
+| 症状（核过的事实） | 证据 |
+|---|---|
+| **结果行看不到标签**：`line.labels` / `line.raw` 随响应回来，面板一行都没渲染——「这行是哪个容器写的」在卡片里根本看不到 | 行渲染只有 `ll_resultTime` / `ll_resultLevel` / `ll_resultMsg` 三格；`line.labels` 在 `client-src/index.js` 出现 **0 次** |
+| **想按某个标签值筛：没有这条路**。只能先手填「分组字段」→ 点「分组」→ 再点榜上那条——三步，且前提是你**已经知道字段名** | `filterAdd` 只在 `drillDown()` 里被调用（榜那条路），行上没有任何入口 |
+| **级别筛选没有入口**：宿主 `/query` 早就收 `level`，面板一个入口都没有；要只看 error 得自己写查询串，而 Loki / ES 的方言不同 | `queryPayload` 不产 `level`；`levelMatches` / `readLevel` 在 client-src 里 0 次 |
+
+| 判据 | 落点 |
+|---|---|
+| **行上摆出「谁写的」**：按**宿主给的顺序**取前 3 个标签（`LABEL_PRIORITY` 已经排的是「排查时先问什么」，**不在这里重挑**——再挑一次就是第二份会漂的判据）；空值不摆（占位会把有值的挤掉）；超长截断并带 `…`（**值本身不截**：下发给筛选的必须是原值，截过的值筛不到东西） | `pure.js` 的 `rowLabels` / `rowLabelOverflow`；`ROW_LABEL_MAX` / `ROW_LABEL_VALUE_MAX` |
+| **点标签值 = 按「字段 = 值」加一条筛选并立刻重查**：与点榜下钻走**同一个** `drillDown`（判据只有一份，不新写一遍「怎么筛」）；类名刻意**不带 `btn`**（按钮族几何检查按 `/btn/i` 抓类名——这些是行内的小标签，几何本来就跟按钮不同族，与直方图柱子同一条做法） | `index.js` 的 `ll_resultTags` / `ll_resultTagHit` + `.ll_resultTag*` 样式 |
+| **不可点的标签照旧摆出来**（空值那类）：筛选表达不了「字段缺失」，给个点得动、筛的却是别的东西的入口更坏——判据就是 `rowFilterProblem`（它转调既有的 `filterProblem`，**值不做 trim** 那条一并继承） | `pure.js` 的 `rowFilterProblem` |
+| **悬停说全**：时间 + 级别（**推断出来的标出「从正文推断」**——`level` 是筛选项，两种可信度不是一回事）+ 全部标签 + 原文 `raw`；行尾写「另有 N 个标签」（N **只数有值的**，否则悬停里是空值、那句话就成了假的） | `pure.js` 的 `lineTitle` / `rowLabelOverflow` |
+| **级别下拉**（不限 + 六档）：复用宿主既有 `level` 入参，**零契约改动**；草稿里放 `level: ''` 表示不限，**载荷里不带这个键**（线上形状与加它之前逐字节一致，与 `filters` 空数组同一条） | `pure.js` 的 `levelChoices` / `levelFilterOf`；`queryPayload` |
+| **不认识的值收成「不限」**（不直接下发）：`level` 是枚举，宿主 `readLevel` 收到认不出的会**报错**——宁可不下发，也不发一个会把整次查询变成错误的枚举值。原生 `<select>` 在所选值不在选项里时回落显示第一项，而第一项就是「不限」，界面自洽 | `pure.js` 的 `levelFilterOf` |
+| **页内筛必须说出来**：宿主是在**返回的这一页**上过滤的（`src/execute.ts` 的既有口径），`counts` / `truncation` 仍是未筛的整页。不说出来就会把「这一页里的 error」读成「窗口里一共多少 error」 | 新键 `hint.levelPaged`；判据 `pure.js` 的 `levelFiltered`（看**下发的载荷**，不看回显——查询在途的那几秒也该在场） |
+| **改级别不自动重查**（与改查询串 / 时间窗同一条）：都在草稿里，由「查询」那一下一起发——一改就查会在连点时打出一串请求 | `index.js` 的 `onChange` 只写草稿 |
+| **敏感字段那句话**：`raw` 与全部标签原样来自后端，行详情里写明（与 docker「投递给 Agent 时留意凭证」同一条态度） | 新键 `hint.rowSensitive` |
+
+**用例**：`client-pure.test.ts` **+13**（`levelChoices` 与宿主 `CANONICAL_LEVELS` 的对偶 / `levelFilterOf` 七种输入 / `levelFiltered` 与载荷同真同假 / 载荷带不带 `level` 三条 / `rowLabels` 按宿主顺序 + 空值不摆 + 超长截断且值不截 + 垃圾入参 / `rowLabelOverflow` 只数有值的 / `lineTitle` 推断标记 / `rowFilterProblem` 空值挡下 / 值不 trim）；
+`client-smoke` **+4**（行上摆 3 个 + 悬停说全 + 行尾「另有 2 个」+ 敏感字段那句 / 点标签 → 请求体恰是那一对 + 聚合带同一份筛选 + 芯片出现 / 空值不占位 / 级别选中 → 载荷带 `level` + 页内筛那句在场 + 回到不限后**不带这个键**）。
+
+**反例（拆掉判据必须变红，逐条实跑过）**——**12 条**：
+
+| 拆法 | 变红的用例 |
+|---|---|
+| `levelFilterOf` 不收回枚举（垃圾值直接下发） | pure：三条级别用例（`levelFilterOf` / `levelFiltered` / 载荷不带键） |
+| `rowLabels` 自己挑（挑最短的） | pure：`按**宿主给的顺序**取前 3 个` |
+| 空值也摆出来 | pure：`空值不摆` |
+| 截断不带 `…` | pure：`超长值截断并带省略号` |
+| `rowLabelOverflow` 把空值也算进去 | pure：`rowLabelOverflow 报「还有几个没摆出来」` |
+| 行上不渲染标签（回到旧三格） | smoke：行上的标签三条一起红 |
+| 标签值不可点 | smoke：行上的标签三条一起红 |
+| 级别下拉不写进草稿 | smoke：`级别筛选：下拉六档 + 不限` |
+| 去掉「页内筛」那句边界声明 | smoke：同上 |
+| 改级别后自动重查 | smoke：同上 |
+| `level` 空值时也带一个空键 | pure：四条（**含三条既有的 queryPayload 用例**——形状守卫是共用的） |
+| 下发前把值 `trim` 了 | pure：`**值不做 trim**` |
+
+**门槛**：本包单测 **356 条**（原 343；`client-pure.test.ts` 103）；`client-smoke` **44/44**（原 40）；
+`client-lint` 通过（样式变量 130 / 自定义属性 132 / 中性边框 11 处仍全是 0.5px / 按钮族仍 5 个类——
+行上的标签刻意不进这一族）；`check-i18n` 本包 **125 条键**（+`field.level` + 级别七档 + `hint.levelPaged` /
+`hint.rowLabelFilter` / `hint.rowMoreLabels` / `hint.rowSensitive`）；全仓
+`typecheck && build && test && aggregate` 绿：**170 文件 / 2916 用例**（原 2903）。
+
+**这一刀与设计的分期**：它**提前落地**了 [design.md §9.3](./docs/design.md#93-借什么按优先级每条带落点--契约影响--诚实边界)
+的第 2 项（行详情）与第 3 项（从行上取值加筛选）——设计正文已随之改成「已落地」，P8-乙 / 丙 的两行也标了
+提前量（见那一节的「已提前落地」注）。判据本身没变，变的只是它落在了哪一期。
+
+**还没做的（如实记下）**：这一刀**没跑真机**——覆盖是 `client-lint`（静态）、`client-pure.test.ts`（纯函数）、
+`client-smoke`（无浏览器的渲染树 + 请求体）三层。真机上还没看过的是**观感**：标签在真实行宽下的换行与
+拥挤程度（一屏六行、每行 3 个标签）、可点标签与不可点标签**一眼看得出区别**（现在只有 hover 底与 cursor）、
+以及 `<select>` 多一格之后那一行在窄卡片里的排布。要真机时按
+[design.md §9.7](./docs/design.md#97-验收口径) 的口径跑（临时 profile + 真 ES + 真 Chrome，产物含内网标识
+移出仓库到 `/tmp/`）。

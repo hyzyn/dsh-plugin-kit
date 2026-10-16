@@ -24,6 +24,28 @@ export interface ToolDeps {
  */
 export declare function formatLine(line: LogLine): string;
 export declare function renderLines(lines: readonly LogLine[], markId?: string): string;
+/** `loglens_fields` 的渲染输入（从工具返回值里取用的那一小撮）。 */
+export interface FieldsView {
+    fields?: Array<{
+        name: string;
+        kind: string;
+        preferred?: boolean;
+        conflict?: boolean;
+        esTypes?: string[];
+    }>;
+    total?: number;
+    truncated?: boolean;
+    warnings?: string[];
+}
+/**
+ * `loglens_fields` 的渲染文本（导出是为了能直接测：冲突标记这种东西不该只靠人肉看）。
+ *
+ * 两件事必须出现在文本里：
+ * ① 一共多少个 / 是不是被截断（截断只在显式 limit 时才会发生）；
+ * ② **每个类型冲突的字段逐个标出来**——同名在不同索引里类型不一致，拿它分组只会覆盖一部分索引，
+ *    而候选里它的名字跟别人长得一模一样，不标就等于没说。
+ */
+export declare function renderFields(result: FieldsView): string;
 export declare function registerLoglensTools(deps: ToolDeps): void;
 /** before / after 的夹取（0~50，缺省 5）：负数或非整数一律回落缺省值。 */
 export declare function clampCount(value: unknown, fallback: number): number;

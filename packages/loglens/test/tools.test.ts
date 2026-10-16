@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendCaps, LogBackend, LogLine, LogQueryResult, NormalizedQuery } from '../src/backends/types.js'
 import type { LoglensConfig, LoglensTarget, SourceKind } from '../src/config.js'
-import { adapterHint, clampCount, formatLine, hintFor, registerLoglensTools, renderLines, resolveTarget } from '../src/tools.js'
+import { adapterHint, clampCount, formatLine, hintFor, registerLoglensTools, renderFields, renderLines, resolveTarget } from '../src/tools.js'
 
 interface Captured {
   execute: (args: unknown) => Promise<unknown>
@@ -274,25 +274,41 @@ describe('loglens_search', () => {
 })
 
 describe('loglens_fields', () => {
-  it('截断信号跟着结果走：被上限截断时 total / truncated / warning 都在（真机反馈第 4 条）', async () => {
-    const { add, captured } = capture()
-    const backend = fakeBackend({
+  /** 一个会照 `limit` 截的后端：调用方不给 limit 就全给（判据与两边适配器同形）。 */
+  function manyFieldsBackend(count: number): LogBackend {
+    return fakeBackend({
       fields: async (_target, options) => {
-        const all = Array.from({ length: 120 }, (_item, index) => ({ name: 'f' + String(index), kind: 'indexed' as const }))
-        const limit = options?.limit ?? all.length
-        return { fields: all.slice(0, limit), total: all.length, truncated: all.length > limit }
+        const all = Array.from({ length: count }, (_item, index) => ({ name: 'f' + String(index), kind: 'indexed' as const }))
+        const shown = options?.limit === undefined ? all : all.slice(0, options.limit)
+        return { fields: shown, total: all.length, truncated: options?.limit !== undefined && all.length > options.limit }
       },
     })
-    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => backend, add })
-    const value = await captured.get('loglens_fields')!.execute({ limit: 150 }) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
-    expect(value.fields).toHaveLength(120)   // 硬上限 200，120 个全给
+  }
+
+  it('**不传 limit 就是不截断**：120 个字段全给、truncated 恒 false（2026-10-14 对齐 Kibana）', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => manyFieldsBackend(120), add })
+    const value = await captured.get('loglens_fields')!.execute({}) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
+    expect(value.fields).toHaveLength(120)
     expect(value.total).toBe(120)
     expect(value.truncated).toBe(false)
+    // 没截就不许有那句警告——警告只在真截了的时候出现，不能变成常驻噪声
+    expect(value.warnings).toEqual([])
+  })
 
-    const capped = await captured.get('loglens_fields')!.execute({ limit: 500 }) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
-    expect(capped.fields).toHaveLength(120)
-    expect(capped.warnings.join()).toContain('硬上限')
+  it('传了 limit 才截：只列前 N 个，total / truncated / 警告都在（真机反馈第 4 条）', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => manyFieldsBackend(120), add })
+    const value = await captured.get('loglens_fields')!.execute({ limit: 50 }) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
+    expect(value.fields).toHaveLength(50)
+    expect(value.total).toBe(120)
+    expect(value.truncated).toBe(true)
+    expect(value.warnings.join()).toContain('只列了前 50 个')
+    expect(value.warnings.join()).toContain('去掉 limit 就是全部')
+    // limit 只校验正整数：没有硬上限了（默认本来就是全部，再给个「上限」只会出现
+    // 「要 300 被夹到 200，比不传还少」这种自相矛盾）
     await expect(captured.get('loglens_fields')!.execute({ limit: 0 })).rejects.toThrow('limit 必须是正整数')
+    await expect(captured.get('loglens_fields')!.execute({ limit: 1.5 })).rejects.toThrow('limit 必须是正整数')
   })
 
   it('直接搬运后端报的字段', async () => {
@@ -303,6 +319,76 @@ describe('loglens_fields', () => {
     expect(value.total).toBe(1)
     expect(value.truncated).toBe(false)
     expect(value.warnings).toEqual([])
+  })
+
+  it('多类型字段的 esTypes / conflict / conflictDescriptions 在**执行层不许丢**，一路到渲染', async () => {
+    const { add, captured } = capture()
+    const backend = fakeBackend({
+      fields: async () => ({
+        fields: [
+          { name: 'app.name', kind: 'indexed' as const, esTypes: ['text', 'keyword'] },
+          {
+            name: 'container.labels.x',
+            kind: 'indexed' as const,
+            esTypes: ['date', 'text'],
+            conflict: true,
+            conflictDescriptions: { date: ['app-1'], text: ['app-2'] },
+          },
+        ],
+        total: 2,
+        truncated: false,
+      }),
+    })
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => backend, add })
+    const value = await captured.get('loglens_fields')!.execute({}) as { fields: Array<Record<string, unknown>> }
+    // 「同名但同族」不算冲突：只搬 esTypes，不带 conflict（真机那个 date+text 才算）
+    expect(value.fields[0]).toEqual({ name: 'app.name', kind: 'indexed', esTypes: ['text', 'keyword'] })
+    expect(value.fields[1]).toEqual({
+      name: 'container.labels.x',
+      kind: 'indexed',
+      esTypes: ['date', 'text'],
+      conflict: true,
+      conflictDescriptions: { date: ['app-1'], text: ['app-2'] },
+    })
+  })
+})
+
+describe('renderFields（loglens_fields 的文本）', () => {
+  it('冲突字段逐个标出来 + 末尾一句合计（不标就会拿一个类型不一致的字段去分组）', () => {
+    const text = renderFields({
+      fields: [
+        { name: 'host.name', kind: 'indexed', preferred: true },
+        { name: 'container.labels.x', kind: 'indexed', conflict: true, esTypes: ['date', 'text'] },
+        { name: 'app.name', kind: 'indexed', esTypes: ['text', 'keyword'] },
+      ],
+      total: 3,
+      truncated: false,
+      warnings: [],
+    })
+    expect(text).toContain('字段 3 / 共 3 个')
+    expect(text).toContain('* host.name（indexed）')
+    expect(text).toContain('container.labels.x（indexed，**类型冲突**：date / text）')
+    // 同族多类型只把类型摆出来，不打冲突标记
+    expect(text).toContain('app.name（indexed）')
+    expect(text).toContain('有 1 个字段**类型冲突**')
+  })
+
+  it('没有冲突字段时不多说一句；空清单说的是一句人话', () => {
+    const text = renderFields({ fields: [{ name: 'app', kind: 'indexed' }], total: 1, truncated: false, warnings: [] })
+    expect(text).toBe('字段 1 / 共 1 个\n  app（indexed）')
+    expect(text).not.toContain('类型冲突')
+    expect(renderFields({ fields: [], total: 0, truncated: false, warnings: [] })).toBe('这个来源没有报告任何字段。')
+  })
+
+  it('截断与警告照旧跟着文本走（只有显式 limit 才会走到这里）', () => {
+    const text = renderFields({
+      fields: [{ name: 'a', kind: 'indexed' }],
+      total: 120,
+      truncated: true,
+      warnings: ['只列了前 1 个（这个来源共有 120 个字段）：…'],
+    })
+    expect(text).toContain('字段 1 / 共 120 个（已截断）')
+    expect(text).toContain('只列了前 1 个')
   })
 })
 

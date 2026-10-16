@@ -49,8 +49,16 @@
     `.keyword` 子字段，还是退回 `match_phrase`（text 且无子字段时）——**不让调用方去记 `.keyword` 这条约定**。
     Loki 不支持它（过滤写进 LogQL），报错文案要说清这一点。
   **`fields` 返回 `{ fields, total, truncated }` 而不是裸数组**（2026-10-11 真机反馈第 4 条）：
-  字段清单会被上限截断（默认 80、硬上限 200，优先键排在前面），而调用方必须能看出「还有多少没列出来」——
-  一份看不出被截断的 45KB 字段表等于没给（与行的 `hit_limit` 同一口径）。
+  契约之所以带上 `total` / `truncated`，是因为 45KB 那份字段表**看不出被截断**等于没给（与行的
+  `hit_limit` 同一口径）。**但默认并不截断**（2026-10-14 对齐 Kibana：`_field_caps` 从不 slice，
+  长度交给界面/调用方消化）：不传 `limit` 就全列，只有调用方显式给了 `limit` 才可能出现
+  `truncated: true` 与那句警告。优先键仍然排在前面（`preferred: true`）。
+  **字段清单只说「能用的名字」**（2026-10-14 对齐 Kibana 的第二刀）：`object` / `nested` 这类**容器行**
+  （`container` / `host` / `log` 这种没有自己值的父级）不列——真机实测 `_field_caps?fields=*` 在
+  `*,-.*` 上回的 200 个名字里有 10 个是容器行，列出来只会让人选一个「点了没结果」的字段；
+  同名在**不同索引**里落到不同**宽类型族**的字段标 `conflict: true` 并带上 `esTypes` /
+  `conflictDescriptions`（Kibana 的 `type: 'conflict'`）——同族的多类型（`text` + `keyword`）不算冲突。
+  形状是**可选**的：只有一个类型时不带 `esTypes`，不然每个字段都要为一条没有信息量的字段付载荷。
 - `BackendCaps`：`queryLanguage`（`logql` / `lucene` / `ppl` / `none`）、`flavor?`、`follow`、
   `aggregations`、`requiresTimeRange`、`fields`（`indexed` / `discovered` / `fixed`）、
   **`pagination`（`cursor` / `offset` / `none`）、`maxPageSize`、`maxWindowMs`**。
@@ -218,6 +226,8 @@
 （`hintFor` / `adapterHint`：用现成的 `docker_logs` / `docker_logs_grep`），**没有包一层**。面板那一格（P6）：
 选中 docker 目标时，卡片里换成 Docker 日志区，**相对路径** fetch `/api/dsh-docker/containers` 与
 `/api/dsh-docker/logs`（同源天然满足），弱面（无 until / tail 有上限 / 无 grep）在界面上如实标注。
+容器清单**不需要点按钮**（2026-10-14）：选中 Docker 来源即自动拉，缓存键 = 来源 id + Docker 目标名
+（`containersKey`），换目标重拉、同键不重拉、失败不留缓存；「刷新」是手动出口（容器会变）。
 「装了没装」的宿主侧判据是 cordis 的 plugin registry（见本文件 §5 末与 `src/plugins.ts`）。
 
 **实测前提（2026-10-11 复核）**：宿主侧**没有**可用的「工具注册表列举」API——`@deepseek-ai/dsh-tools@0.1.2-rc.1`
@@ -314,6 +324,13 @@ client-modules 按这份声明把包变成可加载的浏览器 bundle——**�
   裸 `client.js` 的是 `env` · `kit-settings` · `mcp` · `profile` · `prompt` · `rss` · `search`（7）。
   → 现存 `client-lint.mjs` 的注释与该名单**不一致**（写「两个包」且漏掉 `kit-settings`），
   属已登记的漂移，按 conventions § 文档分档 纪律 3 **只加标注、不擅自修正**。
+- **面板的侧边栏入口是「手搓 DOM」的，且 family 名单在 4 个包各有一份硬编码**（2026-10-15 复核）：
+  侧边栏那几个入口用的都是 `data-dsh-*-entry` 属性选择器，**同一条 family 名单在 `docker` / `tty` /
+  `rss` / `search` 四个包的产物里各出现一次**，且覆盖面并不一致——
+  `search`（作为面板目录的读侧）认 `global-search` / `rss` / `taskboard` / `ssh` 四个，
+  `docker` 多认一个 `docker`，`tty` 多认一个 `tty`，`rss` 只认 `rss` / `ssh` / `taskboard` 三个。
+  → 再加第 5 个入口就得同步改那几份名单（且每份的覆盖面还不一样），
+  这是 §9 决定「工作台入口走右侧栏标签 + 设置卡片按钮，不走手搓侧边栏入口」的直接理由之一。
 - `coverage-ratchet.mjs` 的范围是 `packages/*/src/**`（glob）→ loglens 的 `src` 自动进面；
   只判 `lines`（基线 66.52），容差 0.3 个百分点；**只在 nightly 跑、不在 ci.yml**，
   文件头自述「不挡任何人」；`pnpm coverage:write` 是设计好的接受通道。
@@ -325,3 +342,111 @@ client-modules 按这份声明把包变成可加载的浏览器 bundle——**�
   且不出现 `logquery_search` 那种「query…search」重复；`logscope` 避开——本仓
   [glossary](../../../docs/glossary.md) 里 **scope 是 cordis 的隔离层**，术语会撞车。
   （功能**不冲突**：那些插件管的是 harness 自己的 `ctx.logger`，本插件查的是外部日志后端；撞的是**名字**。）
+
+## 9. 查询工作台（借 Kibana 的核心，不做 1:1 复刻）
+
+**这一章的定位**：它是**设计交底**，不是待办清单。写完这一章，另一个工程师应当能**不做新的设计决定**
+就直接开工——每一条都给出「借它的哪一点、落在哪个现成接口、契约动不动、诚实的边界在哪」。
+分期判据、守卫、门槛与真机验收口径的**执行面**在 [ROADMAP.md](../ROADMAP.md#分期) 的 P8-甲…丁；
+**本文不复述那里的门槛数字**（复制即第二真相源）。
+
+**一句话**：把面板从「设置卡片里的一条查询区」变成**与对话同屏的日志查询工作台**，
+功能骨架照 Kibana Discover 的核心（字段侧栏 / 查询栏 / 结果表 / 直方图 / 筛选芯片 / 时间与自动刷新），
+**不复刻**它的数据视图、保存对象、Lens、告警、KQL / ES|QL 编辑器。
+
+### 9.1 承载与入口
+
+| 项 | 决定 | 理由与代价 |
+|---|---|---|
+| **承载** | 工作台 = **会话右侧栏标签**：客户端 apply 里 `ctx.inject(['sidebarRightTabs','sidebarRight'], …)`，`sidebarRightTabs.register({ id: <实现 id>, kind, priority: 'extension', title, guide })` + `slots.register({ name: 'sidebar.right.pane.tab', key: <实现 id> }, Body)` | 有现成先例（[docker/client-src/index.js](../../docker/client-src/index.js) 的容器面板标签就是这一形状）。**`key` 必须是实现 id、不是 kind**——写错的表现是「标签能开、body 空白」，而这条路**没有编译期守卫**（契约原文见 `dsh-client-ui-sidebar-right` 的 `tab-registry.d.ts` 与 `contract/slots.d.ts`：body 按 definition 的 `id` 派发） |
+| **入口（主）** | 右侧栏 guide 里的一条 capsule（`guide: [{ order, title, description }]`） | 宿主自己把 guide 画成入口列表；我们只贡献一条，**不碰宿主的布局** |
+| **入口（副）** | 设置卡片里一个「打开查询台」按钮，调 `sidebarRight.openTab(kind, {})` | 卡片仍是最容易找到的去处；按钮**拿不到服务时整块不画**（见下一行） |
+| **为什么不用手搓侧边栏入口** | 不用 `data-dsh-*-entry` 那条路 | 那条路的 family 名单在 `docker` / `tty` / `rss` / `search` **四个包各有一份硬编码、覆盖面还不一致**（实测见 §8）——加第 5 个入口要同步改四份名单，换来的只是一个图标 |
+| **老宿主 / 服务缺失 / 插件被禁用** | `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` 的**回调不执行就是没有这两个服务**：卡片**保留今天的查询区**（行为一点不减，照 docker「拿不到右侧栏服务自动退回模态」的先例）；插件禁用时四条路由只留 `/config`（既有口径） | 退回去的是**功能完整的旧面**，不是「少一半的工作台」。客户端 apply 里**不许因为拿不到服务而抛错**——那会让整个插件起不来（卡片一起没） |
+| **卡片与工作台的关系** | **两个组件**，共享 `client-src/pure.js` 的判据与**同一个执行层**（`/query` / `/fields` / `/facets`）；不做「同一组件两种外壳」 | 工作台落地后卡片**逐步退成来源清单 + 开关**（正是它今天的前两格）；两者重叠的只剩「来源下拉」一处。理由是判据全是纯函数、两处调用同一份，**不存在两份会漂的规则** |
+
+### 9.2 三栏骨架（以及**不复刻**什么）
+
+```
+┌─ 左：字段侧栏 ─┬─ 上：查询栏（查询串 / 来源 / 时间 / 条数 / 自动刷新） ──────────┐
+│ 这一页命中的   │  筛选芯片行（字段 = 值 + ×，可临时停用）                        │
+│ 其余可用字段   ├───────────────────────────────────────────────────────────────┤
+│ 有类型冲突的   │  时间分布（直方图，点柱放大——P6 第五刀已打底）                  │
+│ （子串过滤）   ├───────────────────────────────────────────────────────────────┤
+│                │  结果表（列可勾选、表头点排序「本页」、行可展开看 labels/raw）   │
+└────────────────┴───────────────────────────────────────────────────────────────┘
+```
+
+**不复刻**：Data view 管理、Saved objects / 保存搜索 / 分享短链、Lens、告警、Dashboard、ML、
+KQL / ES|QL 编辑器与自动补全、**字段 popularity 分区与虚拟滚动**、sample size / 采样档位设置。
+逐条理由见 §9.4。
+
+### 9.3 借什么（按优先级；每条带落点 / 契约影响 / 诚实边界）
+
+| # | 借 Kibana 的 | 我们的做法（落点） | 契约影响 | 诚实边界 |
+|---|---|---|---|---|
+| 1 | **字段侧栏**（Available / Popular / 类型 / 点选） | 复用 `/fields`（已**不截断**、已剔容器行、已标 `conflict`）。分区：**「这一页命中的」**来自当前页 `lines[].labels` 的键 / **「其余可用字段」**来自 `/fields` / **「有类型冲突的」**来自 `conflict: true`。点字段 → **加一列** 或 **加一条筛选**（两个动作**分开**，不猜） | **无**（`/fields` 形状不变） | 「命中」只代表**这一页**（被 `limit` 截断过），界面上就写「本页」；**不做** Kibana 的 sampled popularity（那要额外聚合）。大字段表（历史上那台全集群通配来源 45KB / 上百字段）用**子串过滤 + 滚动 + 「共 N 个」**消化，不引虚拟滚动——与字段浮层同一条既有判据（§3.1 / ROADMAP 的「字段清单不再截断」） |
+| 2 | **结果表 + 行详情** | 行渲染从「时间/级别/正文」扩成**列集**（列可勾选）；行**展开**看 `labels` 表与 `raw`（ES 侧是 `JSON.stringify(_source)`，Loki 是原文）。**已提前落地一半**（2026-10-16，见 ROADMAP 的「面板第六刀」）：行上按宿主顺序摆前 3 个标签、悬停给全部标签与原文、`raw` 与敏感提示在场；**列集与行展开还没做** | **无**——`raw` 与全字段 `labels` **已经随 `/query` 响应回来**（`SearchOutcome.lines` 直接透传），零宿主改动 | raw 可能含敏感字段（与 docker「投递给 Agent 时留意凭证」同一条态度），行详情里写一句；**超长截断并明说「已截断」** |
+| 3 | **筛选芯片行**（filter bar） | 已有「字段 = 值」芯片 + `×`（P6 第三刀）。补两格：**从行上的标签值直接加筛选**（点 `labels` 里的值）——**已提前落地**（2026-10-16，与点榜下钻复用同一个 `drillDown`）；**临时停用某条筛选**（界面侧 mute 列表，**不下发**）还没做 | **无**（mute 是纯客户端状态；`filters` 仍是 `Record<字段,值>`） | **停用不是删除**：芯片上要能看出「这条没生效」；**一个字段只有一条值的约束不变**（§3.1 那条「两条并存会静默盖掉一条」） |
+| 4 | **时间选择器**（相对 + 绝对 + 快捷档） | 面板加**绝对时间输入**（ISO 8601 / `-30m` / `now`） | **无**——宿主**早就收了**：[src/query.ts](../src/query.ts) 的 `asTime` + [src/tools.ts](../src/tools.ts) 的 `from`/`to` schema（`oneOf` number\|string），面板只是没暴露 | **不带时区的写法按本机时区解释**（`asTime` 既有口径），界面上写明。`custom` 档已为「点柱放大」存在，两处**共用同一份**「说的=做的」判据（`pure.js` 的 `windowProblem` / `queryProblem`） |
+| 4b | **级别筛选**（Kibana 把它放在查询栏里） | 下拉「不限 + 六档」，走宿主**既有**的 `level` 入参。**已提前落地**（2026-10-16） | **无**（`level` 早就在 `/query` 与 `loglens_search` 的入参里） | **它是页内筛**：宿主在返回的这一页上过滤，`counts` / `truncation` 仍是未筛的整页（`src/execute.ts` 的既有口径）——界面上**必须**说出来，否则「这一页里的 error」会被读成「窗口里一共多少 error」 |
+| 5 | **Auto refresh** | 面板侧定时器**重跑同一次查询**：相对档每 tick 以**当前时刻重算窗口**（窗跟着走）；绝对档 / 放大档**重查同一段**（窗口不跟，界面上写着这句） | **无** | 在途跳过、标签不可见暂停、失败**不吞**（沿用既有错误行）；**不做** Kibana 的「刷新时保持时间窗比例」等花样；间隔档位**固定几档** |
+| 6 | **直方图与结果联动** | P6 第五刀已打底（点柱放大到那一档 + 高亮 + 被夹提示）；补**取消**（照点榜下钻「再点一次取消」的既有交互） | **无** | 空桶**不给点**；被下限夹过**必须说**（两条都已落地并有守卫） |
+| 7 | **字段统计**（Field statistics 页签） | **只借能借的那半**：选中字段后复用 `/facets` 的 `by=<field>` 看 top values，**连 `otherCount` / `countErrorUpperBound` 的原话一起照抄** | **无** | `min` / `max` / `cardinality` / `percentiles` 要**新聚合** → 归 **P8-丁**（要先问） |
+| 8 | **本页排序** | 表头点击**排序这一页**，标题写明「本页」 | **无** | **不是** Kibana 的服务端排序（那要动 `NormalizedQuery`，见 §9.5 的 P8-丁）。**排序一页**与「排序全部命中」是两件事，界面上不许混 |
+| 9 | **最近查询 / 列集记忆** | `localStorage`（照 docker 存「上次目标」的先例）：列集、自动刷新间隔、最近若干条查询串 | **无**（**不写** profile 配置，**不动** settings schema） | **只在本机浏览器里有效，不跨设备同步**——写下来 |
+| 10 | **导出**（可选，低优先） | 纯客户端把**当前页**导出为文本 / CSV | **无** | 只导这一页，标题与文件名里**写明** |
+
+### 9.4 明确不借（连同理由）
+
+| 不借 | 理由 |
+|---|---|
+| **KQL / ES\|QL 编辑器与自动补全** | KQL 与我们的 `query_string` 是**两种方言**，写转换器就是「统一 DSL」——正是 §1 的**非目标**。ES\|QL 要 ES **8.11+** 与 `capabilities().queryLanguage` 的真实分档（现在是诚实的 `lucene`）→ 归 **P8-丁**，且**必须先真机验收** |
+| **数据视图（Data view）管理** | 我们的等价物是「来源 + 索引表达式」，**已经在设置卡片里**；再来一层只会多一份**会漂的范围判据**（而「来源回显解析后的索引表达式」正是真机反馈第四批要解决的） |
+| **保存搜索 / Saved objects / 分享短链 / 告警 / Dashboard / Lens / ML** | 另一条产品面，**无运行期反馈** |
+| **字段 popularity 分区与虚拟滚动** | 要额外聚合 / 自造渲染件；先用「子串过滤 + 滚动 + 共 N 个」消化长度（与字段浮层同一条既有判据）。**若真机上千字段卡顿再单开一刀，且必须有实测数字** |
+| **sample size / 采样档位设置** | 我们的「截断」信号已经诚实地报在 `counts` / `truncation` 里（§3.3），再给一个采样档等于把「知道」说成「不知道」 |
+
+### 9.5 数据流与契约影响
+
+**P8-甲 / 乙 / 丙：零宿主改动。** 全部走**既有四条路由**（`/config`、`/query`、`/fields`、`/facets`）
+与既有形状；新增的只有**浏览器侧状态**（列集 / mute / 自动刷新 / 最近查询）与 `pure.js` 的纯函数。
+
+**新增挂载点（P8-甲，唯一要问的一项）**：客户端 apply 里
+`ctx.inject(['sidebarRightTabs','sidebarRight'], …)` 注册标签类型 + body；
+**`dsh.client.inject` 保持 `[]`**——跨包浏览器侧服务的接线**在运行期、不在 manifest**（§8 已实测：
+全仓 `dsh.client.inject` 都是 `[]`，包括已在消费 tty 服务的 docker）。
+拿不到服务时**安静退回卡片**（不抛错，否则客户端 apply 崩 = 整个插件起不来）。
+
+**P8-丁（要先问，独立一轮）**：
+`NormalizedQuery` 加 `sort`、`FacetsSpec` 加 `min`/`max`/`cardinality`、
+`capabilities().queryLanguage` 分档到 ES\|QL —— **每一处都要同步改 `capabilities()` ↔ 实现的对账守卫**
+（[test/capabilities.test.ts](../test/capabilities.test.ts) 的判据：**声明了就必须真有那根接线**，
+Loki 的 `follow` 说过没做，就是那条守卫抓的）。
+
+**跨包一行**：[search/src/index.ts](../../search/src/index.ts) 的 `PANEL_DIRECTORY` 里 loglens 那条
+**描述已经过期**（写着「面板侧只有来源清单与开关；查询走 agent 工具」）——工作台落地后要同步。
+改它属**跨包改动，进先问清单**；守卫 [panel-registry-names.test.ts](../../search/test/panel-registry-names.test.ts)
+只查 `registryName`，**描述不在它的判据里**（所以不改进先问清单就会静默过期）。
+
+### 9.6 边界与失败模式（每条都要有归宿）
+
+| 情形 | 归宿 |
+|---|---|
+| 老宿主 / 无 `sidebarRight` / 插件禁用 | 卡片保留今天的查询区；禁用时四条路由只留 `/config`（既有口径） |
+| **标签是会话作用域**（切会话标签消失） | 照 docker 的既有做法：**粘性意图 + `sidebarRight.registerCloseHandler(kind, …)` 收「用户点了 ✕」**，不重造机制。这需要 `sessions` 服务，**拿不到就退化成「不粘」**（面板本身照常） |
+| 大字段表 | 侧栏用**过滤 + 滚动 + 「共 N 个」**，不引虚拟滚动；`/fields` 全量拉的代价照旧写在文档里（45KB 那份读数） |
+| **无聚合能力的来源**（Loki） | 字段侧栏**可用**（`fields: 'discovered'` 的标签清单）；直方图 / 统计**不画**，且沿用 `supportsAggregation` 的**三态**：`undefined` = **不知道 → 什么都不说**，**不许写成「不支持」**（§3.1 那条「不知道 ≠ 不支持」） |
+| 自动刷新 | 在途跳过、标签不可见暂停、绝对窗口**不跟着走**（写明）、错误照旧落在既有错误行 |
+| 行详情 | raw **超长截断 + 「已截断」**；提示可能含敏感字段 |
+| 空值 / 近似性 | `filters` **表达不了「字段缺失」** → 空值桶**不给下钻**（既有判据）；`otherCount` / `countErrorUpperBound` 的**原话照抄** |
+| 样式 | 新控件走**既有 token 与配方**：发丝线 `0.5px`、圆角取六档 token、按钮族几何一致、可点行照 `.ll_groupRowBtn`、胶囊配 `corner-shape: round`；**新类名避开 `*btn*` 命名**以免被几何一致性检查卷进来（[scripts/client-style-spec.mjs](../../../scripts/client-style-spec.mjs) 的 `BUTTON_CLASS = /btn/i`——P6 第五刀的柱子就是这么避开的） |
+
+### 9.7 验收口径
+
+| 面 | 怎么验 |
+|---|---|
+| **纯函数** | `pure.js` 新增判据**逐条单测**（分区 / 列集 / mute / 排序 / 相对窗口重算 / localStorage 形状），**每条配反例**（拆掉判据必须变红） |
+| **渲染树与请求体** | `scripts/client-smoke.mjs`（**无浏览器**：断言渲染树与请求体）。这一层是 P8-甲…丙 的**主证据**——工作台每一期都要有「点一下 → 请求体恰好是什么」的断言，照 P6 各刀的既有写法 |
+| **真机** | 临时 profile（**真 `DSH_HOME` 的副本**，跑前跑后**源 profile 指纹逐字一致**）、**真 ES**、**真 Chrome**，逐条给读数；产物含内网标识一律**移出仓库到 `/tmp/`**，文档里脱敏（照 [docs/agent-real-test.md](../../../docs/agent-real-test.md) 与本包既有真机记录） |
+| **闸门** | 每期落地都要 `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿、`client-lint` 通过、`check-i18n` 键集一致；产物（`lib/`、`client.js`）**同批提交**（产物闸门 `scripts/check-artifacts.mjs` 比的是**工作树 vs 索引**，一批未提交改动上它必然报「落后」，那不是漂移的证据——提交时的比较才是真判据） |

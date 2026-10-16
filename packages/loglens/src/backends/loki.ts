@@ -313,19 +313,19 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
     },
 
     /**
-     * Loki 的标签清单本来就短（它是索引里的流标签，不是文档字段），所以这里不排序、不截断——
-     * 但形状与 ES 那侧统一（truncated 恒为 false），免得调用方写两套。
+     * Loki 的标签清单本来就短（它是索引里的流标签，不是文档字段），所以这里不排序——
+     * 形状与 ES 那侧统一：不传 `limit` 就是全列（ES 侧 2026-10-14 起同样如此），只在显式给了 limit 时才截。
      */
     async fields(target: LoglensTarget, options: FieldsOptions = {}): Promise<FieldsResult> {
       const body = await callJson(target, joinUrl(target.url, '/loki/api/v1/labels'), { method: 'GET' })
       const data = (body as { data?: unknown }).data
       if (!Array.isArray(data)) return { fields: [], total: 0, truncated: false }
       const names = data.filter((name): name is string => typeof name === 'string' && name !== '')
-      const limit = options.limit === undefined ? names.length : options.limit
+      const shown = options.limit === undefined ? names : names.slice(0, options.limit)
       return {
-        fields: names.slice(0, limit).map((name) => ({ name, kind: 'discovered' as const })),
+        fields: shown.map((name) => ({ name, kind: 'discovered' as const })),
         total: names.length,
-        truncated: names.length > limit,
+        truncated: options.limit !== undefined && names.length > options.limit,
       }
     },
 

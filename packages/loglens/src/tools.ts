@@ -71,6 +71,35 @@ export function renderLines(lines: readonly LogLine[], markId?: string): string 
   return lines.map((line) => (line.id === markId ? '→ ' : '  ') + formatLine(line)).join('\n')
 }
 
+/** `loglens_fields` 的渲染输入（从工具返回值里取用的那一小撮）。 */
+export interface FieldsView {
+  fields?: Array<{ name: string, kind: string, preferred?: boolean, conflict?: boolean, esTypes?: string[] }>
+  total?: number
+  truncated?: boolean
+  warnings?: string[]
+}
+
+/**
+ * `loglens_fields` 的渲染文本（导出是为了能直接测：冲突标记这种东西不该只靠人肉看）。
+ *
+ * 两件事必须出现在文本里：
+ * ① 一共多少个 / 是不是被截断（截断只在显式 limit 时才会发生）；
+ * ② **每个类型冲突的字段逐个标出来**——同名在不同索引里类型不一致，拿它分组只会覆盖一部分索引，
+ *    而候选里它的名字跟别人长得一模一样，不标就等于没说。
+ */
+export function renderFields(result: FieldsView): string {
+  const fields = result.fields ?? []
+  if (fields.length === 0) return '这个来源没有报告任何字段。'
+  const head = '字段 ' + String(fields.length) + (result.total === undefined ? '' : ' / 共 ' + String(result.total)) + ' 个'
+    + (result.truncated === true ? '（已截断）' : '')
+  const body = fields.map((field) => (field.preferred === true ? '* ' : '  ') + field.name + '（' + field.kind
+    + (field.conflict === true ? '，**类型冲突**：' + (field.esTypes ?? []).join(' / ') : '') + '）').join('\n')
+  const conflictCount = fields.filter((field) => field.conflict === true).length
+  const tail = conflictCount === 0 ? [] : ['有 ' + String(conflictCount) + ' 个字段**类型冲突**（同名在不同索引里类型不一致）：'
+    + '拿它分组或筛值可能只覆盖一部分索引，先按上面标出来的类型确认你要的是哪一种。']
+  return [head, body, ...tail, ...(result.warnings ?? [])].join('\n')
+}
+
 /** 一行的输出 schema：与契约的 LogLine 同形（工具返回值与 render 都按它）。 */
 const LINE_SCHEMA = {
   type: 'object',
@@ -287,12 +316,18 @@ export function registerLoglensTools(deps: ToolDeps): void {
     name: 'loglens_fields',
     isConcurrencySafe: () => true,
     description: '列出一个日志来源可用的字段 / 标签（Loki 走 /loki/api/v1/labels；ES / OpenSearch 走 _field_caps）。'
-      + '常用筛选项（container.name / host.name / log.level 这类）排在最前面，默认最多 80 个、硬上限 200；'
-      + '被截断时返回值里的 total / truncated 与 warnings 会说明——**别把这份截断过的清单当成全部字段**。'
+      + '常用筛选项（container.name / host.name / log.level 这类）排在最前面，**默认不截断、列全部**'
+      + '（与 Kibana 的 _field_caps 同口径：长度在那边交给界面，在这边交给调用方自己权衡）——'
+      + '一台通配全集群的来源可能有上千个字段、响应几十 KB，只想确认某几个字段在不在就先传 limit 收窄，'
+      + '或用 loglens_facets 看哪些字段真有数据。'
+      + '传了 limit 才可能截断，那时返回值里的 total / truncated 与 warnings 会说明。'
+      + '容器行（`object` / `nested`，如 `container` / `host` 这类没有自己值的父级）不列；'
+      + '同名在不同索引里落到不同宽类型族的标 `conflict: true`（带 esTypes 与 conflictDescriptions）——'
+      + '那种字段拿去分组或筛值可能只覆盖一部分索引。'
       + '字段名**不用带 .keyword**（子字段行也不列）：适配器会自己按 _field_caps 决定怎么打。',
     parameters: {
       target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
-      limit: { type: 'number', description: '最多列几个字段（默认 80，硬上限 200）' },
+      limit: { type: 'number', description: '最多列几个字段（不传 = 全部；传了就只列前这么多，正整数，无硬上限）' },
     },
     output: {
       schema: {
@@ -311,23 +346,18 @@ export function registerLoglensTools(deps: ToolDeps): void {
                 kind: { type: 'string', required: true },
                 label: { type: 'string' },
                 preferred: { type: 'boolean', description: 'true = 常用筛选项（排在前面）' },
+                esTypes: { type: 'array', items: { type: 'string' }, description: '同名在不同索引里出现过的原生 ES 类型（只有多类型时才返回）' },
+                conflict: { type: 'boolean', description: 'true = 同名在不同索引里落到了不同的**宽类型族**（Kibana 的 type: conflict）；拿它分组 / 筛值可能只覆盖一部分索引' },
+                conflictDescriptions: { type: 'object', additionalProperties: true, properties: {}, description: '冲突时：每个原生类型各出现在哪些索引里' },
               },
             },
           },
-          total: { type: 'number', required: true, description: '这个来源一共有多少字段（截断前）' },
+          total: { type: 'number', required: true, description: '这个来源一共有多少字段（截断前；已去掉内部字段、.keyword 子行与 object/nested 容器行）' },
           truncated: { type: 'boolean', required: true },
           warnings: { type: 'array', required: true, items: { type: 'string' } },
         },
       },
-      render: (_args: unknown, value: unknown) => {
-        const result = value as { fields?: Array<{ name: string, kind: string, preferred?: boolean }>, total?: number, truncated?: boolean, warnings?: string[] }
-        const fields = result.fields ?? []
-        if (fields.length === 0) return [{ type: 'text', text: '这个来源没有报告任何字段。' }]
-        const head = '字段 ' + String(fields.length) + (result.total === undefined ? '' : ' / 共 ' + String(result.total)) + ' 个'
-          + (result.truncated === true ? '（已截断）' : '')
-        const body = fields.map((field) => (field.preferred === true ? '* ' : '  ') + field.name + '（' + field.kind + '）').join('\n')
-        return [{ type: 'text', text: [head, body, ...(result.warnings ?? [])].join('\n') }]
-      },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderFields(value as FieldsView) }],
     },
     async execute(args: unknown) {
       return await runFields(deps, (args ?? {}) as Record<string, unknown>)

@@ -204,9 +204,14 @@ export async function runFacets(deps, input) {
         warnings,
     };
 }
-/** 列字段的默认上限与硬上限（工具面直接取用；适配器那边还有一份自己的默认值）。 */
-export const FIELDS_DEFAULT_LIMIT = 80;
-export const FIELDS_MAX_LIMIT = 200;
+/**
+ * 列字段的**长度处理**（2026-10-14，对齐 Kibana）：**不传 limit 就是不截断**，来源有多少字段列多少。
+ *
+ * 原来这里是「默认 80 + 硬上限 200」。真机反馈第 4 条要的是**看得出被截断**（45KB 那份清单被当成全部），
+ * 不是「一律砍到 80」——Kibana 的 `_field_caps` 从来不 slice，长度交给界面（字段名搜索 + 分区 + 虚拟滚动）。
+ * 所以这层同理：默认给全，要收窄是调用方**显式**说的事；只有真截了才带上 total / truncated 与那句警告
+ * （形状不变，信号仍然跟着结果走）。工具面的成本提示写在工具描述里，不靠这里的默认值替调用方做决定。
+ */
 export async function runFields(deps, input) {
     const picked = resolveTarget(deps.config(), input.target);
     if (!picked.ok)
@@ -214,22 +219,20 @@ export async function runFields(deps, input) {
     const backend = deps.backendFor(picked.target.kind);
     if (backend === undefined)
         throw new Error(adapterHint(picked.target.kind));
-    let requested = FIELDS_DEFAULT_LIMIT;
+    // `limit` 是**可选的收窄手段**，没有默认值、也没有硬顶：调用方要前 N 个就明说，不说就是全部
+    let limit;
     if (input.limit !== undefined && input.limit !== null) {
         if (typeof input.limit !== 'number' || !Number.isInteger(input.limit) || input.limit < 1) {
             throw new Error('limit 必须是正整数（列字段的条数上限）');
         }
-        requested = input.limit;
+        limit = input.limit;
     }
-    const limit = Math.min(requested, FIELDS_MAX_LIMIT);
-    const result = await backend.fields(picked.target, { limit });
+    const result = await backend.fields(picked.target, limit === undefined ? {} : { limit });
     const warnings = [];
-    if (requested > FIELDS_MAX_LIMIT) {
-        warnings.push('limit ' + String(requested) + ' 超过硬上限，已夹到 ' + String(FIELDS_MAX_LIMIT));
-    }
     if (result.truncated) {
         warnings.push('只列了前 ' + String(result.fields.length) + ' 个（这个来源共有 ' + String(result.total) + ' 个字段）：'
-            + '这正是「字段表看不出被截断」的坑——用 limit 要更多，或先用 loglens_facets 看哪些字段真有数据');
+            + '这正是「字段表看不出被截断」的坑——去掉 limit 就是全部，'
+            + '或先用 loglens_facets 看哪些字段真有数据');
     }
     return {
         target: describeTarget(picked.target),
@@ -238,6 +241,11 @@ export async function runFields(deps, input) {
             kind: field.kind,
             ...(field.label === undefined ? {} : { label: field.label }),
             ...(field.preferred === true ? { preferred: true } : {}),
+            // 多类型才有（Kibana 的 esTypes / type: conflict / conflictDescriptions）：**必须原样搬过去**，
+            // 在这一层丢掉的话，工具面就再也说不出「这个字段在不同索引里类型不一致」（渲染与面板都靠它）
+            ...(field.esTypes === undefined ? {} : { esTypes: field.esTypes }),
+            ...(field.conflict === true ? { conflict: true } : {}),
+            ...(field.conflictDescriptions === undefined ? {} : { conflictDescriptions: field.conflictDescriptions }),
         })),
         total: result.total,
         truncated: result.truncated,

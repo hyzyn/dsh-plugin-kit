@@ -525,6 +525,82 @@ describe('flavor / fields / health', () => {
     expect(result.truncated).toBe(true)
   })
 
+  it('**不传 limit 就是不截断**：120 个字段全列（2026-10-14 对齐 Kibana，不许再退回「默认砍到 80」）', async () => {
+    // 这条用例的判据只有一个：**默认那条路上没有任何 slice**——字段数超过任何可能的默认上限（80 / 200）
+    // 也照样全给。谁要是把默认上限加回来（或让 ES 侧继续走 ES_DEFAULT_FIELD_LIMIT），这条立刻红。
+    const many: Record<string, unknown> = {}
+    for (let index = 0; index < 120; index += 1) many['f' + String(index).padStart(3, '0')] = { keyword: {} }
+    const fake = await startFakeEs({ docs: [], fieldCaps: many })
+    const result = await createElasticBackend({ flavor: 'es' }).fields(fake.target)
+    expect(result.total).toBe(120)
+    expect(result.fields).toHaveLength(120)
+    expect(result.truncated).toBe(false)
+    // 顺序照旧：优先键在名字前面，其余按字母——「不截断」不等于「不管顺序」
+    expect(result.fields.every((field) => field.kind === 'indexed')).toBe(true)
+  })
+
+  it('同名在不同索引里类型不一致时标 conflict + esTypes + conflictDescriptions（Kibana 的 type: conflict）', async () => {
+    // 真机实例（ES 11.1 那台、`*,-.*`）：`container.labels.org_label-schema_build-date` 在部分索引是
+    // `date`、部分是 `text`——拿它分组只会覆盖一部分索引，所以必须标出来
+    const fake = await startFakeEs({
+      docs: [],
+      fieldCaps: {
+        '@timestamp': { date: { type: 'date', indices: ['app-1'] } },
+        'container.labels.org_label-schema_build-date': {
+          date: { type: 'date', indices: ['app-1'] },
+          text: { type: 'text', indices: ['app-2'] },
+        },
+      },
+    })
+    const result = await createElasticBackend({ flavor: 'es' }).fields(fake.target)
+    const conflicted = result.fields.find((field) => field.name === 'container.labels.org_label-schema_build-date')
+    expect(conflicted?.conflict).toBe(true)
+    expect(conflicted?.esTypes).toEqual(['date', 'text'])
+    expect(conflicted?.conflictDescriptions).toEqual({ date: ['app-1'], text: ['app-2'] })
+    // 单类型字段不带这一串：只在**有信息量**时才加（载荷与噪声两条都算）
+    const plain = result.fields.find((field) => field.name === '@timestamp')
+    expect(plain?.esTypes).toBeUndefined()
+    expect(plain?.conflict).toBeUndefined()
+    expect(plain?.conflictDescriptions).toBeUndefined()
+  })
+
+  it('同族的多类型**不算**冲突（text + keyword 都是字符串，Kibana 原话是 ignore the conflict）', async () => {
+    const fake = await startFakeEs({
+      docs: [],
+      fieldCaps: {
+        'app.name': {
+          text: { type: 'text', indices: ['app-1'] },
+          keyword: { type: 'keyword', indices: ['app-2'] },
+        },
+      },
+    })
+    const result = await createElasticBackend({ flavor: 'es' }).fields(fake.target)
+    const field = result.fields.find((item) => item.name === 'app.name')
+    // 类型摆出来（调用方看得见它是两栖的），但不打冲突标记——冲突的判据是**宽类型族**不同，不是「类型不止一个」
+    expect(field?.esTypes).toEqual(['text', 'keyword'])
+    expect(field?.conflict).toBeUndefined()
+    expect(field?.conflictDescriptions).toBeUndefined()
+  })
+
+  it('object / nested 容器行不列（真机：`*,-.*` 的 200 个名字里有 10 个是容器行），total 也只数可列的', async () => {
+    const fake = await startFakeEs({
+      docs: [],
+      fieldCaps: {
+        container: { object: { type: 'object' } },
+        'container.name': { keyword: { type: 'keyword' } },
+        host: { object: { type: 'object' } },
+        'host.name': { keyword: { type: 'keyword' } },
+        'host.kids': { nested: { type: 'nested' } },
+        // 「既当过容器又当过叶子」的名字**不剔**：判据是「所有类型都是容器」，不能顺手藏掉一个没定论的名字
+        'container.mixed': { object: { type: 'object' }, keyword: { type: 'keyword', indices: ['app-1'] } },
+      },
+    })
+    const result = await createElasticBackend({ flavor: 'es' }).fields(fake.target)
+    expect(result.fields.map((field) => field.name)).toEqual(['container.name', 'host.name', 'container.mixed'])
+    expect(result.total).toBe(3)   // 容器行不算进 total——「共 N 个字段」要与列出来的一致
+    expect(result.fields.find((field) => field.name === 'container.mixed')?.conflict).toBe(true)
+  })
+
   it('连不上时 health 如实回报（不是抛错）', async () => {
     const fake = await startFakeEs({ docs: [] })
     const url = fake.url

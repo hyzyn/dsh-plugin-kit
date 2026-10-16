@@ -31,10 +31,15 @@ export declare const ES_PROBE_WINDOW_MS: number;
 export declare const ES_PIT_KEEP_ALIVE = "2m";
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
 export declare const ES_TIME_FIELD = "@timestamp";
-/** 列字段的默认上限（真机反馈：45KB 的字段表等于没给）。 */
-export declare const ES_DEFAULT_FIELD_LIMIT = 80;
-/** 列字段的硬上限：工具面再要也不能越过它（一次返回值撑爆上下文比少列几个字段糟得多）。 */
-export declare const ES_MAX_FIELD_LIMIT = 200;
+/** 宽类型族；认不出来的一律 `unknown`。 */
+export declare function esTypeFamily(esType: string): string;
+/**
+ * 是不是 `object` / `nested` 这类**容器行**：它们自己没有值（值在子字段里），拿来分组或筛值只会打空。
+ * Kibana 收尾也把它们剔掉（`!['object', 'nested'].includes(field.type)`）；真机实测 `*,-.*` 的
+ * `_field_caps?fields=*` 会回 10 个这种行（`container` / `host` / `log` / `agent` / `ecs` … 200 个名字里）。
+ * 判据是「**所有**类型都是容器」——某个名字既当过容器又当过叶子，那是字段本身的问题，不能顺手藏掉。
+ */
+export declare function isContainerRow(esTypes: readonly string[]): boolean;
 /**
  * 「常用筛选项」：这些字段排在最前面（名单与 src/line.ts 的标签优先键同源，加几个 ES 侧的常见项）。
  * 判据是**排查时真的会拿它筛**，不是「名字好听」。

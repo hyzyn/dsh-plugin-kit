@@ -14,6 +14,8 @@
  */
 import {
   appendLines,
+  containersKey,
+  containerSlotState,
   countsParts,
   dockerFlagOf,
   dockerLogLines,
@@ -43,7 +45,17 @@ import {
   queryPayload,
   queryProblem,
   supportsAggregation,
-  windowOptions,
+  levelChoices,
+  levelFiltered,
+  levelFilterOf,
+  lineTitle,
+  ROW_LABEL_MAX,
+  rowFilterProblem,
+  rowLabelOverflow,
+  rowLabels,
+  windowChoices,
+  windowProblem,
+  zoomToBar,
 } from './pure.js'
 
 window.__ModuleLoader__.load({
@@ -101,7 +113,9 @@ window.__ModuleLoader__.load({
       '.ll_row{display:grid;grid-template-columns:minmax(120px,140px) minmax(140px,1.4fr) minmax(180px,2fr) auto auto;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px}',
       // URL 与索引表达式竖着放一格：横着再加一列会把这一行挤到看不清
       '.ll_stack{display:flex;flex-direction:column;gap:6px;min-width:0}',
-      '.ll_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
+      // text-overflow: 下拉/输入框都只有这么宽，装不下时**硬切**会切掉半个字（真机：占位项被原生
+      // 箭头切了一半）——省略号至少说明「后面还有」。原生 `<select>` 也认这条（Chrome / Firefox）。
+      '.ll_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5;text-overflow:ellipsis}',
       '.ll_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.ll_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
       '.ll_input:disabled{opacity:.5;cursor:not-allowed}',
@@ -109,16 +123,30 @@ window.__ModuleLoader__.load({
       '.ll_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
       '.ll_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
       '.ll_query{display:flex;flex-direction:column;gap:10px;border-top:.5px solid var(--dsw-alias-border-l1);padding-top:12px}',
-      '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,2fr) minmax(96px,120px) minmax(64px,84px) auto;gap:8px;align-items:center}',
+      '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,2fr) minmax(96px,120px) minmax(96px,120px) minmax(64px,84px) auto;gap:8px;align-items:center}',
       // 分组那一行只有「字段 / 一个按钮 / 一句回话」（字段候选改成点开即拉之后，没有独立的按钮了）
       '.ll_groupGrid{display:grid;grid-template-columns:minmax(180px,2fr) auto minmax(0,1fr);gap:8px;align-items:center}',
       '.ll_queryMeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
-      '.ll_resultRow{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:baseline;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
+      '.ll_resultRow{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:8px;align-items:baseline;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
       '.ll_resultRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.ll_resultTime{color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
       '.ll_resultLevel{color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
       '.ll_resultMsg{color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word}',
+      /*
+       * 行上的标签（「这行是谁写的」）。排版与榜上那些条同一族：等宽、小号、发丝描边。
+       * **类名刻意不带 `btn`**（`scripts/client-style-spec.mjs` 的 BUTTON_CLASS = /btn/i 会把它们卷进
+       * 「同族几何一致」——这些是行内的小标签，几何本来就和按钮不同族），与直方图柱子同一条做法。
+       */
+      '.ll_resultTags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}',
+      '.ll_resultTag{display:inline-flex;align-items:center;gap:4px;max-width:220px;padding:0 4px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
+      // 可点的标签值：点一下就是「按它加一条筛选」（照 .ll_groupRowBtn 的配方：背景/边框归零 + hover 底）
+      '.ll_resultTagHit{cursor:pointer;color:var(--dsw-alias-label-primary)}',
+      '.ll_resultTagHit:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l4)}',
+      '.ll_resultTagHit:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      '.ll_resultTagKey{color:var(--dsw-alias-label-tertiary)}',
+      '.ll_resultTagValue{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ll_resultTagMore{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
       '.ll_warn{color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px}',
       // 时间分布（直方图）。柱子高度是**内联** style（每根都不一样，写不进类里）；类只管外观。
       '.ll_hist{display:flex;flex-direction:column;gap:6px}',
@@ -128,6 +156,14 @@ window.__ModuleLoader__.load({
       '.ll_histBar{flex:1 1 0;min-width:1px;background:var(--dsw-alias-interactive-bg-hover);border-radius:1px}',
       // 空桶只留一条 2% 的底座（见 pure.js histogramBars：补 0 是为了让「那段时间一条都没有」看得见）
       '.ll_histBarEmpty{background:var(--dsw-alias-border-l1)}',
+      // 可点的柱子是个 <button>（键盘也能用），所以要把 UA 的按钮外观整条按掉，只留那根条本身
+      // （类名刻意不带 `btn`：按钮族检查按 /btn/i 抓类名，柱子套上去会被「同族几何一致」卷进来）
+      '.ll_histBarClick{appearance:none;padding:0;border:0;font:inherit;cursor:pointer}',
+      '.ll_histBarClick:hover:not(:disabled){background:var(--dsw-alias-label-tertiary)}',
+      '.ll_histBarClick:disabled{opacity:.4;cursor:not-allowed}',
+      '.ll_histBarClick:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      // 正在放大的那一档：与榜上「正在按它下钻」同一个高亮（让人看得出这一屏是收窄过的）
+      '.ll_histBarActive,.ll_histBarActive:hover:not(:disabled){background:var(--dsw-alias-state-business-primary)}',
       // 按字段分组（terms 榜）。条的宽度是**内联** style（每条都不一样，写不进类里）；类只管外观。
       '.ll_groups{display:flex;flex-direction:column;gap:6px}',
       '.ll_groupHead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
@@ -167,16 +203,25 @@ window.__ModuleLoader__.load({
       // 右侧留出箭头的位子（输入框的 padding 归 .ll_input，这里只补右内边距）
       '.ll_pickInput{padding-right:30px}',
       '.ll_pickChevron{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary)}',
-      '.ll_pickList{position:absolute;z-index:100;top:calc(100% + 4px);left:0;right:0;box-sizing:border-box;max-height:216px;overflow-y:auto;padding:4px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      /*
+       * 浮层是个**两段式**盒子：上面一段滚动（候选），下面一段钉住不动（页脚：一共多少字段 + 刷新）。
+       * 2026-10-14 对齐 Kibana 之后不再截断，候选可能有上百行——页脚要是跟着滚，就得先滚到底才看得见
+       * 「共 102 个字段」，那等于没报。所以滚动只给候选那一层（`.ll_pickScroll`），页脚是它的兄弟。
+       */
+      '.ll_pickList{position:absolute;z-index:100;top:calc(100% + 4px);left:0;right:0;box-sizing:border-box;max-height:216px;display:flex;flex-direction:column;padding:4px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      '.ll_pickScroll{min-height:0;overflow-y:auto}',
       '.ll_pickItem{display:block;width:100%;min-height:34px;padding:6px 8px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:13px;line-height:20px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}',
       '.ll_pickItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       // 方向键停在那一行（与 hover 同一个底：两套输入说的是同一件事）
       '.ll_pickItemActive{background:var(--dsw-alias-interactive-bg-hover)}',
       '.ll_pickItem:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
+      // 冲突字段的行尾标记（同名在不同索引里类型不一致）：一行里只加一小截文字，不要做成胶囊/徽章
+      '.ll_pickConflict{margin-left:6px;color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px}',
       // 浮层里的「不是候选」的几行：加载中 / 取不到 / 这个来源没有字段名 —— 都排成一条文字行
       '.ll_pickState{padding:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
       // 页脚：宿主那句截断警告（照抄）+「刷新」；与候选之间用一条发丝线分开
-      '.ll_pickFoot{display:flex;align-items:center;gap:8px;margin-top:4px;padding:4px 8px 2px;border-top:.5px solid var(--dsw-alias-border-l2)}',
+      // `flex:none` 是钉住它的关键：滚动只发生在 `.ll_pickScroll`，页脚在它外面、永远看得见
+      '.ll_pickFoot{flex:none;display:flex;align-items:center;gap:8px;margin-top:4px;padding:4px 8px 2px;border-top:.5px solid var(--dsw-alias-border-l2)}',
       '.ll_pickFoot .ll_pickState{flex:1;min-width:0;padding:0}',
       '.ll_pickRefresh{flex:none;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}',
       '.ll_pickRefresh:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
@@ -216,6 +261,8 @@ window.__ModuleLoader__.load({
       'meta.groupsBlankKey': '（空值）',
       'hint.histogram': '这张图来自后端按时间分桶（不是数这一页——这一页被条数截断过，数它只会得到一个假的分布）。',
       'hint.histogramTruncated': '窗口比这张图长，只画了前一部分。',
+      'hint.zoomBar': '点一下放大到这一段（把时间窗夹到这一根柱）',
+      'hint.zoomClamped': '已放大到最短 1 分钟（那一档分桶比这还窄，再窄就查不出东西了）。',
       'hint.groups': '这张榜来自后端的 terms 聚合（不是数这一页——这一页被条数截断过，数它只会得到一个假的排名）。点一条即按它下钻（加一条筛选重查一次），再点一次取消。',
       'hint.groupsTruncated': '桶比这张榜长，只画了前一部分。',
       'hint.groupBlankNoDrill': '空值那一条不能下钻：筛选只能表达「字段 = 某值」，表达不了「字段缺失」。',
@@ -255,7 +302,12 @@ window.__ModuleLoader__.load({
       'msg.saved': '已保存',
       'msg.memoryOnly': '宿主没有 settings 服务，改动只在本次进程内有效',
       'msg.fieldsEmpty': '这个来源没有返回字段名（可以直接手填，比如 container.name）',
+      // 容器下拉那格占位项的两种「还没有选项」（第三种是「加载中…」，复用 list.loading）：
+      // 都短到能放进最窄的那一列（见 scripts/client-smoke.mjs 的宽度预算）
+      'msg.containersEmpty': '没有容器',
+      'msg.containersFailed': '加载失败',
       'error.fields': '字段清单取不到：{message}',
+      'error.containers': '容器清单取不到：{message}',
       'error.needUrl': '这个类型必须填地址',
       'error.badUrl': '地址必须是 http:// 或 https:// 开头的绝对地址',
       'error.badKind': '类型不认识（支持 Loki / Elasticsearch / OpenSearch / Docker）',
@@ -265,19 +317,38 @@ window.__ModuleLoader__.load({
       'placeholder.groupBy': 'container.name',
       'field.target': '来源',
       'field.window': '时间窗',
+      'field.level': '级别',
       'field.limit': '条数',
       'btn.query': '查询',
       'btn.querying': '查询中…',
       'btn.group': '分组',
       'btn.grouping': '分组中…',
       'btn.refreshFields': '刷新',
+      'hint.fieldsCount': '共 {count} 个字段',
+      'badge.conflict': '类型冲突',
       'btn.nextPage': '下一页',
       'btn.clear': '清空结果',
       'option.15m': '最近 15 分钟',
       'option.1h': '最近 1 小时',
       'option.6h': '最近 6 小时',
       'option.24h': '最近 24 小时',
+      // 「自定义」那一档只在点柱放大之后才出现在下拉里；文案按**真实范围**现算（见 windowLabel）
+      'option.custom': '{from} → {to}',
       'list.noHit': '没有命中（换个时间窗，或放宽查询串）',
+      // 级别那一格：「不限」是空串那一项（原生 <select> 的回落项也就是它，见 pure.js levelFilterOf）
+      'option.levelAny': '不限级别',
+      'option.levelTrace': 'trace 及以上',
+      'option.levelDebug': 'debug 及以上',
+      'option.levelInfo': 'info 及以上',
+      'option.levelWarn': 'warn 及以上',
+      'option.levelError': 'error 及以上',
+      'option.levelFatal': 'fatal',
+      // 页内筛的**边界**必须说出来：宿主是在返回的这一页上过滤的，counts / truncation 仍是未筛的整页
+      'hint.levelPaged': '级别是在**返回的这一页**上筛的（宿主口径）：计数与截断提示仍是未筛的整页，要按级别看全量请用分组榜。',
+      // 行上的标签：点值即按它加一条筛选（「这行是谁写的」→「看它写的其它行」）
+      'hint.rowLabelFilter': '按 {field} = {value} 加一条筛选（再点榜上那条或芯片上的 × 可去掉）',
+      'hint.rowMoreLabels': '另有 {count} 个标签（悬停看全部）',
+      'hint.rowSensitive': '行详情里可能有敏感字段（原文与标签原样来自日志后端）',
       'meta.returned': '返回 {count} 行',
       'meta.matched': '命中 {count}',
       'meta.matchedAtLeast': '至少命中 {count}',
@@ -293,15 +364,20 @@ window.__ModuleLoader__.load({
       'status.cursor_expired': '游标已过期',
       'error.needTarget': '先选一个来源',
       'error.badLimit': '条数得是正整数',
+      'error.badWindow': '自定义时间窗不完整（点柱放大时会带上这一段；重新点一根柱，或改回预设档）',
       'field.dockerTarget': 'Docker 目标名',
       'field.container': '容器',
       'field.tail': '行数',
-      'btn.containers': '拉取容器',
+      'btn.refresh': '刷新',
       'btn.logs': '看日志',
       'hint.docker': '容器日志走的是 Docker 面板插件自己的 /api/dsh-docker/logs：这条路没有 until、行数有上限、没有 grep——要精确检索请让 agent 用 docker_logs_grep。',
       'hint.dockerMissing': '这条路径要「Docker 容器面板」插件（当前没检测到它）：装上并启用后，这里可以直接看容器日志。',
+      // 清单**拉回来了、但是空的**：下拉那格写着「没有容器」，这句是它的解释（请求带的是 all:false）
+      'hint.containersEmpty': '这个 Docker 目标上没有运行中的容器（这里只列运行中的）。',
       'error.needContainer': '先选一个容器',
-      'option.pickTarget': '（先选一个来源）',
+      // 占位项要**短到放得进最窄一列**（旧文案「（先选一个来源）」9 字 117px，被原生箭头切掉一半）；
+      // 「还要先做什么」由旁边那条错误行说（error.needTarget）。宽度预算的守卫在 client-smoke 里。
+      'option.pickTarget': '选择来源',
       'option.dockerAuto': '（让 Docker 面板自己回落）',
       'btn.logsLoading': '加载中…',
       'list.noLogs': '没有日志（换个大点的时间窗或行数再试）',
@@ -321,6 +397,8 @@ window.__ModuleLoader__.load({
       'meta.groupsBlankKey': '(empty value)',
       'hint.histogram': 'This chart comes from the backend time-bucketing (not from counting this page — the page is capped by the limit, so counting it would only give you a fake distribution).',
       'hint.histogramTruncated': 'The window is longer than this chart; only the first part is drawn.',
+      'hint.zoomBar': 'Click to zoom into this slice (narrows the time window to this bar)',
+      'hint.zoomClamped': 'Zoomed to the 1-minute minimum (that bucket is narrower than this; anything narrower finds nothing).',
       'hint.groups': 'This ranking comes from the backend terms aggregation (not from counting this page — the page is capped by the limit, so counting it would only give you a fake ranking). Click a row to drill into it (adds one filter and re-runs the query); click it again to undo.',
       'hint.groupsTruncated': 'There are more buckets than this ranking; only the first part is drawn.',
       'hint.groupBlankNoDrill': 'The empty-value row cannot be drilled into: a filter can only say “field = some value”, not “the field is missing”.',
@@ -360,7 +438,10 @@ window.__ModuleLoader__.load({
       'msg.saved': 'Saved',
       'msg.memoryOnly': 'The host has no settings service; changes last only in this process',
       'msg.fieldsEmpty': 'This source returned no field names (you can type one, e.g. container.name)',
+      'msg.containersEmpty': 'No containers',
+      'msg.containersFailed': 'Load failed',
       'error.fields': 'Could not load the field list: {message}',
+      'error.containers': 'Could not load the container list: {message}',
       'error.needUrl': 'This kind needs a URL',
       'error.badUrl': 'The URL must be an absolute http:// or https:// address',
       'error.badKind': 'Unknown kind (Loki / Elasticsearch / OpenSearch / Docker)',
@@ -370,19 +451,35 @@ window.__ModuleLoader__.load({
       'placeholder.groupBy': 'container.name',
       'field.target': 'Source',
       'field.window': 'Time window',
+      'field.level': 'Level',
       'field.limit': 'Limit',
       'btn.query': 'Run',
       'btn.querying': 'Running…',
       'btn.group': 'Group',
       'btn.grouping': 'Grouping…',
       'btn.refreshFields': 'Refresh',
+      'hint.fieldsCount': '{count} fields in total',
+      'badge.conflict': 'type conflict',
       'btn.nextPage': 'Next page',
       'btn.clear': 'Clear',
       'option.15m': 'Last 15 minutes',
       'option.1h': 'Last hour',
       'option.6h': 'Last 6 hours',
       'option.24h': 'Last 24 hours',
+      // The "custom" entry only appears after a bar zoom; its copy is computed from the real range (see windowLabel)
+      'option.custom': '{from} → {to}',
       'list.noHit': 'No hits (widen the window or loosen the query)',
+      'option.levelAny': 'Any level',
+      'option.levelTrace': 'trace and up',
+      'option.levelDebug': 'debug and up',
+      'option.levelInfo': 'info and up',
+      'option.levelWarn': 'warn and up',
+      'option.levelError': 'error and up',
+      'option.levelFatal': 'fatal',
+      'hint.levelPaged': 'The level filter is applied to the returned page (the host’s own semantics): the counts and truncation signals still describe the unfiltered page. Use the group ranking for per-level totals.',
+      'hint.rowLabelFilter': 'Add a filter {field} = {value} (remove it via the ranking row or the × on the chip)',
+      'hint.rowMoreLabels': '{count} more labels (hover to see all)',
+      'hint.rowSensitive': 'Row details can contain sensitive fields (raw and labels come verbatim from the log backend)',
       'meta.returned': '{count} rows',
       'meta.matched': '{count} matched',
       'meta.matchedAtLeast': 'at least {count} matched',
@@ -398,15 +495,17 @@ window.__ModuleLoader__.load({
       'status.cursor_expired': 'cursor expired',
       'error.needTarget': 'Pick a source first',
       'error.badLimit': 'The limit must be a positive integer',
+      'error.badWindow': 'The custom time window is incomplete (bar zoom carries that range; click a bar again, or go back to a preset)',
       'field.dockerTarget': 'Docker target name',
       'field.container': 'Container',
       'field.tail': 'Lines',
-      'btn.containers': 'Load containers',
+      'btn.refresh': 'Refresh',
       'btn.logs': 'Show logs',
       'hint.docker': 'Container logs come from the Docker panel plugin own /api/dsh-docker/logs: no until, a capped tail, and no grep — ask the agent for docker_logs_grep when you need real search.',
       'hint.dockerMissing': 'This path needs the Docker container panel plugin (not detected): install and enable it to read container logs here.',
+      'hint.containersEmpty': 'This Docker target has no running containers (this list only shows running ones).',
       'error.needContainer': 'Pick a container first',
-      'option.pickTarget': '(pick a source)',
+      'option.pickTarget': 'Select source',
       'option.dockerAuto': '(let the Docker panel pick)',
       'btn.logsLoading': 'Loading…',
       'list.noLogs': 'No logs (try a wider time window or a larger tail)',
@@ -495,6 +594,17 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(false)
       const [saving, setSaving] = React.useState(false)
       const [query, setQuery] = React.useState(emptyQuery)
+      /*
+       * 直方图上「点一根柱放大」的结果：**正在放大在哪一档**（`{ from, to }`，用来把那一档
+       * 高亮出来）与**它是不是被下限夹过**（界面要如实说一句，不许静默收窄）。
+       *
+       * 窗口本身**不在 state 里**——它在 `query.window`（草稿自带，见 pure.js 的 `zoomToBar`）。
+       * 理由：查询一律经 `runQuery(append, override)` 发出去，`override` 是「这一次要用哪份
+       * 草稿」；窗口若另存一份 state，点柱子那一枪读到的就还是上一轮的值（D04 那一类：
+       * 说的和查的不是一件事）。这两项只是**给眼睛看的回显**，不参与请求。
+       */
+      const [zoomedBar, setZoomedBar] = React.useState(undefined)
+      const [zoomClamped, setZoomClamped] = React.useState(false)
       const [outcome, setOutcome] = React.useState(undefined)
       const [lines, setLines] = React.useState([])
       const [cursor, setCursor] = React.useState(undefined)
@@ -514,6 +624,9 @@ window.__ModuleLoader__.load({
       // 此刻要摆的候选（纯判据在 pure.js 的 fieldChoices：子串过滤 / 保持宿主顺序 / 命中 0 个回空）
       const choices = pickOpen ? fieldChoices(fields, groupBy) : []
       const [fieldsNote, setFieldsNote] = React.useState('')
+      // 这个来源一共有多少字段（宿主回的 total）：**面板不传 limit，所以列出来的就是全部**——
+      // 页脚报这个数（Kibana 那边是把长度交给界面去消化，我们这里至少让「有多长」看得见）
+      const [fieldsTotal, setFieldsTotal] = React.useState(0)
       const [fieldsError, setFieldsError] = React.useState('')
       // 在途闩：同一来源正在拉的途中不要再来一枪（一次点击会先 focus 再 click，见 loadFields）
       const fieldsFlightRef = React.useRef('')
@@ -526,6 +639,14 @@ window.__ModuleLoader__.load({
       const [dockerTail, setDockerTail] = React.useState(200)
       const [dockerBusy, setDockerBusy] = React.useState(false)
       const [dockerTargets, setDockerTargets] = React.useState([])
+      // 这份容器清单属于谁（缓存键：来源 id + Docker 目标名，见 pure.js 的 containersKey）
+      const [containersSource, setContainersSource] = React.useState('')
+      // 容器清单自己在途（与 dockerBusy 分开：那个是「看日志」的忙，两个转的圈不是一件事）
+      const [containersBusy, setContainersBusy] = React.useState(false)
+      // 拉容器清单失败时宿主那句话（只落在这一格，不动卡片顶部那条错误行）
+      const [containersError, setContainersError] = React.useState('')
+      // 在途闩：同一个键正在拉的途中不要再来一枪（换目标连着点两下时别打两枪同一份）
+      const containersFlightRef = React.useRef('')
 
       /** 宿主回什么就照什么渲染：一切状态以服务端那份为准，不在本地做乐观合并。 */
       const applyConfig = React.useCallback((payload) => {
@@ -613,19 +734,51 @@ window.__ModuleLoader__.load({
 
       /* ---- 查询区（P6 面板侧）：走宿主那条 /query，与 agent 工具同一个执行层 ---- */
 
-      /** 一次展示用的时间格式：本地时间到毫秒（日志排查里毫秒常常就是线索）。 */
-      function formatTime(ms) {
+      /**
+       * 一次展示用的时间格式：本地时间到毫秒（日志排查里毫秒常常就是线索）。
+       *
+       * `withDate` 给「自定义窗口」那一档用：放大出来的窗口可能跨天（点一根 6 小时档的柱子），
+       * 只写 `HH:mm:ss` 会让人读成「今天那一段」——跨天时把日期一起写出来。
+       */
+      function formatTime(ms, withDate) {
         const date = new Date(ms)
         const pad = (value, width) => String(value).padStart(width, '0')
-        return pad(date.getHours(), 2) + ':' + pad(date.getMinutes(), 2) + ':' + pad(date.getSeconds(), 2) + '.' + pad(date.getMilliseconds(), 3)
+        const clock = pad(date.getHours(), 2) + ':' + pad(date.getMinutes(), 2) + ':' + pad(date.getSeconds(), 2) + '.' + pad(date.getMilliseconds(), 3)
+        return withDate === true
+          ? pad(date.getMonth() + 1, 2) + '-' + pad(date.getDate(), 2) + ' ' + clock
+          : clock
       }
 
-      /** 时间窗预设的文案：逐条列字面量，别用 'option.' + key 拼（静态闸门扫不到动态键）。 */
+      /**
+       * 时间窗预设的文案：逐条列字面量，别用 'option.' + key 拼（静态闸门扫不到动态键）。
+       *
+       * `custom` 档（点柱放大）**必须**在这里有分支：漏了它下拉就显示裸键名 `custom`
+       * ——下拉说的那一项与真正用的那一项不是同一个判断（loglens D04）。文案按**真实范围**
+       * 现算，所以这里读的是当前草稿里的那一段（`query.window`），不是另存的一份。
+       */
       function windowLabel(key) {
         if (key === '15m') return t('option.15m')
         if (key === '1h') return t('option.1h')
         if (key === '6h') return t('option.6h')
         if (key === '24h') return t('option.24h')
+        if (key === 'custom' && windowProblem(query.window) === '') {
+          return t('option.custom', { from: formatTime(query.window.from, true), to: formatTime(query.window.to, true) })
+        }
+        return key
+      }
+
+      /**
+       * 级别下拉的文案：逐条列字面量，别用 'option.level' + key 拼（静态闸门扫不到动态键）。
+       * 空串 = 不限（不是「trace」——那两者差着整档）。
+       */
+      function levelLabel(key) {
+        if (key === '') return t('option.levelAny')
+        if (key === 'trace') return t('option.levelTrace')
+        if (key === 'debug') return t('option.levelDebug')
+        if (key === 'info') return t('option.levelInfo')
+        if (key === 'warn') return t('option.levelWarn')
+        if (key === 'error') return t('option.levelError')
+        if (key === 'fatal') return t('option.levelFatal')
         return key
       }
 
@@ -682,7 +835,9 @@ window.__ModuleLoader__.load({
             body: JSON.stringify(payload),
           })
           const bars = histogramBars(parsed.overTime, payload.from, payload.to, step.ms)
-          setHistogram(bars.bars.length === 0 ? undefined : { ...bars, interval: step.key })
+          // `stepMs` 跟着柱子一起存：点柱放大要知道**这一根有多宽**（就是这一档分桶的宽度）。
+          // 不另存一份 state——两处各算一次必然漂（窗口换了档位、点下去却按旧档位夹）。
+          setHistogram(bars.bars.length === 0 ? undefined : { ...bars, interval: step.key, stepMs: step.ms })
         } catch (err) {
           setHistogram({ error: err.message })
         }
@@ -745,13 +900,17 @@ window.__ModuleLoader__.load({
         const effective = { ...draft, target: chosenTarget }
         const problem = queryProblem(effective, drafts.length)
         if (problem !== '') {
-          setError(problem === 'needTarget' ? t('error.needTarget') : t('error.badLimit'))
+          setError(problem === 'needTarget'
+            ? t('error.needTarget')
+            : problem === 'badWindow' ? t('error.badWindow') : t('error.badLimit'))
           return
         }
         setQuerying(true)
         setError('')
         setOk('')
         try {
+          // 窗口随草稿走（`effective.window`，见 pure.js 的 zoomToBar）：这里**不再**读任何
+          // 组件状态——那正是「点柱子第一枪查的还是旧窗口」那条老路。
           const payload = queryPayload(effective, drafts, Date.now())
           if (append && cursor !== undefined) payload.cursor = cursor
           const data = await api('/api/dsh-loglens/query', {
@@ -806,6 +965,42 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * 点直方图上一根柱 = 把时间窗夹到那一档（放大）。与「点榜上一行」是同一个套路：
+       * 改草稿 → **立刻重查一遍**（不拿本地行数糊一个结果）→ 行、分布、榜三处一起收窄。
+       *
+       * 三条判据：
+       * ① 窗口由**草稿**带着走（`zoomed.query.window` + `preset: 'custom'`），经 `runQuery` 的
+       *    override 参数进这一枪——**不许**另存一份 state 再在 `runQuery` 里读闭包（那样第一枪
+       *    读到的还是旧窗口：`preset` 写成 `custom`，发出去的却是一小时）；
+       * ② 一次查询期间连点多根柱：**后一次盖掉前一次**（`zoomedBar` 记的是当前放大在哪一档），
+       *    所以看图就知道「现在是哪一档放大着」；
+       * ③ 被下限夹过（`clamped`）时**说出来**——那一行写着「已放大到最短 1 分钟」，
+       *    让人知道窗不是他点的那么宽。
+       */
+      const zoomToBarAt = async (barTs, barStepMs) => {
+        if (querying) return
+        const zoomed = zoomToBar(query, barTs, barStepMs)
+        if (zoomed === null) return
+        setQuery(zoomed.query)
+        setZoomedBar(zoomed.query.window)
+        setZoomClamped(zoomed.clamped)
+        // 草稿原样带上（窗口与筛选都在里面），**不再**拼第三份东西
+        await runQuery(false, zoomed.query)
+      }
+
+      /** 换预设（下拉）：把上一次的放大回显清掉——它属于上一次查询，不该跟着新窗口走。 */
+      const changePreset = (preset) => {
+        // 窗口也一并撤掉：留着它就成了「下拉写着 1 小时、草稿里还夹着自定义段」的第二份真相
+        setQuery((current) => {
+          const next = { ...current, preset }
+          delete next.window
+          return next
+        })
+        setZoomedBar(undefined)
+        setZoomClamped(false)
+      }
+
+      /**
        * 「分组」按钮：窗口与查询串沿用**上一次查询回显的那一份**（不重新查一遍行）。
        * 三条即时反馈：还没查过 / 没填字段 / 来源明确不支持——都不发请求，界面直接说为什么。
        */
@@ -825,7 +1020,8 @@ window.__ModuleLoader__.load({
        * 原生 `<datalist>` 就是点开就有，「先按按钮、再点输入框」是两步做一件事。
        *
        * `targetId` 由调用方给（当前选中的来源），不在这里读闭包：这样「拉回来的这份属于谁」是显式的，
-       * 缓存按它判（`fieldFetchNeeded`）。`limit` 不传——用宿主自己的默认值与它那句截断警告。
+       * 缓存按它判（`fieldFetchNeeded`）。**`limit` 不传 = 要全部**（2026-10-14 对齐 Kibana：宿主的默认
+       * 就是「不截断」，所以候选里摆的就是这个来源的全部字段；有多长由页脚的 total 报出来）。
        */
       const loadFields = async (targetId) => {
         /*
@@ -846,6 +1042,8 @@ window.__ModuleLoader__.load({
           })
           const list = Array.isArray(parsed.fields) ? parsed.fields : []
           setFields(list)
+          // total 是宿主的权威数字；缺了就退回这份清单的长度（面板不传 limit，两者本来就相等）
+          setFieldsTotal(typeof parsed.total === 'number' ? parsed.total : list.length)
           // 记下「这份属于哪个来源」：同一个来源再点开就不重拉了（见 fieldFetchNeeded）
           setFieldsSource(targetId)
           const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : []
@@ -857,6 +1055,7 @@ window.__ModuleLoader__.load({
            * 失败时**不写缓存**（`fieldsSource` 不动），所以下一次点开会重试。
            */
           setFields([])
+          setFieldsTotal(0)
           setFieldsError(err.message)
         } finally {
           // 在途闩放开（失败也一样放开，好让下一次点开能重试）
@@ -889,23 +1088,54 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const loadContainers = async () => {
-        if (!docker || selectedDraft === undefined) return
-        setDockerBusy(true)
-        setError('')
+      /**
+       * 拉容器清单。**不需要点按钮**（2026-10-14 改成自动）：选中 Docker 来源、或换了 Docker 目标时，
+       * effect 里按 `containersKey` 判一次「这份还算不算数」，不算就拉；页面上留一个「刷新」出口
+       * （容器是会变的：起停一个容器之后清单就旧了）。
+       *
+       * `draft` 由调用方给（当前选中的那一条），不在这里读闭包：这样「拉回来的是哪个目标的」是显式的，
+       * 缓存与在途闩都按它算出来的键比。
+       */
+      const loadContainers = async (draft) => {
+        if (!docker || draft === undefined || draft === null) return
+        const key = containersKey(draft)
+        if (key === '') return
+        // 在途闩用 ref（不是 state）：连着换两次目标时，两份请求会在同一轮渲染里都看到旧值
+        if (containersFlightRef.current === key) return
+        containersFlightRef.current = key
+        setContainersBusy(true)
+        setContainersError('')
         try {
           const parsed = await api('/api/dsh-docker/containers', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(selectedDraft.dockerTarget === '' ? { all: false } : { target: selectedDraft.dockerTarget, all: false }),
+            body: JSON.stringify(draft.dockerTarget === '' ? { all: false } : { target: draft.dockerTarget, all: false }),
           })
           const list = Array.isArray(parsed.containers) ? parsed.containers : []
           setContainers(list)
-          setContainer((current) => (current === '' && list.length > 0 ? list[0].id : current))
+          // 记下「这份属于哪个键」：同一份再渲染就不重拉了（见 containersKey / fieldFetchNeeded）
+          setContainersSource(key)
+          /*
+           * 选中的容器要**跟着清单走**：换了目标之后，原来那个 id 多半不在新清单里——留着它，
+           * 原生 `<select>` 会回落显示第一项，而面板状态里还是旧 id（loglens D04 那一类不一致）。
+           * 所以：还在就留着，不在就换成新清单的第一条（新清单为空则清空）。
+           */
+          setContainer((current) => {
+            if (list.some((item) => item.id === current)) return current
+            return list.length > 0 ? list[0].id : ''
+          })
         } catch (err) {
-          setError(err.message)
+          /*
+           * 拉失败就**落在这一格**（用户正看着那儿），不动卡片顶部那条错误行：容器清单是自动拉的，
+           * 失败不该把整张卡片变成「出错了」。失败时**不写缓存**（`containersSource` 不动），
+           * 所以下一次触发还会重试——同时把清单清掉，免得留着一份「哪个目标的都不知道」的旧选项。
+           */
+          setContainers([])
+          setContainer('')
+          setContainersError(err.message)
         } finally {
-          setDockerBusy(false)
+          containersFlightRef.current = ''
+          setContainersBusy(false)
         }
       }
 
@@ -943,14 +1173,62 @@ window.__ModuleLoader__.load({
         setOk('')
       }
 
-      if (view === 'summary') {
-        return t('card.desc')
-      }
-
+      /*
+       * 选中的来源 = 这次查询**真正会用的**那一项（唯一的那个来源、或下拉值命中的那一项）。
+       *
+       * 这两行**必须在 `view === 'summary'` 那个提前返回之前**：下面挂着一个 `useEffect`
+       * （容器清单自动拉），而 hooks 的调用顺序每次渲染都必须一样——放在提前返回之后就等于
+       * 条件调用 hook（summary 视图那一轮少一个 hook，React 会直接报错）。
+       */
       const selectedDraft = drafts.find((draft) => draft.id === query.target) === undefined
         ? (drafts.length === 1 ? drafts[0] : undefined)
         : drafts.find((draft) => draft.id === query.target)
       const isDocker = selectedDraft !== undefined && selectedDraft.kind === 'docker'
+      /*
+       * **容器清单自动拉**（2026-10-14，与字段候选「点开即拉」同一条判据：别把「做一件事」拆成两步）：
+       * 选中 Docker 来源时拉一次；换了 Docker 目标（键变了）再拉一次；同一个键不重复拉。
+       *
+       * 依赖里放的是**键的三个来源**（id / kind / dockerTarget）而不是整个对象：对象每次渲染都是新的，
+       * 用它当依赖会变成「渲染一次拉一次」。
+       */
+      React.useEffect(() => {
+        if (!docker || selectedDraft === undefined || selectedDraft.kind !== 'docker') return
+        if (fieldFetchNeeded(containersSource, containersKey(selectedDraft))) loadContainers(selectedDraft)
+      }, [
+        docker,
+        selectedDraft === undefined ? '' : selectedDraft.id,
+        selectedDraft === undefined ? '' : selectedDraft.kind,
+        selectedDraft === undefined ? '' : selectedDraft.dockerTarget,
+        containersSource,
+      ])
+
+      /*
+       * 容器下拉**第一项**（占位项）此刻该说哪一种状态：判据全在 pure.js 的 `containerSlotState`，
+       * 这里只负责把状态名翻成人话（顺带让下面那条 hint 用同一份判断，不出现「下拉说没有、hint 说在拉」）。
+       *
+       * `pending` 得**自己算**：它在 `busy` 翻起来之前就已经为真（effect 还没跑、或响应还没回来的那一帧），
+       * 靠它这一格从第一帧起就是「加载中…」，而不是先闪一下「没有容器」再改口。
+       */
+      const containersPending = isDocker && fieldFetchNeeded(containersSource, containersKey(selectedDraft))
+      const containerSlot = containerSlotState({
+        available: docker,
+        pending: containersPending,
+        busy: containersBusy,
+        error: containersError,
+        count: containers.length,
+      })
+      /** 占位项那句：两条短文案（`msg.containers*`）就是为了放得进最窄那列，宽度预算有守卫。 */
+      const containerSlotText = () => {
+        if (containerSlot === 'loading') return t('list.loading')
+        if (containerSlot === 'error') return t('msg.containersFailed')
+        if (containerSlot === 'empty') return t('msg.containersEmpty')
+        return t('field.container')
+      }
+
+      if (view === 'summary') {
+        return t('card.desc')
+      }
+
       /*
        * 「来源」下拉显示的那一项 = 这次查询**真正会用的**那一项（同一个判据，不是第二份）。
        *
@@ -1145,7 +1423,7 @@ window.__ModuleLoader__.load({
                           className: 'll_input',
                           title: t('field.target'),
                           // 显示的那一项 = 真正会用的那一项（见 render 里的 chosenTarget）：
-                          // 都没选时 value 是空串，由下面那个占位项把它显示成「（先选一个来源）」
+                          // 都没选时 value 是空串，由下面那个占位项把它显示成「选择来源」
                           value: chosenTarget,
                           disabled: saving || querying || dockerBusy,
                           onChange: (event) => { setQuery((current) => ({ ...current, target: event.target.value })) },
@@ -1168,8 +1446,18 @@ window.__ModuleLoader__.load({
                           title: t('field.window'),
                           value: query.preset,
                           disabled: saving || querying,
-                          onChange: (event) => { setQuery((current) => ({ ...current, preset: event.target.value })) },
-                          children: windowOptions().map((key) => jsx('option', { value: key, children: windowLabel(key) }, key)),
+                          onChange: (event) => { changePreset(event.target.value) },
+                          children: windowChoices(query.preset).map((key) => jsx('option', { value: key, children: windowLabel(key) }, key)),
+                        }),
+                        isDocker ? null : jsx('select', {
+                          className: 'll_input',
+                          title: t('field.level'),
+                          value: levelFilterOf(query),
+                          disabled: saving || querying,
+                          // 改了就记进草稿；**不自动重查**（与改查询串 / 时间窗同一条：都在草稿里，
+                          // 由「查询」那一下一起发出去——一改就查会在打字 / 连点时打出一串请求）
+                          onChange: (event) => { setQuery((current) => ({ ...current, level: event.target.value })) },
+                          children: levelChoices().map((key) => jsx('option', { value: key, children: levelLabel(key) }, 'll-level-' + (key === '' ? 'any' : key))),
                         }),
                         isDocker ? null : jsx('input', {
                           className: 'll_input',
@@ -1275,30 +1563,47 @@ window.__ModuleLoader__.load({
                             }) : fields.length === 0 ? jsx('div', {
                               className: 'll_pickList',
                               children: jsx('div', { className: 'll_pickState', children: t('msg.fieldsEmpty') }),
-                            }) : choices.length === 0 ? null : jsx('div', {
+                            }) : choices.length === 0 ? null : jsxs('div', {
                               className: 'll_pickList',
                               children: [
-                                ...choices.map((item, at) => jsx('button', {
-                                  type: 'button',
-                                  // 当前那一行要高亮出来：方向键挪的是它，回车取的是它（不然键盘用户看不见自己停在哪）
-                                  className: at === pickIndex ? 'll_pickItem ll_pickItemActive' : 'll_pickItem',
-                                  title: item.name,
-                                  // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
-                                  onMouseDown: (event) => { event.preventDefault() },
-                                  // 鼠标划到哪一行，方向键就从哪一行接着走（两套输入共用同一个「当前行」）
-                                  onMouseEnter: () => { setPickIndex(at) },
-                                  onClick: () => {
-                                    setGroupBy(item.name)
-                                    setPickOpen(false)
-                                  },
-                                  children: item.name,
-                                }, 'll-field-' + item.name)),
-                                // 页脚：宿主的截断警告（照抄）+ 一个「刷新」——缓存的出口
-                                // （同一个来源不再每次都拉，但字段是会随新数据长的，得留个手动口子）
+                                // 候选那一层自己滚（页脚在它外面，滚不动）
+                                jsx('div', {
+                                  className: 'll_pickScroll',
+                                  children: choices.map((item, at) => jsx('button', {
+                                    type: 'button',
+                                    // 当前那一行要高亮出来：方向键挪的是它，回车取的是它（不然键盘用户看不见自己停在哪）
+                                    className: at === pickIndex ? 'll_pickItem ll_pickItemActive' : 'll_pickItem',
+                                    // 悬停说全：冲突字段把「哪几种类型」也写在 title 里（行上只放得下一小截标记）
+                                    title: item.conflict === true
+                                      ? item.name + '（' + t('badge.conflict') + (item.esTypes.length > 0 ? '：' + item.esTypes.join(' / ') : '') + '）'
+                                      : item.name,
+                                    // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
+                                    onMouseDown: (event) => { event.preventDefault() },
+                                    // 鼠标划到哪一行，方向键就从哪一行接着走（两套输入共用同一个「当前行」）
+                                    onMouseEnter: () => { setPickIndex(at) },
+                                    onClick: () => {
+                                      setGroupBy(item.name)
+                                      setPickOpen(false)
+                                    },
+                                    /*
+                                     * 冲突字段**必须在行上看得出来**：拿它分组只会覆盖一部分索引，
+                                     * 用户看到候选都一样长（真机上那一个名字长得跟别人没区别）就会照点。
+                                     */
+                                    children: item.conflict === true
+                                      ? [item.name, jsx('span', { className: 'll_pickConflict', children: t('badge.conflict') })]
+                                      : item.name,
+                                  }, 'll-field-' + item.name)),
+                                }),
+                                // 页脚：**这个来源一共有多少字段**（不截断之后，长度就靠这个数看得见）
+                                // + 一个「刷新」——缓存的出口（同一个来源不再每次都拉，但字段会随新数据长）
+                                // 只有显式 limit 才可能被截断，那时这个位置换成宿主的原话警告（照抄，见 loadFields）
                                 jsxs('div', {
                                   className: 'll_pickFoot',
                                   children: [
-                                    jsx('span', { className: fieldsNote === '' ? 'll_pickState' : 'll_pickState ll_warn', children: fieldsNote }),
+                                    jsx('span', {
+                                      className: fieldsNote === '' ? 'll_pickState' : 'll_pickState ll_warn',
+                                      children: fieldsNote === '' ? t('hint.fieldsCount', { count: fieldsTotal }) : fieldsNote,
+                                    }),
                                     jsx('button', {
                                       type: 'button',
                                       className: 'll_pickRefresh',
@@ -1324,8 +1629,7 @@ window.__ModuleLoader__.load({
                     }),
                     // 生效中的筛选：一行芯片（每条一个 ×）。只在有筛选时出现——没有筛选时这一行
                     // 不占位、也不说一句话（说「当前没有筛选」等于往界面上加噪音）。
-                    isDocker || activeFilters.length === 0 ? null : jsxs('div', {
-                      className: 'll_filters',
+                    isDocker || activeFilters.length === 0 ? null : jsxs('div', {                      className: 'll_filters',
                       children: [
                         jsx('span', { className: 'll_filtersLabel', children: t('field.filters') }),
                         ...activeFilters.map((chip) => jsxs('span', {
@@ -1349,21 +1653,28 @@ window.__ModuleLoader__.load({
                     isDocker ? jsxs('div', {
                       className: 'll_queryGrid',
                       children: [
-                        jsx('button', {
-                          type: 'button',
-                          className: 'll_btnGhost',
-                          disabled: dockerBusy || !docker,
-                          onClick: () => { loadContainers() },
-                          children: t('btn.containers'),
-                        }),
                         jsx('select', {
                           className: 'll_input',
                           title: t('field.container'),
                           value: container,
-                          disabled: dockerBusy || !docker,
+                          // 清单自己在途时也先别让人点（第一项此刻就是「加载中…」，见 containerSlot）
+                          disabled: dockerBusy || containersBusy || !docker,
                           onChange: (event) => { setContainer(event.target.value) },
                           children: [
-                            jsx('option', { value: '', children: t('field.container') }, 'll-container-none'),
+                            /*
+                             * 占位项：清单没到的时候它**就是过渡态**（「加载中…」/「加载失败」/「没有容器」），
+                             * 有清单时才是那一句「容器」（打头的判据在 pure.js 的 containerSlotState）。
+                             *
+                             * 它必须**排第一**，而且这是唯一一个 value 为空串的项：原生 `<select>` 的 value
+                             * 匹配不上任何选项时会回落显示**第一项**（loglens D04 就是那个坑）——过渡态写在
+                             * 后面就等于在「正在拉」的那几秒里让下拉继续写着「容器」，用户看不出在拉。
+                             */
+                            jsx('option', {
+                              value: '',
+                              // 状态行不是可选项：那一刻没有一个真容器值得选。默认态保持原样（这一项本来就能选）
+                              disabled: containerSlot !== 'default',
+                              children: containerSlotText(),
+                            }, 'll-container-none'),
                             ...containers.map((item) => jsx('option', { value: item.id, children: item.name === undefined || item.name === '' ? item.id : item.name }, item.id)),
                           ],
                         }),
@@ -1372,8 +1683,8 @@ window.__ModuleLoader__.load({
                           title: t('field.window'),
                           value: query.preset,
                           disabled: dockerBusy || !docker,
-                          onChange: (event) => { setQuery((current) => ({ ...current, preset: event.target.value })) },
-                          children: windowOptions().map((key) => jsx('option', { value: key, children: windowLabel(key) }, 'll-dw-' + key)),
+                          onChange: (event) => { changePreset(event.target.value) },
+                          children: windowChoices(query.preset).map((key) => jsx('option', { value: key, children: windowLabel(key) }, 'll-dw-' + key)),
                         }),
                         jsx('select', {
                           className: 'll_input',
@@ -1382,6 +1693,16 @@ window.__ModuleLoader__.load({
                           disabled: dockerBusy || !docker,
                           onChange: (event) => { setDockerTail(Number(event.target.value)) },
                           children: [50, 100, 200, 500].map((value) => jsx('option', { value: String(value), children: String(value) }, 'll-tail-' + String(value))),
+                        }),
+                        // 清单是自动拉的，但容器会变（起停一个就旧了）——留一个手动出口。
+                        // 在途时它自己写「加载中…」：那时占位项还写着具体的容器（旧清单还在），
+                        // 这一格是「你刚按的那件事正在做」的唯一落点（与旁边「看日志」同一个写法）
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost',
+                          disabled: dockerBusy || containersBusy || !docker,
+                          onClick: () => { loadContainers(selectedDraft) },
+                          children: containersBusy ? t('list.loading') : t('btn.refresh'),
                         }),
                         jsx('button', {
                           type: 'button',
@@ -1393,8 +1714,29 @@ window.__ModuleLoader__.load({
                       ],
                     }) : null,
                     isDocker
-                      ? jsx('p', { className: 'll_hint', children: docker ? t('hint.docker') : t('hint.dockerMissing') })
+                      ? jsx('p', {
+                        /*
+                         * 这一格与下拉读**同一份状态**（containerSlot），不另起一套判断：
+                         *   失败 → 宿主原话（自动拉的那一步没人按按钮，不能把整张卡片染成出错）；
+                         *   拉回来是空的 → 说清「只列运行中的」（否则「没有容器」会被读成这个目标上什么都没有）；
+                         *   其余 → 那两句固定的解释。
+                         */
+                        className: containerSlot === 'error' ? 'll_hint ll_warn' : 'll_hint',
+                        children: containerSlot === 'error'
+                          ? t('error.containers', { message: containersError })
+                          : containerSlot === 'empty'
+                            ? t('hint.containersEmpty')
+                            : (docker ? t('hint.docker') : t('hint.dockerMissing')),
+                      })
                       : jsx('p', { className: 'll_hint', children: t('hint.query') }),
+                    /*
+                     * 级别筛选那句**边界声明**：宿主是在返回的这一页上筛的，counts / truncation 仍是未筛的
+                     * 整页。不说出来就会把「这一页里的 error」读成「窗口里一共多少 error」（同一屏上两个
+                     * 数字说的不是一件事）。判据在 pure.js 的 `levelFiltered`——它只看**下发的载荷**，
+                     * 不看回显：查询在途的那几秒也该在场。
+                     */
+                    isDocker || !levelFiltered(query) ? null : jsx('p', { className: 'll_hint', children: t('hint.levelPaged') }),
+                    isDocker || outcome === undefined ? null : jsx('p', { className: 'll_hint', children: t('hint.rowSensitive') }),
                     isDocker && dockerOpened && dockerLogLines(dockerLogs).length > 0 ? jsx('div', {
                       className: 'll_results',
                       children: dockerLogLines(dockerLogs).map((text, at) => jsx('div', {
@@ -1422,14 +1764,59 @@ window.__ModuleLoader__.load({
                     }),
                     lines.length > 0 && !isDocker ? jsx('div', {
                       className: 'll_results',
-                      children: lines.map((line) => jsxs('div', {
-                        className: 'll_resultRow',
-                        children: [
-                          jsx('span', { className: 'll_resultTime', children: formatTime(line.ts) }),
-                          jsx('span', { className: 'll_resultLevel', children: line.level === undefined ? '' : line.level }),
-                          jsx('span', { className: 'll_resultMsg', children: line.message }),
-                        ],
-                      }, 'll-line-' + line.id)),
+                      children: lines.map((line) => {
+                        /*
+                         * 一行 = 时间 · 级别 · 正文 · **谁写的**（标签）。
+                         *
+                         * 标签本来随响应回来却没人渲染——「这行是哪个容器写的」在卡片里看不到，想按它
+                         * 筛得先填「分组字段」再点榜，三步。这里把值直接做成可点的**筛选入口**：
+                         * 点一下 = 加一条「字段 = 值」并立刻重查（与点榜上下钻走**同一个** drillDown，
+                         * 判据只有一份）。
+                         *
+                         * 摆哪几个、怎么截断全在 pure.js（`rowLabels`）：按宿主给的顺序取前 3 个——
+                         * 顺序已经是判据（`LABEL_PRIORITY` 排的就是「排查时先问什么」），这里再挑一次
+                         * 就是第二份会漂的规则。摆不下的收进悬停（title 里有全部标签与原文）。
+                         */
+                        const tags = rowLabels(line, ROW_LABEL_MAX)
+                        const more = rowLabelOverflow(line, ROW_LABEL_MAX)
+                        return jsxs('div', {
+                          className: 'll_resultRow',
+                          title: lineTitle(line),
+                          children: [
+                            jsx('span', { className: 'll_resultTime', children: formatTime(line.ts) }),
+                            jsx('span', { className: 'll_resultLevel', children: line.level === undefined ? '' : line.level }),
+                            jsx('span', { className: 'll_resultMsg', children: line.message }),
+                            tags.length === 0 && more === 0 ? null : jsxs('span', {
+                              className: 'll_resultTags',
+                              children: [
+                                ...tags.map((tag) => (rowFilterProblem(tag) === '' ? jsxs('button', {
+                                  type: 'button',
+                                  // 类名不带 `btn`（按钮族几何检查按 /btn/i 抓类名）——与直方图柱子同一条
+                                  className: 'll_resultTag ll_resultTagHit',
+                                  title: t('hint.rowLabelFilter', { field: tag.field, value: tag.value }),
+                                  disabled: querying,
+                                  // 保住这一次点击：按钮在行里，行本身没有 onMouseDown 的约定，
+                                  // 但焦点落到按钮上再重渲染会把 ::focus-visible 跳走，所以先不抢焦点
+                                  onMouseDown: (event) => { event.preventDefault() },
+                                  onClick: () => { drillDown(tag.field, tag.value) },
+                                  children: [
+                                    jsx('span', { className: 'll_resultTagKey', children: tag.field }),
+                                    jsx('span', { className: 'll_resultTagValue', children: tag.display }),
+                                  ],
+                                }, 'll-tag-' + tag.field) : jsx('span', {
+                                  // 不可点的标签（空值那类）：照旧摆出来，只是没有那个入口
+                                  className: 'll_resultTag',
+                                  children: [
+                                    jsx('span', { className: 'll_resultTagKey', children: tag.field }),
+                                    jsx('span', { className: 'll_resultTagValue', children: tag.display }),
+                                  ],
+                                }, 'll-tag-' + tag.field))),
+                                more > 0 ? jsx('span', { className: 'll_resultTagMore', children: t('hint.rowMoreLabels', { count: more }) }) : null,
+                              ],
+                            }),
+                          ],
+                        }, 'll-line-' + line.id)
+                      }),
                     }) : null,
                     // 时间分布：拿不到就把那句话说出来（不动结果列表），**不支持**就说清不支持，
                     // **不知道**（宿主没给 capabilities）什么都不说——「不知道 ≠ 不支持」。
@@ -1454,13 +1841,41 @@ window.__ModuleLoader__.load({
                           }),
                           jsx('div', {
                             className: 'll_histBars',
-                            children: histogram.bars.map((bar) => jsx('div', {
-                              className: bar.count === 0 ? 'll_histBar ll_histBarEmpty' : 'll_histBar',
+                            children: histogram.bars.map((bar) => {
+                              /*
+                               * 一根柱 = 「这一段有多少条」。点它 = 把窗口夹到这一段重查一次
+                               * （与点榜上一行同一条套路：改草稿 → 立刻重查，不拿本地行数糊一个结果）。
+                               *
+                               * **空桶不给点**：点进一个 0 条的时间段只会得到一个「没有命中」，
+                               * 看不出「是你自己点了那根空的」——所以它是一根静态柱子（与榜上
+                               * 「空值那一桶不给点」同一条判据：给个点得动、结果却是别的东西的入口更坏）。
+                               *
+                               * 类名刻意**不带 `btn`**：`scripts/client-style-spec.mjs` 的按钮族检查按
+                               * `/btn/i` 抓类名，柱子套上去就会被「同族几何一致」卷进来（柱子的高度
+                               * 是内联的、每条都不一样，本来就谈不上同族）。
+                               */
+                              const barClass = bar.count === 0 ? 'll_histBar ll_histBarEmpty' : 'll_histBar ll_histBarClick'
                               // 空桶给 2% 的底座：否则「那段时间一条都没有」与「这一段没画」看起来一样
-                              style: { height: String(Math.max(bar.ratio * 100, 2)) + '%' },
-                              title: t('meta.histBucket', { time: formatTime(bar.ts), count: bar.count }),
-                            }, 'll-hist-' + String(bar.ts))),
+                              const style = { height: String(Math.max(bar.ratio * 100, 2)) + '%' }
+                              const label = t('meta.histBucket', { time: formatTime(bar.ts), count: bar.count })
+                              if (bar.count === 0) {
+                                return jsx('div', { className: barClass, style, title: label }, 'll-hist-' + String(bar.ts))
+                              }
+                              // 正在放大的那一档：与榜上「正在按它下钻」同一个高亮（看得出这一屏是收窄过的）
+                              const active = zoomedBar !== undefined && zoomedBar.from === bar.ts
+                              return jsx('button', {
+                                type: 'button',
+                                className: active ? barClass + ' ll_histBarActive' : barClass,
+                                style,
+                                // 悬停说全：条数 + 「点一下放大到这一段」（不然没人知道它能点）
+                                title: label + '\n' + t('hint.zoomBar'),
+                                disabled: querying,
+                                onClick: () => { zoomToBarAt(bar.ts, histogram.stepMs) },
+                              }, 'll-hist-' + String(bar.ts))
+                            }),
                           }),
+                          // 被下限夹过要**说出来**（`clamped`）：窗不是他点的那么宽，静默收窄比报错更难查
+                          zoomClamped ? jsx('p', { className: 'll_hint', children: t('hint.zoomClamped') }) : null,
                           jsx('p', { className: 'll_hint', children: t('hint.histogram') }),
                         ],
                       }) : jsx('p', { className: 'll_warn', children: t('error.histogram', { message: histogram.error }) })),
