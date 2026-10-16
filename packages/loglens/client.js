@@ -280,6 +280,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 取消放大：回到放大**之前**那一档（界面在放大时把当时的下拉值记在 `from`）。
+     *
+     * 为什么必须记住「从哪一档放大的」：窗口一旦被改成 `custom`，草稿里就没有任何地方能反推出
+     * 原来选的是 15 分钟还是 24 小时了。若取消时随手回落到某个默认档（比如 1 小时），那就是
+     * **替用户改窗口**——他点那一下的意思明明是「我不放大了」，不是「我要查最近 1 小时」。
+     * 这与 `zoomToBar` 把「为什么要放大」写进 `clamped` 是同一条：**别替用户猜，也别说一套做一套**。
+     *
+     * `from` 必须是真预设（`windowOptions()` 里那几档）：认不出就回 `null`、由调用方**什么都不做**
+     * ——退回 `custom` 但没有窗口会被 `queryProblem` 挡成 `badWindow`（点一下得到一句报错），
+     * 而这里宁可让那一下没有反应（下拉还在，用户照样能自己选一档）。这条兜底在正常路径上不可达。
+     *
+     * 只动 `preset` 与 `window`：查询串 / 筛选 / 条数 / 级别都是用户自己的东西，取消放大不该碰
+     * （与 `zoomToBar` 只加窗口是同一条）。
+     *
+     * @param draft 当前草稿（只读）
+     * @param from 放大之前的那一档（预设键）
+     * @returns 新草稿；`from` 不是真预设时回 `null`
+     */
+    function unzoomQuery(draft, from) {
+      if (draft === null || draft === undefined || typeof draft !== 'object') return null
+      const preset = String(from == null ? '' : from)
+      if (!windowOptions().includes(preset)) return null
+      const next = { ...draft, preset }
+      // 窗口必须**撤掉**（不是留着）：留着它就成了「下拉写着 1 小时、草稿里还夹着自定义段」的第二份真相
+      delete next.window
+      return next
+    }
+
+    /**
      * 表单能不能提交：空串表示可以，否则是 i18n 键名后缀。
      *
      * 这里只校验**面板自己知道的事**（选没选来源、条数是不是正整数、自定义窗口的形状）；时间戳
@@ -1113,6 +1142,7 @@ window.__ModuleLoader__.load({
       'hint.histogram': '这张图来自后端按时间分桶（不是数这一页——这一页被条数截断过，数它只会得到一个假的分布）。',
       'hint.histogramTruncated': '窗口比这张图长，只画了前一部分。',
       'hint.zoomBar': '点一下放大到这一段（把时间窗夹到这一根柱）',
+      'hint.zoomBarCancel': '再点一次取消放大（回到放大之前那一档）',
       'hint.zoomClamped': '已放大到最短 1 分钟（那一档分桶比这还窄，再窄就查不出东西了）。',
       'hint.groups': '这张榜来自后端的 terms 聚合（不是数这一页——这一页被条数截断过，数它只会得到一个假的排名）。点一条即按它下钻（加一条筛选重查一次），再点一次取消。',
       'hint.groupsTruncated': '桶比这张榜长，只画了前一部分。',
@@ -1249,6 +1279,7 @@ window.__ModuleLoader__.load({
       'hint.histogram': 'This chart comes from the backend time-bucketing (not from counting this page — the page is capped by the limit, so counting it would only give you a fake distribution).',
       'hint.histogramTruncated': 'The window is longer than this chart; only the first part is drawn.',
       'hint.zoomBar': 'Click to zoom into this slice (narrows the time window to this bar)',
+      'hint.zoomBarCancel': 'Click again to undo the zoom (back to the preset you zoomed from)',
       'hint.zoomClamped': 'Zoomed to the 1-minute minimum (that bucket is narrower than this; anything narrower finds nothing).',
       'hint.groups': 'This ranking comes from the backend terms aggregation (not from counting this page — the page is capped by the limit, so counting it would only give you a fake ranking). Click a row to drill into it (adds one filter and re-runs the query); click it again to undo.',
       'hint.groupsTruncated': 'There are more buckets than this ranking; only the first part is drawn.',
@@ -1456,6 +1487,14 @@ window.__ModuleLoader__.load({
        */
       const [zoomedBar, setZoomedBar] = React.useState(undefined)
       const [zoomClamped, setZoomClamped] = React.useState(false)
+      /*
+       * 放大**之前**是哪一档（取消放大时回到它，见 pure.js 的 `unzoomQuery`）。
+       *
+       * 为什么不能从草稿反推：窗口一旦改成 `custom`，草稿里就没有任何地方能看出原来选的是
+       * 15 分钟还是 24 小时了。随手回落一个默认档就是「替用户改窗口」——他点那一下的意思明明是
+       * 「我不放大了」。这三项都是**界面的放大回显**，与请求无关（请求读的是草稿）。
+       */
+      const [zoomFrom, setZoomFrom] = React.useState('')
       const [outcome, setOutcome] = React.useState(undefined)
       const [lines, setLines] = React.useState([])
       const [cursor, setCursor] = React.useState(undefined)
@@ -1782,6 +1821,21 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * 查询栏里的输入框按回车 = 点「查询」（同一条路：都走 `runQuery(false)`）。
+       *
+       * 为什么值这一行：查一次是这一整格里最常做的事，而「打完字 → 手离开键盘 → 移到鼠标 →
+       * 点按钮」每天要重复几十次。回车是最不需要解释的那一个键（浏览器里所有搜索框都是它）。
+       *
+       * 在途 / 保存中不重复发（与按钮的 `disabled` 同一条件）：按钮那一刻点不动，回车也该发不出去
+       * ——否则出现「按钮灰着但还能打枪」这种两套说法。
+       */
+      const runOnEnter = (event) => {
+        if (event.key !== 'Enter') return
+        if (saving || querying) return
+        runQuery(false)
+      }
+
+      /**
        * 点榜上的一行 = 按它下钻：把这个桶加成一条筛选（已经在筛同一个值 → 再点就是取消），
        * 然后**带着新筛选立刻重查一遍**——行、时间分布、榜三处一起收窄。
        *
@@ -1826,15 +1880,35 @@ window.__ModuleLoader__.load({
        * ② 一次查询期间连点多根柱：**后一次盖掉前一次**（`zoomedBar` 记的是当前放大在哪一档），
        *    所以看图就知道「现在是哪一档放大着」；
        * ③ 被下限夹过（`clamped`）时**说出来**——那一行写着「已放大到最短 1 分钟」，
-       *    让人知道窗不是他点的那么宽。
+       *    让人知道窗不是他点的那么宽；
+       * ④ **再点一次取消**（照点榜下钻「再点一次取消」的既有交互）：点的是**正放大着的那一档**
+       *    （就是高亮的那根）就回到放大之前那一档。判据与高亮**同一条**（`zoomedBar.from`）：
+       *    高亮哪一根、点哪一根能撤销，说的是同一件事。
        */
       const zoomToBarAt = async (barTs, barStepMs) => {
         if (querying) return
+        // 取消放大：只撤窗口与回显，查询串 / 筛选 / 条数 / 级别一律不动
+        if (zoomedBar !== undefined && zoomedBar.from === barTs) {
+          const back = unzoomQuery(query, zoomFrom)
+          if (back === null) return
+          setQuery(back)
+          setZoomedBar(undefined)
+          setZoomClamped(false)
+          setZoomFrom('')
+          await runQuery(false, back)
+          return
+        }
         const zoomed = zoomToBar(query, barTs, barStepMs)
         if (zoomed === null) return
         setQuery(zoomed.query)
         setZoomedBar(zoomed.query.window)
         setZoomClamped(zoomed.clamped)
+        /*
+         * 记下「从哪一档放大的」：已经是 `custom` 时**保留原有的那一档**——连点多根柱是
+         * 「在同一次放大里挪窗口」，取消时该回到**最初**那一档，而不是回到上一个自定义段
+         * （`custom` 不是用户能挑的一档，见 `windowChoices`）。
+         */
+        setZoomFrom(query.preset === 'custom' ? zoomFrom : query.preset)
         // 草稿原样带上（窗口与筛选都在里面），**不再**拼第三份东西
         await runQuery(false, zoomed.query)
       }
@@ -1849,6 +1923,7 @@ window.__ModuleLoader__.load({
         })
         setZoomedBar(undefined)
         setZoomClamped(false)
+        setZoomFrom('')
       }
 
       /**
@@ -2291,6 +2366,8 @@ window.__ModuleLoader__.load({
                           value: query.q,
                           disabled: saving || querying,
                           onChange: (event) => { setQuery((current) => ({ ...current, q: event.target.value })) },
+                          // 回车即查（查询栏里最常做的事，见 runOnEnter）
+                          onKeyDown: runOnEnter,
                         }),
                         isDocker ? null : jsx('select', {
                           className: 'll_input',
@@ -2318,6 +2395,8 @@ window.__ModuleLoader__.load({
                           value: String(query.limit),
                           disabled: saving || querying,
                           onChange: (event) => { setQuery((current) => ({ ...current, limit: Number(event.target.value) })) },
+                          // 条数也是这一行的输入框：回车即查与查询串同一口径（不然只有一半的框认回车）
+                          onKeyDown: runOnEnter,
                         }),
                         isDocker ? null : jsx('button', {
                           type: 'button',
@@ -2718,8 +2797,9 @@ window.__ModuleLoader__.load({
                                 type: 'button',
                                 className: active ? barClass + ' ll_histBarActive' : barClass,
                                 style,
-                                // 悬停说全：条数 + 「点一下放大到这一段」（不然没人知道它能点）
-                                title: label + '\n' + t('hint.zoomBar'),
+                                // 悬停说全：条数 + 这一根此刻点下去会做什么。**正在放大的那一根说的是
+                                // 「再点一次取消」**——同一个手势在这一档上是撤销，不说清就成了「点不动」的错觉
+                                title: label + '\n' + (active ? t('hint.zoomBarCancel') : t('hint.zoomBar')),
                                 disabled: querying,
                                 onClick: () => { zoomToBarAt(bar.ts, histogram.stepMs) },
                               }, 'll-hist-' + String(bar.ts))

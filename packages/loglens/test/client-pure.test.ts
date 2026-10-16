@@ -51,6 +51,7 @@ import {
   rowFilterProblem,
   rowLabelOverflow,
   rowLabels,
+  unzoomQuery,
 } from '../client-src/pure.js'
 
 describe('draft 形状', () => {
@@ -912,5 +913,43 @@ describe('行上的标签（谁写的）', () => {
     expect(rowFilterProblem(row)).toBe('')
     expect(rowLabels({ labels: { 'log.level': 'ERROR ' } }, 1)[0].value).toBe('ERROR ')
     expect(rowLabels({ labels: { 'log.level': 'ERROR ' } }, 1)[0].display).toBe('ERROR ')
+  })
+})
+
+describe('取消放大（再点一次那一档）', () => {
+  it('回到放大**之前**那一档，并把自定义窗口撤掉（不留第二份真相）', () => {
+    const zoomed = { target: 'es', q: 'x', preset: 'custom', window: { from: 1_000, to: 2_000 }, limit: 50, filters: [{ field: 'a', value: 'b' }], level: 'error' }
+    const back = unzoomQuery(zoomed, '15m')
+    expect(back.preset).toBe('15m')
+    // 窗口必须**撤掉**（不是留着）：留着它 = 「下拉写着 15 分钟、草稿里还夹着自定义段」
+    expect('window' in back).toBe(false)
+    // 其余一律不动：取消放大不该顺手改用户的查询串 / 筛选 / 条数 / 级别
+    expect(back.q).toBe('x')
+    expect(back.limit).toBe(50)
+    expect(back.filters).toEqual([{ field: 'a', value: 'b' }])
+    expect(back.level).toBe('error')
+    // 纯函数：入参不被改（界面靠新对象触发重渲染）
+    expect(zoomed.preset).toBe('custom')
+    expect(zoomed.window).toEqual({ from: 1_000, to: 2_000 })
+  })
+
+  it('`from` 必须是真预设：认不出就回 null（宁可那一下没反应，也不替用户挑一档）', () => {
+    const zoomed = { target: 'es', preset: 'custom', window: { from: 1, to: 2 } }
+    for (const bad of ['', 'custom', 'nonsense', undefined, null, 42, '1H']) {
+      expect(unzoomQuery(zoomed, bad), JSON.stringify(bad)).toBeNull()
+    }
+    // 草稿本身缺席也回 null（界面据此不发请求）
+    expect(unzoomQuery(undefined, '1h')).toBeNull()
+    expect(unzoomQuery(null, '1h')).toBeNull()
+    // 四档预设都认
+    for (const key of ['15m', '1h', '6h', '24h']) expect(unzoomQuery(zoomed, key).preset).toBe(key)
+  })
+
+  it('与 zoomToBar 配成一对：放大 → 取消 回到原档，且往返不改窗口以外的任何东西', () => {
+    const draft = { target: 'es', q: 'level:error', preset: '6h', limit: 30, filters: [] }
+    const zoomed = zoomToBar(draft, 5_000_000, 60_000)
+    expect(zoomed.query.preset).toBe('custom')
+    const back = unzoomQuery(zoomed.query, draft.preset)
+    expect(back).toEqual({ ...draft })
   })
 })

@@ -1702,6 +1702,119 @@ await test('级别筛选：下拉六档 + 不限；选中后请求体带 level�
   assert.equal(treeText(runtime.tree).includes('级别是在'), false, '不限级别时那句该撤掉')
 })
 
+/* ------------------------------------------------------------------ *
+ * 回车即查 + 放大后取消（面板第七刀）
+ * ------------------------------------------------------------------ */
+
+/** 查询串输入框（占位符是一句中文，按它找得到）。 */
+function queryInput(tree) {
+  return treeFind(tree, (node) => node.type === 'input' && String(node.props?.placeholder ?? '').includes('查询串'))[0]
+}
+
+/** 条数输入框（title 是 t('field.limit') 的兜底文案）。 */
+function limitInput(tree) {
+  return treeFind(tree, (node) => node.type === 'input' && node.props?.title === '条数')[0]
+}
+
+await test('回车即查：查询串与条数两个输入框都认回车（只有回车认；与点「查询」同一条路）', async () => {
+  serverRoutes = ZOOM_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  const box = queryInput(tree)
+  assert.ok(box !== undefined, '找不到查询串输入框')
+  assert.equal(typeof box.props.onKeyDown, 'function', '查询串输入框该接上回车（不然打完字还得摸鼠标）')
+
+  // 先打字（不查）
+  box.props.onChange({ target: { value: 'level:error' } })
+  runtime.tick()
+  await runtime.update()
+  calls.length = 0
+  // 非回车键**不发请求**（否则每敲一个字就打一枪）
+  queryInput(runtime.tree).props.onKeyDown({ key: 'a' })
+  await runtime.update()
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/query').length, 0, '不是回车不该发请求')
+  // 回车 → 发出这一次查询，查询串就是刚打的那一串
+  queryInput(runtime.tree).props.onKeyDown({ key: 'Enter' })
+  await runtime.update()
+  await runtime.update()
+  await runtime.update()
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '回车该真的查一次')
+  assert.equal(query.body.q, 'level:error', '打进去的查询串要原样发出去：' + JSON.stringify(query.body))
+
+  // 条数那一格也认回车（同一行里的输入框只有一半认回车就说不通）
+  calls.length = 0
+  const limitBox = limitInput(runtime.tree)
+  assert.ok(limitBox !== undefined, '找不到条数输入框')
+  assert.equal(typeof limitBox.props.onKeyDown, 'function', '条数输入框也该接上回车')
+  limitBox.props.onChange({ target: { value: '25' } })
+  runtime.tick()
+  await runtime.update()
+  limitInput(runtime.tree).props.onKeyDown({ key: 'Enter' })
+  await runtime.update()
+  await runtime.update()
+  await runtime.update()
+  const again = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(again !== undefined, '条数那格回车也该查')
+  assert.equal(again.body.limit, 25, '条数要跟着改：' + JSON.stringify(again.body))
+})
+
+await test('放大后取消：再点**正在放大的那根**柱 → 回到放大前那一档（窗口、下拉、高亮一起回落）', async () => {
+  serverRoutes = ZOOM_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  await clickAndSettle(runtime, clickableBars(tree)[1])
+  assert.equal(windowSelect(runtime.tree).props.value, 'custom', '先得真的进到自定义档')
+  const active = treeFind(runtime.tree, (node) => hasClass(node, 'll_histBarActive'))
+  assert.equal(active.length, 1, '放大那一档该高亮着')
+  assert.ok(String(active[0].props.title).includes('再点一次取消'), '高亮那根的悬停要说清再点一次是撤销：' + String(active[0].props.title))
+
+  calls.length = 0
+  await clickAndSettle(runtime, active[0])
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '取消放大也要真的重查一次（窗口变了）')
+  // 回到放大之前那一档：这次 runPanelQueryFull 用的是默认 '1h'，所以窗口恰好是一小时
+  assert.equal(query.body.to - query.body.from, 60 * 60 * 1000,
+    '取消后该回到放大前那一档（1 小时），实得 ' + String(query.body.to - query.body.from))
+  // 聚合跟着同一个窗口（同一屏三个数字说的必须是同一段）
+  for (const call of calls.filter((item) => item.path === '/api/dsh-loglens/facets')) {
+    assert.equal(call.body.to - call.body.from, 60 * 60 * 1000, '聚合也要回到同一段')
+  }
+  const select = windowSelect(runtime.tree)
+  assert.equal(select.props.value, '1h', '下拉回落到放大前那一档')
+  assert.equal(windowChoicesHasCustom(runtime.tree), false, 'custom 不该再留在下拉里')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_histBarActive')).length, 0, '高亮该撤掉')
+  assert.equal(treeText(runtime.tree).includes('已放大到最短'), false, '被夹那句该跟着撤掉')
+})
+
+await test('放大后取消：连点两根柱（第二次从自定义档再放大）之后取消，要回到**最初**那一档（不是回到 custom 那个死胡同）', async () => {
+  serverRoutes = ZOOM_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  // 第一次放大：1 小时窗里的一档（1m 分桶）
+  await clickAndSettle(runtime, clickableBars(tree)[0])
+  assert.equal(windowSelect(runtime.tree).props.value, 'custom', '第一次放大后该是自定义档')
+  /*
+   * 放大之后窗口只有 1 分钟 → 分桶细到 10s → 桩按**这次请求的窗口**摆桶，所以画面上有 2 根有数据的柱：
+   * 高亮的那根（= 刚放大的那一档）与另一根。点**另一根**就是「自定义档里再放大一次」——
+   * 这一步最容易把「从哪一档放大的」记成 custom。
+   */
+  const inner = clickableBars(runtime.tree)
+  assert.ok(inner.length >= 2, '放大后的窗里该有多根有数据的柱，实得 ' + String(inner.length))
+  const other = inner.find((node) => !hasClass(node, 'll_histBarActive'))
+  assert.ok(other !== undefined, '该有一根不是高亮着的')
+  await clickAndSettle(runtime, other)
+  assert.equal(windowSelect(runtime.tree).props.value, 'custom', '第二次放大仍在自定义档')
+
+  // 现在取消：必须回到**最初**那一档（1 小时），而不是停在 custom（那会让取消变成点了没反应）
+  calls.length = 0
+  const active = treeFind(runtime.tree, (node) => hasClass(node, 'll_histBarActive'))
+  assert.equal(active.length, 1, '该有一根高亮着')
+  await clickAndSettle(runtime, active[0])
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '取消要真的重查一次（否则就是点了没反应）')
+  assert.equal(query.body.to - query.body.from, 60 * 60 * 1000,
+    '连点之后取消仍要回到最初那一档（1 小时），实得 ' + String(query.body.to - query.body.from))
+  assert.equal(windowSelect(runtime.tree).props.value, '1h', '下拉回到最初那一档')
+})
+
 let failed = 0
 for (const result of results) {
   if (result.ok) console.log('  ✓ ' + result.name)

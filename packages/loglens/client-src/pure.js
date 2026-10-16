@@ -256,6 +256,35 @@ export function zoomToBar(draft, barTs, barStepMs) {
 }
 
 /**
+ * 取消放大：回到放大**之前**那一档（界面在放大时把当时的下拉值记在 `from`）。
+ *
+ * 为什么必须记住「从哪一档放大的」：窗口一旦被改成 `custom`，草稿里就没有任何地方能反推出
+ * 原来选的是 15 分钟还是 24 小时了。若取消时随手回落到某个默认档（比如 1 小时），那就是
+ * **替用户改窗口**——他点那一下的意思明明是「我不放大了」，不是「我要查最近 1 小时」。
+ * 这与 `zoomToBar` 把「为什么要放大」写进 `clamped` 是同一条：**别替用户猜，也别说一套做一套**。
+ *
+ * `from` 必须是真预设（`windowOptions()` 里那几档）：认不出就回 `null`、由调用方**什么都不做**
+ * ——退回 `custom` 但没有窗口会被 `queryProblem` 挡成 `badWindow`（点一下得到一句报错），
+ * 而这里宁可让那一下没有反应（下拉还在，用户照样能自己选一档）。这条兜底在正常路径上不可达。
+ *
+ * 只动 `preset` 与 `window`：查询串 / 筛选 / 条数 / 级别都是用户自己的东西，取消放大不该碰
+ * （与 `zoomToBar` 只加窗口是同一条）。
+ *
+ * @param draft 当前草稿（只读）
+ * @param from 放大之前的那一档（预设键）
+ * @returns 新草稿；`from` 不是真预设时回 `null`
+ */
+export function unzoomQuery(draft, from) {
+  if (draft === null || draft === undefined || typeof draft !== 'object') return null
+  const preset = String(from == null ? '' : from)
+  if (!windowOptions().includes(preset)) return null
+  const next = { ...draft, preset }
+  // 窗口必须**撤掉**（不是留着）：留着它就成了「下拉写着 1 小时、草稿里还夹着自定义段」的第二份真相
+  delete next.window
+  return next
+}
+
+/**
  * 表单能不能提交：空串表示可以，否则是 i18n 键名后缀。
  *
  * 这里只校验**面板自己知道的事**（选没选来源、条数是不是正整数、自定义窗口的形状）；时间戳
