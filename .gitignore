@@ -26,3 +26,6 @@ coverage/
 # 根 scripts/lib/ 是共享的隔离引导模块（真机脚本与 vitest 用例都 import 它），
 # 不是构建产物，必须入库
 !scripts/lib/
+# playwright MCP 的工作目录：真机验收时落下的控制台日志与页面快照。这类产物可能带内网标识
+# （照 conventions 的真机验收口径），一律不入库——要留档就移出仓库到 /tmp
+.playwright-mcp/
