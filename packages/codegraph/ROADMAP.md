@@ -390,9 +390,26 @@ query 族的 argv 校验、`CG27`、`CG65` 各若干）。**共同点**：每条
 **边界**：这是**测试 / CI 稳定性**问题，不是产品缺陷——「CLI 调用失败 → 500」正是设计意图，
 所以它**不进 `CGxx` 产品缺陷台账**，留在本节。
 
-**可选修法（未做，先记账）**：① 给本文件里 spawn 密集的用例放宽**用例超时**（`it(…, 60_000)`
-或文件级 `testTimeout`）——「真子进程要起来」不是被验的语义；② 让这个文件与全量套件分开跑
-（CI 的 `test_filter` 入口本来就是为它加的）；③ 给 windows 腿更多预算。
+**可选修法**（③ 与诊断已于 2026-10-17 落地，①② 仍未做）：
+
+- ① 给本文件里 spawn 密集的用例放宽**用例超时**（`it(…, 60_000)` 或文件级 `testTimeout`）——
+  「真子进程要起来」不是被验的语义。**只对超时形状有效**：CI 上那两次红拿到的都是 500 形状
+  （约 148ms，**不是超时**），所以它收不了 CI 这条。
+- ② 让这个文件与全量套件分开跑（CI 的 `test_filter` 入口本来就是为它加的）。**未做**：它要改
+  `.github/`（共享状态，先问），而且 vitest 的 `--exclude` 会**覆盖**默认 excludes
+  （`node_modules` / `dist` 等）——直接用它会把依赖树里的测试也收进来，要做得稳得把默认
+  patterns 一起带上，或换一种切法。
+- ③ 给 windows 腿更多预算 → **2026-10-17 落成「CI Windows 腿降并发」**：`vitest.config.ts` 的
+  `workerCap`（`maxWorkers: 2`，只在 `CI && win32` 生效，本机与另两条腿一字不变；两支由
+  `scripts/test/vitest-config.test.ts` 钉住）。**为什么落在 vitest 配置而不是 `ci.yml`**：两条
+  workflow 里同一个入口的命令必须**逐字一致**（`scripts/ci-script-truth.mjs` 判据 3 防的正是
+  「某一侧被偷偷加参数」），给 `pnpm test` 挂个 flag 会当场判成 `ci.crossWorkflow.mismatch`
+  （release.yml 那边是裸的）；worker 数本来也是运行器的事。**这是降低概率，不是治本。**
+- **同轮补的诊断（2026-10-17）**：`test/cli-route.test.ts` 的 `call()` 现在把**每一个 500 的
+  响应体**打出来——500 的两种成因（spawn 的 `error` 事件 / 子进程非零退出）**区别只写在响应体
+  里**（`settleCliRun` 会把 stderr 原文拼进 error），而此前只有 `unlock` 那一条用例带这行诊断，
+  所以 CG27 那次再红时日志里什么都没有、又一次定不了性。**判据一字未变**，只是失败时多一行
+  stderr；下一次红即可定性，届时按证据收口（若降并发后仍红，下一手就是 ②）。
 
 ## 项目级 ROADMAP 第 4 项（`isConcurrencySafe`）与本包的关系：**不成立**
 
