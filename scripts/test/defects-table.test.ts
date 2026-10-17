@@ -37,6 +37,7 @@ import {
   collectCrossRefs,
   computeFacts,
   readDefectsInputs,
+  toPosixPath,
 } from '../defects-table.mjs'
 
 /** 真实仓库的 5 份文本（只读；反例都在它的副本上改）。 */
@@ -377,6 +378,16 @@ describe('守卫的边界：拿不到文本 / 表被整段删掉时也要报，�
  */
 describe('判据 8：跨包引用的号必须真实存在（悬空引用）', () => {
   const pad = (value: number) => String(value).padStart(2, '0')
+
+  it('引用路径一律 POSIX 分隔符——Windows 上 `relative()` 给反斜杠，豁免表的键就对不上了', () => {
+    // 2026-10-17 CI 实测：windows-latest 上判据 8 凭空报出「夹具里那条假号是悬空引用」
+    // （豁免表的键是 `scripts/test/…`，而报出来的是 `scripts\test\…`），ubuntu / macos 全绿。
+    // 本机是 macOS，`sep === '/'`，所以归一的那一支**必须靠传 separator 才验得到**。
+    expect(toPosixPath('scripts\\test\\defects-table.test.ts', '\\')).toBe('scripts/test/defects-table.test.ts')
+    expect(toPosixPath('scripts/test/defects-table.test.ts')).toBe('scripts/test/defects-table.test.ts')
+    // 真实仓库的不变量：收上来的引用路径里不许有反斜杠（Windows 腿跑这条时才是真的在验）
+    expect(real.references.filter((file) => file.path.includes('\\')).map((file) => file.path), '引用路径必须已归一').toEqual([])
+  })
 
   it('真实仓库：抓得到引用（命中不是 0），且每一条都指向真实存在的号', () => {
     const refs = collectCrossRefs(real.references)

@@ -90,7 +90,7 @@
  *   node scripts/defects-table.mjs --quiet    # 只打印差异
  */
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -224,11 +224,26 @@ const DANGLING_REF_ALLOW = [
 ]
 
 /**
+ * 把路径归一成 POSIX 分隔符（`\` → `/`）。
+ *
+ * **为什么必须归一**（2026-10-17 CI 实测）：`relative()` 在 Windows 上给的是
+ * `scripts\test\x.ts`，而引用路径既出现在**报错文案**里、又是 `DANGLING_REF_ALLOW` 的键——
+ * 不归一的话同一份豁免表在 Windows 上匹配不上，判据 8 会在那边凭空报出一条悬空引用
+ * （windows-latest 红、ubuntu / macos 绿，本机 macOS 复现不出来）。
+ *
+ * `separator` 可传是为了让这条归一**在任意平台上都能被用例验证**：本机是 `/`，不给参数
+ * 就只能证「原样返回」，证不到 Windows 那支。
+ */
+export function toPosixPath(path, separator = sep) {
+  return separator === '/' ? path : path.split(separator).join('/')
+}
+
+/**
  * 递归收集「会写编号的文本」（**只读**）。跳过 `node_modules` / `lib` / 构建产物与点目录，
  * 但保留 `.github`（workflow 注释里在写编号）。
  *
  * @returns `{ path, text }[]`；`path` 相对**起始目录**（仓库根传进来时就是仓库相对路径，
- *   报错里要能直接定位）。
+ *   报错里要能直接定位），且**一律 POSIX 分隔符**。
  */
 export function collectReferenceFiles(dir, root = dir, out = []) {
   let entries = []
@@ -253,7 +268,7 @@ export function collectReferenceFiles(dir, root = dir, out = []) {
       continue
     }
     if (!REFERENCE_EXT.test(name)) continue
-    out.push({ path: relative(root, full), text: readFileSync(full, 'utf8') })
+    out.push({ path: toPosixPath(relative(root, full)), text: readFileSync(full, 'utf8') })
   }
   return out
 }
