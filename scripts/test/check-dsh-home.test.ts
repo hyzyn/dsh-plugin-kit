@@ -79,7 +79,10 @@ describe('listFilesUnder：递归列文件，相对哨兵目录', () => {
       mkdirSync(join(dir, 'tty'), { recursive: true })
       writeFileSync(join(dir, 'cordis.patch.yml'), '')
       writeFileSync(join(dir, 'tty', 'shell-integration.sh'), '')
-      expect(listFilesUnder(dir).sort()).toEqual(['cordis.patch.yml', join('tty', 'shell-integration.sh')])
+      // 期望值刻意写成 **POSIX 字面量**而不是 `join('tty', …)`：这条就是「报出来的路径
+      // 在哪个平台都长得一样」的判据——用 `join` 拼期望值的话，Windows 上两边会一起变成
+      // 反斜杠，判据自己跟着漂（2026-10-17 CI：判据 8 就是栽在这个形状上）。
+      expect(listFilesUnder(dir).sort()).toEqual(['cordis.patch.yml', 'tty/shell-integration.sh'])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

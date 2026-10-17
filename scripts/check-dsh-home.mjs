@@ -50,6 +50,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// 报出来的路径一律 POSIX 分隔符：Windows 上 `relative()` 给的是 `tty\shell-integration.sh`，
+// 而判据 2 的消息就是靠这个名字指出「哪个落点被写了」——同一份判据在不同平台给出两种写法，
+// 文档与排障都对不上。**从 `defects-table.mjs` 引，不在这里抄第二份**（本仓的规矩是同一事实
+// 只留一份，见 docs/conventions.md § 文档分层）：它同目录、同为 L0 只读守卫，import 无副作用。
+import { toPosixPath } from './defects-table.mjs'
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** vitest 的真实 JS 入口（绕开 `.cmd` shim，同 `check-test-collection.mjs` 的教训）。 */
@@ -85,7 +91,7 @@ export function findRawDerivations(repoRoot = root) {
 }
 
 /**
- * 列出一个目录里的**所有文件**（递归，相对该目录）。目录不存在时返回空数组。
+ * 列出一个目录里的**所有文件**（递归，相对该目录，**一律 POSIX 分隔符**）。目录不存在时返回空数组。
  *
  * 判据 2 用它回答的不是「配置变了吗」而是「凭空多出东西了吗」：哨兵目录开局是空的，
  * 所以任何出现在里面的文件都是某个用例写的——不需要预知会写哪些文件名，
@@ -99,7 +105,7 @@ export function listFilesUnder(dir, base = dir) {
     // `base` 一路传下去：相对路径要以**哨兵目录**为基准，不然 `tty/xxx` 会退化成 `xxx`，
     // 报错里就看不出是哪个落点被写了（判据 2 的消息全靠这个名字）。
     if (statSync(p).isDirectory()) out.push(...listFilesUnder(p, base))
-    else out.push(relative(base, p))
+    else out.push(toPosixPath(relative(base, p)))
   }
   return out
 }
