@@ -98,19 +98,30 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    `addHarnessSourceSection`、`dsh-subprocess-local` 改签名的几个导出、
  *    `dsh-host-webserver` 的 `get port(): number | undefined`（本仓按结构用，只调 `register` /
  *    `registerUpgrade`）、`dsh-credentials-local` 新增的 `ignoredKeys`——**全部零引用或零影响**。
+ *  - 0.2.1-rc.1 vs 0.2.1-alpha.5：**纯显式声明，宿主对本仓零差异**——`0.2.1-rc.1` 本来就被
+ *    `^0.2.1-alpha.5` 覆盖（同一个 `0.2.1` 版本元组，预发布之间不比大小），官方判定器实测放行。
+ *    逐文件比对（两档各装一份临时依赖树，逐 `lib/` 比对）：本仓 import 的 14 个宿主包
+ *    （`dsh-tools` / `dsh-mcp-client` / `dsh-credentials` / `dsh-credentials-local` /
+ *    `dsh-client-locale` / `dsh-base` / `dsh-web-app` / `dsh-user-approval` / `dsh-settings` /
+ *    `dsh-session-query` / `dsh-sandbox` / `dsh-launch-environment` / `dsh-headless` / `dsh`）
+ *    **`lib/` 全部逐字节相同**，判定器 `dsh-app-boot` 的 `lib/` 同样逐字节相同；整套 304 个包里
+ *    只有 5 个客户端产物不同，且**差异只有版本字符串**（`settings-general` / `sidebar` /
+ *    `settings-account` 里的 `0.2.1-alpha.5` → `0.2.1-rc.1`、`dsh-client-modules` 里的 commit 哈希、
+ *    `dsh-web-frontend` 只有 `.map`）。所以这一档**不改任何插件运行代码**，也不需要新的行为适配。
  * `cordis` 4.0.4 与 `schemastery` 3.18.4 在前三档同版本；第四、五档的宿主带的是
  * 4.0.5-alpha.1 与 3.18.5-alpha.1；**第六档（alpha.5）带 ~4.0.5-alpha.2 / ~3.18.5-alpha.2，
  * 实际解析到 4.0.5 / 3.18.5**——与第四、五档解析到的同名版本，两份 tarball 除 `package.json`
  * 外**逐字节相同**，且 app-boot 用 `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`），
- * 所以同一条范围同时声明多段是如实表述，而不是「先放宽再说」。
+ * 所以同一条范围同时声明多段是如实表述，而不是「先放宽再说」。**第七档（rc.1）仍是
+ * 4.0.5 / 3.18.5**（与第六档同一对，逐字节相同）。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
  * 唯一支持的 peer 写法：逐 cohort 的 `^<cohort>` 用 `||` 连起来（预发布参与匹配，见文件头）。
  * 单 cohort 时就是 `^0.1.7-rc.2` 这种老写法，多 cohort 时是
- * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-alpha.5`。
+ * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1`。
  */
 const EXPECTED_RANGE = DSH_COHORTS.map((cohort) => `^${cohort}`).join(' || ')
 /**

@@ -3,9 +3,9 @@
 > 执行对象：AI 代理。本文自包含，按 PR 顺序执行；每节末尾有可勾选验收项。
 > **状态**：**方案已定，代码未动（2026-10-07）**。§0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
-> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.5`** 现算的
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-rc.1`** 现算的
 > （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 复核于 `0.2.1-alpha.2`，
-> 2026-10-16 复核于 `0.2.1-alpha.5`，见 §2.1 末「升级复核」）。
+> 2026-10-16 复核于 `0.2.1-alpha.5`，2026-10-17 复核于 `0.2.1-rc.1`，见 §2.1 末「升级复核」）。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
@@ -84,7 +84,7 @@
 
 ## 2. 现算事实与那条实现约束
 
-### 2.1 三条实测事实（DSH `0.2.1-alpha.5`，2026-10-07 首测 · 10-09 / 10-16 复核）
+### 2.1 三条实测事实（DSH `0.2.1-rc.1`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 复核）
 
 **事实 1：审批瀑布的答案今天由「页面」给出。**
 
@@ -206,6 +206,21 @@ Linux 的 zenity / kdialog 仍是 `errorCode(error) === 1`。事实 3 的正文�
 「只报基准版本」的情况下静默漂过的——现在判据多了两条：macOS 必须仍在用 AppKit `NSOpenPanel`
 （`NSModalResponseOK`），且「退出码 + stderr 文本」（`-128` / `User canceled`）不许回来；两条都配了
 反例。它再变就不是静默漂过，而是直接报红。
+
+**升级复核（2026-10-17，宿主 `0.2.1-alpha.5` → `0.2.1-rc.1`）**：这一档**没有可复核的漂移**——
+三条事实的五个载体文件在两档之间**逐字节相同**（`cmp` 逐文件比对，两档各装一份完整依赖树）：
+`dsh-user-approval/lib/index.js`、`dsh-client-ui-approval/lib/client.js`、
+`dsh-client-modules/lib/client.js`、`dsh-api-remotes/lib/types/remote-events.js`、
+`dsh-host-directory-picker-native/lib/index.js`。按惯例仍逐条重跑：审批瀑布仍是
+`dsh-user-approval` 的 `ctx.waterfall(…, "approval/request", …)`，浏览器侧 answerer 仍是
+`dsh-client-ui-approval` 的 `.$on("approval/request", …)` → `answerApproval(…)`，
+`dsh-client-modules` 的 `defaultLoadBundle` 仍走 `createElement("script")`、说明文案仍是
+`same-origin external classic script` 且宿主仍是 **0** 处 CSP，
+`dsh-host-directory-picker-native` 仍是 AppKit `NSOpenPanel`（`NSModalResponseOK`）+
+取消 `return ''` → `outputPath()` → `null`、darwin 分支无 try/catch，四条 picker 准则逐条仍在。
+`checkHostWorld()` 返回空数组——**红的只有「基准版本对不上」这条绊线**（按设计），
+本节基准随之更新到 `0.2.1-rc.1`。上一轮新增的两条反例（macOS 必须仍用 `NSOpenPanel`；
+「退出码 + stderr 文本」不许回来）在这一档仍然全绿。
 
 ### 2.2 把事实合起来：两个形态，只有一个成立
 
