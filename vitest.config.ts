@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 /**
  * 仓库级测试底座：收 packages/<pkg>/test/ 与 scripts/test/ 下的用例。
@@ -47,6 +47,31 @@ export function workerCap({ ci, platform }: { ci: string | undefined; platform: 
   return inCi && platform === 'win32' ? { maxWorkers: 2 } : {}
 }
 
+/**
+ * 「分道跑」的另一半（2026-10-17 加，配合 CI 上那一步）：Windows 腿**先**把 spawn 密集的
+ * `packages/codegraph/test/cli-route.test.ts` 单独跑一遍（那一轮它独占机器），其余文件再由
+ * 常规那轮跑——这一支就是给常规那轮用的：把那个文件从本轮里排掉。
+ *
+ * **为什么用 `configDefaults.exclude` 而不是手抄一份默认列表**：vitest 的默认 excludes 会随
+ * 版本变（`node_modules` / `dist` / 各种 config 文件…）。手抄一份就是第二份真相源，而且会
+ * **静默腐烂**——`--exclude` 是**覆盖**而不是追加，漏掉一个默认项就可能把依赖树里的测试
+ * 一起收进来跑（所以这里用 vitest 自己导出的那份）。
+ *
+ * **为什么由环境变量驱动、而不是写死在配置里**：那一轮与常规那轮必须是**同一条命令**——
+ * `scripts/ci-script-truth.mjs` 判据 3 要求两条 workflow 里同一个入口的命令**逐字一致**，
+ * 所以不能给 `pnpm test` 挂 flag、也不能加 `VAR=1 ` 前缀，只能靠 step 的 `env:` 传进来。
+ *
+ * @returns `undefined` = 不动 excludes（用 vitest 自己的默认）。
+ */
+export function laneExclude({ skipCliRoute }: { skipCliRoute: string | undefined }) {
+  return skipCliRoute === '1'
+    ? [...configDefaults.exclude, '**/codegraph/test/cli-route.test.ts']
+    : undefined
+}
+
+/** 本轮要不要排掉那个 spawn 密集的文件（由 CI 的 `env:` 决定，本机永远不排）。 */
+const exclude = laneExclude({ skipCliRoute: process.env.DSH_SKIP_CLI_ROUTE })
+
 export default defineConfig({
   test: {
     include: ['packages/*/test/**/*.test.ts', 'scripts/test/**/*.test.ts'],
@@ -93,5 +118,7 @@ export default defineConfig({
     hookTimeout: 60_000,
     // CI 的 Windows 腿降并发；其余环境展开成空对象（一字不变）。理由与边界见 `workerCap` 的注释。
     ...workerCap({ ci: process.env.CI, platform: process.platform }),
+    // 同样：只有 CI 的 Windows 腿在「常规那一轮」里排掉 spawn 密集的那个文件（上面那步已单独跑过）。
+    ...(exclude === undefined ? {} : { exclude }),
   },
 })

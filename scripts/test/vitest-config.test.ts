@@ -7,8 +7,9 @@
  * §「cli-route.test.ts 在 Windows 上的负载敏感」。
  */
 import { describe, expect, it } from 'vitest'
+import { configDefaults } from 'vitest/config'
 
-import { workerCap } from '../../vitest.config'
+import { laneExclude, workerCap } from '../../vitest.config'
 
 describe('workerCap：只有 CI 的 Windows 腿降并发', () => {
   it('CI + win32 → 给出 maxWorkers（削掉那层进程创建压力）', () => {
@@ -21,5 +22,23 @@ describe('workerCap：只有 CI 的 Windows 腿降并发', () => {
     expect(workerCap({ ci: 'true', platform: 'darwin' })).toEqual({})
     // 空串按「没设」处理：有的 CI 会把它设成空值，`'false'` 之类仍算「在 CI 里」
     expect(workerCap({ ci: '', platform: 'win32' })).toEqual({})
+  })
+})
+
+describe('laneExclude：CI 的 Windows 腿在「常规那一轮」排掉 spawn 密集的文件', () => {
+  it('开关打开 → 在 **vitest 自己的默认 excludes 之后**追加那个文件', () => {
+    const exclude = laneExclude({ skipCliRoute: '1' })
+    expect(exclude, '开关打开时必须给出 excludes').toBeDefined()
+    // 默认那几项**一个都不能少**：`--exclude` 是覆盖而不是追加，漏一项就可能去收依赖树里的测试
+    for (const pattern of configDefaults.exclude) {
+      expect(exclude, `默认 exclude 丢了：${pattern}`).toContain(pattern)
+    }
+    expect(exclude).toContain('**/codegraph/test/cli-route.test.ts')
+  })
+
+  it('开关关闭（本机开发、另两条腿、手动指名单文件那条道）→ undefined，excludes 一行不动', () => {
+    expect(laneExclude({ skipCliRoute: undefined })).toBeUndefined()
+    expect(laneExclude({ skipCliRoute: '' })).toBeUndefined()
+    expect(laneExclude({ skipCliRoute: '0' })).toBeUndefined()
   })
 })
