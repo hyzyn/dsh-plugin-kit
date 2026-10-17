@@ -289,3 +289,62 @@ describe('能力自述随 /query 下发', () => {
     expect('capabilities' in (facets.body ?? {})).toBe(false)
   })
 })
+
+/*
+ * 结构化筛选的**接线**（2026-10-17 真机抓到的洞，第二十二刀）。
+ *
+ * 判据本身是对的：`normalizeQuery`、ES 适配器的 `filterClauses`、面板的芯片都按 filters 办事。
+ * 漏掉的是中间那一层——`runSearch` 拼查询时没把它传下去，而 `runFacets` 传了。结果是
+ * 「行」永远是全量：面板上条件芯片好好摆着、榜与分布也确实收窄了，只有最要紧的那份结果没收窄
+ * （真机：`filters: {container.name: prometheus}` 发出去，回来的 100 行里躺着 6 个容器，
+ * matched 也还是未筛的 26264）。
+ *
+ * 这类「判据写对了但没接上」的漏法，各层自己的单测一条都拦不住——只能从**真实入口**
+ * （`/query` 路由）走一遍，看它到底有没有到适配器手里。所以这两条断言的是「到没到」，
+ * 不是「拼得对不对」（后者已经有用例）。
+ */
+describe('结构化筛选：从 /query 路由进去，真能到适配器手里', () => {
+  const CAPS: BackendCaps = {
+    queryLanguage: 'lucene',
+    follow: false,
+    aggregations: true,
+    requiresTimeRange: true,
+    fields: 'indexed',
+    pagination: 'cursor',
+    maxPageSize: 100,
+    maxWindowMs: 60 * 60 * 1000,
+  }
+
+  it('桩适配器收到了 filters（没有被某一层悄悄丢掉）', async () => {
+    const seen: Array<Record<string, string> | undefined> = []
+    const stub: LogBackend = {
+      id: 'stub',
+      capabilities: () => CAPS,
+      fields: async () => ({ fields: [], total: 0, truncated: false }),
+      query: async (query) => {
+        seen.push(query.filters)
+        return { lines: [], counts: { returned: 0, totalKnown: false }, truncation: { truncated: false, reasons: [] } }
+      },
+      health: async () => ({ ok: true }),
+    }
+    const config: LoglensConfig = { enabled: true, targets: [{ id: 'x1', kind: 'elasticsearch', label: 'stub', url: 'http://127.0.0.1:1' }] }
+    const response = await harness(config, () => stub).request({
+      ...PROOF,
+      body: { target: 'x1', from: 1_700_000_000_000, to: 1_700_000_060_000, filters: { 'container.name': 'prometheus' } },
+    })
+    expect(response.status).toBe(200)
+    expect(seen).toEqual([{ 'container.name': 'prometheus' }])
+  })
+
+  it('Loki 带着 filters 进来会**报错**，而不是静默给全量', async () => {
+    const fake = await startFakeLoki()
+    const response = await harness(configWith(fake.url)).request({
+      ...PROOF,
+      body: { target: 'loki', from: 1_700_000_000_000, to: 1_700_000_060_000, filters: { app: 'demo' } },
+    })
+    expect(response.status).toBe(400)
+    expect(String(response.body?.error)).toContain('暂不支持结构化 filters')
+    // 适配器是**在打请求之前**就拒的：一个字节都不该发到 Loki
+    expect(fake.requests).toEqual([])
+  })
+})

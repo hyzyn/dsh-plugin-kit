@@ -18,6 +18,8 @@ import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+// CSS 里那句 `max-height` 与这个常量是同一条规矩的两半（一个是渲染、一个是上翻判断）
+import { FIELD_PANEL_CEILING, FIELD_PANEL_WIDTH, fieldNameBreaks } from '../client-src/pure.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const code = readFileSync(join(root, 'client.js'), 'utf8')
@@ -548,6 +550,18 @@ function queryOutcome(target, aggregations) {
   }
 }
 
+/**
+ * 排序按钮（第十八刀图标化之后，按钮上只剩档位名「时间 / 级别 / 正文」）。
+ *
+ * 按 `aria-label` 找而不是按文字找：文字只剩「时间」这种两字档位名，与页面上别处的
+ * 「最近 1 小时」之类容易混；aria-label 才是那句完整的「本页排序：时间」。
+ */
+function sortButton(tree, order) {
+  return treeFind(tree, (node) => node.type === 'button'
+    && typeof node.props?.['aria-label'] === 'string'
+    && node.props['aria-label'].includes('本页排序：' + order))[0]
+}
+
 /** 按文案找按钮（按钮文字就是 t('btn.*') 的中文兜底）。 */
 function buttonByText(tree, text) {
   return treeFind(tree, (node) => node.type === 'button' && treeText(node) === text)[0]
@@ -597,7 +611,22 @@ async function runPanelQueryFull(targetId, options = {}) {
   queryBtn.props.onClick()
   await runtime.update()
   await runtime.update()
-  return { runtime, tree: await runtime.update() }
+  tree = await runtime.update()
+  /*
+   * 选列面板默认收起：需要它的用例显式打开（顺便验一次「点它才展开」）。
+   *
+   * 第三十刀之后只剩**一个**面板（元信息行那颗「字段」）。筛选不再有面板——它是筛选行上的
+   * 两格输入框，跟着这一行的常驻判据自己出现（跑过一次查询就有），不需要在这里点开。
+   */
+  if (options.fieldsOpen === true) {
+    const fieldsBtn = buttonByText(tree, '字段')
+    assert.ok(fieldsBtn !== undefined, '找不到打开选列面板的开关')
+    fieldsBtn.props.onClick(rectAt(16, 120, 74, 22))
+    await runtime.update()
+    await runtime.update()
+    tree = await runtime.update()
+  }
+  return { runtime, tree }
 }
 
 /** 只要最终渲染树的用例（分布那几条用这个）。 */
@@ -721,8 +750,11 @@ await test('点柱放大：点一根有数据的柱 = 把时间窗夹到**这一
   const select = windowSelect(after)
   assert.equal(select.props.value, 'custom', '窗口下拉该显示「自定义」那一档')
   assert.ok(treeText(select).includes('→'), '下拉文案该是**真实范围**，不是裸键名 custom：' + treeText(select))
-  assert.ok(String(bars[1].props.title).includes('点一下放大到这一段'), '悬停该说清这根柱子能点：' + String(bars[1].props.title))
-  assert.ok(String(bars[1].props.title).includes('5 条'), '悬停仍要说清这一段有多少条')
+  // 第十六刀：钻掉原生 tooltip（它会盖住横轴），句子搬进 aria-label + 读数条
+  assert.equal(bars[1].props.title, undefined, '不该再挂原生 title（那个灰框会压住横轴刻度）')
+  const aria = String(bars[1].props['aria-label'])
+  assert.ok(aria.includes('点一下放大到这一段'), '读屏用户要能听出这根柱子能点：' + aria)
+  assert.ok(aria.includes('5 条'), '读屏用户也要知道这一段有多少条：' + aria)
 })
 
 await test('点柱放大：空桶是**静态**的，点不动（给个点得动、结果却是空窗口的入口更坏）', async () => {
@@ -1623,7 +1655,8 @@ await test('行上的标签：只摆**1 个身份标签**（宿主顺序第一�
   const chips = tagChips(tree)
   assert.equal(chips.length, 1, '行上只摆 1 个（顺序里的第一个），实得 ' + String(chips.length))
   // 顺序就是宿主给的顺序（container → host → …），不重挑
-  assert.equal(treeText(chips[0]), 'container.nameapp-svc-1')
+  // 行上只摆值（字段名在悬停 / ＋N 浮层 / 字段栏里），值本身不被字段名挤掉
+  assert.equal(treeText(chips[0]), 'app-svc-1')
   assert.ok(String(chips[0].props.title).includes('按 container.name = app-svc-1 加一条筛选'),
     '可点的标签必须说清点它会做什么：' + String(chips[0].props.title))
   // 其余 4 个（host / file / stream / pod）收进「＋4」
@@ -1635,8 +1668,8 @@ await test('行上的标签：只摆**1 个身份标签**（宿主顺序第一�
   assert.ok(String(row.props.title).includes('kubernetes.pod.name = app-1-abc'), '悬停该有全部标签')
   assert.ok(String(row.props.title).includes('{"message":"boom"'), '悬停该有原文（raw）')
   assert.ok(String(row.props.title).includes('error（从正文推断）'), '推断出来的级别必须标出来（两种可信度）')
-  // 敏感字段那句话在场（raw 原样来自后端）
-  assert.ok(treeText(tree).includes('可能有敏感字段'), '行详情里可能有敏感字段，这句话该在')
+  // 敏感字段那句**不常驻**在结果区上方：只在真的展开、看到原文的地方说（常驻提醒是噪音）
+  assert.equal(treeText(tree).includes('可能有敏感字段'), false, '这句话不该常驻在结果列表上方')
 })
 
 await test('「＋N」：点开**全部标签**浮层（不嵌在滚动列表里，否则会被裁），点一条即筛、点背景收起', async () => {
@@ -1693,7 +1726,7 @@ await test('行上的标签：点身份标签 = 按「字段 = 值」加一条�
   }
   const { runtime, tree } = await runPanelQueryFull('es')
   const chip = tagChips(tree)[0]
-  assert.equal(treeText(chip), 'container.nameapp-svc-1', '行上第一颗是 container.name')
+  assert.equal(treeText(chip), 'app-svc-1', '行上第一颗是 container.name 的值（键名在悬停里）')
 
   calls.length = 0
   await clickAndSettle(runtime, chip)
@@ -1720,7 +1753,7 @@ await test('行上的标签：空值那类**不摆**（筛选表达不了「字�
   // 空值那一个**不摆**（没有值的标签占位会把有值的挤掉）——所以这一行只有 1 格，且它是可点的
   const chips = tagChips(tree)
   assert.equal(chips.length, 1, '空值不占位：实得 ' + String(chips.length))
-  assert.equal(treeText(chips[0]), 'host.namenode-7')
+  assert.equal(treeText(chips[0]), 'node-7', '行上只摆值')
   assert.equal(moreButton(tree), undefined, '只剩 1 个有值标签时不该有「＋N」')
 })
 
@@ -1728,13 +1761,29 @@ await test('行上的标签：空值那类**不摆**（筛选表达不了「字�
  * 级别筛选（宿主既有入参；页内筛必须说出来）
  * ------------------------------------------------------------------ */
 
-/** 级别下拉（它的选项里有一个空 value 的「不限级别」）。 */
+/** 级别下拉（它的选项里有一个空 value 的「不限」，而且同一格里还有 error+ 那一档）。 */
 function levelSelect(tree) {
   return treeFind(tree, (node) => node.type === 'select'
     && Array.isArray(node.props?.children)
     && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === ''
-      && treeText(child).includes('不限级别')))[0]
+      && treeText(child) === '不限')
+    && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === 'error'))[0]
 }
+
+await test('级别下拉的文案**短到放得进那一格**：warn+ / error+，不再拖着「及以上」（真机 96px 一列）', async () => {
+  serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true) }
+  const tree = await runPanelQuery('es')
+  const select = levelSelect(tree)
+  assert.ok(select !== undefined, '找不到级别下拉')
+  const labels = select.props.children.map((child) => treeText(child))
+  assert.deepEqual(labels, ['不限', 'trace+', 'debug+', 'info+', 'warn+', 'error+', 'fatal'],
+    '七项都要短：实得 ' + JSON.stringify(labels))
+  // 预算：`.ll_queryGrid` 第四列最窄 96px − 左右各 12px 内边距 − 原生箭头约 20px ≈ 52px 文字区，
+  // font-size 13px → 约 4 个汉字宽。`trace+` = 3 个汉字宽（5 个半角 × 0.5 + 1），留一格余量。
+  for (const label of labels) {
+    assert.ok(labelUnits(label) <= 4, '级别下拉的「' + label + '」放不进最窄那一格（预算 4，实得 ' + String(labelUnits(label)) + '）')
+  }
+})
 
 await test('级别筛选：下拉六档 + 不限；选中后请求体带 level，且**明说这是页内筛**', async () => {
   serverRoutes = {
@@ -1745,7 +1794,7 @@ await test('级别筛选：下拉六档 + 不限；选中后请求体带 level�
   const select = levelSelect(tree)
   assert.ok(select !== undefined, '找不到级别下拉')
   assert.equal(select.props.value, '', '默认是「不限」')
-  assert.equal(treeText(tree).includes('级别是在'), false, '不限级别时不该说那句边界声明')
+  assert.equal(treeText(tree).includes('是在「返回的这一页」上筛的'), false, '不限级别时不该说那句边界声明')
 
   calls.length = 0
   select.props.onChange({ target: { value: 'error' } })
@@ -1758,7 +1807,9 @@ await test('级别筛选：下拉六档 + 不限；选中后请求体带 level�
   const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
   assert.equal(query.body.level, 'error', '载荷里该带 level：' + JSON.stringify(query.body))
   // 边界声明必须在场：宿主是在**这一页**上筛的，counts / truncation 仍是未筛的整页
-  assert.ok(treeText(runtime.tree).includes('级别是在'), '页内筛那句必须说出来：' + treeText(runtime.tree).slice(0, 400))
+  assert.ok(treeText(runtime.tree).includes('是在「返回的这一页」上筛的'), '页内筛那句必须说出来：' + treeText(runtime.tree).slice(0, 400))
+  // 标签缩短成 `warn+` 之后，这句是全屏唯一写着完整语义的地方——`+` 的读法必须在这里讲清
+  assert.ok(treeText(runtime.tree).includes('warn+ 就是 warn 及以上'), '要把下拉里的 `+` 讲清：' + treeText(runtime.tree).slice(0, 400))
 
   // 换回「不限」→ 载荷里**不带这个键**（形状回到加它之前）
   calls.length = 0
@@ -1768,7 +1819,7 @@ await test('级别筛选：下拉六档 + 不限；选中后请求体带 level�
   await clickAndSettle(runtime, buttonByText(runtime.tree, '查询'))
   const again = calls.find((call) => call.path === '/api/dsh-loglens/query')
   assert.equal('level' in again.body, false, '回到不限之后不许带一个空的 level：' + JSON.stringify(again.body))
-  assert.equal(treeText(runtime.tree).includes('级别是在'), false, '不限级别时那句该撤掉')
+  assert.equal(treeText(runtime.tree).includes('是在「返回的这一页」上筛的'), false, '不限级别时那句该撤掉')
 })
 
 /* ------------------------------------------------------------------ *
@@ -1834,7 +1885,14 @@ await test('放大后取消：再点**正在放大的那根**柱 → 回到放�
   assert.equal(windowSelect(runtime.tree).props.value, 'custom', '先得真的进到自定义档')
   const active = treeFind(runtime.tree, (node) => hasClass(node, 'll_histBarActive'))
   assert.equal(active.length, 1, '放大那一档该高亮着')
-  assert.ok(String(active[0].props.title).includes('再点一次取消'), '高亮那根的悬停要说清再点一次是撤销：' + String(active[0].props.title))
+  // 第十六刀：这句话现在由**读数条**说（悬停到正在放大的那一根时）
+  assert.ok(String(active[0].props['aria-label']).includes('再点一次取消'), '读屏用户要听出再点一次是撤销：' + String(active[0].props['aria-label']))
+  // 读数气泡只在悬停时存在（第十七刀）：先悬停再读
+  active[0].props.onMouseEnter()
+  await runtime.update()
+  const live = treeFind(runtime.tree, (node) => hasClass(node, 'll_histReadout'))[0]
+  assert.ok(live !== undefined, '悬停正在放大的那根时该出现读数气泡')
+  assert.ok(treeText(live).includes('再点一次取消'), '气泡该说清再点一次是撤销：' + treeText(live))
 
   calls.length = 0
   await clickAndSettle(runtime, active[0])
@@ -1975,6 +2033,1397 @@ await test('只改级别也算改条件（同一份判据，不为每个控件�
   assert.ok(treeText(runtime.tree).includes('查询条件已经改过'), '改级别也是改条件：' + treeText(runtime.tree).slice(0, 400))
   assert.equal(buttonByText(runtime.tree, '下一页'), undefined, '改级别之后「下一页」也得收起')
 })
+
+/* ------------------------------------------------------------------ *
+ * 字段侧栏 + 结果表列集 + 行详情（P8-乙）
+ * ------------------------------------------------------------------ */
+
+/** 带标签的查询结果（两条行：第一条五个标签，第二条少几个——用来验列的 `—`）。 */
+function labeledOutcome() {
+  const lines = [
+    {
+      ts: 0,
+      message: 'boot',
+      source: '0',
+      level: 'debug',
+      labels: {
+        'container.name': 'app-1',
+        'host.name': 'node-1',
+        'log.file.path': '/var/log/app.log',
+        'kubernetes.pod.name': 'web-1',
+        stream: 'stdout',
+      },
+      raw: '{"message":"boot"}',
+      id: '0:0',
+    },
+    {
+      ts: 1000,
+      message: 'ready',
+      source: '0',
+      level: 'error',
+      labels: { 'container.name': 'app-1', 'host.name': 'node-2', stream: 'stderr' },
+      raw: '{"message":"ready"}',
+      id: '0:1',
+    },
+  ]
+  return {
+    ok: true,
+    target: { id: 'es', kind: 'elasticsearch', label: '内网 ES' },
+    window: { from: 0, to: 900_000 },
+    returned: lines.length,
+    counts: { returned: lines.length, totalKnown: true, matched: lines.length },
+    truncation: { truncated: false, reasons: [] },
+    lines,
+    warnings: [],
+    capabilities: { queryLanguage: 'lucene', pagination: 'cursor', follow: false, aggregations: false },
+  }
+}
+
+/** `/fields` 的清单：两个命中字段 + 一个其余字段 + 一个类型冲突字段。 */
+function labeledFields() {
+  return {
+    ok: true,
+    fields: [
+      { name: 'container.name', kind: 'indexed', preferred: true },
+      { name: 'host.name', kind: 'indexed' },
+      { name: 'service.name', kind: 'indexed', preferred: true },
+      { name: 'mixed.type', kind: 'indexed', conflict: true, esTypes: ['date', 'text'] },
+    ],
+    total: 4,
+    truncated: false,
+    warnings: [],
+  }
+}
+
+const FIELD_ROUTES = () => ({
+  '/api/dsh-loglens/query': labeledOutcome(),
+  '/api/dsh-loglens/fields': labeledFields(),
+})
+
+/**
+ * 侧栏里某个字段的那颗动作（键是 `ll-<column|filter>-act-<字段名>`）。
+ *
+ * 第二十六刀：选列面板的动作从「列」按钮换成了**勾选框**（`<input type=checkbox>`），
+ * 所以 column 那头要按 input 找；filter 仍是 button。
+ */
+function fieldAction(tree, kind, name) {
+  const tag = kind === 'column' ? 'input' : 'button'
+  return treeFind(tree, (node) => node.type === tag && node.props?.key === 'll-' + kind + '-act-' + name)[0]
+}
+
+/** 点一下某个字段的勾选框（模拟用户在整行上点了一下：label 里那颗 checkbox 的 onChange）。 */
+async function toggleColumnPick(runtime, name) {
+  const box = fieldAction(runtime.tree, 'column', name)
+  assert.ok(box !== undefined, '找不到 ' + name + ' 的勾选框')
+  assert.notEqual(box.props.disabled, true, name + ' 的勾选框是禁用的（满员？）')
+  box.props.onChange()
+  await runtime.update()
+  await runtime.update()
+  await runtime.update()
+}
+
+/**
+ * **结果表上方**那排列芯片。
+ *
+ * 注意作用域（第二十一刀）：面板里也有一份同样的芯片（「已选列」，用同一个 `.ll_columnChip`
+ * 外观），所以「加了几列」不能在全树上数——会数出两倍。
+ */
+function resultColumnChips(tree) {
+  const row = treeFind(tree, (node) => hasClass(node, 'll_columns'))[0]
+  return row === undefined ? [] : treeFind(row, (node) => hasClass(node, 'll_columnChip'))
+}
+
+/** 侧栏的过滤框 / 行首展开箭头 / 额外列的值单元格。 */
+function fieldFilterBox(tree) {
+  return treeFind(tree, (node) => node.type === 'input' && hasClass(node, 'll_fieldsFilter'))[0]
+}
+function rowToggleButtons(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_rowToggle'))
+}
+function columnCellNodes(tree) {
+  return treeFind(tree, (node) => hasClass(node, 'll_resultCell'))
+}
+function rowDetailNodes(tree) {
+  return treeFind(tree, (node) => hasClass(node, 'll_rowDetail'))
+}
+
+await test('字段面板：默认收起、点开是**浮层**（结果区不分栏），点面板外收起、重开不重拉', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_fields')).length, 0, '默认不画字段浮层（宽度全归日志）')
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_fieldScrim')).length, 0, '没有浮层就不该留遮罩')
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_resultItem')).length, 2, '结果照常')
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/fields').length, 0,
+    '收起时不该为看不见的面板多打一枪 /fields')
+  // 浮层不占布局：结果区的容器在收起 / 展开两态下是**同一个 class**（没有「两栏 / 单列」两套壳）
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_workbench'))[0].props.className, 'll_workbench',
+    '收起时结果区不该挂上另一套布局 class')
+
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '字段'))
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fields')).length, 1, '点「字段」浮出来')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fieldScrim')).length, 1,
+    '浮层带一层遮罩：点面板外任何地方都能收起')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_workbench'))[0].props.className, 'll_workbench',
+    '展开后结果区仍是同一个壳（浮层不挤它）')
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/fields').length, 1,
+    '展开时才拉一次字段清单')
+
+  await clickAndSettle(runtime, treeFind(runtime.tree, (node) => hasClass(node, 'll_fieldScrim'))[0])
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fields')).length, 0, '点面板外收起')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fieldScrim')).length, 0, '遮罩跟着收起')
+
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '字段'))
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fields')).length, 1, '再点一次还能打开')
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/fields').length, 1,
+    '同一个来源不重拉字段清单')
+})
+
+
+
+await test('列集：点「列」加一列（值取行标签，缺的显示 —），再点同一颗去掉', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+  await toggleColumnPick(runtime, 'container.name')
+
+  let next = runtime.tree
+  const chips = resultColumnChips(next)
+  assert.equal(chips.length, 1, '列芯片该出现一个：' + treeText(next).slice(0, 300))
+  assert.ok(treeText(chips[0]).includes('container.name'))
+  const cells = columnCellNodes(next)
+  assert.deepEqual(cells.map((node) => treeText(node)), ['app-1', 'app-1'], '两行都取到行标签的原值')
+
+  // 有额外列 → 行改成 grid（正文有下限，窗口不够横向滚动），0 列时仍是原来的 flex 行
+  const wideResults = treeFind(next, (node) => hasClass(node, 'll_resultsWide'))[0]
+  assert.ok(wideResults !== undefined, '有额外列时结果区要进「宽表」形态（横向滚动）')
+  const firstRow = treeFind(next, (node) => hasClass(node, 'll_resultRow'))[0]
+  assert.equal(firstRow.props.style.display, 'grid', '有额外列的行用 grid 模板')
+  assert.ok(firstRow.props.style.gridTemplateColumns.includes('minmax(198px,1fr)'),
+    '正文必须有 198px 下限（否则 4 列时正文会被挤成 0 宽）：' + firstRow.props.style.gridTemplateColumns)
+  assert.ok(firstRow.props.style.gridTemplateColumns.includes('96px'), '每个额外列 96px')
+
+  // 换一列缺值的：第一条有、第二条没有 → 第二条画 —
+  await toggleColumnPick(runtime, 'log.file.path')
+  next = runtime.tree
+  assert.equal(resultColumnChips(next).length, 2)
+  const values = columnCellNodes(next).map((node) => treeText(node))
+  assert.deepEqual(values, ['app-1', '/var/log/app.log', 'app-1', '—'],
+    '列按「每条行的这一列」排：缺值必须是 —，不是空串或假值（实得 ' + JSON.stringify(values) + '）')
+
+  // 芯片上的 × 去掉第一列（入口与侧栏那颗是同一个开关）
+  const remove = treeFind(next, (node) => node.type === 'button' && hasClass(node, 'll_colRemove'))[0]
+  await clickAndSettle(runtime, remove)
+  assert.equal(resultColumnChips(runtime.tree).length, 1)
+  assert.equal(columnCellNodes(runtime.tree).length, 2, '去掉一列之后每行只剩另一列的值')
+})
+
+await test('列集上限：到 4 列时第 5 次点击给出人话，列集不变（不是静默丢掉）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+  for (const name of ['container.name', 'host.name', 'log.file.path', 'kubernetes.pod.name']) {
+    await toggleColumnPick(runtime, name)
+  }
+  assert.equal(resultColumnChips(runtime.tree).length, 4)
+
+  /*
+   * 第二十六刀：满员之后**未选**的勾选框直接禁用（不是点一下再弹一句错）——
+   * 那条错误文案是「按了没事发生」时代的补丁，现在按不动这件事本身在勾选框上就看得出来。
+   * 仍要能**取消**已选的那 4 个（否则满员之后一个都去不掉）。
+   */
+  const blocked = fieldAction(runtime.tree, 'column', 'stream')
+  assert.ok(blocked !== undefined, 'stream 这一行该在')
+  assert.equal(blocked.props.disabled, true, '满员后未选的行该禁用')
+  assert.ok(String(blocked.props['aria-label']).includes('stream'), '禁用也要能读出是哪个字段：' + String(blocked.props['aria-label']))
+  // 禁用状态下点它：列集不许变
+  blocked.props.onChange()
+  await runtime.update()
+  assert.equal(resultColumnChips(runtime.tree).length, 4, '禁用状态下点了列集不许变')
+  // 已选的那几个仍然可点（取消勾选）
+  for (const name of ['container.name', 'host.name']) {
+    assert.equal(fieldAction(runtime.tree, 'column', name).props.disabled, false,
+      '已选的 ' + name + ' 不许被满员挡住——否则满员之后一个都去不掉')
+  }
+  await toggleColumnPick(runtime, 'container.name')
+  assert.equal(resultColumnChips(runtime.tree).length, 3, '取消勾选要真的去掉一列')
+})
+
+
+await test('行详情：点箭头展开全部标签与原文；一次只开一行，再点收起', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime } = await runPanelQueryFull('es')
+  let toggles = rowToggleButtons(runtime.tree)
+  assert.equal(toggles.length, 2, '每条结果一个展开箭头')
+  assert.equal(toggles[0].props['aria-expanded'], false)
+
+  await clickAndSettle(runtime, toggles[0])
+  let details = rowDetailNodes(runtime.tree)
+  assert.equal(details.length, 1, '展开之后出现一条行详情')
+  const text = treeText(details[0])
+  // 行上只摆 1 个标签，详情要把**全部**标签摆出来（这是「＋N」之外的另一条路）
+  assert.ok(text.includes('host.name'), '详情要列全部标签：' + text.slice(0, 300))
+  assert.ok(text.includes('log.file.path'))
+  assert.ok(text.includes('kubernetes.pod.name'))
+  assert.ok(text.includes('{"message":"boot"}'), '详情要带原文')
+  assert.ok(text.includes('可能有敏感字段'), '原文真的摆出来了，才在这里说「可能有敏感字段」')
+  assert.equal(rowToggleButtons(runtime.tree)[0].props['aria-expanded'], true)
+
+  // 开第二行 → 第一行自动收起（一次只开一行）
+  toggles = rowToggleButtons(runtime.tree)
+  await clickAndSettle(runtime, toggles[1])
+  details = rowDetailNodes(runtime.tree)
+  assert.equal(details.length, 1, '换一行展开时上一行必须收起')
+  assert.ok(treeText(details[0]).includes('{"message":"ready"}'))
+  assert.equal(rowToggleButtons(runtime.tree)[0].props['aria-expanded'], false)
+
+  // 再点同一颗 → 收起
+  await clickAndSettle(runtime, rowToggleButtons(runtime.tree)[1])
+  assert.equal(rowDetailNodes(runtime.tree).length, 0)
+})
+
+await test('行详情：原文超长截断并**说出**截断（截了却不说会被当成完整原文）', async () => {
+  const outcome = labeledOutcome()
+  outcome.lines = [{
+    ts: 0,
+    message: 'huge',
+    source: '0',
+    labels: { 'container.name': 'app-1' },
+    raw: 'x'.repeat(20005),
+    id: '0:0',
+  }]
+  outcome.returned = 1
+  outcome.counts = { returned: 1, totalKnown: true, matched: 1 }
+  serverRoutes = { '/api/dsh-loglens/query': outcome, '/api/dsh-loglens/fields': labeledFields() }
+  const { runtime } = await runPanelQueryFull('es')
+  await clickAndSettle(runtime, rowToggleButtons(runtime.tree)[0])
+  const detail = rowDetailNodes(runtime.tree)[0]
+  assert.ok(detail !== undefined, '该展开出详情')
+  const raw = treeFind(detail, (node) => hasClass(node, 'll_rowRaw'))[0]
+  assert.ok(raw !== undefined, '超长原文也要摆（截断的那一段）')
+  assert.equal(treeText(raw).length, 20000, '只显示前 20000 个字符')
+  const text = treeText(detail)
+  assert.ok(text.includes('20000'), '提示里要报显示了多少：' + text.slice(-300))
+  assert.ok(text.includes('20005'), '提示里要报原文一共多少：' + text.slice(-300))
+})
+
+
+await test('字段清单随查询**自动拉一次**：同来源不重拉（缓存），结果渲染不依赖它', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/fields').length, 1,
+    '查询成功后自动拉一次（侧栏要「其余可用字段」）')
+  calls.length = 0
+  await clickAndSettle(runtime, buttonByText(tree, '查询'))
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/fields').length, 0,
+    '同一个来源再查不重拉字段清单')
+})
+
+await test('字段清单拉不到：只落在侧栏里的一句话，结果列表照常（附加信息不许拖垮结果）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': labeledOutcome(),
+    '/api/dsh-loglens/fields': { ok: false, status: 500, body: { error: 'boom' } },
+  }
+  const { tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+  assert.ok(treeText(tree).includes('字段清单取不到：boom'), '宿主原话要落在侧栏里')
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_resultRow')).length, 2, '结果列表不受影响')
+  // 命中区仍然可用（它只靠这一页的 labels）
+  assert.equal(fieldAction(tree, 'column', 'container.name') !== undefined, true)
+})
+
+await test('重查之后展开的行收起（旧的展开态指向一份已经不存在的结果）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  await clickAndSettle(runtime, rowToggleButtons(tree)[0])
+  assert.equal(rowDetailNodes(runtime.tree).length, 1)
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '查询'))
+  assert.equal(rowDetailNodes(runtime.tree).length, 0, '重查会换一整份结果，展开态必须跟着收')
+})
+
+await test('整行可点：点行展开/收起详情；点行里的按钮只做按钮自己的事（不顺手展开）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime } = await runPanelQueryFull('es')
+  const rows = treeFind(runtime.tree, (node) => hasClass(node, 'll_resultRow'))
+  assert.ok(typeof rows[0].props.onClick === 'function', '行本身该有 onClick（14px 的箭头不该是唯一入口）')
+
+  // 点在普通区域（没有 button 祖先）：展开
+  rows[0].props.onClick({ target: { closest: () => null } })
+  await runtime.update()
+  assert.equal(rowDetailNodes(runtime.tree).length, 1, '点行本身该展开详情')
+
+  // 点的是行里的按钮（closest('button') 有值）：不处理，免得「点标签筛一次」顺手把详情翻出来
+  const rowAfter = treeFind(runtime.tree, (node) => hasClass(node, 'll_resultRow'))[0]
+  rowAfter.props.onClick({ target: { closest: (selector) => (selector === 'button' ? {} : null) } })
+  await runtime.update()
+  assert.equal(rowDetailNodes(runtime.tree).length, 1, '点按钮不许顺手切换展开态')
+
+  // 再点普通区域：收起
+  const rowAgain = treeFind(runtime.tree, (node) => hasClass(node, 'll_resultRow'))[0]
+  rowAgain.props.onClick({ target: { closest: () => null } })
+  await runtime.update()
+  assert.equal(rowDetailNodes(runtime.tree).length, 0)
+})
+
+await test('级别按严重度染色：debug 灰、error 红（不再所有级别都染成告警色）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const tree = await runPanelQuery('es')
+  const levels = treeFind(tree, (node) => hasClass(node, 'll_resultLevel'))
+  assert.equal(levels.length, 2)
+  assert.ok(hasClass(levels[0], 'll_resultLevelMuted'), 'debug 该是灰的：' + levels[0].props.className)
+  assert.ok(hasClass(levels[1], 'll_resultLevelError'), 'error 该是红的：' + levels[1].props.className)
+  // 大小写必须对得上 CSS 类名（拼接成 ll_resultLevelmuted 就一条样式都不生效）
+  assert.equal(levels[0].props.className.includes('ll_resultLevelmuted'), false)
+})
+
+await test('显示密度：默认「完整」（旧模式，正文全展开），点「紧凑」只留 3 行，再点回完整', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  const messageNode = () => treeFind(runtime.tree, (node) => hasClass(node, 'll_resultMsg'))[0]
+  assert.equal(hasClass(messageNode(), 'll_resultMsgCompact'), false, '默认是完整模式：看日志不该先点开每一条')
+  assert.ok(buttonByText(tree, '紧凑') !== undefined, '元信息行该有「紧凑」这个开关')
+
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '紧凑'))
+  assert.ok(hasClass(messageNode(), 'll_resultMsgCompact'), '点「紧凑」之后正文只留 3 行')
+  assert.ok(buttonByText(runtime.tree, '完整') !== undefined, '切到紧凑后按钮变成「完整」（点它切回去）')
+
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '完整'))
+  assert.equal(hasClass(messageNode(), 'll_resultMsgCompact'), false, '切回完整后正文全展开')
+})
+
+await test('本页排序：默认「时间」（宿主原序），点一下换「级别」并按严重度重排，再点换「正文」', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  /** 屏幕上正文那一列的顺序（排序唯一可见的结果）。 */
+  const messageOrder = () => treeFind(runtime.tree, (node) => hasClass(node, 'll_resultMsg')).map((node) => treeText(node))
+
+  assert.deepEqual(messageOrder(), ['boot', 'ready'], '默认是宿主原序（时间倒序），不许自作主张按 ts 重排')
+  assert.ok(sortButton(tree, '时间') !== undefined, '元信息行该有排序入口，且写着**当前档位**')
+
+  await clickAndSettle(runtime, sortButton(runtime.tree, '时间'))
+  assert.deepEqual(messageOrder(), ['ready', 'boot'], '「级别」档：error 排在 debug 前面（从重到轻）')
+  assert.ok(sortButton(runtime.tree, '级别') !== undefined, '按钮上要写着换成了哪一档')
+  // 排序是**纯展示**：一发请求都不该多打
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/query').length, 1, '排序不该重查')
+
+  await clickAndSettle(runtime, sortButton(runtime.tree, '级别'))
+  assert.deepEqual(messageOrder(), ['boot', 'ready'], '「正文」档：boot < ready')
+  assert.ok(sortButton(runtime.tree, '正文') !== undefined)
+
+  // 循环回第一档：三档走完回到「时间」
+  await clickAndSettle(runtime, sortButton(runtime.tree, '正文'))
+  assert.deepEqual(messageOrder(), ['boot', 'ready'], '回到宿主原序')
+  assert.ok(sortButton(runtime.tree, '时间') !== undefined)
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/query').length, 1, '三档循环全程不该重查')
+})
+
+await test('本页排序只管**摆的顺序**：结果区仍是同一个壳、行数不变（不改 lines 本身）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime } = await runPanelQueryFull('es')
+  await clickAndSettle(runtime, sortButton(runtime.tree, '时间'))
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_resultRow')).length, 2, '排序不许吞行 / 重出行')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_workbench')).length, 1, '结果区仍是同一个壳')
+})
+
+await test('时间分布横轴：柱子下面标出时间刻度（首尾钉住、中间按比例），排序入口写明「本页」', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 } },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      return { ok: true, overTime: [{ ts: first, count: 3 }, { ts: first + 30 * step, count: 5 }], interval: body.interval, warnings: [] }
+    },
+  }
+  const tree = await runPanelQuery('es')
+  const axis = treeFind(tree, (node) => hasClass(node, 'll_histAxis'))[0]
+  assert.ok(axis !== undefined, '该画出横轴（原来这张图一个时间点都没有）')
+  const ticks = treeFind(axis, (node) => hasClass(node, 'll_histTick'))
+  assert.ok(ticks.length >= 2, '至少首尾两格刻度，实得 ' + String(ticks.length))
+  assert.ok(ticks.length <= 4, '刻度最多 4 个（再密就糊成一条灰带），实得 ' + String(ticks.length))
+  assert.ok(hasClass(ticks[0], 'll_histTickStart'), '首格用左对齐（居中的首格会有一半落在图外）')
+  assert.ok(hasClass(ticks[ticks.length - 1], 'll_histTickEnd'), '末格用右对齐')
+  // 中间刻度按比例摆（内联 style）；首尾不写 left（由 CSS 的 left:0 / right:0 钉住）
+  for (const tick of ticks.slice(1, -1)) {
+    assert.ok(typeof tick.props.style?.left === 'string' && tick.props.style.left.endsWith('%'),
+      '中间刻度要按比例定位，实得 ' + JSON.stringify(tick.props.style))
+  }
+  // 刻度是**时刻**，不是空串（格式判据在 client-pure 的 formatTickTime，这里只要它非空）
+  for (const tick of ticks) assert.ok(treeText(tick).length >= 4, '刻度上要有可读的时刻：' + JSON.stringify(treeText(tick)))
+
+  // 排序那句说明必须写「本页」：宿主没有服务端排序，读成「排序全部命中」是这一格唯一的事故
+  const sortBtn = sortButton(tree, '时间')
+  assert.ok(sortBtn !== undefined)
+  assert.ok(String(sortBtn.props.title).includes('本页'), '排序入口自己要先说清只排这一页：' + String(sortBtn.props.title))
+  // `{order}` 收的是**档位名**（时间），不是按钮上那一整句（「排序：时间」）——塞错会拼出
+  // 「本页排序：排序：时间」。真机第一版就这样，所以这条断言要钉住那个重复。
+  assert.equal(String(sortBtn.props.title).includes('排序：排序'), false,
+    '悬停说明里把按钮整句塞进了 {order}：' + String(sortBtn.props.title))
+  assert.ok(String(sortBtn.props.title).includes('本页排序：时间'), '悬停里该是「本页排序：时间」：' + String(sortBtn.props.title))
+})
+
+
+/*
+ * 第十五刀：布局重排的三条守卫。
+ *
+ * 它们守的是**屏幕上那一眼**能看见的东西，而不是内部实现：来源配置收得起来（收起态只剩一行）、
+ * 图在结果**上面**（先看趋势再看行）、元信息拆成「短句 + 动作」与「长句」两层。
+ * 每一条都对应真机上一次具体的读数（816×782 那一屏量到面板 1055px、结果区 240px、元信息 102px）。
+ */
+
+/** 按类名找树里的元素（与 treeFind 同源，但只按类名 token 匹配）。 */
+function byClass(tree, cls) {
+  return treeFind(tree, (node) => hasClass(node, cls))
+}
+
+/** 挂一张**插件整页**（view === 'page'）的树：那一页与设置卡的默认展开态不同。 */
+async function mountPage(runtime, Card) {
+  let tree = await runtime.mount(Card, { view: 'page' })
+  await runtime.update()
+  await runtime.update()
+  return runtime.tree === undefined ? tree : runtime.tree
+}
+
+await test('来源配置收得起来：插件整页**默认收起**（只留一行摘要），点一下才铺开那几行表单', async () => {
+  serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true) }
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  await mountPage(runtime, Card)
+  await runtime.update()
+
+  // 收起态：没有任何来源行（那是配置区里最占地方的东西），但摘要必须说清有几条
+  assert.equal(byClass(runtime.tree, 'll_row').length, 0,
+    '插件整页默认收起：不该一进来就铺开来源行（真机上那两行占 300px）')
+  const toggle = byClass(runtime.tree, 'll_sourcesToggle')[0]
+  assert.ok(toggle !== undefined, '找不到「编辑来源」那颗折叠把手')
+  assert.equal(toggle.props['aria-expanded'], false, '收起态 aria-expanded 要是 false')
+  const summary = byClass(runtime.tree, 'll_panelSummary')[0]
+  assert.ok(summary !== undefined, '收起态必须留一句摘要（否则看不出还查不查得动）')
+  assert.ok(treeText(summary).includes('来源'), '摘要要把「几个来源」说出来：' + treeText(summary))
+
+  // 展开：那几行回来，把手翻成「收起」
+  await clickAndSettle(runtime, toggle)
+  // 默认桩里配了 3 条（es / local / docker）——数它们，而不是数「我以为有几条」
+  assert.equal(byClass(runtime.tree, 'll_row').length, 3, '展开后来源行回来，实得 ' + String(byClass(runtime.tree, 'll_row').length))
+  const reopened = byClass(runtime.tree, 'll_sourcesToggle')[0]
+  assert.equal(reopened.props['aria-expanded'], true, '展开后 aria-expanded 要是 true')
+
+  // 再收起来：表单**不画**（不是 display:none —— 那还会留在无障碍树里）
+  await clickAndSettle(runtime, reopened)
+  assert.equal(byClass(runtime.tree, 'll_row').length, 0, '再收起来时来源行要从树里消失')
+})
+
+await test('设置卡**默认展开**来源配置：那一页的主任务就是配来源（与插件页相反）', async () => {
+  serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true) }
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  await runtime.update()
+  await runtime.update()
+  assert.ok(byClass(runtime.tree, 'll_row').length > 0,
+    '设置卡里配来源是主任务：一进来就该看得见那几行（不该让用户先找折叠把手）')
+  assert.equal(byClass(runtime.tree, 'll_sourcesToggle')[0].props['aria-expanded'], true)
+})
+
+await test('图在结果**上面**：先看趋势再看行（Kibana 同一顺序），翻页仍在最后', async () => {
+  serverRoutes = {
+    // 游标字段是 **nextCursor**（面板读的就是这个名字，见 runQuery）：写成 cursor: 'c1' 不报错，
+    // 只是「下一页」永远不出现——一条会静默空转的断言
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 }, nextCursor: 'c1' },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      return { ok: true, overTime: [{ ts: first, count: 3 }, { ts: first + 10 * step, count: 5 }], interval: body.interval, warnings: [] }
+    },
+  }
+  const tree = await runPanelQuery('es')
+  // 树是深度优先的：先出现的那个就是屏幕上靠上的那个
+  const order = []
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return
+    if (hasClass(node, 'll_hist') && order.indexOf('hist') === -1) order.push('hist')
+    if (hasClass(node, 'll_results') && order.indexOf('results') === -1) order.push('results')
+    if (node.type === 'button' && treeText(node) === '下一页' && order.indexOf('next') === -1) order.push('next')
+    const kids = node.props?.children
+    for (const kid of Array.isArray(kids) ? kids : [kids]) walk(kid)
+  }
+  walk(tree)
+  assert.deepEqual(order, ['hist', 'results', 'next'],
+    '顺序该是「分布 → 结果 → 下一页」，实得 ' + JSON.stringify(order))
+})
+
+await test('元信息分两层：短句 + 动作一行，宿主的**长句** warning 另起一块（不再把按钮挤到第三行）', async () => {
+  const longWarning = 'level=warn（warn 及以上）是按「返回的这一页」筛的：98 / 100 行被筛掉，counts 与 truncation 仍是未筛的整页——按级别看全量要求后端真有级别字段（ES 上 log.level 常为空、级别是从正文推断的），否则只能在查询串里搜级别关键字'
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), level: 'warn', warnings: [longWarning] },
+    '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
+  }
+  const tree = await runPanelQuery('es')
+
+  // 那一句**原话照抄**（不许吞掉：agent 工具看得到的东西面板也得看得到），但住在长句层里
+  const note = byClass(tree, 'll_queryNote')[0]
+  assert.ok(note !== undefined, '长句那一层该存在')
+  assert.ok(treeText(note).includes('是按「返回的这一页」筛的'), '宿主的原话要完整落在长句层：' + treeText(note).slice(0, 120))
+
+  // 四颗动作按钮在**短句那一层**（与计数同一行），不在长句里——真机上它们就是被那句散文推走的
+  const meta = byClass(tree, 'll_queryMeta')[0]
+  assert.ok(meta !== undefined, '元信息短句层该存在')
+  for (const label of ['字段', '紧凑', '时间', '清空结果']) {
+    assert.ok(treeText(meta).includes(label), '「' + label + '」该在短句那一层（与计数同一行）')
+  }
+  assert.equal(treeText(note).includes('清空结果'), false, '按钮不该落进长句层')
+  // 弹簧：计数与按钮之间那一下 flex:1 —— 没有它，窄屏换行时按钮会贴着最后一句计数
+  assert.ok(byClass(meta, 'll_metaGap').length >= 1, '短句与动作之间要有那颗弹簧')
+})
+
+
+/*
+ * 第十六刀：直方图的三件事（都来自真机那张放大图）。
+ *
+ * 那张图上有三个具体问题：① 原生 tooltip 的灰框正压在横轴刻度上；② tooltip 里写
+ * `18:28:00.000`（1 分钟一档的桶标到毫秒）；③ 标题写着「峰值 681 条」而图上那根最高柱
+ * 没有任何记号——681 与常态 460 只差一截，61 根里肉眼挑不出来。
+ */
+
+await test('直方图读数：悬停哪一根就**贴在哪一根上方**说哪一根（不再钉在最左边）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 } },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      // 中间那根 9 条最高，其余 3 条 —— 峰值必须挑得出中间那根
+      return { ok: true, overTime: [{ ts: first, count: 3 }, { ts: first + 30 * step, count: 9 }, { ts: first + 50 * step, count: 3 }], interval: body.interval, warnings: [] }
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+
+  // 第十七刀：不悬停时**不画**读数条（常驻一行还是「信息在别处」那个毛病）
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_histReadout')).length, 0,
+    '不悬停时不该有一行常驻读数（那正是「柱子与信息隔得远」的来源）')
+
+  const bars = clickableBars(tree)
+  assert.ok(bars.length >= 3, '该有可点的柱子')
+
+  // 悬停中间那根 → 气泡出现，写的是**那一根**的数
+  bars[1].props.onMouseEnter()
+  await runtime.update()
+  const bubble = treeFind(runtime.tree, (node) => hasClass(node, 'll_histReadout'))[0]
+  assert.ok(bubble !== undefined, '悬停之后要出现读数气泡')
+  const hovered = treeText(bubble)
+  assert.ok(hovered.includes('9'), '悬停的那根是 9 条：' + hovered)
+
+  // **位置跟着柱子走**：left 由柱序号算（第 2 根 / 总共 N 根 ≈ 中间），不是固定在最左
+  const left = String(bubble.props.style?.left ?? '')
+  assert.ok(left.endsWith('%'), '气泡位置要用柱序号算的百分比：' + left)
+  const at = Number(left.replace('%', ''))
+  assert.ok(at > 5 && at < 95, '第 2 根柱的气泡不该贴在最左（那正是上一版的问题）：' + left)
+
+  // 换一根 → 位置跟着换
+  clickableBars(runtime.tree)[bars.length - 1].props.onMouseEnter()
+  await runtime.update()
+  const last = treeFind(runtime.tree, (node) => hasClass(node, 'll_histReadout'))[0]
+  const lastLeft = Number(String(last.props.style?.left ?? '0').replace('%', ''))
+  assert.ok(lastLeft > at, '悬停到右边那根时气泡要右移（实得 ' + String(lastLeft) + ' vs ' + String(at) + '）')
+
+  // 移开 → 气泡消失（不是回到某个常驻句子）
+  clickableBars(runtime.tree)[1].props.onMouseLeave()
+  await runtime.update()
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_histReadout')).length, 0,
+    '移开之后气泡要消失')
+})
+
+await test('直方图悬停里的时刻**不带毫秒**（1 分钟一档的桶标到毫秒只是噪音）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 } },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      return { ok: true, overTime: [{ ts: first, count: 3 }, { ts: first + 10 * step, count: 5 }], interval: body.interval, warnings: [] }
+    },
+  }
+  const tree = await runPanelQuery('es')
+  const bars = clickableBars(tree)
+  for (const bar of bars) {
+    const title = String(bar.props.title)
+    assert.equal(/\.\d{3}/.test(title), false, '悬停里不该出现毫秒：' + title)
+  }
+})
+
+await test('峰值那一根在图上**看得出来**：它挂 ll_histBarPeak，且只有一根', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 } },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      return { ok: true, overTime: [{ ts: first, count: 3 }, { ts: first + 20 * step, count: 12 }, { ts: first + 40 * step, count: 4 }], interval: body.interval, warnings: [] }
+    },
+  }
+  const tree = await runPanelQuery('es')
+  const peaks = treeFind(tree, (node) => hasClass(node, 'll_histBarPeak'))
+  assert.equal(peaks.length, 1, '峰值记号该恰好一根，实得 ' + String(peaks.length))
+  // 记号必须挂在**真的最高**那根上（12 条那根）：按 title 里的条数认
+  assert.ok(String(peaks[0].props['aria-label']).includes('12'), '峰值记号挂错了柱子：' + String(peaks[0].props['aria-label']))
+  // 而且它与可点柱族的类名并存（峰值柱仍然点得动，不是一条死标注）
+  assert.ok(tokensOf(peaks[0]).includes('ll_histBar'), '峰值柱仍是柱子族的一员')
+})
+
+await test('一条数据都没有时不画峰值记号（不指一个不存在的最忙时段）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/facets': (body) => ({ ok: true, overTime: [], interval: body.interval ?? '1m', warnings: [] }),
+  }
+  const tree = await runPanelQuery('es')
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_histBarPeak')).length, 0,
+    '全 0 的窗口没有峰值，不该画记号')
+})
+
+
+await test('柱子挤成平带时改用基线裁剪，并**必须**说明「柱高不与条数成正比」', async () => {
+  // 真机那组读数：常态 ~460、峰值 681（比 1.47）——线性画法下 50/61 根落在 60~70% 一档
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 } },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      const overTime = Array.from({ length: 40 }, (_, i) => ({ ts: first + i * step, count: i === 20 ? 681 : 460 + (i % 5) * 8 }))
+      return { ok: true, overTime, interval: body.interval, warnings: [] }
+    },
+  }
+  const tree = await runPanelQuery('es')
+  const text = treeText(tree)
+  // 裁剪了就**必须说**：柱高不再与条数成正比，不说就是把差异读成倍数
+  assert.ok(text.includes('柱高只表示相对高低'), '裁剪时必须说明柱高不是条数比例：' + text.slice(0, 400))
+  // 说明里要给出读准确数的办法（读数条就是那个办法）
+  assert.ok(text.includes('悬停任一根看它的实际条数'), '还要指一条能读准数的路：' + text.slice(0, 400))
+  // **面板不渲染 Markdown**：文案里的 `**` 会原样露在界面上（真机已抓到过一次）。
+  // 这条断言盯的是「界面文案里不许出现 Markdown 记号」，不只是这一句。
+  assert.equal(/\*\*/.test(text), false, '界面文案里露出了 Markdown 的 ** 星号：' + text.slice(0, 400))
+})
+
+await test('数据本来就铺得开（最大 ≥ 最小 × 3）时走线性，**不写**那句裁剪说明（没发生的事不用解释）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), window: { from: 0, to: 60 * 60 * 1000 } },
+    '/api/dsh-loglens/facets': (body) => {
+      const step = INTERVAL_MS[body.interval] ?? 60_000
+      const first = Math.floor(Number(body.from) / step) * step
+      const overTime = Array.from({ length: 40 }, (_, i) => ({ ts: first + i * step, count: i === 20 ? 900 : 20 + (i % 3) }))
+      return { ok: true, overTime, interval: body.interval, warnings: [] }
+    },
+  }
+  const tree = await runPanelQuery('es')
+  assert.equal(treeText(tree).includes('柱高只表示相对高低'), false,
+    '差得够开的时候不该多一句裁剪说明')
+})
+
+
+/*
+ * 第十八刀：元信息行那四颗动作按钮图标化。
+ *
+ * 守两件事：① 四颗都**真的带图标**（不是文案改了就算）；② 图标的形状照抄宿主
+ * （viewBox 16×16 / 描边 1 / currentColor / 16 个单位的坐标系）——形状不对就不是「宿主那一颗」，
+ * 而是「我画了一颗差不多意思的」，那与维护者 2026-10-13 提过的「图标要和官方的一致」相违。
+ */
+
+await test('四颗动作按钮都带图标，且用的是宿主那套图标配方（16×16 / 描边 1 / currentColor）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const tree = await runPanelQuery('es')
+
+  // 四颗按钮：字段 / 紧凑（或完整）/ 排序 / 清空
+  const meta = treeFind(tree, (node) => hasClass(node, 'll_queryMeta'))[0]
+  assert.ok(meta !== undefined, '找不到元信息行')
+  const buttons = treeFind(meta, (node) => node.type === 'button' && hasClass(node, 'll_btnGhostIcon'))
+  assert.equal(buttons.length, 4, '四颗动作按钮都该挂 ll_btnGhostIcon（没有图标的不挂），实得 ' + String(buttons.length))
+
+  let icons = 0
+  for (const button of buttons) {
+    const svg = treeFind(button, (node) => node.type === 'svg' && hasClass(node, 'll_actionIcon'))[0]
+    assert.ok(svg !== undefined, '按钮「' + treeText(button) + '」没有图标')
+    icons += 1
+    // 宿主配方：viewBox 16×16、fill none、stroke currentColor、strokeWidth 1
+    assert.equal(svg.props.viewBox, '0 0 16 16', 'viewBox 要与宿主一致：' + String(svg.props.viewBox))
+    assert.equal(svg.props.fill, 'none', '宿主图标是描边不是填色')
+    assert.equal(svg.props.stroke, 'currentColor', '描边取 currentColor（按钮的悬停 / 选中色才带得动）')
+    assert.equal(String(svg.props.strokeWidth), '1', '宿主 …Regular 那一档是 1：' + String(svg.props.strokeWidth))
+    assert.equal(svg.props['aria-hidden'], 'true', '图标是装饰，名字由按钮自己说')
+  }
+  assert.equal(icons, 4, '四颗都要有图标')
+
+  // 四颗的**形状互不相同**（同一个 path 套四遍不算图标化）
+  const shapes = buttons.map((button) => {
+    const svg = treeFind(button, (node) => node.type === 'svg' && hasClass(node, 'll_actionIcon'))[0]
+    const paths = treeFind(svg, (node) => node.type === 'path').map((node) => String(node.props.d))
+    return paths.join('|')
+  })
+  assert.equal(new Set(shapes).size, 4, '四颗图标必须是四个不同的形状（实得 ' + String(new Set(shapes).size) + ' 种）')
+})
+
+await test('排序按钮上只剩**档位名**（图标已经说了「这是排序」），完整句子仍在 aria-label 里', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+
+  const button = sortButton(tree, '时间')
+  assert.ok(button !== undefined, '找不到排序按钮')
+  // 文字只有档位名：不再拖着「排序：」两个字（那一行还要塞另外三颗按钮）
+  assert.equal(treeText(button), '时间', '按钮文字该只剩档位名，实得：' + JSON.stringify(treeText(button)))
+  // 但完整语义一个字没少：aria-label 里仍是「本页排序：时间」
+  assert.ok(String(button.props['aria-label']).includes('本页排序：时间'),
+    '读屏要能听到完整那句：' + String(button.props['aria-label']))
+
+  await clickAndSettle(runtime, sortButton(runtime.tree, '时间'))
+  assert.equal(treeText(sortButton(runtime.tree, '级别')), '级别', '换档之后按钮上也只写档位名')
+})
+
+
+/*
+ * 第十九刀：字段侧栏的排版。
+ *
+ * 守的是真机上量到的三件事：① 字段行是**三列网格**（名字 / 计数 / 动作各就各位），
+ * 不是一条 flex 行（那样计数与动作会互相对不齐）；② 「列 / 筛」两颗动作**常驻描边**
+ * （原来只在行 hover 时才长出边框，静止时是一段灰字，与字段名混在一起）；
+ * ③ 过滤框带放大镜与清除。
+ */
+
+await test('字段行是三列网格：名字 / 计数 / 动作分列，动作按钮常驻描边（不是 hover 才长出来）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+
+  /*
+   * 第二十七刀：**选列面板不再画动作桶**。
+   *
+   * 它原来留了一个空 span「占住第三列」，结果是：那一行的网格规则只定义了两列
+   * （`.ll_fieldPick .ll_fieldRow{grid-template-columns:minmax(0,1fr) auto}`），空 span 掉到
+   * 第二行，把名字顶高 4px、行高从 26 变 28（真机量到 `offset -4 / pickH 28`）。
+   * 两模式的列宽对齐改由那条两列规则负责，不靠占位元素。
+   */
+  const rows = treeFind(tree, (node) => hasClass(node, 'll_fieldRow'))
+  assert.ok(rows.length > 0, '侧栏该有字段行')
+  for (const row of rows) {
+    const kinds = row.props.children.filter((child) => child !== null && typeof child === 'object')
+    // 第一格是「名字格」；列模式下名字是静态文本（不可点）
+    assert.ok(hasClass(kinds[0], 'll_fieldNameCell'), '第一格必须是名字格：' + kinds[0].props.className)
+    assert.ok(treeFind(kinds[0], (node) => hasClass(node, 'll_fieldNameStatic')).length === 1,
+      '列模式下名字该是静态文本')
+    // 计数在名字之后
+    const countAt = kinds.findIndex((child) => hasClass(child, 'll_fieldCount'))
+    if (countAt >= 0) assert.ok(countAt > 0, '计数要在名字之后')
+    // **没有**动作桶（第二十八刀：两模式都没有了——列模式换成行首勾选框，筛选模式换成展开区）
+    assert.equal(kinds.filter((child) => hasClass(child, 'll_fieldActs')).length, 0,
+      '行里不该再有动作桶')
+  }
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_fieldAct')).length, 0,
+    '选列面板不该再有动作按钮（勾选框才是动作）')
+  assert.ok(treeFind(tree, (node) => hasClass(node, 'll_fieldPick')).length > 0, '每行该是一个可点的勾选行')
+  assert.ok(treeFind(tree, (node) => node.type === 'input' && hasClass(node, 'll_fieldCheck')).length > 0,
+    '该有勾选框')
+
+})
+
+await test('字段过滤框带放大镜与清除：有内容才出现 ×，点 × 清空过滤词', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+
+  // 放大镜挂在一颗 `span` 上（定位锚），svg 在里面：
+  const icon = treeFind(tree, (node) => hasClass(node, 'll_fieldsFilterIcon'))[0]
+  assert.ok(icon !== undefined, '过滤框该有一颗放大镜（这个面板唯一的导航方式，要在静止时看得出来）')
+  const svg = treeFind(icon, (node) => node.type === 'svg')[0]
+  assert.ok(svg !== undefined, '放大镜得真是一颗图标（svg）')
+  // 放大镜是装饰：不抢焦点、不吃点击
+  assert.equal(svg.props['aria-hidden'], 'true')
+  assert.equal(svg.props.viewBox, '0 0 16 16', '与其余图标同一套配方')
+
+  // 空着的时候**没有**清除按钮（给一颗 × 会让人以为点了会发生什么）
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_fieldsFilterClear')).length, 0,
+    '过滤词为空时不该有清除按钮')
+
+  const box = treeFind(tree, (node) => node.type === 'input' && hasClass(node, 'll_fieldsFilter'))[0]
+  assert.ok(box !== undefined, '找不到过滤框')
+  box.props.onChange({ target: { value: 'agent' } })
+  await runtime.update()
+
+  const clear = treeFind(runtime.tree, (node) => hasClass(node, 'll_fieldsFilterClear'))[0]
+  assert.ok(clear !== undefined, '有过滤词时该出现清除按钮')
+  await clickAndSettle(runtime, clear)
+  const after = treeFind(runtime.tree, (node) => node.type === 'input' && hasClass(node, 'll_fieldsFilter'))[0]
+  assert.equal(after.props.value, '', '点 × 该把过滤词清空')
+})
+
+await test('字段分区标题是**吸附**的：滚下去之后还知道自己在看哪个分区', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const tree = await runPanelQuery('es', { fieldsOpen: true })
+  const titles = treeFind(tree, (node) => hasClass(node, 'll_fieldSectionTitle'))
+  assert.ok(titles.length >= 1, '该有分区标题')
+  // 判据在 CSS（position:sticky）：组件这层只能断言标题真的画出来了、且带计数的文案
+  for (const title of titles) {
+    assert.ok(treeText(title).length > 0, '分区标题不能是空的')
+    assert.ok(String(title.props.className).includes('ll_fieldSectionTitle'))
+  }
+})
+
+
+/*
+ * 第二十刀：字段面板**从触发它的那颗按钮长出来**。
+ *
+ * 守的是「能打开它的东西和它本身在同一处」：面板原来钉在结果区左端（`left:0`），而「字段」
+ * 按钮在整行右侧——真机量到横向差 123px，按的是右边那颗、展开的东西出现在最左边。
+ * 与第十七刀「读数条钉在左端、柱子在图中间」是同一条毛病。
+ */
+
+await test('字段面板贴在「字段」按钮下方展开（右缘对齐按钮），不是钉在结果区左端', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+
+  // 组件这层拿不到真实布局，所以断言的是**契约**：面板的 style 由按钮的视口坐标算出，
+  // 且方向是「右缘对齐 + 顶边贴按钮下沿」。真实像素由真机验收（ROADMAP 第十九/二十刀有读数）。
+  const button = treeFind(tree, (node) => node.type === 'button' && treeText(node) === '字段')[0]
+  assert.ok(button !== undefined, '找不到「字段」按钮')
+
+  // 点开：onClick 会收到 event，面板据此记下按钮位置
+  button.props.onClick({
+    currentTarget: {
+      getBoundingClientRect: () => ({ right: 900, bottom: 300, left: 840, top: 272, width: 60, height: 28 }),
+    },
+  })
+  await runtime.update()
+  await runtime.update()
+
+  const panel = treeFind(runtime.tree, (node) => hasClass(node, 'll_fields'))[0]
+  assert.ok(panel !== undefined, '点「字段」之后面板该出现')
+  assert.ok(panel.props.style !== undefined, '面板位置该由按钮坐标算出来（不是 CSS 里钉死的 left:0）')
+  // 右缘对齐按钮右缘：900 - FIELD_PANEL_WIDTH（340）= 560（宽度是常量，见 pure.js）
+  assert.equal(panel.props.style.left, 900 - FIELD_PANEL_WIDTH, '面板左缘 = 按钮右缘 - 面板宽（右缘对齐）：' + JSON.stringify(panel.props.style))
+  // 顶边贴按钮下沿 + 4px
+  assert.equal(panel.props.style.top, 304, '面板顶边 = 按钮下沿 + 4：' + JSON.stringify(panel.props.style))
+})
+
+await test('字段面板的定位是 fixed（不钉在结果区那一格里）：否则按钮挪了它不会跟', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const tree = await runPanelQuery('es', { fieldsOpen: true })
+  const panel = treeFind(tree, (node) => hasClass(node, 'll_fields'))[0]
+  assert.ok(panel !== undefined)
+  // 组件这层看不到 computed style；这里断言的是「位置由内联 style 给」这个契约
+  // （fixed 在 CSS 里，由 client-lint 的样式检查兜住）
+  assert.ok(String(panel.props.className).includes('ll_fields'))
+})
+
+
+/*
+ * 第二十一刀：字段侧栏的过滤与分组。
+ *
+ * 守的是真机上量到的两件事：① 92 个字段里 **58 个是 `container.labels.*`**，一层平铺的列表
+ * 让 3 个有用的字段和 58 个 Docker 标签混在一起；② 过滤框是唯一的导航方式，而它只认一整串
+ * 子串——人打「cont name」得到 0 个结果。
+ */
+
+/** 那个字段的行**显示成什么**（行里只写末段，父路径在组头）。 */
+function fieldRowName(tree, fullName) {
+  // 第二十八刀：手填按钮搬进展开区了，「这一行是哪个字段」改由**名字按钮的 title**（完整字段名）定位
+  const row = treeFind(tree, (node) => hasClass(node, 'll_fieldRow')
+    && treeFind(node, (inner) => (hasClass(inner, 'll_fieldName') || hasClass(inner, 'll_fieldNameStatic'))
+      && String(inner.props?.title ?? '') === fullName).length > 0)[0]
+  if (row === undefined) return undefined
+  const name = treeFind(row, (node) => hasClass(node, 'll_fieldName'))[0]
+  return name === undefined ? undefined : treeText(name)
+}
+
+await test('面板里能看见并去掉**已选列**（列芯片原来被面板自己挡住）', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+  // 展开前：没有已选列那一格
+  assert.equal(treeFind(tree, (node) => hasClass(node, 'll_fieldsPicked')).length, 0,
+    '没加列时不该占那一行')
+
+  await toggleColumnPick(runtime, 'container.name')
+  const picked = treeFind(runtime.tree, (node) => hasClass(node, 'll_fieldsPicked'))[0]
+  assert.ok(picked !== undefined, '加了列之后面板里该有「已选列」那一格')
+  assert.ok(treeText(picked).includes('已选列（1）'), '要报加了几列：' + treeText(picked))
+  assert.ok(treeText(picked).includes('container.name'), '要写清是哪一列')
+
+  // 面板里那颗 × 就是去掉这一列的入口（与结果区上方的芯片同一个动作）
+  const remove = treeFind(picked, (node) => hasClass(node, 'll_colRemove'))[0]
+  assert.ok(remove !== undefined, '每一列都要有 ×')
+  await clickAndSettle(runtime, remove)
+  assert.equal(resultColumnChips(runtime.tree).length, 0, '点 × 去掉列')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fieldsPicked')).length, 0,
+    '没有列了，那一格也不该留着')
+})
+
+/**
+ * 一套「支持聚合」的路由：字段清单 + 行 + 一份值桶。第三十刀的筛选框用例都走它。
+ *
+ * 桶里那条 `key: ''`（空值）是**故意留着**的：真机 ES 会回这一条，而筛选表达不了
+ * 「字段缺失」——它必须在候选里被挡掉（有用例钉着）。
+ */
+const VALUES_ROUTES = () => ({
+  '/api/dsh-loglens/query': { ...labeledOutcome(), capabilities: { queryLanguage: 'lucene', pagination: 'cursor', follow: false, aggregations: true } },
+  '/api/dsh-loglens/fields': labeledFields(),
+  '/api/dsh-loglens/facets': (body) => (body.by === undefined
+    ? HIST_OK
+    : { ok: true, buckets: [{ key: 'grafana', count: 42 }, { key: 'prometheus', count: 8 }, { key: '', count: 2 }], warnings: [] }),
+})
+
+/*
+ * 第三十刀：筛选行 = 一条**两格输入框**（左边选字段、右边可输可选）。
+ *
+ * 守的是这一刀的理由：加一条条件原来是四步（点「＋ 筛选」→ 在 92 个字段里找 → 点字段看值 →
+ * 点值）。弹层退场之后整个过程是：点左边挑字段 → 右边自动张开该字段的 top 值 → 回车。
+ * 所以这里要同时钉住三件事：两格都在、右格跟着左格走、手打的值也能提交。
+ */
+
+/** 筛选行上的条件芯片（面板里那份列芯片是另一个类名，不会撞）。 */
+function filterChips(tree) {
+  return treeFind(tree, (node) => hasClass(node, 'll_chip'))
+}
+
+/** 两格输入框：左格（字段）与右格（值）。 */
+function fxFieldInput(tree) {
+  return treeFind(tree, (node) => node.type === 'input' && hasClass(node, 'll_fxField'))[0]
+}
+function fxValueInput(tree) {
+  return treeFind(tree, (node) => node.type === 'input' && hasClass(node, 'll_fxValue'))[0]
+}
+/** 下拉里的候选行（字段那张与值那张用同一个类）。 */
+function fxItems(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_fxItem'))
+}
+/** 一次点击的视口坐标桩（与「＋N」浮层那几条用例同一个写法）。 */
+function rectAt(left, top, width, height) {
+  return {
+    currentTarget: {
+      getBoundingClientRect: () => ({ left, top, right: left + width, bottom: top + height, width, height }),
+    },
+  }
+}
+
+/** 查回来 0 行的那一份响应（字段清单照常有：它与有没有行无关）。 */
+function emptyOutcome() {
+  const base = labeledOutcome()
+  return { ...base, returned: 0, counts: { returned: 0, totalKnown: true, matched: 0 }, lines: [] }
+}
+
+
+
+
+
+
+await test('筛选行是一条**两格输入框**：左边字段、右边值，右边那颗「=」把条件的形状写在界面上', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { tree } = await runPanelQueryFull('es')
+
+  // 跑了查询就有这一行（加了条件前后都在：入口得先存在）
+  const fieldBox = fxFieldInput(tree)
+  const valueBox = fxValueInput(tree)
+  assert.ok(fieldBox !== undefined, '筛选行该有「字段」那一格')
+  assert.ok(valueBox !== undefined, '筛选行该有「值」那一格')
+  assert.equal(fieldBox.props.value, '', '刚查完两格都是空的')
+  assert.equal(valueBox.props.value, '')
+
+  // 字段还没选：值那一格禁用（没有字段就没有「这个字段的值」可列）
+  assert.equal(valueBox.props.disabled, true, '没选字段时值那一格该禁用')
+  assert.ok(String(valueBox.props.title).includes('先在左边选一个字段'), '禁用要说明为什么：' + String(valueBox.props.title))
+
+  // 原「＋ 筛选」那颗按钮与它的整块弹层都退场了
+  assert.equal(treeFind(tree, (node) => node.props?.key === 'll-filter-add').length, 0,
+    '「＋ 筛选」该跟着弹层一起退场')
+  assert.equal(treeFind(tree, (node) => node.props?.key === 'll-quick-act-container.name').length, 0,
+    '行尾那颗悬停「填值」按钮也退场了（手填搬进这一条）')
+})
+
+await test('左格打下半个名字 → 候选收窄；选中一个**自动把右格张开**并拉它的 top 值', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  calls.length = 0
+
+  fxFieldInput(tree).props.onFocus()
+  runtime.tick()
+  await runtime.update()
+  // 全部字段都在候选里（命中区先排、其余跟着）
+  assert.ok(fxItems(runtime.tree).length > 0, '点开左格该列出字段候选')
+
+  fxFieldInput(runtime.tree).props.onChange({ target: { value: 'cont name' } })
+  runtime.tick()
+  await runtime.update()
+  const narrow = fxItems(runtime.tree)
+  assert.equal(narrow.length, 1, '`cont name` 该只剩 container.name：' + String(narrow.length))
+  assert.ok(treeText(narrow[0]).includes('container.name'), '候选取的就是它：' + treeText(narrow[0]))
+
+  calls.length = 0
+  await clickAndSettle(runtime, narrow[0])
+  assert.equal(fxFieldInput(runtime.tree).props.value, 'container.name', '选中之后左格写上字段名')
+  // 右格自动张开 + 自动拉一次（选字段的下一步必然是填值）
+  const sent = calls.filter((call) => call.path === '/api/dsh-loglens/facets' && call.body?.by !== undefined)
+  assert.equal(sent.length, 1, '选定字段该自动拉一次 top 值：' + JSON.stringify(calls.map((c) => c.path)))
+  assert.equal(sent[0].body.by, 'container.name')
+  const rows = fxItems(runtime.tree)
+  assert.ok(rows.length >= 2, '右格该列出这个字段的值：' + String(rows.length))
+  assert.ok(treeText(rows[0]).includes('grafana'), '值原样显示：' + treeText(rows[0]))
+  assert.ok(treeText(rows[0]).includes('42'), '计数要跟着：' + treeText(rows[0]))
+})
+
+await test('候选里点一个值 → 立刻带 filters 重查（与榜下钻同一条 drillDown），两格清空', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+
+  calls.length = 0
+  const row = fxItems(runtime.tree).find((node) => treeText(node).includes('grafana'))
+  assert.ok(row !== undefined, '找不到 grafana 那一行')
+  await clickAndSettle(runtime, row)
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '点值要真的重查一次：' + JSON.stringify(calls.map((c) => c.path)))
+  assert.deepEqual(query.body.filters, { 'container.name': 'grafana' }, '筛选按「字段 = 值」下发')
+  assert.ok(treeText(runtime.tree).includes('container.name = grafana'), '芯片要在场')
+
+  // 提交之后两格清空、下拉收起（这两格是「往里加」的入口，留着上一次的字会污染下一条）
+  assert.equal(fxFieldInput(runtime.tree).props.value, '', '左格该清空')
+  assert.equal(fxValueInput(runtime.tree).props.value, '')
+  assert.equal(fxItems(runtime.tree).length, 0, '下拉该收起')
+})
+
+await test('**手打一个不在候选里的值**也能提交（长尾值 / 带空格 / 通配只有手打表达得了）', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+
+  // 只填左格（不点候选）：右格此刻仍然可用
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  assert.equal(fxValueInput(runtime.tree).props.disabled, false, '选了字段之后值那一格该可用')
+
+  calls.length = 0
+  fxValueInput(runtime.tree).props.onChange({ target: { value: 'grafana-frontend-*' } })
+  runtime.tick()
+  await runtime.update()
+  // 候选里没有这个值，但「确定」已经可以按（两格都非空）
+  const go = treeFind(runtime.tree, (node) => node.props?.key === 'll-fx-go')[0]
+  assert.ok(go !== undefined, '两格都填了就该出现提交按钮')
+  await clickAndSettle(runtime, go)
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '手打的值也要真的重查：' + JSON.stringify(calls.map((c) => c.path)))
+  assert.deepEqual(query.body.filters, { 'container.name': 'grafana-frontend-*' },
+    '手打的值原样下发（不做 trim / 不改写）：' + JSON.stringify(query.body.filters))
+})
+
+await test('值那一格**回车**提交候选里选中的那一条；没选中就提交打的字', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+
+  // 方向键往下挪一格到 prometheus（−1 → 0 → 1）
+  calls.length = 0
+  fxValueInput(runtime.tree).props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
+  runtime.tick()
+  await runtime.update()
+  fxValueInput(runtime.tree).props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
+  runtime.tick()
+  await runtime.update()
+  fxValueInput(runtime.tree).props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  await runtime.update()
+  await runtime.update()
+
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '回车要提交：' + JSON.stringify(calls.map((c) => c.path)))
+  assert.deepEqual(query.body.filters, { 'container.name': 'prometheus' },
+    '提交的是**选中的那一条**，不是空串：' + JSON.stringify(query.body.filters))
+})
+
+await test('Backspace 在值格有字时删字、值格空了退回字段格（不把整条条件清掉）', async () => {
+  const { filterBoxBack } = await import('../client-src/pure.js')
+  assert.equal(filterBoxBack('container.name', 'graf'), 'value', '值格有字 → 删字')
+  assert.equal(filterBoxBack('container.name', ''), 'field', '值格空了 → 退回字段格')
+  assert.equal(filterBoxBack('', ''), 'none', '两格都空 → 什么都不做')
+})
+
+await test('来源不支持聚合（Loki）时**不发**值请求，直接在下拉里说清为什么', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...labeledOutcome(), capabilities: { queryLanguage: 'logql', pagination: 'cursor', follow: false, aggregations: false } },
+    '/api/dsh-loglens/fields': labeledFields(),
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  calls.length = 0
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+
+  const sent = calls.filter((call) => call.path === '/api/dsh-loglens/facets' && call.body?.by !== undefined)
+  assert.equal(sent.length, 0, '不支持聚合时不该发这个请求')
+  assert.ok(treeText(runtime.tree).includes('不支持聚合'), '要说明白为什么没有候选：' + treeText(runtime.tree).slice(-400))
+})
+
+await test('值取不到时把宿主原话摆在下拉里（不伪装成「没有值」）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': VALUES_ROUTES()['/api/dsh-loglens/query'],
+    '/api/dsh-loglens/fields': labeledFields(),
+    '/api/dsh-loglens/facets': (body) => (body.by === undefined ? HIST_OK : { ok: false, status: 500, body: { error: 'shard down' } }),
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  assert.ok(treeText(runtime.tree).includes('shard down'), '宿主原话要落在这里：' + treeText(runtime.tree).slice(-400))
+})
+
+await test('空值那一档**不出现**在候选里：筛选表达不了「字段缺失」', async () => {
+  // VALUES_ROUTES 的桶里有一条 key 为空串、count 2 的（真机 ES 会回这一条）
+  const { valueChoices } = await import('../client-src/pure.js')
+  const rows = valueChoices('container.name', [
+    { key: 'grafana', count: 42 },
+    { key: '', count: 2 },
+    { key: 'prometheus', count: 8 },
+  ], undefined, 8)
+  assert.deepEqual(rows.map((row) => row.value), ['grafana', 'prometheus'], '空白值不进来（点了筛不了）')
+})
+
+await test('已经在筛的那个值在候选里**打标记**（点一下是取消，与榜上同一条）', async () => {
+  const { valueChoices } = await import('../client-src/pure.js')
+  const rows = valueChoices('container.name', [{ key: 'grafana', count: 42 }, { key: 'prometheus', count: 8 }], 'grafana', 8)
+  assert.equal(rows[0].active, true, '正在筛的那一条要标出来')
+  assert.equal(rows[1].active, false)
+})
+
+await test('候选顺序保持后端给的（按计数排序是后端的结论，不再排一次）', async () => {
+  const { valueChoices, filterFieldChoices } = await import('../client-src/pure.js')
+  const rows = valueChoices('f', [{ key: 'b', count: 1 }, { key: 'a', count: 99 }], undefined, 8)
+  assert.deepEqual(rows.map((row) => row.value), ['b', 'a'], '不按计数重排')
+  // 字段候选：这一页命中的排在前面，两侧内部保持 fieldSections 给的顺序
+  const picked = filterFieldChoices({
+    hit: [{ name: 'container.name' }],
+    rest: [{ name: 'service.name' }, { name: 'host.name' }],
+    conflict: [{ name: 'mixed.type' }],
+  }, '')
+  assert.deepEqual(picked.map((row) => row.name), ['container.name', 'service.name', 'host.name', 'mixed.type'])
+  assert.equal(picked[0].group, 'hit')
+})
+
+await test('**0 行结果**时「字段」也打得开面板（这一格原来是个按下去没反应的死键）', async () => {
+  serverRoutes = { '/api/dsh-loglens/query': emptyOutcome(), '/api/dsh-loglens/fields': labeledFields() }
+  const { runtime } = await runPanelQueryFull('es', { fieldsOpen: true })
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_resultItem')).length, 0, '这一轮真的没有行')
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fields')).length, 1,
+    '0 行也要打得开——0 行正是最想加一条条件的时候')
+  // 选列面板只列本页命中的字段：0 行时那批是空的——但面板**打开了**，且说清了为什么没有可加的列
+  assert.ok(treeText(runtime.tree).includes('这一页没有可加列的字段'),
+    '0 行时该说明白为什么没有可加的列：' + treeText(runtime.tree).slice(0, 260))
+})
+
+await test('面板高度上限 JS 与 CSS 同一口径：只改一边就红（否则上翻判断拿的是过时的数）', () => {
+  assert.ok(code.includes('max-height:min(' + String(FIELD_PANEL_CEILING) + 'px,70vh)'),
+    '`.ll_fields` 的 max-height 与 pure.js 的 FIELD_PANEL_CEILING 已经漂开（上翻判断会用错高度）')
+})
+
+/*
+ * 第二十三刀：字段面板「读得完」——名字断在词上，脚注一行说得完，宽度是一个常量。
+ *
+ * 三处都是真机截图上看得见的东西：`com_docker_compose_config-hash` 被从词中间切开；
+ * 脚注 464px 塞进 284px 的格子、被省略号切在句子中间；面板宽度在 CSS 与定位代码里各写了一份。
+ */
+
+/**
+ * 长末段的两条 Docker 标签（40 字符上下）。
+ *
+ * 第三十刀之后面板只列**本页命中**的字段，所以这两条必须真的出现在行的 labels 里——
+ * 挂在 `/fields` 上是不够的（那是「其余可用」，进不了选列面板）。
+ */
+const LONG_LEAF_FIELDS = () => {
+  const outcome = labeledOutcome()
+  outcome.lines[0].labels['container.labels.com_docker_compose_config-hash'] = 'abc123'
+  outcome.lines[0].labels['container.labels.com_docker_compose_project_environment_file'] = '/srv/app/.env'
+  return {
+    '/api/dsh-loglens/query': outcome,
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [
+        { name: 'container.labels.com_docker_compose_config-hash', kind: 'keyword' },
+        { name: 'container.labels.com_docker_compose_project_environment_file', kind: 'keyword' },
+      ],
+      total: 2,
+      truncated: false,
+      warnings: [],
+    },
+  }
+}
+
+/** 一个字段行里「名字」那一格的所有子节点（文本段与 <wbr>）。 */
+function fieldNameNode(tree, fullName) {
+  return treeFind(tree, (node) => hasClass(node, 'll_fieldName')
+    && typeof node.props?.title === 'string' && node.props.title.includes(fullName))[0]
+}
+
+await test('长末段断在**分隔符**上（不是从词中间切开）：`<wbr>` 的个数 = 段数 − 1', async () => {
+  serverRoutes = LONG_LEAF_FIELDS()
+  const { runtime } = await runPanelQueryFull('es', { fieldsOpen: true })
+
+  const full = 'container.labels.com_docker_compose_config-hash'
+  const nameNode = fieldNameNode(runtime.tree, full)
+  assert.ok(nameNode !== undefined, '找不到那个长名字的字段行')
+
+  // 行上显示的是**末段**：拼回去必须逐字等于末段（差一个字符 = 点错字段）
+  assert.equal(treeText(nameNode), 'com_docker_compose_config-hash', '行上该只写末段：' + treeText(nameNode))
+
+  const breaks = treeFind(nameNode, (node) => node.type === 'wbr')
+  const segments = fieldNameBreaks('com_docker_compose_config-hash')
+  assert.equal(breaks.length, segments.length - 1, '每个分隔符之后一个断点（段数 − 1）：' + String(breaks.length))
+
+  // 每个断点都落在分隔符之后：把子节点拼回去，逐段核对
+  const parts = []
+  let buffer = ''
+  for (const child of nameNode.props.children) {
+    if (child !== null && typeof child === 'object' && child.type === 'wbr') { parts.push(buffer); buffer = '' } else buffer += String(child)
+  }
+  parts.push(buffer)
+  assert.deepEqual(parts, segments, '断点位置与 fieldNameBreaks 不一致')
+  // 断点在**分隔符之后**：除最后一段外，每一段都必须以分隔符结尾（这就是「断在词上」）
+  for (const part of parts.slice(0, -1)) {
+    assert.ok(/[-_.]$/.test(part), '断点在词中间（这一段没有以分隔符结尾）：' + part)
+  }
+})
+
+await test('面板脚注**一行读得完**：短句在格子里放得下，完整那段在 title 里', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const tree = await runPanelQuery('es', { fieldsOpen: true })
+  const foot = treeFind(tree, (node) => hasClass(node, 'll_hintElide'))[0]
+  assert.ok(foot !== undefined, '面板底部该有那句脚注')
+  const text = treeText(foot)
+  // 预算：格子宽 = 面板宽 − 左右 padding 16，字号 11px → 这么多「汉字宽」（真机实测 464px 塞不进去）
+  const budget = (FIELD_PANEL_WIDTH - 16) / 11
+  assert.ok(labelUnits(text) <= budget - 1,
+    '脚注会再次被省略号切断（' + String(labelUnits(text)) + ' 汉字宽 > 预算 ' + String(Math.round(budget - 1)) + '）：' + text)
+  // 完整解释不能丢：挪进 title（想细看的人悬停就有）
+  assert.ok(String(foot.props.title).length > text.length, '完整那段该在 title 里（不是删掉）')
+  // 两种面板各有一份完整解释（第二十五刀）：这一条走的是「字段」那颗打开的**选列**面板，
+  // 讲的是「列为什么只能用本页命中的字段」；筛选弹层那份讲「点名字看值」
+  assert.ok(String(foot.props.title).includes('本页命中'), 'title 里要有完整解释：' + String(foot.props.title))
+})
+
+await test('面板宽度只有**一个**权威常量：CSS 与定位代码不许各写一份', () => {
+  assert.ok(code.includes('width:' + String(FIELD_PANEL_WIDTH) + 'px'),
+    'CSS 的 .ll_fields 宽度与 pure.js 的 FIELD_PANEL_WIDTH 漂开了')
+  // 断行靠 <wbr>，不靠 anywhere：`anywhere` 会让浏览器把一行填满再断（词从中间裂开）。
+  // 只盯 `.ll_fieldName` 这一条规则——`.ll_rowRaw` / `.ll_detailValue` 那些是**原文**，
+  // 长 JSON 没有分隔符，就是该硬断。
+  const nameRule = code.slice(code.indexOf('.ll_fieldName{'), code.indexOf('}', code.indexOf('.ll_fieldName{')))
+  assert.ok(!nameRule.includes('overflow-wrap:anywhere'),
+    '`.ll_fieldName` 又用回了 overflow-wrap:anywhere——那会把长末段从词中间切开：' + nameRule)
+  assert.ok(nameRule.includes('overflow-wrap:break-word'), '长到放不下的单段仍要能硬断（break-word 兜底）：' + nameRule)
+})
+
+/*
+ * 第二十四刀：点字段 → 就地列出它的 top 值 → 点一个值直接筛。
+ *
+ * 守的是「**值**与**行**是同一个子集」：请求体与榜共用同一个信封（窗口 / 查询串 / 筛选）。
+ * 少带一样就会给出上一次条件下的一组值——那比不展开更坏，因为它看起来是这一次的。
+ */
+
+/** 一套「支持聚合」的路由：字段清单 + 行 + 一份值桶。 */
+
+
+
+
+/*
+ * 第二十六刀：选列面板的「列」按钮换成**勾选**。
+ *
+ * 用户原话：「这里的『列』字很怪，选择字段，要么做成行选中，要么做成 checkbox 勾选」。
+ * 「列」是**操作名**，摆在一列字段名右边像是数字/单位的一部分；而这一栏做的事就是
+ * 「把这些字段选出来」——那是选择，不是命令。
+ */
+
+await test('选列面板的每一行是**勾选**：真的 checkbox、整行可点、选中态反映在 checked 上', async () => {
+  serverRoutes = FIELD_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es', { fieldsOpen: true })
+
+  // 行被包在 <label> 里：点名字 / 点数字 / 点勾选框都算选它（16px 的勾选框对鼠标太小）
+  const picks = treeFind(tree, (node) => hasClass(node, 'll_fieldPick'))
+  assert.ok(picks.length > 0, '每一行该是一个可点的勾选行')
+  assert.ok(picks.every((node) => node.type === 'label'), '行必须是 <label>（整行可点、点勾选框也触发）')
+
+  const box = fieldAction(tree, 'column', 'container.name')
+  assert.equal(box.type, 'input', '勾选框必须是真的 <input>（键盘空格 / 读屏 / checked 都不用另写）')
+  assert.equal(box.props.type, 'checkbox', '不是自己画的方块')
+  assert.equal(box.props.checked, false, '没选时 unchecked')
+  assert.ok(String(box.props['aria-label']).includes('container.name'), '要能读出是哪个字段：' + String(box.props['aria-label']))
+
+  // 勾上：checked 跟着变，列集里也有了
+  await toggleColumnPick(runtime, 'container.name')
+  assert.equal(fieldAction(runtime.tree, 'column', 'container.name').props.checked, true, '勾上之后 checked 为真')
+  assert.equal(resultColumnChips(runtime.tree).length, 1)
+
+  // 再点掉
+  await toggleColumnPick(runtime, 'container.name')
+  assert.equal(fieldAction(runtime.tree, 'column', 'container.name').props.checked, false, '取消勾选')
+  assert.equal(resultColumnChips(runtime.tree).length, 0)
+})
+
+
+/*
+ * 第二十七刀：选列面板的**缩进契约**。
+ *
+ * 用户截图上的「没对齐」是真机量出来的：组头的箭头在 x=199、行里的勾选框在 x=219，差 20px。
+ * 根因是两套各写各的数字——组头「箭头 10px + gap 4 + padding 4」、行「勾选框 16px + gap 6 +
+ * 组体 padding-left 14 + 行 padding 4」。现在统一成「前导槽 16px + gap 4 + padding 4」，
+ * 组体不再自己缩进。这不是「看起来差不多」，是**同一个数字**。
+ *
+ * 组件这层量不到像素（没有布局引擎），所以断言的是**那组数字本身**：任何一边被改单，
+ * 这条就红。真实像素由真机验收（ROADMAP 第二十七刀有读数）。
+ */
+
+/** 取一条 CSS 规则（`.sel{...}`）的声明串，找不到返回 undefined。 */
+function cssRule(selector) {
+  const needle = selector + '{'
+  const at = code.indexOf(needle)
+  if (at === -1) return undefined
+  const end = code.indexOf('}', at)
+  return code.slice(at + needle.length, end)
+}
+
+await test('缩进契约：组头箭头与行勾选框**同宽**（16px）、同名 gap（4px）、组体不再自己缩进', () => {
+  const chevron = cssRule('.ll_fieldGroupChevron')
+  const check = cssRule('input[type=checkbox].ll_fieldCheck')
+  const head = cssRule('.ll_fieldGroupHead')
+  const pick = cssRule('.ll_fieldPick')
+  const body = cssRule('.ll_fieldGroupBody')
+  assert.ok(chevron && check && head && pick && body, '这几条规则都得在（少一条就等于换了个实现）')
+
+  // ① 前导槽同宽：箭头与勾选框都占 16px——宽度不同就必然错开
+  assert.ok(/width:16px/.test(chevron), '组头箭头该是 16px 的前导槽：' + chevron)
+  assert.ok(/width:16px/.test(check), '勾选框该是 16px：' + check)
+  // ② gap 同值：两处都用 4px
+  assert.ok(/gap:4px/.test(head), '组头 gap 该是 4px：' + head)
+  assert.ok(/gap:4px/.test(pick), '勾选行的 gap 该是 4px：' + pick)
+  /*
+   * ③ 组体的缩进（第二十九刀起**要**缩进了，判据随之改）：
+   *
+   * 第二十七刀禁止 `padding-left`，是为了消掉「两套数字各写各的」造成的 20px 错位。
+   * 但第二十九刀用户要「tree 那种层次效果」——组内的行**必须**相对组头退一格。
+   * 所以现在合法的不是「不许缩进」，而是：**左边距与内边距等量**（行被整体平移，
+   * 不是只挤内容），并且有一条竖向导轨说明层级。这样行内「前导槽 + gap」那套仍在，
+   * 缩进只是整体位移，对齐关系不变。
+   */
+  const bodyPad = /padding-left:([\d.]+)px/.exec(body)
+  const bodyMargin = /margin-left:([\d.]+)px/.exec(body)
+  assert.ok(bodyPad !== undefined && bodyMargin !== undefined, '组体该有等量的左内边距与左边距（整体平移）：' + body)
+  assert.equal(bodyPad[1], bodyMargin[1], '左内边距与左边距必须等量，否则行会被压窄而不是整体右移：' + body)
+  assert.ok(/border-left/.test(body), '组体该有一条竖向导轨（tree 的层级感就靠它）：' + body)
+})
+
+/*
+ * 第二十九刀：两件用户点名的东西——
+ *   ① 「展开没有 tree 那种层次效果」
+ *   ② 「需要手填的时候还需要展开去填太麻烦了」
+ */
+
+
 
 let failed = 0
 for (const result of results) {

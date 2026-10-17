@@ -567,6 +567,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 级别该染什么色（界面用三个色档，不按 severity 数字自己调色）：
+     * error / fatal → 红；warn → 橙；info → 次要前景；debug / trace / 没有级别 → 灰。
+     *
+     * 为什么值得单独一条：`level` 是从正文推断出来的也照样显示（`levelInferred`），原来一律染
+     * `state-warn-primary`——满屏 debug 看着像一片告警。颜色是「一眼扫过去先看哪行」的第一层信号，
+     * 不能所有级别都同一个颜色。
+     */
+    function levelTone(level) {
+      const value = typeof level === 'string' ? level.trim().toLowerCase() : ''
+      if (value === 'error' || value === 'fatal') return 'error'
+      if (value === 'warn') return 'warn'
+      if (value === 'info') return 'info'
+      // 没有级别 = 不知道，不染成告警色；debug / trace 也只是灰
+      return 'muted'
+    }
+
+    /**
      * 行的悬停文案：时间 + 级别（**推断出来的标出来**）+ 全部标签 + 原文。
      *
      * `levelInferred` 必须写出来：`level` 是筛选项，「文档说它是 error」与「我从正文看着像 error」是两种
@@ -623,6 +640,69 @@ window.__ModuleLoader__.load({
       if (typeof counts.scannedBytes === 'number') parts.push({ key: 'scannedBytes', value: counts.scannedBytes })
       return parts
     }
+
+    /**
+     * 结果列表「本页排序」（第十三刀）。
+     *
+     * 为什么是**本页**：宿主没有服务端排序（`NormalizedQuery.sort` 属于 P8-丁，要动契约，见
+     * design.md §9.5）。而宿主给的顺序是**时间倒序**（`direction` 默认 backward，见 src/query.ts），
+     * 于是「这一页里 error 在哪」只能靠眼睛从 100 行里翻——排序这一页解决的是**扫读**，不是
+     * 「排序全部命中」；界面上的标题必须写明「本页」，不许让人读成后者（设计 §9.3 #8 的同一条边界）。
+     *
+     * 三档（`time` 是宿主原序，不重排）：
+     * - `time`：原样（= 后端顺序，`appendLines` 追加的下一页也接着排）
+     * - `level`：严重度**从重到轻**（fatal → error → warn → info → debug → trace → 无级别最后），
+     *   同档内保持宿主原序（稳定排序：`Array.prototype.sort` 在 ES2019 起是稳定的，但这里**显式**
+     *   用原下标兜底，免得将来换实现的运行时改变结果）
+     * - `message`：按正文的 `localeCompare`，其余同上
+     *
+     * **为什么 `time` 要单列一档而不是「排序的一个方向」**：宿主原序不是「按 ts 排序」——同一纳秒的
+     * 多行是**切不开的一组**（末组会略超 limit，见 README 的翻页取舍）。按 ts 重排会把那一组打散，
+     * 于是一页之内的顺序与**翻页游标**描述的顺序不再一致。原序是唯一与游标同源的顺序，它必须留着。
+     */
+    const LEVEL_RANK = { fatal: 0, error: 1, warn: 2, info: 3, debug: 4, trace: 5 }
+
+    /** 排序档位的键（下标就是界面上循环切换的顺序）。 */
+    function sortKeys() {
+      return ['time', 'level', 'message']
+    }
+
+    /** 把排序请求收成能用的那一档：不认识的一律回原序（`time`）。 */
+    function sortKeyOf(key) {
+      const value = String(key == null ? '' : key)
+      return sortKeys().includes(value) ? value : 'time'
+    }
+
+    /**
+     * 这一页按哪一档排（返回**新数组**，不改入参）。
+     *
+     * 空 / 单行原样返回：没有必要为一页 0 行造一个新数组（也不会在渲染里白白换一次引用）。
+     */
+    function sortLines(lines, key) {
+      const rows = Array.isArray(lines) ? lines.slice() : []
+      const mode = sortKeyOf(key)
+      if (mode === 'time' || rows.length < 2) return rows
+      const rank = (line) => {
+        const level = line !== null && typeof line === 'object' && typeof line.level === 'string' ? line.level.trim().toLowerCase() : ''
+        return LEVEL_RANK[level] === undefined ? 6 : LEVEL_RANK[level]
+      }
+      const text = (line) => (line !== null && typeof line === 'object' && line.message !== undefined ? String(line.message) : '')
+      // 带原下标：同值时按「宿主给的顺序」排（显式稳定，不依赖运行时的 sort 实现）
+      const indexed = rows.map((line, index) => ({ line, index }))
+      indexed.sort((left, right) => {
+        const delta = mode === 'level'
+          ? rank(left.line) - rank(right.line)
+          : text(left.line).localeCompare(text(right.line))
+        return delta !== 0 ? delta : left.index - right.index
+      })
+      return indexed.map((item) => item.line)
+    }
+
+    /*
+     * 档位的**文案**不在这里：本包的做法是「逐条列字面量、放在组件里」（见 index.js 的 kindLabel /
+     * levelLabel / windowLabel / reasonText），静态 i18n 闸门才扫得到那些键。这里只留**判据**
+     * （哪一档、收口到哪一档）——与 levelTone 只回色档、文案由界面拼是同一条分工。
+     */
 
     /* ============================ 时间分布（直方图，P6） ============================ */
 
@@ -759,6 +839,174 @@ window.__ModuleLoader__.load({
       }
       for (const bar of bars) bar.ratio = max === 0 ? 0 : bar.count / max
       return { bars, max, total, truncated: wanted > cap }
+    }
+
+    /**
+     * 时间分布柱子的**画法**（第十六刀）：把「每段多少条」变成柱高。
+     *
+     * 为什么不是简单的 `count / max`：真机那张图上 61 根柱子里 **50 根落在 60~70% 这一档**
+     * （常态 ~460 条、峰值 681），线性归一化之后整张图是一条平带——**图的意义是看差异**，
+     * 而峰值把差异压平了。这不是数据的问题（日志量本来就在那个量级上很稳），是画法的问题。
+     *
+     * 三档做法，按数据自己挑（**不让人选**：多一个开关就多一个要解释的东西）：
+     *
+     * ① `linear`：全部柱子都用「零起点」的诚实比例。**只在数据本来就铺得开时用**（最大 / 最小 ≥ 3）——
+     *    那种时候线性轴最容易读，也不需要解释；
+     * ② `clipped`：数据挤在一起时，从 **`floor`** 起画（基线裁剪），把 [floor, max] 这一段的差异拉开。
+     *    这是**统计图表的通行做法**，但它有一个必须付的代价：**柱高不再与条数成正比**。
+     *    所以界面**必须明说**（见 `histogramScaleNote`），否则读到的是错的量级；
+     * ③ `flat`：全是同一个值（或一条都没有）——怎么画都一样，老实画平带，也不写那句裁剪说明
+     *    （说了反而让人以为被裁过）。
+     *
+     * `floor` 取 `min × 0.9` 再向下取整到「好读的台阶」：留 10% 余量是为了让**最小那根也看得见**
+     * （贴着基线的那根柱子分不清「很少」与「没有」）。
+     *
+     * @returns `{ mode, floor, max, note }`：`mode` 是 `linear` / `clipped` / `flat`，
+     *   `note` 是**界面上该说的那句话的键**（`linear`/`flat` 不需要说明，回空串）。
+     */
+    function histogramScale(bars) {
+      const list = Array.isArray(bars) ? bars : []
+      let max = 0
+      let min = Number.POSITIVE_INFINITY
+      let seen = 0
+      for (const bar of list) {
+        if (bar === null || typeof bar !== 'object') continue
+        const count = Number.isFinite(bar.count) && bar.count > 0 ? bar.count : 0
+        if (count <= 0) continue
+        seen += 1
+        if (count > max) max = count
+        if (count < min) min = count
+      }
+      if (seen === 0 || max <= 0) return { mode: 'flat', floor: 0, max: 0, note: '' }
+      // 全一样（或只有一个非零桶）：没有差异可放大，画平带
+      // 只有一个非零桶、或非零桶的值全都一样：**没有差异可放大**，老实画平带
+      if (seen < 2 || max === min) return { mode: 'flat', floor: 0, max: max, note: '' }
+      /*
+       * 挤在一起 → 基线裁剪。**这条判据是「最大 / 最小 < 3」**：真机那组是 681 / 278 ≈ 2.4，
+       * 落在这一档里。而「差异本来就大」的数据（比如夜里 0 条、白天 900 条，比例几百倍）
+       * 走 linear——那种图本来就一目了然，给它加一句「柱高不是从零起」纯属多话。
+       */
+      if (max / min < 3) {
+        const floor = Math.max(1, Math.floor(min * 0.9))
+        return { mode: 'clipped', floor: floor, max: max, note: 'hint.histogramClipped' }
+      }
+      return { mode: 'linear', floor: 0, max: max, note: '' }
+    }
+
+    /**
+     * 峰值那根柱的起点 ts（第十六刀）；空输入 / 全是 0 返回 undefined。
+     *
+     * 为什么值得一个函数：标题上写着「峰值 681 条」，而真机那张图上**哪一根是 681 完全看不出来**
+     * ——61 根柱子里最高的那根只比别人高一点点（681 vs 常态 ~460），肉眼根本挑不出来。图上必须
+     * 给那根一个记号，否则那个数字只能靠挨个悬停去找。
+     *
+     * **并列时取第一根**（不是随便取）：两根一样高时说「峰值在左边那根」与「在右边那根」都对，
+     * 取第一根至少是确定性的，且与「从左到右读图」的习惯一致。
+     */
+    function histogramPeakTs(bars) {
+      const list = Array.isArray(bars) ? bars : []
+      let best
+      let bestCount = 0
+      for (const bar of list) {
+        if (bar === null || typeof bar !== 'object') continue
+        const count = Number.isFinite(bar.count) ? bar.count : 0
+        if (count <= 0) continue
+        if (count > bestCount) {
+          bestCount = count
+          best = bar.ts
+        }
+      }
+      return bestCount > 0 && Number.isFinite(best) ? best : undefined
+    }
+
+    /**
+     * 一根柱在悬停 / 读屏里该念的那句话（第十六刀）。
+     *
+     * 改之前柱子的悬停是浏览器的原生 tooltip，里面写着 `18:28:00.000 · 429 条`：
+     *   - **毫秒对 1 分钟一档的分桶是纯噪音**（每一根都这么长，读的人得先跳过它才看见条数）；
+     *   - 原生 tooltip 还会**盖住横轴刻度**（真机截图里那个灰框正压在 18:27 上）；
+     *   - 图上一个时间点都没有时，读者分不清 `18:28` 指的是「这一分钟的开始」还是「这一段」。
+     *
+     * 所以时刻按**分桶宽度**选精度（`bucketClock`），并在末尾带上「这一段」的范围说明。
+     * 返回纯文本（不进 i18n：这是数据 + 数字，标签那半句由界面拼）。
+     */
+    function histogramBucketClock(ts, stepMs) {
+      const value = Number.isFinite(ts) ? ts : 0
+      const step = Number.isFinite(stepMs) && stepMs > 0 ? stepMs : 0
+      const date = new Date(value)
+      const pad = (number) => String(number).padStart(2, '0')
+      const clock = pad(date.getHours()) + ':' + pad(date.getMinutes())
+      // 分桶 ≥ 1 分钟：秒一定是 00（桶按整分对齐），写出来只是噪音
+      if (step === 0 || step >= 60 * 1000) return clock
+      return clock + ':' + pad(date.getSeconds())
+    }
+
+    /**
+     * 时间分布横轴要标哪几个时刻（第十三刀）。
+     *
+     * 真机读数（2026-10-17，test-logs @ 3085，真 ES，1 小时窗 / 61 根柱）：图上除了「每根柱子 1m /
+     * 峰值 / 合计」三句话，**一个时间点都没有**——那根最高的柱子是哪一分钟，只能靠数的：从左端
+     * 往后数第 N 根再乘 1 分钟。横轴刻度把这件事变成一眼。判据四条：
+     *
+     * ① **首尾各标一个**（`to` 用窗口右端、不是最后一根柱的起点：柱子代表的是 [ts, ts+step) 那一段，
+     *    把右端标成柱子起点会让「最后这一分钟的量」看起来落在窗口之外）；
+     * ② 中间的刻度**按窗口等分**挑（1/3、2/3），再**吸附到柱子的网格上**（`ts` 取整到 step 的倍数）——
+     *    等分保证间距均匀（第一版按「从整点起每 N 根柱」走，首格经常与左端那个刻度重叠，于是
+     *    实际只剩一个中间刻度、右边空出一大段）；
+     * ③ 刻度**位置由吸附后的 ts 算**（不是由等分点算）：标签上的时刻与它画在哪儿必须是同一件事，
+     *    宁可位置偏半根柱，也不许「写着 17:48、画在 17:47 的位置」；
+     * ④ **最多 4 个**：再密就糊成一条灰带，而轴上的字比柱子本身更抢眼。
+     *
+     * 认不出的输入回空数组：界面据此**不画轴**（画一条只有首尾两端的轴等于没标）。
+     */
+    function histogramAxis(bars, from, to, maxTicks) {
+      const list = Array.isArray(bars) ? bars : []
+      const start = Number.isFinite(from) ? from : 0
+      const end = Number.isFinite(to) ? to : 0
+      const limit = Number.isInteger(maxTicks) && maxTicks >= 2 ? maxTicks : 4
+      if (list.length < 2 || !(end > start)) return []
+      const step = Number.isFinite(list[1].ts) && Number.isFinite(list[0].ts) ? list[1].ts - list[0].ts : 0
+      if (!(step > 0)) return []
+      const span = end - start
+      const ticks = [{ ts: start, at: 0 }]
+      /*
+       * 中间刻度：窗口的 1/(n+1) 等分点，各吸附到最近的柱子边界（`round` 而不是 `ceil`：吸附误差
+       * 最多半根柱，取最近的才不会把 1/3 处的刻度系统性推到右边）。
+       */
+      const wanted = Math.max(limit - 2, 0)
+      for (let index = 1; index <= wanted; index += 1) {
+        const target = start + (span * index) / (wanted + 1)
+        const ts = Math.round(target / step) * step
+        if (!(ts > start) || !(ts < end)) continue
+        // 位置按**窗口比例**给（刻度位置与标签上的时刻同源：同一个 ts 算出来的）。
+        // 四舍五入到 0.1%：内联 style 里也该是一眼读得懂的数。
+        ticks.push({ ts, at: Math.round(((ts - start) / span) * 1000) / 10 })
+      }
+      ticks.push({ ts: end, at: 100 })
+      return ticks
+    }
+
+    /**
+     * 横轴刻度上的时刻（本地时间，**不经过 locale**）。
+     *
+     * 为什么不复用界面里那个 `formatTime`：那个带毫秒、且只会在「跨天」时才补日期——刻度上需要的是
+     * 另一套取舍（**按窗口跨度选精度**），而且它必须是**纯函数**才能进 vitest（刻度是坐标，
+     * 错了整张图读出来的时刻全是错的）。
+     *
+     * 三档：
+     * - 窗口 ≤ 2 分钟：`HH:mm:ss`（1 分钟档的分桶里，秒是有效信息）
+     * - 窗口 < 12 小时：`HH:mm`
+     * - 更长：`MM-DD HH:mm`（跨天时只写时分会读成同一天的两个时刻）
+     */
+    function formatTickTime(ts, spanMs) {
+      const value = Number.isFinite(ts) ? ts : 0
+      const span = Number.isFinite(spanMs) ? spanMs : 0
+      const date = new Date(value)
+      const pad = (number) => String(number).padStart(2, '0')
+      const clock = pad(date.getHours()) + ':' + pad(date.getMinutes())
+      if (span > 0 && span <= 2 * 60 * 1000) return clock + ':' + pad(date.getSeconds())
+      if (span >= 12 * 60 * 60 * 1000) return pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + clock
+      return clock
     }
 
     /* ============================ 按字段分组（terms 榜，P6 第二格） ============================ */
@@ -1014,6 +1262,557 @@ window.__ModuleLoader__.load({
       return ''
     }
 
+    /* ============================ 字段侧栏与结果表列集（P8-乙） ============================ */
+
+    /**
+     * 结果表能加的额外列上限。
+     *
+     * 为什么有上限：行是 flex（正文 `flex:1`），每加一列都在抢同一行宽度；四列之后窄卡片里正文会先被
+     * 挤到看不清。宁可在「加不动」时明说一句，也不让人自己加到一个看不出东西的表。
+     */
+    const RESULT_COLUMN_MAX = 4
+
+    /** 侧栏一个分区最多渲染多少行（再多就靠子串过滤收窄；界面报「共 N 个」）。 */
+    const FIELD_LIST_MAX = 200
+
+    /**
+     * 这一页的标签字段使用情况：`[{ name, count }]`，count = 这一页里带这个字段的行数。
+     *
+     * 为什么只数**这一页**：行模型里只有 labels 随响应回来（其余字段没有逐行值），而这一页被
+     * `limit` 截断过——界面上必须写「本页」，不能让人读成「全窗口」。排序：出现次数降序、同次数按
+     * 名字（稳定顺序，不随对象键顺序漂）。
+     */
+    function pageFieldUsage(lines) {
+      const counts = new Map()
+      for (const line of Array.isArray(lines) ? lines : []) {
+        const labels = line !== null && typeof line === 'object' && line.labels !== null && typeof line.labels === 'object' ? line.labels : {}
+        for (const [name, value] of Object.entries(labels)) {
+          const text = String(value == null ? '' : value)
+          if (text === '') continue
+          counts.set(name, (counts.get(name) || 0) + 1)
+        }
+      }
+      return [...counts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((left, right) => right.count - left.count || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+    }
+
+    function fieldNameOf(item) {
+      return item !== null && typeof item === 'object' && typeof item.name === 'string' ? item.name : ''
+    }
+
+    /**
+     * 字段名的**最后一段**（`container.labels.com_docker_compose_image` → `com_docker_compose_image`）。
+     *
+     * 为什么要它（第二十一刀）：真机上这台来源有 **92 个字段，其中 58 个是 `container.labels.*`**
+     * ——一层平铺的列表把 `agent.name` 这种短名字和 `container.labels.com_docker_compose_project_environment_file`
+     * 这种长名字混排在一起，长名字折成两三行、行高参差，扫起来全是噪音。
+     * 分组之后行里只写末段，父路径由组头说——`container.labels` 组从 58 行折行文字变成 58 行短词。
+     *
+     * 没有点的名字（`stream`）就是它自己。
+     */
+    function fieldLeaf(name) {
+      const text = String(name == null ? '' : name)
+      const at = text.lastIndexOf('.')
+      return at === -1 ? text : text.slice(at + 1)
+    }
+
+    /**
+     * 字段名的**父路径**（`container.labels.foo` → `container.labels`）；没有点就是空串。
+     *
+     * 分组键。选「父路径」而不是「第一段」是因为真机数据：按第一段分，`container` 仍是 61 个的一坨
+     * （其中 58 个是 labels）；按父路径分，那 58 个收成**一个可折叠的组**，而 `container` 组只剩 3 个
+     * 直接子字段。组的名字就是「这批字段的共同父路径」，没有额外规则要记。
+     */
+    function fieldParent(name) {
+      const text = String(name == null ? '' : name)
+      const at = text.lastIndexOf('.')
+      return at === -1 ? '' : text.slice(0, at)
+    }
+
+    /**
+     * 过滤词拆成多个词（第二十一刀）：按空白切分、转小写、去重、丢空串。
+     *
+     * 为什么不是单个子串：真机上这个框是 92 个字段**唯一**的导航方式，而人打字是分词的
+     * （「cont name」想找 container 那边带 name 的字段）。单串匹配要求用户记得确切连写形式，
+     * 打 `container name` 会得到 0 个结果——那不是「没找到」，是「你打的方式这个框不认」。
+     */
+    function fieldFilterTerms(text) {
+      const words = String(text == null ? '' : text).toLowerCase().split(/\s+/)
+      return [...new Set(words.filter((word) => word !== ''))]
+    }
+
+    /** 一个字段名是否命中**全部**词（每个词都是一段子串；空词表 = 全命中）。 */
+    function fieldMatches(name, terms) {
+      const lower = String(name == null ? '' : name).toLowerCase()
+      const list = Array.isArray(terms) ? terms : []
+      return list.every((term) => lower.includes(term))
+    }
+
+    /**
+     * 把一组字段按**父路径**分组（第二十一刀）。
+     *
+     * 返回 `[{ key, items }]`，`key` 是父路径（顶层字段是空串）。组按名字排、**顶层组永远排最前**
+     * （`stream` / `message` 这类是通常最先要看的），组内保持入参顺序（调用方已经按
+     * 「常用优先 / 出现次数」排好了，这里不重排——重排就是第二份判据）。
+     *
+     * 入参的每一项**原样保留**（不改形状）：叶子名由 `fieldLeaf` 现算，分组不往数据里塞字段，
+     * 少一个会与 `name` 漂的第二份真相。
+     */
+    function groupFieldsByParent(items) {
+      const groups = new Map()
+      for (const item of Array.isArray(items) ? items : []) {
+        const name = fieldNameOf(item)
+        if (name === '') continue
+        const key = fieldParent(name)
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(item)
+      }
+      return [...groups.entries()]
+        .sort((left, right) => {
+          const a = left[0]
+          const b = right[0]
+          if (a === b) return 0
+          if (a === '') return -1
+          if (b === '') return 1
+          return a < b ? -1 : 1
+        })
+        .map(([key, groupItems]) => ({ key, items: groupItems }))
+    }
+
+    /**
+     * 侧栏三分区（字段清单来自 `/fields`，使用情况来自 `pageFieldUsage`）：
+     *   hit      = 这一页的行里真有值的字段（**只有这些能加列**——列的值来自行标签）
+     *   conflict = `/fields` 标了 `conflict: true` 的字段（同名在不同索引里类型不一致）
+     *   rest     = 其余可用字段（不能加列，但可以按值筛 / 填进分组框）
+     *
+     * `filterText` 是**多词过滤**（空白分词、每词都要命中、不区分大小写；空串不过滤，见
+     * `fieldFilterTerms`）。三个分区**互斥**：hit 优先——哪怕它在
+     * `/fields` 里也标了冲突，这一页的行确实带着值，列就能画。
+     * `totals` 是过滤后各自的总数（界面拿它说「共 N 个」；渲染可以再截断到 `FIELD_LIST_MAX`）。
+     *
+     * 为什么「其余」也能筛但写着不能加列：筛选下发的是「字段 = 值」，不需要逐行值；列要逐行画，
+     * 而行里没有它的值——给它一个能点、画出来全是 `—` 的入口，比不给更坏。
+     */
+    function fieldSections(fields, usage, filterText) {
+      // 多词 AND（判据在 fieldFilterTerms / fieldMatches）：`cont name` → container.name
+      const terms = fieldFilterTerms(filterText)
+      const match = (name) => fieldMatches(name, terms)
+      const byName = new Map()
+      for (const field of Array.isArray(fields) ? fields : []) {
+        const name = fieldNameOf(field)
+        if (name === '' || byName.has(name)) continue
+        byName.set(name, field)
+      }
+      const hitNames = new Set()
+      const hit = []
+      for (const item of Array.isArray(usage) ? usage : []) {
+        const name = fieldNameOf(item)
+        if (name === '' || hitNames.has(name) || !match(name)) continue
+        hitNames.add(name)
+        const field = byName.get(name)
+        hit.push({
+          name,
+          count: Number.isFinite(item.count) ? item.count : 0,
+          ...(field === undefined ? {} : {
+            ...(typeof field.kind === 'string' ? { kind: field.kind } : {}),
+            ...(field.preferred === true ? { preferred: true } : {}),
+            ...(field.conflict === true ? { conflict: true } : {}),
+            ...(Array.isArray(field.esTypes) ? { esTypes: field.esTypes.slice() } : {}),
+          }),
+        })
+      }
+      const rest = []
+      const conflict = []
+      for (const [name, field] of byName) {
+        if (hitNames.has(name) || !match(name)) continue
+        const item = {
+          name,
+          ...(typeof field.kind === 'string' ? { kind: field.kind } : {}),
+          ...(field.preferred === true ? { preferred: true } : {}),
+          // 冲突标记要**跟着这一行走**：侧栏在「类型冲突」分区里靠它画那个小标记
+          ...(field.conflict === true ? { conflict: true } : {}),
+          ...(Array.isArray(field.esTypes) ? { esTypes: field.esTypes.slice() } : {}),
+        }
+        if (field.conflict === true) conflict.push(item)
+        else rest.push(item)
+      }
+      // 其余字段按「常用优先、再按名字」：宿主已经把优先键标成 preferred，别在这里重挑
+      rest.sort((left, right) => (left.preferred === right.preferred ? 0 : left.preferred === true ? -1 : 1)
+        || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      conflict.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      return { hit, conflict, rest, totals: { hit: hit.length, conflict: conflict.length, rest: rest.length } }
+    }
+
+    /**
+     * 点「列」：已在列集里 → 去掉；不在 → 加到最后。返回 `{ columns, problem }`，
+     * problem 是 `badColumn` / `columnLimit`（满员的说法由界面翻成人话）。
+     * 不可变：返回新数组（调用方 setState 才有意义）。
+     */
+    function columnToggle(columns, field) {
+      const list = Array.isArray(columns) ? columns.slice() : []
+      const name = String(field == null ? '' : field)
+      if (name === '') return { columns: list, problem: 'badColumn' }
+      const at = list.indexOf(name)
+      if (at !== -1) {
+        list.splice(at, 1)
+        return { columns: list, problem: '' }
+      }
+      if (list.length >= RESULT_COLUMN_MAX) return { columns: list, problem: 'columnLimit' }
+      list.push(name)
+      return { columns: list, problem: '' }
+    }
+
+    /**
+     * 结果表的列宽（有额外列时用 CSS grid，宽了由结果区**横向滚动**）：
+     * 展开箭头 · 时间 · 级别 · 正文（min 198px，有富余时吃满）· 每个额外列 96px · 身份标签 250px。
+     *
+     * 为什么不是「让 flex 自己挤」：正文是唯一可伸缩的那一格，额外列一多它就归零
+     * （真机上 4 列时正文 0px、一行 1176px 高）。这里给正文一个下限，宁可让表横向滚动，
+     * 也不把日志正文压成一行一个字。0 列时返回空串（界面退回原来的 flex 行，行为一点不变）。
+     */
+    const RESULT_COLUMN_TRACKS = {
+      toggle: '14px',
+      time: '90px',
+      level: '36px',
+      message: 'minmax(198px,1fr)',
+      cell: '96px',
+      tags: '250px',
+    }
+    function resultColumnsTemplate(columns) {
+      const list = Array.isArray(columns) ? columns.slice(0, RESULT_COLUMN_MAX) : []
+      if (list.length === 0) return ''
+      return [
+        RESULT_COLUMN_TRACKS.toggle,
+        RESULT_COLUMN_TRACKS.time,
+        RESULT_COLUMN_TRACKS.level,
+        RESULT_COLUMN_TRACKS.message,
+        ...list.map(() => RESULT_COLUMN_TRACKS.cell),
+        RESULT_COLUMN_TRACKS.tags,
+      ].join(' ')
+    }
+
+    /**
+     * 行里某一列的显示值：取行标签里的原值；没有（这一页这行没带）就是 undefined——
+     * 界面画 `—` 并在悬停里说「这一行没有这个字段」，**不造一个假值**。
+     */
+    function columnValue(line, field) {
+      const name = String(field == null ? '' : field)
+      if (name === '') return undefined
+      const labels = line !== null && typeof line === 'object' && line.labels !== null && typeof line.labels === 'object' ? line.labels : {}
+      const value = labels[name]
+      if (value === undefined || value === null) return undefined
+      const text = String(value)
+      return text === '' ? undefined : text
+    }
+
+    /**
+     * 行详情里的原文：超长截断并**明说截断**（设计 §9.6「raw 超长截断 + 已截断」）。
+     * 返回 `{ text, truncated, total }`；`total` 是原文字符数（界面用它在提示里报数）。
+     */
+    const RAW_PREVIEW_MAX = 20000
+    function rawPreview(raw, max) {
+      const text = String(raw == null ? '' : raw)
+      const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : RAW_PREVIEW_MAX
+      if (text.length <= limit) return { text, truncated: false, total: text.length }
+      return { text: text.slice(0, limit), truncated: true, total: text.length }
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 浮层定位与开关（第二十二刀）
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 浮层落在哪儿：给**触发它的那颗按钮**的视口坐标（`anchor`），算出浮层的视口坐标。
+     *
+     * 三条边界（浮层跑出屏幕、或者反过来盖住触发它的那颗按钮，都是这一类东西的通病）：
+     *   ① 横向：`align: 'right'` 右缘对齐按钮右缘（元信息行那颗在整行右侧，左对齐要向左伸 300px）；
+     *      `align: 'left'` 左缘对齐按钮左缘（筛选行那颗在左侧，右对齐会缩回最左边去）；
+     *      两种都夹进视口（`margin` ~ `vw - width - margin`）。
+     *   ② 纵向优先**往下开**（`bottom + gap`）：下面放得下 `height`（面板想要的高度）就一个像素都不动。
+     *   ③ 下面放不下就**上翻**；两边都放不下（真机 816×782 上一抓就是——面板想要 520，上下各只剩
+     *      300 多）就挑宽的那一边，把高度收进那一边的空间（`maxHeight`，面板自己滚）。**不许**为了
+     *      「整块都留在屏幕里」把面板挪到屏幕中央：那会让它反过来盖住触发它的那颗按钮，而这个面板
+     *      之所以存在，就是因为「能打开它的东西和它本身在同一处」（第二十刀）。
+     *
+     * `vw` / `vh` 拿不到（无浏览器 / 测试桩）时不做夹取、也不上翻：**能打开**比位置精确重要。
+     * 坐标一律取整，免得半像素的发丝线落在小数上糊掉。
+     */
+    function panelPlacement(anchor, options) {
+      if (anchor === null || anchor === undefined || typeof anchor !== 'object') return undefined
+      const spec = options === null || options === undefined ? {} : options
+      const width = Number.isFinite(spec.width) ? spec.width : 0
+      const height = Number.isFinite(spec.height) ? spec.height : 0
+      const margin = Number.isFinite(spec.margin) ? spec.margin : 8
+      const gap = Number.isFinite(spec.gap) ? spec.gap : 4
+      const vw = Number.isFinite(spec.vw) && spec.vw > 0 ? spec.vw : 0
+      const vh = Number.isFinite(spec.vh) && spec.vh > 0 ? spec.vh : 0
+      // 左对齐只有按钮左缘可用时才算数；拿不到就退回右对齐那一套（右缘也没有就贴左边距）
+      const leftAligned = anchor.align === 'left' && Number.isFinite(anchor.left)
+      const rawLeft = leftAligned
+        ? anchor.left
+        : (Number.isFinite(anchor.right) ? anchor.right - width : margin)
+      const left = vw > 0
+        ? Math.min(Math.max(margin, rawLeft), Math.max(margin, vw - width - margin))
+        : Math.max(margin, rawLeft)
+      let top = Number.isFinite(anchor.bottom) ? anchor.bottom + gap : margin
+      let maxHeight
+      if (vh > 0 && height > 0) {
+        const below = vh - margin - top
+        const above = Number.isFinite(anchor.top) ? anchor.top - gap - margin : Number.NaN
+        if (below < height && above >= height) {
+          // 上翻：面板底边停在按钮上沿之上
+          top = anchor.top - gap - height
+        } else if (below < height) {
+          // 两边都放不下：挑宽的那一边，高度收进那边的空间（面板自己滚）
+          const room = Number.isFinite(above) ? Math.max(below, above) : below
+          if (room > 0) {
+            maxHeight = Math.floor(room)
+            if (Number.isFinite(above) && above > below) top = anchor.top - gap - maxHeight
+          }
+        }
+      }
+      const placed = { left: Math.round(left), top: Math.round(top) }
+      if (maxHeight !== undefined) placed.maxHeight = maxHeight
+      return placed
+    }
+
+    /**
+     * 字段面板**想要**的高度：与 CSS 的 `.ll_fields{max-height:min(520px,70vh)}` 同一口径。
+     *
+     * 渲染由 CSS 管（它才是真正决定画多高的那个），这个数只用来判断「往下开放不放得下、要不要上翻」。
+     * 两者漂开的最坏后果是面板早一步上翻或早一步收窄，不会把位置算错——所以它没有做成两处共享的
+     * 常量（JS 读不到 CSS）。`client-smoke.mjs` 里有一条断言盯着 CSS 那一行，改一边会红。
+     */
+    const FIELD_PANEL_CEILING = 520
+    function fieldPanelHeight(vh) {
+      if (!Number.isFinite(vh) || vh <= 0) return FIELD_PANEL_CEILING
+      return Math.min(FIELD_PANEL_CEILING, Math.round(vh * 0.7))
+    }
+
+    /**
+     * 字段面板的宽度：与 CSS 的 `.ll_fields{width:…}` 同一口径。
+     *
+     * 为什么要一个常量：它有两处用处——CSS 决定画多宽，`panelPlacement` 用它算「右缘对齐」的左缘。
+     * 两处各写一个数就会漂（漂了之后面板不是贴着按钮，而是差几十像素，看着像随机偏了一点）。
+     * 340 而不是 300：真机上 `container.labels.*` 那一串末段（`com_docker_compose_service` 这类
+     * 27 个字符）在 300px 里正好差一点点放不下，多出来的 40px 让它们一行读完。
+     * `client-smoke.mjs` 有一条断言盯着 CSS 那一行，改一边会红。
+     */
+    const FIELD_PANEL_WIDTH = 340
+
+    /**
+     * 一个字段名（末段）能在哪儿断行：在每个 `_` / `-` / `.` **之后**给一个断点。
+     *
+     * 为什么要这个：CSS 那边原来用 `overflow-wrap:anywhere`——浏览器会把一整行**填满**再断，
+     * 于是 `com_docker_compose_config-hash` 被切成 `com_docker_compose_conf` / `ig-hash`
+     * （真机截图里就是这样，一个词从中间裂开）。给不出断点时浏览器只能这么切；给出断点之后，
+     * 它会在 `com_docker_compose_` 后面断，读起来是"两个词"而不是"半个词"。
+     *
+     * 返回**逐段保留分隔符**的数组（`['com_','docker_','compose_','config-','hash']`），
+     * 拼回去逐字等于入参——这一点有用例钉着（错一个字符就会让行上显示的名字与真实字段名不符，
+     * 而那正是「点错了字段」的来源）。
+     */
+    function fieldNameBreaks(name) {
+      const text = String(name == null ? '' : name)
+      if (text === '') return []
+      const separators = new Set(['_', '-', '.'])
+      const out = []
+      let current = ''
+      for (let at = 0; at < text.length; at += 1) {
+        const ch = text[at]
+        current += ch
+        // 连续分隔符算**一处**断点：`a__b` 断成 `a__` / `b`，不是 `a_` / `_` / `b`
+        const next = at + 1 < text.length ? text[at + 1] : ''
+        if (separators.has(ch) && !separators.has(next)) {
+          out.push(current)
+          current = ''
+        }
+      }
+      if (current !== '') out.push(current)
+      return out
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 筛选组合框（第三十刀）
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 筛选框右边那一格的候选：把一个字段的 top 值摊成「可选的候选行」。
+     *
+     * 与 `valueBars`（画横条的版本）**分开**：那个版本把比例与截断一起算好，是给「看长短」用的；
+     * 筛选框的候选只需要「这个值能不能点、点了筛什么」——它没有条，也就不该带上一条用不上的比例。
+     *
+     * 三条判据：
+     *   - **空白值不进来**：筛选只能表达「字段 = 某值」，表达不了「字段缺失」（与 `filterProblem`
+     *     同一条，界面上那一桶本来也不给点）。把一个点了没反应的行摆出来，比不摆更坏。
+     *   - **已经在筛的那个值打标记**（`active`）：它还在候选里（点一下是取消，与榜上同一条），
+     *     只是要让人看得出「这一条已经生效了」。
+     *   - **保持后端给的顺序**：按计数排序是后端的结论，再排一次等于把它盖掉（与 `groupBars` 同一条）。
+     */
+    function valueChoices(field, buckets, active, limit) {
+      const name = String(field == null ? '' : field).trim()
+      const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_VALUES_MAX
+      if (name === '') return []
+      const rows = []
+      for (const bucket of Array.isArray(buckets) ? buckets : []) {
+        if (rows.length >= cap) break
+        if (bucket == null || typeof bucket.key !== 'string' || !Number.isFinite(bucket.count)) continue
+        // 空白值：筛不了（见上），不占一格
+        if (bucket.key.trim() === '') continue
+        rows.push({
+          value: bucket.key,
+          count: bucket.count,
+          active: active !== undefined && active !== null && String(active) === bucket.key,
+        })
+      }
+      return rows
+    }
+
+    /**
+     * 两段式筛选框的候选里「当前那一行」上下挪一格：**允许停在「没选」那一档**（−1）。
+     *
+     * 与 `pickMove` 的差别是判据，不是风格：分组框的输入框里**只有**候选那条路（打进的字就是
+     * 结论），所以必须永远有一行被选中；筛选框的值那一格可以打任何东西（长尾值、带空格的、
+     * 带引号的），「没选中任何候选」是一个**正常状态**——回车该取的是用户打的那串字。
+     *
+     * 所以这里能从 −1 往下走到第一行，也能从第一行往上退回 −1（再往上就停住）。
+     */
+    function choiceMove(current, delta, length) {
+      const count = Number.isInteger(length) && length > 0 ? length : 0
+      const step = Number.isFinite(delta) ? Math.trunc(delta) : 0
+      if (count === 0) return -1
+      const at = Number.isInteger(current) ? current : -1
+      const next = at + step
+      return Math.min(Math.max(next, -1), count - 1)
+    }
+
+    /**
+     * 筛选框左边那一格的候选：**全部字段**按输入收窄，且「这一页命中」的排在前面。
+     *
+     * 与 `fieldChoices`（分组框的候选）分开：那个保持宿主顺序、不做分区；筛选框这里有一个
+     * 实际差别——**这一页命中的字段是刚看过的那些**，它们才是此刻大概率要筛的。所以先排命中区、
+     * 再排其余（三个分区内部都保持 `fieldSections` 已经算好的顺序，不重排）。
+     *
+     * 收窄规则**复用** `fieldFilterTerms` + `fieldMatches`（多词 AND，别在这儿另写一套）：同一个
+     * 来源的两个相框——一个在侧栏里筛字段名、一个在筛选行里筛字段名——对 `cont name` 给出不同的
+     * 答案，是那种「用着用着发现它时灵时不灵」的毛病。判据只有一个，两处共用。
+     */
+    function filterFieldChoices(sections, typed, limit) {
+      const terms = fieldFilterTerms(typed)
+      const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_LIST_MAX
+      const out = []
+      const take = (items, group) => {
+        for (const item of Array.isArray(items) ? items : []) {
+          if (out.length >= cap) return
+          const name = String(item == null || item.name == null ? '' : item.name)
+          if (name === '' || !fieldMatches(name, terms)) continue
+          out.push({ name, group })
+        }
+      }
+      take(sections == null ? undefined : sections.hit, 'hit')
+      take(sections == null ? undefined : sections.rest, 'rest')
+      take(sections == null ? undefined : sections.conflict, 'conflict')
+      return out
+    }
+
+    /**
+     * 两段式筛选框里「当前那一段」该退到哪儿（Backspace / 删除键的判据）。
+     *
+     * 三态：
+     *   - 值那一格**有字**：退掉最后一个字（`'value'`，调用方把 value 去掉尾字）；
+     *   - 值那一格**空了、字段已选**：退到字段那一格（`'field'`），字段名留着、值清空——
+     *     这是「我要换个字段」最自然的手势，而不是逼人先点一下左边；
+     *   - 字段也没选：什么都不做（`'none'`）。
+     *
+     * 为什么值优先：写值的时候按 Backspace 是指望删字，不是指望换字段。反过来会让人在打错一个
+     * 字母时**把整条条件清掉**。
+     */
+    function filterBoxBack(field, value) {
+      if (String(value == null ? '' : value) !== '') return 'value'
+      if (String(field == null ? '' : field).trim() !== '') return 'field'
+      return 'none'
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 字段的 top 值（第二十四刀）
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 取某个字段 top 值时向聚合要几个值。
+     *
+     * 8 是**目视**算出来的：每个值一行 18px，8 行 = 144px —— 下拉里一眼扫得完，也不会把
+     * 它下面的东西顶出屏幕。筛选框（第三十刀）与它的候选共用这个数：一处改了另一处跟着改。
+     */
+    const FIELD_VALUES_SIZE = 8
+    /** 画出来的上限（与请求数一致；后端要是多给了，多的不画）。 */
+    const FIELD_VALUES_MAX = 8
+
+    /**
+     * 取某个字段 top 值的请求体：与榜（`groupPayload`）**同一个信封**，只多一个 `size`。
+     *
+     * 信封相同不是巧合——它保证「值」与「行」「分布」画的是**同一个子集**（同一个窗口、同一个查询串、
+     * 同一份筛选），见 `facetsEnvelope` 那段注释。窗口回显不全就返回 null，不发畸形请求。
+     */
+    function fieldValuesPayload(draft, outcome, field, size) {
+      const name = String(field == null ? '' : field).trim()
+      if (name === '') return null
+      const envelope = facetsEnvelope(draft, outcome)
+      if (envelope === null) return null
+      const wanted = Number.isFinite(size) && size > 0 ? Math.floor(size) : FIELD_VALUES_SIZE
+      return { ...envelope, by: name, size: wanted }
+    }
+
+    /**
+     * 值清单的缓存键：**同一份条件只能有一种答案**。
+     *
+     * 键里带字段名与整个信封（来源 + 窗口 + 查询串 + 筛选）：改了任何一个，这一格就必须重新问后端。
+     * 少带一样都会给出「上一次条件下的一组值」——那比不展开更坏，因为它看起来是这一次的。
+     * 拿不到信封时返回 null（调用方据此显示「不知道窗口，先查一次」那类话，而不是发一个畸形请求）。
+     */
+    function fieldValuesKey(draft, outcome, field) {
+      const payload = fieldValuesPayload(draft, outcome, field)
+      if (payload === null) return null
+      const filters = payload.filters === undefined
+        ? ''
+        : Object.keys(payload.filters).sort().map((key) => key + '=' + payload.filters[key]).join('&')
+      return [payload.by, payload.target, String(payload.from), String(payload.to), payload.q, filters].join('\u0000')
+    }
+
+    /**
+     * top 值 → 可画的行（复用榜那套归一化，再按本格的条数截一刀）。
+     *
+     * `ratio` 用的是**整批**的最大值（不是截断之后的最大值）：截断只影响「画几行」，
+     * 不该让头条忽然变成满格——那会让「8 条里最大的一条」看起来与「50 条里最大的一条」一样重。
+     */
+    function valueBars(buckets, limit) {
+      const spec = groupBars(buckets)
+      const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_VALUES_MAX
+      const rows = spec.bars.slice(0, cap)
+      return { rows, max: spec.max, truncated: spec.truncated || spec.bars.length > rows.length }
+    }
+
+    /**
+     * 选列面板里**这一行此刻能不能点**（第二十六刀：把「列」按钮换成勾选）。
+     *
+     * 三种情形，判据一句话说得完：
+     *   - 已选：**永远能点**（取消勾选不能被「满员」挡住——否则满员之后一个都去不掉，
+     *     这正是「点不动却不说为什么」的另一种形态）；
+     *   - 未选且**满员**：`limit`——界面据此画禁用态并说明「最多 4 列」；
+     *   - 其余：`ok`。
+     *
+     * 与 `columnToggle` 分开是因为两者的读者不同：那个决定「改完之后是什么」，
+     * 这个决定「画成什么样」。合成一个就得在渲染时先算一遍结果、再假装没算。
+     */
+    function columnPickState(columns, field) {
+      const list = Array.isArray(columns) ? columns : []
+      const name = String(field == null ? '' : field)
+      if (name === '') return 'bad'
+      if (list.indexOf(name) !== -1) return 'picked'
+      if (list.length >= RESULT_COLUMN_MAX) return 'limit'
+      return 'ok'
+    }
+
     /* ================================ CSS ================================ */
 
     const CSS = [
@@ -1032,7 +1831,23 @@ window.__ModuleLoader__.load({
       '.ll_cardBody{padding:2px 16px 16px}',
       '.ll_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
       '.ll_panelHeader{display:flex;align-items:center;gap:10px;flex:none}',
-      '.ll_panelTitle{margin:0;font-size:15px;font-weight:500;line-height:22px;white-space:nowrap;flex:1}',
+      '.ll_panelTitle{margin:0;font-size:15px;font-weight:500;line-height:22px;white-space:nowrap;flex:none}',
+      // 标题右侧那句「2 个来源 · 已启用」：收起来源列表之后，来源还剩几个是**唯一**要一直看得见的事
+      '.ll_panelSummary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      /*
+       * 「编辑来源」那颗展开/收起入口（第十五刀）。
+       *
+       * 为什么要有它：真机 816×782 量到面板总高 1055px，其中来源配置区（说明 + 新增 + 两行表单）
+       * 占 ~300px（28%）——而查日志的时候那一片基本不动。收起之后整块只剩一行，查询与结果能进首屏。
+       *
+       * 类名刻意**不带 `btn`**（与 `ll_rowToggle` / `ll_fieldAct` 同一条：按钮族几何检查按 /btn/i
+       * 抓类名，这是一颗行内的折叠把手，几何本来就不是按钮族那套 H28/R-sm）。
+       */
+      '.ll_sourcesToggle{box-sizing:border-box;display:flex;align-items:center;gap:6px;width:100%;height:26px;padding:0 4px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;text-align:left;cursor:pointer}',
+      '.ll_sourcesToggle:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.ll_sourcesToggle:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
+      // 收起时把整块压成一行：展开态才有的间距写在 .ll_sourcesBody 上，收起态一点不留
+      '.ll_sourcesBody{display:flex;flex-direction:column;gap:12px}',
       '.ll_switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}',
       '.ll_switch input[type=checkbox]{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
       '.ll_switch input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
@@ -1067,12 +1882,280 @@ window.__ModuleLoader__.load({
       '.ll_empty,.ll_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px;line-height:18px}',
       '.ll_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
       '.ll_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
-      '.ll_query{display:flex;flex-direction:column;gap:10px;border-top:.5px solid var(--dsw-alias-border-l1);padding-top:12px}',
-      '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,2fr) minmax(96px,120px) minmax(96px,120px) minmax(64px,84px) auto;gap:8px;align-items:center}',
-      // 分组那一行只有「字段 / 一个按钮 / 一句回话」（字段候选改成点开即拉之后，没有独立的按钮了）
-      '.ll_groupGrid{display:grid;grid-template-columns:minmax(180px,2fr) auto minmax(0,1fr);gap:8px;align-items:center}',
+      /*
+       * `.ll_query` 是个**列向 flex**，它的子项默认 `align-items: stretch` —— 于是「下一页」那颗
+       * `ll_btnGhost` 被拉成整行 928px（真机 2026-10-17 量到：一颗按钮横跨整个面板，比结果表还宽）。
+       * 这里把默认对齐改成 `flex-start`：子项按自己的内容宽排；要占满整行的那些（grid 行、
+       * 结果区、提示段）本来就写了 `width:100%` / 是 grid，不受影响。
+       */
+      '.ll_query{display:flex;flex-direction:column;align-items:flex-start;gap:10px;border-top:.5px solid var(--dsw-alias-border-l1);padding-top:12px}',
+      '.ll_query>*{width:100%}',
+      // 「下一页」是这一列里唯一一颗**不该**占满整行的按钮（它是结果列表的续页入口，不是一行内容）
+      '.ll_query>.ll_btnGhost{align-self:center;width:auto}',
+      /*
+       * 查询区两行（第十五刀）：**主行**（来源 · 查询串 · 查询）与**选项行**（时间窗 · 级别 · 条数 · 分组字段 · 分组）。
+       *
+       * 改之前是一行五格 + 一行分组：真机 816×782 上量到查询串那格只有 **160px**（约 12 个汉字），
+       * 而它是这个面板里唯一需要打长串的地方（Lucene 表达式）；同一行里还塞着三项不改也能查的参数。
+       * 现在把「随时会改的那一格」独占剩余宽度（1fr），参数挪到第二行——两行加起来比原来两行
+       * 还矮（原来分组行右半边 300px 是空的，见下面 .ll_groupGrid 的注释）。
+       */
+      '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,1fr) auto;gap:8px;align-items:center}',
+      /*
+       * 选项行 = 时间窗 · 级别 · 条数 · 分组字段 · 「分组」。
+       *
+       * 分组那一行原来是**独立的一行**，模板 `minmax(180px,2fr) auto minmax(0,1fr)`：第三列是留给
+       * 「一句回话」的，而实际上没有任何东西放进去——真机量到那一片永远空着 ~300px（三列里最宽的一列
+       * 是空的）。合并进这一行之后，分组字段拿 1fr，空列消失，还省掉一整行的行高。
+       *
+       * 时间窗那一列从 96px 起步是因为这里放的是「最近 1 小时」这种 5.5 个汉字宽的文案：
+       * 96px 减去左右内边距与原生箭头只剩 ~52px 文字区，它会被切成「最近 1 小…」（真机读数）。
+       */
+      '.ll_groupGrid{display:grid;grid-template-columns:minmax(120px,136px) minmax(96px,120px) minmax(64px,84px) minmax(120px,1fr) auto;gap:8px;align-items:center}',
+      // Docker 那一档自成一行（容器 · 时间窗 · 条数 · 刷新 · 看日志）：五格，别去套上面那两套模板
+      '.ll_dockerGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(96px,120px) minmax(64px,84px) auto auto;gap:8px;align-items:center}',
+      /*
+       * 元信息行拆两层（第十五刀）：
+       *   ① `.ll_queryMeta` = **短句 + 动作**（计数 · 截断 · 提示 · 四颗按钮），一行放得下；
+       *   ② `.ll_queryNote` = **长句**（宿主的级别/兜底 warning），一句一行各自排。
+       *
+       * 为什么拆：改之前它们同在一条 `flex-wrap` 行里，宿主那句 90 字的级别 warning 占了整行，
+       * 四颗按钮被挤到第三行——真机量到这一行 **102px**（三行）。同样的字数，分成两层之后
+       * 短句那层永远 28px、长句那层按自己的宽度换行，按钮不再被一段散文推走。
+       */
       '.ll_queryMeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
-      '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
+      // 短句（计数 / 截断）与动作（四颗按钮）之间的弹簧：宽度够时把按钮顶到右边，不够时整组一起换行
+      '.ll_metaGap{flex:1 1 0;min-width:0}',
+      // 长句那一层：一句一行（每句按自己的宽度换行），行距用 gap 而不是 margin，最后一句不留尾巴
+      '.ll_queryNote{display:flex;flex-direction:column;gap:2px;font-size:12px;line-height:18px}',
+      /*
+       * 结果区高度（第十三刀，真机读数）：原来是死数 `max-height:420px`——在 1440×900 的窗口里，
+       * 100 行结果只露出 **7 行**（平均行高 61px），而同一屏还要按下方的「字段 / 紧凑 / 清空结果」
+       * 与时间分布。改成**视口相对**：窗口越高露得越多，行数不再由一个拍下来的像素数决定。
+       *
+       * 下限 240px 是「至少还看得见三四行」，上限 70vh 是「不许把下面的分布挤出屏幕」——
+       * 两端都是为了让「日志区」与「图」同时在场。
+       */
+      '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:min(720px,72vh);min-height:300px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
+      /*
+       * 第十五刀：`min-height` 从 240px 提到 **300px**，上限改成 `min(720px, 72vh)`。
+       *
+       * 为什么敢抬高下限：这一版把上面三块压掉了一整屏的量级（来源配置收起 ~300px、
+       * 元信息 102px→28px、查询行两行合一）。空出来的高度**归结果**——它是这个面板的主体，
+       * 240px 只够 3~4 行（真机 11 行/屏时约 60px 一行）。
+       *
+       * 上限仍是视口相对（72vh）：窗口越高露得越多，但它不许把下面的分布与翻页挤出屏幕。
+       */
+      /*
+       * 结果区：字段面板是**浮层**，结果表永远拿整行宽度（真机反馈两连：常驻占宽度 → 收起后
+       * 内联展开还是把正文从 577px 挤到 389px）。浮层绝对定位在结果之上，点面板外 / 再点触发它那颗收起。
+       */
+      '.ll_workbench{position:relative}',
+      /*
+       * 浮层那一层（第二十二刀）：面板搬出结果区之后，它需要**一个不生成盒子的容器**。
+       *
+       * 面板与遮罩都是 `position:fixed`，本身不需要父盒；但这个容器不能白占一格——它的父级
+       * `.ll_panel` 是 `gap:12px` 的纵向 flex，插一个零高度的 div 会多出一个 12px 空档。
+       * `display:contents` 让这个 div 自己不生成盒子，两个 `fixed` 的孩子照旧贴在视口上。
+       */
+      '.ll_fieldLayer{display:contents}',
+      /*
+       * 遮罩（第二十刀）：面板改成 `fixed` 之后，遮罩也得跟着改成**全屏 fixed**。
+       *
+       * 原来它是 `absolute; inset:0`（铺满结果区那一格）——面板还在结果区里时两者对得上；
+       * 现在面板浮到按钮下方、可能盖到元信息行与图上面去，只铺结果区的遮罩就漏了那几块：
+       * 点面板上方那片空白不会收起，看着像「点外面没反应」。
+       * 层级 99 < 面板 100，所以遮罩铺满整屏也不会挡住面板自己的点击。
+       */
+      '.ll_fieldScrim{position:fixed;inset:0;z-index:99}',
+      '.ll_btnGhostOn{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}',
+      /*
+       * 带图标的那几颗动作按钮（第十八刀）。
+       *
+       * `padding` 收到 `0 8px`（原来的 10px 是为纯文字按钮留的呼吸量）：图标占掉一段视觉宽度后，
+       * 同样的内边距会让整排变宽——而这一行本来就要与计数挤在同一条线上。
+       * `gap` 从 4 加到 6：图标与字之间需要比「字与字」更大的间隔才不糊在一起。
+       */
+      '.ll_btnGhostIcon{gap:6px;padding:0 8px}',
+      // 图标本身：垂直居中、不缩放、不吃鼠标事件（它是标签的一部分，点它应该点到按钮）
+      '.ll_actionIcon{flex:none;display:block;pointer-events:none}',
+      '.ll_main{display:flex;flex-direction:column;gap:6px;min-width:0}',
+      // 有额外列：行改成 grid（列宽见 pure.js resultColumnsTemplate），宽了横向滚动——正文不会被挤没
+      '.ll_resultsWide{overflow-x:auto}',
+      '.ll_resultsWide .ll_resultTags{max-width:250px}',
+      '.ll_columnsHint{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      // 浮层取宿主菜单配方（border:0 + elevation 投影，中性 border 不许配投影）：与字段候选 / 标签浮层同一套
+      /*
+       * 字段面板（第二十刀重定位）：**从触发它的那颗按钮长出来**，不再是钉在结果区左端的一块。
+       *
+       * 改前是 `position:absolute;top:0;bottom:0;left:0`：面板贴结果区左边缘，而「字段」按钮在
+       * 整行右侧——真机量到两者横向差 **123px**，中间隔着整块结果正文。按的是右边那颗，
+       * 展开的东西出现在最左边，这与「读数条钉在左端、柱子在图中间」是同一条毛病（第十七刀）：
+       * 能打开它的东西和它本身不在同一处。
+       *
+       * 现在 `position:fixed` + 由 `fieldsAnchor` 给的视口坐标（判据在 pure.js 的 `panelPlacement`）：
+       * **横向对齐触发它的那颗按钮**——元信息行那颗在整行右侧，所以右缘对齐；筛选行那颗在左边，
+       * 所以左缘对齐（右对齐会把面板缩回最左边去）。纵向优先贴按钮下沿 4px，下面放不下就上翻。
+       * 与「＋N」全部标签浮层同一套路（那个也是 fixed：`.ll_results` 有 `overflow-y:auto`，
+       * 画在里面的浮层会被裁掉）。
+       *
+       * 高度改成 `max-height` 而不是 `top/bottom` 撑满：它现在贴着按钮、不在结果区那一格里了，
+       * 撑满会一路垂到屏幕底。
+       */
+      '.ll_fields{position:fixed;z-index:100;box-sizing:border-box;width:340px;max-width:calc(100vw - 16px);max-height:min(520px,70vh);min-height:200px;display:flex;flex-direction:column;gap:6px;padding:8px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      // 浮层高度跟结果区走：头 / 过滤框 / 脚注**不许被压扁**（只有列表自己滚），否则 420px 里那行说明只剩 2px
+      '.ll_fieldsHead{flex:none;display:flex;align-items:baseline;justify-content:space-between;gap:6px}',
+      '.ll_fieldsTitle{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;font-weight:600}',
+      '.ll_fieldsTotal{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      /*
+       * 过滤框那一行（第十九刀）：放大镜 · 输入框 · 清除。
+       *
+       * 放大镜是**装饰**（`pointer-events:none`），它只是把「这是搜索」这件事在静止状态说出来；
+       * 输入框补了左内边距给图标让位。清除只在有内容时出现。
+       */
+      '.ll_fieldsFilterRow{position:relative;display:flex;align-items:center;flex:none}',
+      '.ll_fieldsFilterIcon{position:absolute;left:8px;display:flex;color:var(--dsw-alias-label-tertiary);pointer-events:none}',
+      // 有清除按钮时右侧也要让位（否则长字段名会钻到 × 底下）
+      '.ll_fieldsFilter{flex:1 1 auto;min-width:0;height:28px;padding-left:28px;padding-right:26px;font-size:12px;line-height:18px}',
+      '.ll_fieldsFilterClear{position:absolute;right:4px;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:13px;line-height:1;cursor:pointer}',
+      '.ll_fieldsFilterClear:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.ll_fieldsFilterClear:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-1px}',
+      /*
+       * 滚动区（第十九刀）：`padding-right` 从 2px 提到 **4px**——
+       * 字段行的右内边距也是 4px，两者不相等时动作列的右边缘会比过滤框**缩进 2px**
+       * （真机量到 278 vs 284）：一列按钮看着比上面的输入框短一截。
+       */
+      '.ll_fieldsScroll{display:flex;flex-direction:column;gap:4px;min-height:0;overflow-y:auto;padding-right:4px}',
+      '.ll_fields .ll_hint{flex:none;font-size:11px;line-height:16px}',
+      '.ll_hintElide{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}',
+      /*
+       * 分区（第十九刀）：标题改成**吸附的一行小标头**——90 多个字段滚下去之后，
+       * 「我现在看的是『本页命中』还是『其余可用』」原本只能靠回忆（标题早滚出去了）。
+       * `position:sticky` 让它钉在滚动区顶部；上边一条发丝线把它与前一段分开。
+       */
+      /*
+       * 分组（第二十一刀）：组头 + 组内的行。组头是**可折叠的按钮**（带 chevron 与计数），
+       * 行缩进 12px——一眼看出「这些行属于上面那个父路径」。
+       *
+       * 类名刻意**不带 `btn`**（与 `.ll_fieldAct` 同一条：按钮族几何检查按 /btn/i 抓类名，
+       * 这是行内的小折叠把手，几何本来就不是按钮族那套 H28/R-sm）。
+       */
+      '.ll_fieldGroup{display:flex;flex-direction:column;gap:1px}',
+      '.ll_fieldGroupHead{appearance:none;display:flex;align-items:center;gap:4px;box-sizing:border-box;width:100%;min-height:22px;padding:1px 4px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:11px;line-height:14px;text-align:left;cursor:pointer}',
+      '.ll_fieldGroupHead:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_fieldGroupHead:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-1px}',
+      // 官方的字号线（10→14）：`font-size` 必须配 `line-height`，漏了 client-lint 会红
+      /*
+       * 前导槽统一 16px（第二十七刀）：组头的箭头与行里的勾选框**占同一宽度**，
+       * 两边才会落在同一条竖线上（真机量到箭头在 199、勾选框在 219，差 20px 就是这么来的：
+       * 箭头 10px + gap 4、勾选框 16px + gap 6，缩进还各写各的）。
+       */
+      '.ll_fieldGroupChevron{flex:none;width:16px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:14px}',
+      '.ll_fieldGroupName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--ds-font-family-code);font-weight:500}',
+      '.ll_fieldGroupHeadOpen .ll_fieldGroupName{color:var(--dsw-alias-label-primary)}',
+      '.ll_fieldGroupCount{flex:none;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      // 组内的行缩进，与组名对齐（视觉上属于上面那一组）
+      /*
+       * 组体**不再自己缩进**（第二十七刀）：组头与行都用「padding 4 + 前导槽 16 + gap 4」，
+       * 两边自然落在同一条竖线上。原来这里是 padding-left:14px，而行的缩进由它自己再加 4px——
+       * 两套数字各写各的，箭头与勾选框就差了 20px。判据是**同一条竖线**，不是「差不多齐」。
+       */
+      /*
+       * 树的层次（第二十九刀）：用户说「展开没有 tree 那种层次效果」。
+       *
+       * 原来组头与组内的行挨在同一列上（组体只有 1px 的缝），展开与收起在视觉上只是
+       * 「多了几行」——看不出谁属于谁。现在组体左侧有一条 **1px 的竖向导轨**（用 border 画，
+       * 不占额外元素），并且整体缩进 8px：行相对组头往右退一格，一眼看得出层级。
+       * 导轨用 `border-l1`（4% 黑）而不是边框色：它在浅色面板里刚好看得见、又不抢注意力。
+       */
+      '.ll_fieldGroupBody{display:flex;flex-direction:column;gap:1px;margin-left:8px;padding-left:8px;border-left:.5px solid var(--dsw-alias-border-l1)}',
+      /*
+       * 已选列（第二十一刀）：面板里那一格列芯片。与结果表上方的芯片同一套外观
+       * （`.ll_columnChip` 复用），只是容器换了、多了个标签。
+       */
+      '.ll_fieldsPicked{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:0 4px;max-height:56px;overflow-y:auto}',
+      '.ll_fieldsPickedLabel{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      '.ll_fieldSection{display:flex;flex-direction:column;gap:1px}',
+      '.ll_fieldSectionTitle{position:sticky;top:0;z-index:1;padding:3px 4px;background:var(--dsw-alias-bg-layer-2);border-bottom:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      '.ll_fieldBlock{display:flex;flex-direction:column;gap:2px}',
+      /*
+       * 字段行（第十九刀重排）：**三列网格**，不是一条 flex 行。
+       *
+       * 改前是 `flex`：名字 `flex:1`、计数与两个动作各自 `flex:none`。后果是三个东西**互相对不齐**
+       * ——真机量到计数那一列在 18px / 21px 之间跳（`100` / `73` / `72`），动作区 44px，
+       * 而名字占掉 204px 里的绝大部分，剩下那点宽度里「列」「筛」被压成两个 21px 的窄条，
+       * 扫一列字段时看起来像是名字的一部分，不像能点的东西。
+       *
+       * 现在：`名字(1fr) · 计数(右对齐定宽) · 动作(定宽)`。三列各就各位，整列读下来是一条直线；
+       * 计数有了固定宽度（`minmax(34px,auto)` + 右对齐）就不会左右跳。
+       */
+      /*
+       * 字段行两列（第二十八刀：动作区删了，第三列没东西可放）：名字(1fr) · 计数(右对齐定宽)。
+       * 行高 26px 是 `min-height`；真机量到 28 是因为行内最高的是勾选框/动作桶——现在只剩 14px 的
+       * 文本，26 就真的落地了。
+       */
+      '.ll_fieldRow{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;min-height:26px;padding:1px 4px;border-radius:var(--dsw-radius-sm)}',
+      // 选列面板的行被外层 `<label>` 包着：hover / 圆角 / 内边距都归外层，内层让干净（避免双层底色）
+      '.ll_fieldPick .ll_fieldRow{padding:0}',
+      '.ll_fieldPick .ll_fieldRow:hover{background:transparent}',
+      '.ll_fieldRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      /*
+       * 名字这一格现在是个 <button>（第二十四刀：点它展开 top 值）。要按掉 UA 的按钮外观，
+       * 只留文本排版——`font-family` / `font-size` 必须**显式写**（`font:inherit` 会把等宽字体冲掉，
+       * 而字段名靠等宽对齐才读得出来）。caret 用文字三角，与 `.ll_rowToggle` 同一套。
+       */
+      '.ll_fieldNameCell{display:flex;align-items:flex-start;gap:4px;min-width:0}',
+      '.ll_fieldName{appearance:none;line-height:14px;flex:1;min-width:0;display:-webkit-box;min-width:0;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:break-word;padding:0;border:0;background:none;text-align:left;cursor:pointer;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:11px;line-height:14px}',
+      '.ll_fieldName:hover{color:var(--dsw-alias-brand-primary)}',
+      '.ll_fieldName:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}',
+      // 列模式下名字不是开关（面板的职责是选列，不是筛）：不画 hover、不换手型、不吃点击
+      '.ll_fieldNameStatic{flex:1;min-width:0;cursor:default}',
+      /*
+       * 选列面板的一行（第二十六刀）：整行是 `<label>`，点哪儿都算选它。
+       * 勾选框在第一格、与组头缩进对齐（12px）；hover 整行变色——清单里这是「可以点」的信号，
+       * 而 `cursor:pointer` 只在可点时才给（满员禁用那几行回到默认箭头）。
+       */
+      '.ll_fieldPick{display:grid;grid-template-columns:16px minmax(0,1fr);gap:4px;align-items:center;min-height:26px;padding:1px 4px;border-radius:var(--dsw-radius-sm);cursor:pointer}',
+      '.ll_fieldPick:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_fieldPickOn{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_fieldPick:has(.ll_fieldCheck:disabled){cursor:not-allowed;opacity:.5}',
+      '.ll_fieldPick:has(.ll_fieldCheck:disabled):hover{background:transparent}',
+      /*
+       * 选择器必须写成 `input[type=checkbox].cls`（**不带引号**）：闸门的 CSS 解析器在属性选择器
+       * 里遇到引号会断错选择器（实测只剩 `].ll_fieldCheck`），于是这条 accent-color 不被算作
+       * 「覆盖到了这个复选框」，报 uncovered。不带引号是等价的合法写法，也是宿主自己用的那种。
+       */
+      'input[type=checkbox].ll_fieldCheck{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
+      '.ll_fieldCheck:disabled{cursor:not-allowed}',
+      '.ll_fieldCheck:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+      '.ll_fieldNameStatic:hover{color:var(--dsw-alias-label-primary)}',
+      '.ll_fieldName{display:-webkit-box;min-width:0;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:break-word;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:11px;line-height:14px}',
+      '.ll_fieldBadge{flex:none;padding:0 3px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:14px}',
+      /*
+       * 计数：**右对齐 + 等宽数字**。真机上这一列原来会左右跳（100 / 73 / 72 三种宽度），
+       * 一列字段读下去像锯齿；`tabular-nums` 让每个数字占同样宽度，右对齐让个位对齐。
+       */
+      // 计数：右缘与组头计数**同一条竖线**（第二十八刀）。真机上原来是 429 对 461——
+      // 差在一颗「筛」按钮的宽度；动作区删掉之后两处自然对齐，min-width 仍保 30px 防跳。
+      '.ll_fieldCount{display:block;min-width:30px;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:14px;text-align:right;font-variant-numeric:tabular-nums}',
+      // 列芯片：说明多出来那几列是什么，× 就是去掉它的入口
+      '.ll_columns{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0 10px}',
+      '.ll_columnsLabel{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      '.ll_columnChip{display:inline-flex;align-items:center;gap:2px;max-width:220px;padding:0 4px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
+      '.ll_columnName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ll_colRemove{flex:none;width:16px;height:16px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:none;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:12px;line-height:16px;cursor:pointer}',
+      // 行首展开箭头（详情 = 全部标签 + 原文）
+      '.ll_rowToggle{flex:none;width:14px;padding:0;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:10px;line-height:16px;cursor:pointer}',
+      '.ll_resultItem{display:flex;flex-direction:column;gap:2px}',
+      // 额外列：固定基准宽、放不下就省略（不抢正文的 flex:1）
+      '.ll_resultCell{flex:0 1 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}',
+      '.ll_rowDetail{display:flex;flex-direction:column;gap:6px;margin:2px 0 6px;padding:8px 10px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}',
+      '.ll_detailGrid{display:grid;grid-template-columns:minmax(120px,220px) minmax(0,1fr);gap:2px 8px;font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
+      '.ll_detailKey{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}',
+      '.ll_detailValue{color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}',
+      '.ll_detailLabel{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      '.ll_detailMsg{max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
+      '.ll_rowRaw{margin:0;max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
       /*
        * 行 = 时间 · 级别 · 正文 · 标签。**用 flex 不用 grid**：标签列若按 `auto` 量，
        * 它的 max-content（三个 220px 芯片 + 「另有 N 个」）会把正文那列 `minmax(0,1fr)` 挤成
@@ -1080,10 +2163,18 @@ window.__ModuleLoader__.load({
        * 标签最多拿 38% 且可换行，正文永远分得到剩余宽度；没标签的行（Docker 日志）正文直接占满。
        */
       '.ll_resultRow{display:flex;align-items:baseline;gap:8px;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
+      '.ll_resultRow{cursor:pointer;border-bottom:.5px solid var(--dsw-alias-border-l1)}',
       '.ll_resultRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_resultRowOpen{background:var(--dsw-alias-bg-layer-3)}',
       '.ll_resultTime{flex:none;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
-      '.ll_resultLevel{flex:none;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
+      '.ll_resultLevel{flex:none;white-space:nowrap}',
+      '.ll_resultLevelError{color:var(--dsw-alias-state-error-primary)}',
+      '.ll_resultLevelWarn{color:var(--dsw-alias-state-warn-primary)}',
+      '.ll_resultLevelInfo{color:var(--dsw-alias-label-secondary)}',
+      '.ll_resultLevelMuted{color:var(--dsw-alias-label-tertiary)}',
       '.ll_resultMsg{flex:1 1 0;min-width:0;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word}',
+      // 紧凑模式才 clamp 3 行（默认完整：读日志时正文全展开，点行仍可看详情）
+      '.ll_resultMsgCompact{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}',
       /*
        * 行上的标签（「这行是谁写的」）。排版与榜上那些条同一族：等宽、小号、发丝描边。
        * **类名刻意不带 `btn`**（`scripts/client-style-spec.mjs` 的 BUTTON_CLASS = /btn/i 会把它们卷进
@@ -1128,18 +2219,86 @@ window.__ModuleLoader__.load({
       '.ll_hist{display:flex;flex-direction:column;gap:6px}',
       '.ll_histHead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.ll_histTitle{color:var(--dsw-alias-label-primary);font-weight:600}',
-      '.ll_histBars{display:flex;align-items:flex-end;gap:1px;height:56px;padding:4px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm)}',
-      '.ll_histBar{flex:1 1 0;min-width:1px;background:var(--dsw-alias-interactive-bg-hover);border-radius:1px}',
+      /*
+       * 柱子容器（第十七刀）：`padding-top` 从 4px 加到 **22px**，给读数气泡让出位置。
+       *
+       * 气泡是 `bottom:100%`（浮在容器上方）——它**不占**容器内的空间，但会盖在
+       * 「图的上方」那一片上。柱子有 56px 高，最高的那根顶到容器顶，气泡就在它正上方：
+       * 于是气泡不会碰到柱顶，但也意味着它压住了 `.ll_histReadout` 之外的东西（图例 / 标题那一行）——
+       * 留出来的这 22px 就是给它让的位（柱子本身仍按 56px 画，`box-sizing` 让 padding 不进高度）。
+       */
+      /*
+       * 柱子容器（第十七刀）：`padding-top` 从 4px 加到 **24px**——上头那 20px 是给读数气泡让的位。
+       *
+       * 气泡**画在容器里面**（`bottom` 相对柱子顶端 + 容器顶部那段留白），不浮到容器外：
+       * 浮到外面就会盖住上面那行图例（`时间分布 · 每根柱子 1m · 峰值…`），而那一行本身也是要读的。
+       * 柱子仍按 56px 画（`box-sizing:border-box` 让 padding 算进高度里，柱子区就是 28px 了 —— 所以
+       * 高度给到 **76px**，减掉 24 的 padding，剩下的 52px 正好还是原来柱子那一段）。
+       */
+      '.ll_histBars{position:relative;box-sizing:border-box;display:flex;align-items:flex-end;gap:1px;height:76px;padding:4px 4px 4px;padding-top:24px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm)}',
+      /*
+       * 读数条（第十六刀）：图上**常驻一行**，悬停哪一根就说哪一根，不悬停就说峰值那一段。
+       *
+       * 为什么不用原生 tooltip：那个灰框会**盖住横轴刻度**（真机截图里正压在 18:27 上），
+       * 而且每移一根都要重开一次。读数条固定在图的上面一行，高度不变——鼠标进出时下面的横轴不跳。
+       * 三格：时刻 · 条数 · 占全窗比例（时刻在前，因为「哪一段」是读图先问的）。
+       */
+      /*
+       * 读数条是个**浮在柱子上方的气泡**（第十七刀），不是一行常驻文本。
+       *
+       * 位置：`left` 由柱中心给（内联 style），`translateX(-50%)` 让它以那根柱为中心；
+       * 靠边的柱子会有一半落到容器外——`clamp` 到容器的两端（`--ll-clamp` 那两条规则做不到，
+       * 所以用 `max/min` 组合：见下一条）。`bottom:100%` 把它抬到柱子上面，不挡柱顶。
+       *
+       * 它在 `.ll_histBars`（`position:relative`）里绝对定位，所以不占布局、不影响柱高，
+       * 也不把横轴往下推——移进移出时整张图不跳。
+       */
+      '.ll_histReadout{position:absolute;top:2px;z-index:2;transform:translateX(-50%);display:flex;align-items:baseline;gap:8px;max-width:calc(100% - 8px);padding:2px 6px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}',
+      '.ll_histReadoutTime{color:var(--dsw-alias-label-secondary);font-weight:500}',
+      '.ll_histReadoutCount{color:var(--dsw-alias-label-primary)}',
+      '.ll_histReadoutShare{color:var(--dsw-alias-label-tertiary)}',
+      // 读数条末尾那句动作提示：占余下宽度、靠右，超长时省略号（它那句是附注，不许把读数条撑高）
+      // 「点下去做什么」那句：气泡里靠右，与三格读数用分隔线隔开
+      '.ll_histReadoutHint{padding-left:8px;border-left:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary)}',
+      /*
+       * 柱子的颜色（第十三刀，真机读数驱动）：原来取 `--dsw-alias-interactive-bg-hover`
+       * = `#2631480f`，也就是 **6% 透明度的近黑**——真机截图里整张图只剩几根鬼影，
+       * 「这一段量多」根本看不出来。分布图是**数据可视化**，不是控件的选中态，所以取强调色的
+       * 浅档（`state-business-tertiary` = #e4edfd），正在放大的那一档仍用主档。
+       */
+      '.ll_histBar{flex:1 1 0;min-width:1px;background:var(--dsw-alias-state-business-tertiary);border-radius:1px}',
       // 空桶只留一条 2% 的底座（见 pure.js histogramBars：补 0 是为了让「那段时间一条都没有」看得见）
       '.ll_histBarEmpty{background:var(--dsw-alias-border-l1)}',
       // 可点的柱子是个 <button>（键盘也能用），所以要把 UA 的按钮外观整条按掉，只留那根条本身
       // （类名刻意不带 `btn`：按钮族检查按 /btn/i 抓类名，柱子套上去会被「同族几何一致」卷进来）
       '.ll_histBarClick{appearance:none;padding:0;border:0;font:inherit;cursor:pointer}',
-      '.ll_histBarClick:hover:not(:disabled){background:var(--dsw-alias-label-tertiary)}',
+      '.ll_histBarClick:hover:not(:disabled){background:var(--dsw-alias-state-business-primary)}',
       '.ll_histBarClick:disabled{opacity:.4;cursor:not-allowed}',
       '.ll_histBarClick:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
       // 正在放大的那一档：与榜上「正在按它下钻」同一个高亮（让人看得出这一屏是收窄过的）
-      '.ll_histBarActive,.ll_histBarActive:hover:not(:disabled){background:var(--dsw-alias-state-business-primary)}',
+      '.ll_histBarActive,.ll_histBarActive:hover:not(:disabled){background:var(--dsw-alias-state-business-primary);outline:1.5px solid var(--dsw-alias-state-business-primary);outline-offset:1px}',
+      /*
+       * 峰值那一根（第十六刀）：比邻居深一档。
+       *
+       * 为什么只用**颜色**、不在图上浮一块「峰值」文字：那个字块会盖住自己那根柱子与它下面的
+       * 横轴（第一版就写成了浮块，截图里立刻能看出遮挡）——而读者要看的恰恰是那根柱子的**高度**。
+       * 「哪一根是峰值」靠最深的那条 + 读数条那句「峰值在 18:36」两处合起来指认，不靠一块遮罩。
+       *
+       * 写在 `.ll_histBarActive` **之后**是必须的：两者权重相同（都是单类），后写的才生效，
+       * 否则峰值配色会被上面那条主档覆盖掉。
+       */
+      '.ll_histBarPeak{background:var(--dsw-alias-state-business-primary)}',
+      /*
+       * 横轴刻度（第十三刀）：柱子下面一行时刻。原来这张图**一个时间点都没有**——1 小时窗 61 根
+       * 柱子，最高的那根是哪一分钟只能从左端数过去再乘 1 分钟。
+       *
+       * 中间刻度按比例定位并居中（`translateX(-50%)`）；首尾两格改成左 / 右对齐——居中的首尾刻度
+       * 会有一半落在图外。高度固定，轴的文字不许把图撑高（它只是注释，不是内容）。
+       */
+      '.ll_histAxis{position:relative;height:16px;margin:0 4px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}',
+      '.ll_histTick{position:absolute;top:0;white-space:nowrap;transform:translateX(-50%)}',
+      '.ll_histTickStart{left:0;transform:none}',
+      '.ll_histTickEnd{right:0;transform:none}',
       // 按字段分组（terms 榜）。条的宽度是**内联** style（每条都不一样，写不进类里）；类只管外观。
       '.ll_groups{display:flex;flex-direction:column;gap:6px}',
       '.ll_groupHead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
@@ -1150,16 +2309,17 @@ window.__ModuleLoader__.load({
       '.ll_groupKey{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.ll_groupKeyBlank{color:var(--dsw-alias-label-tertiary)}',
       '.ll_groupCount{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}',
-      '.ll_groupTrack{height:8px;background:var(--dsw-alias-bg-layer-3);border-radius:var(--dsw-radius-sm);overflow:hidden}',
-      '.ll_groupFill{height:100%;background:var(--dsw-alias-interactive-bg-hover);border-radius:var(--dsw-radius-sm)}',
+      // 与值条同一条（第二十四刀实测）：`bg-layer-3` 在面板里就是白、`interactive-bg-hover` 只有 6% 黑——
+      // 这两条一起换成「看得见的尺 + 实灰填充」
+      '.ll_groupTrack{height:8px;background:var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);overflow:hidden}',
+      '.ll_groupFill{height:100%;background:var(--dsw-alias-label-tertiary);border-radius:var(--dsw-radius-sm)}',
       // 榜上可点的那一行是个 <button>（键盘也能用），所以要把 UA 的按钮外观整条按掉，只留网格布局
       '.ll_groupRowBtn{cursor:pointer;font:inherit;text-align:left;color:inherit;background:none;border:0;padding:2px 4px;margin:-2px -4px;border-radius:var(--dsw-radius-sm)}',
       '.ll_groupRowBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       // 正在按它下钻的那一条：横条换个色，让人看得出「这一屏是筛过的」
       '.ll_groupRowActive .ll_groupKey{font-weight:600}',
       '.ll_groupRowActive .ll_groupFill{background:var(--dsw-alias-state-business-primary)}',
-      // 筛选芯片：查询区与结果列表之间那一行
-      '.ll_filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      // 筛选芯片：查询区与结果列表之间那一行（第三十刀起这一行的容器是 `.ll_fx`）
       '.ll_filtersLabel{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.ll_chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 4px 2px 8px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
       '.ll_chipText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
@@ -1202,6 +2362,74 @@ window.__ModuleLoader__.load({
       '.ll_pickRefresh{flex:none;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}',
       '.ll_pickRefresh:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
       '.ll_pickRefresh:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
+      /*
+       * 两段式筛选框（第三十刀）：`[字段] = [值] [确定]`，一条条件就是一行。
+       *
+       * 几何跟着**芯片**走（H22 / 12px 18px）：它与芯片排在同一行同一条基线上，
+       * 比芯片高或矮都会让这一行看着歪（与「＋ 筛选」那条同一条判据）。
+       *
+       * 两格共用**一条**发丝线围成的盒子（`.ll_fxBox`），中间那个 `=` 是分隔符也是说明：
+       * 它把「字段 = 值」这条条件的形状直接写在界面上，不必再靠一句提示解释。
+       * 焦点落在哪一格，那一格的边框换品牌色（不是两格各画一个输入框——那样中间会多出
+       * 两条竖线，读起来像两个无关的控件）。
+       *
+       * 类名全部**不带** `input` / `select` 结尾：输入框族检查按那个后缀抓（`scanInputRecipes`），
+       * 而这一格是行内的组合控件、几何由盒子统一管，不是宿主那种独立输入档（H32–40）。
+       */
+      '.ll_fx{position:relative;display:flex;align-items:center;gap:8px;flex-wrap:wrap;max-width:100%}',
+      '.ll_fxBox{position:relative;display:flex;align-items:center;gap:0;box-sizing:border-box;height:24px;max-width:100%;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3)}',
+      // 两格之间只画一条竖线（`=` 那颗就是分隔符本身）
+      '.ll_fxFieldBox,.ll_fxValueBox{position:relative;display:flex;align-items:center;min-width:0;height:100%}',
+      '.ll_fxFieldBox{flex:0 1 150px;border-right:.5px solid var(--dsw-alias-border-l2)}',
+      '.ll_fxValueBox{flex:1 1 130px}',
+      // 焦点在谁身上，那一格自己亮（整盒不换色：换整盒会让人以为两格是一件事）
+      '.ll_fxFieldBox.ll_fxOpen,.ll_fxValueBox.ll_fxOpen{background:var(--dsw-alias-bg-layer-2)}',
+      /*
+       * 两格的 input 本体：**没有边框、没有背景**——描边归盒子。
+       * `height:100%` + `box-sizing:border-box` 让它填满 24px 的盒子（没有显式高度的话
+       * 两格会各按内容撑高，一高一矮）。
+       */
+      '.ll_fxField,.ll_fxValue{box-sizing:border-box;width:100%;min-width:0;height:100%;padding:0 18px 0 8px;border:0;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;text-overflow:ellipsis}',
+      '.ll_fxField::placeholder,.ll_fxValue::placeholder{color:var(--dsw-alias-label-tertiary);font-family:inherit}',
+      '.ll_fxValue:disabled{cursor:not-allowed;color:var(--dsw-alias-label-tertiary)}',
+      // caret 是装饰：整格本来就点得开（与分组框那颗同一条）
+      '.ll_fxChevron{position:absolute;right:5px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary)}',
+      '.ll_fxEq{padding:0 2px;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px}',
+      /*
+       * 提交那颗：只在两格都填了时出现（一颗永远灰着的按钮只是噪音）。
+       * 几何与芯片同一套，用品牌色实心——它是这一行里唯一「按下就发生事情」的东西。
+       */
+      '.ll_fxGo{appearance:none;box-sizing:border-box;height:22px;padding:0 8px;border:0;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-bg-layer-2);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
+      '.ll_fxGo:hover:not(:disabled){opacity:.9}',
+      '.ll_fxGo:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}',
+      '.ll_fxGo:disabled{opacity:.4;cursor:not-allowed}',
+      /*
+       * 下拉：挂在**盒子**上（`.ll_fxBox` 是 `position:relative`）、贴在盒子下方 4px。
+       *
+       * 挂盒子而不是挂整行，是第三十刀第一版的真机读数定的：挂整行时下拉左缘在 105、
+       * 而值那一格在 539——下拉离它要补的那一格 430px。挂盒子上之后，字段那张从盒子左缘长出、
+       * 值那张从盒子**右缘**长出（两张各自贴着自己那一格）。
+       *
+       * `max-height:216px` 与分组候选同一个数（两处下拉长得一样，就不该有两个高度）。
+       */
+      '.ll_fxList{position:absolute;z-index:100;top:calc(100% + 4px);box-sizing:border-box;min-width:220px;max-width:340px;max-height:216px;overflow-y:auto;padding:4px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      // 值那张贴**右缘**（它补的是右边那一格，从左边长出来会离得很远）；字段那张贴左缘。
+      // 顺序有意义：两者同权重，后写的 `.ll_fxListField` 才能把右缘那条覆盖回去。
+      '.ll_fxList{right:0}',
+      '.ll_fxListField{left:0;right:auto;width:auto}',
+      '.ll_fxItem{display:flex;align-items:center;gap:8px;width:100%;min-height:28px;padding:3px 8px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;text-align:left;cursor:pointer}',
+      '.ll_fxItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      // 方向键停在那一行（与 hover 同一个底：两套输入说的是同一件事）
+      '.ll_fxItemOn{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_fxItem:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
+      '.ll_fxItemText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ll_fxItemCount{flex:none;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}',
+      // 「本页」那一小截标记：说明这个字段在这一页的行里真有值（与分组头那套说法同一条）
+      '.ll_fxItemTag{flex:none;padding:0 3px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:10px;line-height:14px}',
+      // 已经在筛的那一条：勾一下（再点是取消）
+      '.ll_fxItemOn2{flex:none;color:var(--dsw-alias-state-business-primary);font-size:11px;line-height:16px}',
+      // 下拉里「不是候选」的那几行：加载中 / 取不到 / 没有值 —— 都排成一条文字行
+      '.ll_fxState{padding:8px;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:12px;line-height:18px}',
     ].join('\n')
 
     let styleEl
@@ -1227,18 +2455,68 @@ window.__ModuleLoader__.load({
       'card.name': '日志查询',
       'card.desc': '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面：来源清单、直连查询、时间分布与按字段分组。',
       'panel.title': '日志来源',
+      // 收起 / 展开来源配置区（第十五刀）。两句都写**动作**：按钮上说的事点下去就发生
+      'btn.sourcesShow': '编辑来源',
+      'btn.sourcesHide': '收起来源配置',
+      'hint.sourcesExpand': '展开来源配置（新增 / 修改 / 删除日志来源）',
+      'hint.sourcesCollapse': '收起来源配置（只留下一行摘要，查询与结果能多占一屏）',
       'panel.histogram': '时间分布',
       'panel.groups': '按字段分组',
       'panel.labels': '全部标签',
+      'field.columns': '列',
+      'placeholder.fieldFilter': '过滤字段名',
+      // 字段侧栏过滤框的清除（第十九刀）：只在有过滤词时出现
+      'hint.fieldFilterClear': '清空过滤词',
+      'placeholder.filterValue': '值（不裁空格）',
+      // 两段式筛选框（第三十刀）：左格是字段、右格是值
+      'placeholder.filterField': '字段',
+      'placeholder.filterFieldFirst': '先选字段',
+      'hint.filterValueFirst': '先在左边选一个字段：值那一格要列的是「这个字段的值」',
+      'btn.apply': '确定',
+      'hint.columnAdd': '加成一列：{field}',
+      'hint.columnRemove': '去掉这一列：{field}',
+      'hint.columnNoValue': '这一行没有 {field} 的值',
+      'hint.columnLimit': '最多同时加 {count} 列：再加正文会被挤到看不清',
+      'hint.columnsScroll': '列多时可左右滚动',
+      'hint.fieldCount': '这一页有 {count} 行带这个字段',
+      // 脚注**一行**能读完的那句（第二十三刀）：真机上它原来 464px 而格子只有 284px，被省略号
+      // 切在句子中间（「…其余字段…」）。完整那段搬进 title——想细看的人悬停就有。
+      'hint.fieldsTooMany': '只列了前 {shown} 个（共 {count} 个）：用上面的过滤收窄',
+      'hint.noFieldsMatch': '没有匹配的字段名',
+      // 字段分组（第二十一刀）
+      'field.topLevel': '顶层字段',
+      'hint.fieldGroupToggle': '展开 / 收起「{name}」这一组（{count} 个字段）',
+      'section.columnsPicked': '已选列（{count}）',
+      // 过滤反馈：搜索时报「命中几个」比「一共多少个」有用
+      'meta.fieldsMatched': '命中 {count} 个',
+      'hint.expandRow': '展开这一行（全部标签与原文）',
+      'hint.collapseRow': '收起这一行',
+      'hint.noLabels': '这一行没有标签',
+      'hint.noRaw': '这个来源没有原文',
+      'hint.rawTruncated': '原文太长，只显示前 {shown} 个字符（共 {total} 个）',
+      'panel.message': '消息',
+      'panel.raw': '原文',
       'meta.histInterval': '每根柱子 {interval}',
       'meta.histPeak': '峰值 {count} 条',
       'meta.histTotal': '共 {count} 条',
       'meta.histBucket': '{time} · {count} 条',
+      // 图的读数条（第十六刀）：悬停一根柱时它说这一段的量，不悬停时说峰值那一段。
+      // 「占全窗」的分母是屏幕上这些柱子的和（不是宿主那个可能更小的合计，见 histPeakShare 的注释）
+      'meta.histBucketCount': '{count} 条',
+      'meta.histPeakShare': '占 {percent}%',
       'meta.groupsCount': '{count} 条',
       'meta.groupsBlankKey': '（空值）',
       'hint.histogram': '这张图来自后端按时间分桶（不是数这一页——这一页被条数截断过，数它只会得到一个假的分布）。',
       'hint.histogramTruncated': '窗口比这张图长，只画了前一部分。',
+      // 基线裁剪的说明（第十六刀）：柱高不按零起点画时必须说出来，否则差异会被读成倍数
+      // **不写 Markdown 的 `**`**：面板不把文案当 Markdown 渲染，界面上会原样露出星号
+      // （与 src/execute.ts 里那条级别 warning 同一条教训，真机截图已抓到过一次）
+      'hint.histogramClipped': '各段条数挨得近（最大值不到最小值的 3 倍），柱子从接近底部起画，好让差异看得出来——柱高只表示相对高低，不是与条数成正比。悬停任一根看它的实际条数。',
       'hint.zoomBar': '点一下放大到这一段（把时间窗夹到这一根柱）',
+      // 读数条里的那一句（第十六刀）：原生 tooltip 拆掉之后「点下去做什么」搬到这里。
+      // 短的这版给读数条用（它在一行里，与时刻 · 条数 · 占比并排）；长的 `hint.zoomBar` 仍在
+      // aria-label 里给读屏用户说全。
+      'hint.zoomBarShort': '点一下放大到这一段',
       'hint.zoomBarCancel': '再点一次取消放大（回到放大之前那一档）',
       'hint.zoomClamped': '已放大到最短 1 分钟（那一档分桶比这还窄，再窄就查不出东西了）。',
       'hint.groups': '这张榜来自后端的 terms 聚合（不是数这一页——这一页被条数截断过，数它只会得到一个假的排名）。点一条即按它下钻（加一条筛选重查一次），再点一次取消。',
@@ -1246,6 +2524,18 @@ window.__ModuleLoader__.load({
       'hint.groupBlankNoDrill': '空值那一条不能下钻：筛选只能表达「字段 = 某值」，表达不了「字段缺失」。',
       'hint.groupDrillRow': '按 {field} = {value} 下钻（再点一次取消）',
       'field.filters': '筛选',
+      'panel.fieldsColumn': '选列',
+      'hint.fieldsColumn': '列要有逐行值才能加；数字是本页行数。',
+      'hint.fieldsColumnFull': '列只能从「本页命中」的字段加：列的值取自这一页每一行的标签，其余字段在这一页的行里没有值，加出来会全是 —。',
+      'msg.noColumnableFields': '这一页没有可加列的字段（本页命中为空，或这一页的行都没带标签）',
+      'section.columnsPickable': '可加列的字段（{count}）',
+      'hint.valueDrill': '按 {field} = {value} 筛',
+      'hint.valueActive': '{value} 正在筛（再点一次取消）',
+      'msg.fieldValuesEmpty': '这个字段在这一页没有值（可能这一页的行都没带它）',
+      'error.fieldValues': '取这个字段的值失败：{message}',
+      'error.fieldValuesWindow': '还没有可用的时间窗：先查一次，再展开字段的值',
+      'hint.addFilter': '加一条筛选：左边选字段、右边填值，回车生效',
+      'badge.pageField': '本页',
       'btn.filterRemove': '移除这条筛选',
       'error.needFilterField': '这条筛选没有字段名',
       'error.needFilterValue': '这条筛选没有值（空值那一桶筛不了：筛选只能表达「字段 = 某值」）',
@@ -1255,7 +2545,7 @@ window.__ModuleLoader__.load({
       'error.groups': '分组取不到：{message}',
       'error.needGroupBy': '先填要分组的字段（不知道有哪些字段就点「有哪些字段」）',
       'list.noBuckets': '这个窗口里没有可分组的数据',
-      'hint.notImplemented': '下面可以直接查当前来源；「分组字段」那一格点开就是当前来源的字段名候选（点开即拉，同一个来源不重复拉，页脚有「刷新」）。整份字段清单与「某一行前后」的上下文仍在 agent 侧的两个工具里（loglens_fields / loglens_context）。',
+      'hint.notImplemented': '下面可以直接查当前来源；结果出来后左边是字段栏（本页命中 / 其余可用 / 类型冲突，点名字就筛选），「分组字段」那一格点开也是当前来源的字段名候选。新增列与行详情的口径见上；「某一行前后」的上下文仍在 agent 侧的 loglens_context 里。',
       'field.kind': '类型',
       'field.label': '名称',
       'field.url': '地址',
@@ -1273,6 +2563,10 @@ window.__ModuleLoader__.load({
       'btn.remove': '删除',
       'list.loading': '加载中…',
       'list.empty': '还没有日志来源，点「+ 新增来源」加一个。',
+      // 收起态那一行摘要用的两句短话（第十五刀）：不写全句，那一格要与标题、开关并排
+      'list.emptyShort': '没有来源',
+      'meta.sourceCount': '{count} 个来源',
+      'meta.sourceActive': '{count} 个来源 · 当前 {label}',
       'status.enabled': '已启用',
       'status.disabled': '已停用',
       'placeholder.label': '例如：本地 Loki',
@@ -1310,6 +2604,18 @@ window.__ModuleLoader__.load({
       'badge.conflict': '类型冲突',
       'btn.nextPage': '下一页',
       'btn.clear': '清空结果',
+      'btn.fields': '字段',
+      'btn.densityCompact': '紧凑',
+      'btn.densityFull': '完整',
+      'hint.density': '紧凑：每条日志只显示 3 行（点行看全文）；完整：正文全展开。选择会记在本机浏览器里。',
+      'hint.fieldsToggle': '打开 / 收起字段浮层（列与筛选的入口；浮在结果上，不占日志宽度）',
+      // 排序（第十三刀）：宿主没有服务端排序，所以入口自己先把「只排这一页」说出来。
+      // `hint.sort` 的 {order} 收的是**档位名**（时间 / 级别 / 正文），不是按钮上的整句
+      // 「排序：时间」——拼进去会变成「排序：排序：时间」（第一版真机就这么画出来了）。
+      'meta.sortTime': '时间',
+      'meta.sortLevel': '级别',
+      'meta.sortMessage': '正文',
+      'hint.sort': '本页排序：{order}。再点一次换下一档（时间 / 级别 / 正文循环）。只重排**已返回的这一页**——后端没有服务端排序，翻页取到的仍是后端顺序。',
       'option.15m': '最近 15 分钟',
       'option.1h': '最近 1 小时',
       'option.6h': '最近 6 小时',
@@ -1318,19 +2624,26 @@ window.__ModuleLoader__.load({
       'option.custom': '{from} → {to}',
       'list.noHit': '没有命中（换个时间窗，或放宽查询串）',
       // 级别那一格：「不限」是空串那一项（原生 <select> 的回落项也就是它，见 pure.js levelFilterOf）
-      'option.levelAny': '不限级别',
-      'option.levelTrace': 'trace 及以上',
-      'option.levelDebug': 'debug 及以上',
-      'option.levelInfo': 'info 及以上',
-      'option.levelWarn': 'warn 及以上',
-      'option.levelError': 'error 及以上',
+      //
+      // 选中项写成 **`warn+`** 而不是「warn 及以上」（2026-10-17 维护者看图后提的）：这一格最窄只有
+      // 96px，七项里五项都拖着「及以上」四个字，一列下拉全是重复的尾巴，反而把级别名挤成配角。
+      // `+` 是日志查看器里通行的那一个记号（`warn+` = warn 及以上），语义不变——**边界说明那一句**
+      // （hint.levelPaged，写着「及以上」的完整口径）仍然在场，所以缩短的是标签，不是判据。
+      'option.levelAny': '不限',
+      'option.levelTrace': 'trace+',
+      'option.levelDebug': 'debug+',
+      'option.levelInfo': 'info+',
+      'option.levelWarn': 'warn+',
+      'option.levelError': 'error+',
       'option.levelFatal': 'fatal',
       // 页内筛的**边界**必须说出来：宿主是在返回的这一页上过滤的，counts / truncation 仍是未筛的整页。
       // 后半句要带前提：分组榜能给出「按级别的全量」**只在后端真有级别字段时**成立——ES 上
       // `log.level` 常常整列是空的（级别是从正文推断的，见 src/line.ts），那时分组也是空桶，
       // 原句「要按级别看全量请用分组榜」就成了指一条走不通的路。
       // 边界少用 Markdown 强调符号：这句是**一句人话**，渲染出来会原样带 `**`（宿主不把文案当 Markdown）。
-      'hint.levelPaged': '级别是在「返回的这一页」上筛的（宿主口径）：计数与截断提示仍是未筛的整页。要按级别看全量只能靠后端真有级别字段——索引里没有时（ES 常从正文推断），分组榜也会是空的。',
+      // 头一句要**把下拉里那个 `+` 讲清**（`warn+` = warn 及以上）：标签 shortening 之后，
+      // 这半句就是全屏唯一写着完整语义的地方——少了它，`+` 只能靠猜。
+      'hint.levelPaged': '级别按「及以上」筛（下拉里的 warn+ 就是 warn 及以上），且是在「返回的这一页」上筛的（宿主口径）：计数与截断提示仍是未筛的整页。要按级别看全量只能靠后端真有级别字段——索引里没有时（ES 常从正文推断），分组榜也会是空的。',
       // 条件改了但结果没重查：屏幕上的行/计数属于**上一次**。必须说出来，尤其是 ES：
       // 「下一页」带的是旧 PIT 游标，配新条件翻页会静默少行。
       'hint.staleResults': '查询条件已经改过——下面这份结果还是上一次查询的。先点「查询」按新条件刷新；在那之前「分组」与「下一页」都收着（翻页的游标属于上一次查询）。',
@@ -1379,18 +2692,53 @@ window.__ModuleLoader__.load({
       'card.name': 'Log query',
       'card.desc': 'Normalizes log backends such as Loki / Elasticsearch / OpenSearch into one query surface: source list, direct query, volume over time and grouping by field.',
       'panel.title': 'Log sources',
+      'btn.sourcesShow': 'Edit sources',
+      'btn.sourcesHide': 'Hide source settings',
+      'hint.sourcesExpand': 'Expand the source settings (add, change or remove log sources)',
+      'hint.sourcesCollapse': 'Collapse the source settings (leaves one summary line so the query and results get the screen)',
       'panel.histogram': 'Volume over time',
       'panel.groups': 'Grouped by field',
       'panel.labels': 'All labels',
+      'field.columns': 'Columns',
+      'placeholder.fieldFilter': 'Filter field names',
+      'hint.fieldFilterClear': 'Clear the filter',
+      'placeholder.filterValue': 'Value (spaces kept)',
+      'placeholder.filterField': 'Field',
+      'placeholder.filterFieldFirst': 'Pick a field first',
+      'hint.filterValueFirst': 'Pick a field on the left first — this box lists that field’s values',
+      'btn.apply': 'Apply',
+      'hint.columnAdd': 'Add as a column: {field}',
+      'hint.columnRemove': 'Remove this column: {field}',
+      'hint.columnNoValue': 'This row has no value for {field}',
+      'hint.columnLimit': 'At most {count} extra columns: more would squeeze the message out of sight',
+      'hint.columnsScroll': 'Scrolls sideways when columns overflow',
+      'hint.fieldCount': '{count} rows on this page carry this field',
+      'hint.fieldsTooMany': 'Showing the first {shown} (of {count}): narrow it down with the filter above',
+      'hint.noFieldsMatch': 'No field names match',
+      'field.topLevel': 'Top-level',
+      'hint.fieldGroupToggle': 'Expand or collapse the “{name}” group ({count} fields)',
+      'section.columnsPicked': 'Columns ({count})',
+      'meta.fieldsMatched': '{count} match',
+      'hint.expandRow': 'Expand this row (all labels and the raw text)',
+      'hint.collapseRow': 'Collapse this row',
+      'hint.noLabels': 'This row has no labels',
+      'hint.noRaw': 'This source has no raw text',
+      'hint.rawTruncated': 'The raw text is too long; showing the first {shown} characters (of {total})',
+      'panel.message': 'Message',
+      'panel.raw': 'Raw',
       'meta.histInterval': 'each bar = {interval}',
       'meta.histPeak': 'peak {count}',
       'meta.histTotal': '{count} total',
       'meta.histBucket': '{time} · {count}',
+      'meta.histBucketCount': '{count} lines',
+      'meta.histPeakShare': '{percent}% of the window',
       'meta.groupsCount': '{count}',
       'meta.groupsBlankKey': '(empty value)',
       'hint.histogram': 'This chart comes from the backend time-bucketing (not from counting this page — the page is capped by the limit, so counting it would only give you a fake distribution).',
       'hint.histogramTruncated': 'The window is longer than this chart; only the first part is drawn.',
+      'hint.histogramClipped': 'The buckets are close together (the max is less than 3× the min), so the bars start near the bottom to make the differences visible — bar height shows relative height only, not a count-proportional scale. Hover a bar for its exact count.',
       'hint.zoomBar': 'Click to zoom into this slice (narrows the time window to this bar)',
+      'hint.zoomBarShort': 'Click to zoom in',
       'hint.zoomBarCancel': 'Click again to undo the zoom (back to the preset you zoomed from)',
       'hint.zoomClamped': 'Zoomed to the 1-minute minimum (that bucket is narrower than this; anything narrower finds nothing).',
       'hint.groups': 'This ranking comes from the backend terms aggregation (not from counting this page — the page is capped by the limit, so counting it would only give you a fake ranking). Click a row to drill into it (adds one filter and re-runs the query); click it again to undo.',
@@ -1398,6 +2746,18 @@ window.__ModuleLoader__.load({
       'hint.groupBlankNoDrill': 'The empty-value row cannot be drilled into: a filter can only say “field = some value”, not “the field is missing”.',
       'hint.groupDrillRow': 'Drill into {field} = {value} (click again to undo)',
       'field.filters': 'Filters',
+      'panel.fieldsColumn': 'Columns',
+      'hint.fieldsColumn': 'A column needs per-row values; the number is this page’s row count.',
+      'hint.fieldsColumnFull': 'Columns can only come from fields that appear on this page: a column shows each row’s label value, and other fields have no value on this page’s rows — the column would be all —.',
+      'msg.noColumnableFields': 'No columnable field on this page (nothing matched, or this page’s rows carry no labels)',
+      'section.columnsPickable': 'Columnable fields ({count})',
+      'hint.valueDrill': 'Filter by {field} = {value}',
+      'hint.valueActive': '{value} is being filtered on (click again to undo)',
+      'msg.fieldValuesEmpty': 'This field has no value on this page (the rows here may not carry it)',
+      'error.fieldValues': 'Could not read this field’s values: {message}',
+      'error.fieldValuesWindow': 'No time window yet — run a query first, then expand the field’s values',
+      'hint.addFilter': 'Add a filter: pick a field on the left, type a value on the right, press Enter',
+      'badge.pageField': 'this page',
       'btn.filterRemove': 'Remove this filter',
       'error.needFilterField': 'This filter has no field name',
       'error.needFilterValue': 'This filter has no value (the empty-value bucket cannot be filtered: a filter can only say “field = some value”)',
@@ -1407,7 +2767,7 @@ window.__ModuleLoader__.load({
       'error.groups': 'Could not group by field: {message}',
       'error.needGroupBy': 'Fill in a field to group by first (click “List fields” if you do not know them)',
       'list.noBuckets': 'No data to group by in this window',
-      'hint.notImplemented': 'You can query the selected source right below; clicking the “Group by field” box opens the field names of the current source as candidates (fetched on open; the same source is not re-fetched, and the footer has “Refresh”). The full field list and per-line context still live in the agent tools (loglens_fields / loglens_context).',
+      'hint.notImplemented': 'You can query the selected source right below; once results exist, the left column is the field list (on this page / other available / type conflicts — click a name to filter), and the “Group by field” box opens the same candidates. New columns and row details are described above; per-line context still lives in the agent tool loglens_context.',
       'field.kind': 'Kind',
       'field.label': 'Name',
       'field.url': 'URL',
@@ -1425,6 +2785,9 @@ window.__ModuleLoader__.load({
       'btn.remove': 'Remove',
       'list.loading': 'Loading…',
       'list.empty': 'No log source yet — click “+ Add source”.',
+      'list.emptyShort': 'No sources',
+      'meta.sourceCount': '{count} sources',
+      'meta.sourceActive': '{count} sources · using {label}',
       'status.enabled': 'Enabled',
       'status.disabled': 'Disabled',
       'placeholder.label': 'e.g. local Loki',
@@ -1458,6 +2821,15 @@ window.__ModuleLoader__.load({
       'badge.conflict': 'type conflict',
       'btn.nextPage': 'Next page',
       'btn.clear': 'Clear',
+      'btn.fields': 'Fields',
+      'btn.densityCompact': 'Compact',
+      'btn.densityFull': 'Full',
+      'hint.density': 'Compact: each message shows 3 lines (click a row for the full text); Full: the whole message is expanded. The choice is remembered in this browser.',
+      'hint.fieldsToggle': 'Show or hide the field panel (columns and filters; it floats over the results and never narrows the log)',
+      'meta.sortTime': 'time',
+      'meta.sortLevel': 'level',
+      'meta.sortMessage': 'message',
+      'hint.sort': 'Sort this page: {order}. Click again for the next mode (time / level / message). Only the rows already returned are reordered — the backend has no server-side sort, so paging still follows its own order.',
       'option.15m': 'Last 15 minutes',
       'option.1h': 'Last hour',
       'option.6h': 'Last 6 hours',
@@ -1465,14 +2837,19 @@ window.__ModuleLoader__.load({
       // The "custom" entry only appears after a bar zoom; its copy is computed from the real range (see windowLabel)
       'option.custom': '{from} → {to}',
       'list.noHit': 'No hits (widen the window or loosen the query)',
-      'option.levelAny': 'Any level',
-      'option.levelTrace': 'trace and up',
-      'option.levelDebug': 'debug and up',
-      'option.levelInfo': 'info and up',
-      'option.levelWarn': 'warn and up',
-      'option.levelError': 'error and up',
+      // Kept in step with zh: `warn+` instead of `warn and up` — the narrowest column is 96px and the
+      // repeated "and up" tail buries the level names. The `+` convention is standard in log viewers,
+      // and the full "and up" wording still lives in hint.levelPaged (the boundary sentence).
+      'option.levelAny': 'Any',
+      'option.levelTrace': 'trace+',
+      'option.levelDebug': 'debug+',
+      'option.levelInfo': 'info+',
+      'option.levelWarn': 'warn+',
+      'option.levelError': 'error+',
       'option.levelFatal': 'fatal',
-      'hint.levelPaged': 'The level filter is applied to the returned page (the host’s own semantics): the counts and truncation signals still describe the unfiltered page. Per-level totals need a real level field in the backend — when the index has none (ES often infers the level from the message), the group ranking is empty too.',
+      // The first clause spells out the `+` in the dropdown (warn+ = warn and up): after shortening the
+      // labels, this is the only place on screen that still carries the full semantics.
+      'hint.levelPaged': 'Levels filter as “and up” (warn+ in the dropdown means warn and up), and only on the returned page (the host’s own semantics): the counts and truncation signals still describe the unfiltered page. Per-level totals need a real level field in the backend — when the index has none (ES often infers the level from the message), the group ranking is empty too.',
       'hint.staleResults': 'The query conditions changed — the results below are still from the previous run. Run the query again first; until then “Group” and “Next page” stay off (the paging cursor belongs to the previous query).',
       'hint.rowLabelFilter': 'Add a filter {field} = {value} (remove it via the ranking row or the × on the chip)',
       'hint.rowMoreLabels': '+{count}',
@@ -1598,11 +2975,117 @@ window.__ModuleLoader__.load({
     const CHEVRON_STROKE = '1'
     const CHEVRON_PATH = 'M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6'
 
+    /*
+     * 元信息行那几颗动作按钮的图标（第十八刀）。
+     *
+     * 为什么图标化：那四个动作（字段 / 紧凑 / 排序 / 清空）在真机上是并排的四块**纯文字**按钮
+     * （`字段` `紧凑` `排序：正文` `清空结果`），四段不同长度的字挤在一行里，扫一眼分不出
+     * 「哪些是开关、哪些是一次性动作」；而其中「排序」还要把档位名带在按钮上，越换越长。
+     * 改成「图标 + 短标签」之后它们有了一眼可辨的形状，宽度也不再随文案浮动。
+     *
+     * 路径**逐字取自宿主自己的前端产物**（`dsh-web-frontend/dist/assets/index-*.js` 里的
+     * `IconFlatListOutlineRegular` / `IconWrapLinesOutlineRegular` / `IconChevronsUpDownOutlineRegular` /
+     * `IconTrashOutlineRegular`）。这不是「我画了四颗差不多意思的图标」，是**宿主那四颗**：
+     *   - 字段列表 → `IconFlatListOutlineRegular`（行首圆点 + 三条横线，就是「一张清单」）
+     *   - 显示密度 → `IconWrapLinesOutlineRegular`（长句折行：正是「完整 / 紧凑」这两档在讲的事）
+     *   - 排序 → `IconChevronsUpDownOutlineRegular`（上下双箭头，排序的通用记号）
+     *   - 清空 → `IconTrashOutlineRegular`（一次性动作，用宿主自己的删除图标）
+     * 描边配方也照抄：`viewBox 0 0 16 16` / `fill:none` / `stroke:currentColor` / `strokeLinecap`
+     * （`round` 那几颗有写，`butt` 的就不补——与 CHEVRON 那条注释同一条规矩：不补官方没写的）。
+     * `strokeWidth` 一律 **1**（宿主 `…Regular` 那一档就是 1；`…Medium` 是另一档，本卡片不用）。
+     */
+    const ACTION_ICONS = {
+      // IconFlatListOutlineRegular
+      fields: {
+        strokeLinecap: 'round',
+        paths: ['M6 3.5h7.5M6 8h7.5M6 12.5h7.5', 'M2.6 3.5h.01M2.6 8h.01M2.6 12.5h.01'],
+        circles: [],
+      },
+      // IconWrapLinesOutlineRegular（长句折行 → 「完整 / 紧凑」这一档显示密度）
+      density: {
+        strokeLinecap: undefined,
+        paths: [
+          'M2.3457 3.19299H13.6541',
+          'M2.3457 7.46497H9.19332',
+          'M2.3457 11.7369H6.4849',
+          'M9.1936 7.46497H11.5183C12.6981 7.46497 13.6544 8.42132 13.6544 9.60103C13.6544 10.7808 12.6981 11.7371 11.5183 11.7371H9.1936',
+          'M10.9505 9.7677L9.12262 11.5956C9.04452 11.6737 9.04452 11.8003 9.12262 11.8784L10.9505 13.7063',
+        ],
+        circles: [],
+      },
+      // IconChevronsUpDownOutlineRegular
+      sort: {
+        strokeLinecap: 'round',
+        paths: ['m5.1 6 2.9-2.9L10.9 6', 'm5.1 10 2.9 2.9 2.9-2.9'],
+        circles: [],
+      },
+      // IconSearchOutlineRegular（字段过滤框：这个面板唯一的导航方式）
+      search: {
+        strokeLinecap: undefined,
+        paths: [
+          'M6.58727 11.8586C9.55061 11.8586 11.9529 9.45637 11.9529 6.49304C11.9529 3.5297 9.55061 1.12744 6.58727 1.12744C3.62394 1.12744 1.22168 3.5297 1.22168 6.49304C1.22168 9.45637 3.62394 11.8586 6.58727 11.8586Z',
+          'M10.2991 10.3933L14.7783 14.8725',
+        ],
+        circles: [],
+      },
+      // IconTrashOutlineRegular（「清空结果」是一次性动作，用宿主自己的删除图标）
+      reset: {
+        strokeLinecap: undefined,
+        paths: [
+          'M1.28149 3.88831H14.7187',
+          'M5.41602 3.88833V2.47962C5.41602 2.29282 5.52492 2.11366 5.71876 1.98157C5.9126 1.84948 6.17551 1.77527 6.44964 1.77527H9.55053C9.82466 1.77527 10.0876 1.84948 10.2814 1.98157C10.4753 2.11366 10.5842 2.29282 10.5842 2.47962V3.88833',
+          'M2.57349 3.88831L3.19366 13.2943C3.21937 13.5502 3.33952 13.7872 3.53065 13.9593C3.72178 14.1313 3.97016 14.2259 4.22729 14.2246H11.7728C12.0299 14.2259 12.2783 14.1313 12.4694 13.9593C12.6605 13.7872 12.7807 13.5502 12.8064 13.2943L13.4266 3.88831',
+        ],
+        circles: [],
+      },
+    }
+
+    /**
+     * 画一颗宿主图标（16×16、描边 1、`currentColor`）。
+     *
+     * `strokeLinejoin` 只在宿主写了的那几颗上出现（`Compact` 有、`FlatList` 没有）——
+     * 与 CHEVRON 那条注释同一条规矩：**不补官方没写的**（补了形状就不完全一样）。
+     */
+    function actionIcon(name) {
+      const icon = ACTION_ICONS[name]
+      if (icon === undefined) return null
+      const svg = {
+        width: '14',
+        height: '14',
+        viewBox: '0 0 16 16',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: CHEVRON_STROKE,
+        xmlns: 'http://www.w3.org/2000/svg',
+        'aria-hidden': 'true',
+        className: 'll_actionIcon',
+      }
+      if (icon.strokeLinecap !== undefined) svg.strokeLinecap = icon.strokeLinecap
+      return jsx('svg', {
+        ...svg,
+        children: [
+          ...icon.paths.map((d, at) => jsx('path', { d }, 'll-action-path-' + name + '-' + String(at))),
+          ...icon.circles.map((circle, at) => jsx('circle', circle, 'll-action-circle-' + name + '-' + String(at))),
+        ],
+      })
+    }
+
     function LoglensSettingsCard(props) {
       // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
       const view = props && props.view
       const pageView = view === 'page'
       const [open, setOpen] = React.useState(pageView)
+      /*
+       * 「来源」那块配置区展开没有（第十五刀）。
+       *
+       * 默认值两份、按**这一页在干什么**分：
+       *   - 设置卡（summary / 点开的那张卡）：配来源就是主任务 → **默认展开**；
+       *   - 插件整页（`view === 'page'`）：主人是「查日志」→ **默认收起**，只留一行摘要。
+       *
+       * 为什么不在收起态把两行表单渲染成 `display:none`：那还是会占着 React 树，而这里更实际的
+       * 理由是可读性——收起时**不画**，屏幕与无障碍树里就真的没有那两行（不是一个「看不见但在」的表单）。
+       */
+      const [sourcesOpen, setSourcesOpen] = React.useState(!pageView)
       const [enabled, setEnabled] = React.useState(true)
       const [drafts, setDrafts] = React.useState([])
       const [error, setError] = React.useState('')
@@ -1620,6 +3103,11 @@ window.__ModuleLoader__.load({
        * 说的和查的不是一件事）。这两项只是**给眼睛看的回显**，不参与请求。
        */
       const [zoomedBar, setZoomedBar] = React.useState(undefined)
+      /*
+       * 直方图上悬停 / 聚焦中的那一根（第十六刀）：存 **ts**（这个窗口里稳定的键），
+       * 不存整根柱——柱子每次渲染都是新对象，存它等于让读数条显示一份可能过期的快照。
+       */
+      const [hoverBar, setHoverBar] = React.useState(undefined)
       const [zoomClamped, setZoomClamped] = React.useState(false)
       /*
        * 放大**之前**是哪一档（取消放大时回到它，见 pure.js 的 `unzoomQuery`）。
@@ -1641,6 +3129,44 @@ window.__ModuleLoader__.load({
        */
       const [lastRun, setLastRun] = React.useState(undefined)
       const [lines, setLines] = React.useState([])
+      /*
+       * 结果表的额外列（用户从左侧字段栏点「列」加上来的）。存**字段名**，不存值：
+       * 值随每一行读 `line.labels[field]`（见 pure.js 的 columnValue）——存值就成了第二份会过期的东西。
+       * 上限在 pure.js 的 columnToggle 里（4 列），这里不另写一条。
+       */
+      const [columns, setColumns] = React.useState([])
+      /*
+       * 行详情展开的是哪一行（`line.id`）。一次只开一行：日志是一条条往下扫的清单，
+       * 同时展开多行会把列表撑得找不到下一行；换一行时上一行自己收起。
+       */
+      const [expandedId, setExpandedId] = React.useState(undefined)
+      /*
+       * 显示密度：**默认完整**（正文全展开，看日志不用一条条点开），切到紧凑才 clamp 3 行。
+       *
+       * 为什么默认完整：维护者原话「之前的模式看日志更方便」——对「读日志」这件事，少一次点击比
+       * 一屏多看几行重要；紧凑是给「扫一眼找异常」的补充，不是替代。选择记在 localStorage 里，
+       * 下次打开还是上次那一种（拿不到 localStorage 就每次默认完整，不报错）。
+       */
+      const [denseResults, setDenseResults] = React.useState(() => {
+        try {
+          return typeof localStorage === 'object' && localStorage !== null && localStorage.getItem('loglens.density') === 'compact'
+        } catch {
+          return false
+        }
+      })
+      /*
+       * 「本页排序」的档位（第十三刀）：`time` = 宿主原序（唯一与翻页游标同源的顺序，默认它）。
+       *
+       * 它是**纯展示**：不发请求、不改草稿，也不进入「条件改了」的判据（`queryStale` 只看草稿）——
+       * 排序不改变查的是什么，只是把同一页按另一种看法摆出来。
+       */
+      const [sortBy, setSortBy] = React.useState(() => {
+        try {
+          return typeof localStorage === 'object' && localStorage !== null ? localStorage.getItem('loglens.sort') : 'time'
+        } catch {
+          return 'time'
+        }
+      })
       const [cursor, setCursor] = React.useState(undefined)
       const [histogram, setHistogram] = React.useState(undefined)
       const [groups, setGroups] = React.useState(undefined)
@@ -1673,6 +3199,65 @@ window.__ModuleLoader__.load({
       const [fieldsError, setFieldsError] = React.useState('')
       // 在途闩：同一来源正在拉的途中不要再来一枪（一次点击会先 focus 再 click，见 loadFields）
       const fieldsFlightRef = React.useRef('')
+      /*
+       * 字段面板**默认收起、展开也是浮层**（维护者真机两轮反馈：「这个有点占地方，用着也不方便」
+       * → 「这个挪走吧」）：它不该在布局里占宽度。要用「列 / 筛」时从元信息行点「字段」浮出来，
+       * 点面板外那层遮罩或再点一次收起；看日志时宽度全归日志。
+       */
+      const [fieldsOpen, setFieldsOpen] = React.useState(false)
+      /*
+       * 触发面板那一颗按钮的**视口坐标**（第二十刀）：面板据此贴在它下方展开。
+       *
+       * 为什么要存而不是每次渲染现量：面板与按钮不在同一个定位上下文里（按钮在元信息行、
+       * 面板是 fixed 浮层），现量要跨两个 ref 做坐标换算；而「展开位置」本来就该是
+       * **点下去那一刻**的位置——窗口滚动后按钮挪了，面板跟着挪反而会飘。
+       *
+       * 第三十刀起只有一个入口了（筛选行那颗「＋ 筛选」连它的弹层一起退场），所以这里
+       * 不再需要 `trigger` 与 `panelToggle` 那套「换一颗 = 换锚点」的判据——面板只属于「字段」。
+       */
+      const [fieldsAnchor, setFieldsAnchor] = React.useState(undefined)
+      // 字段侧栏的过滤词（**多词 AND**，见 pure.js 的 fieldFilterTerms / fieldSections）
+      const [fieldFilter, setFieldFilter] = React.useState('')
+      /*
+       * 字段分组的展开状态（第二十一刀）：键是 `分区::组`，值是用户点过的结果。
+       *
+       * 为什么要「用户点过的」而不是直接存全部状态：默认值**按情形算**（见 groupOpen），
+       * 用户点过的那一组以他的选择为准——不点就每换一次过滤词都被重置回默认。
+       */
+      const [groupOverride, setGroupOverride] = React.useState({})
+      /*
+       * 两段式筛选框（第三十刀）：`{ field, value }`。
+       *
+       * 左格是字段（可打可挑）、右格是值（可打可挑该字段的 top 值）。两个入口——「＋ 筛选」
+       * 那颗按钮与它背后的整块字段弹层——都退场了：它们的职责（选字段 / 看 top 值 / 点值筛选 /
+       * 手填一个值）**全部**落在这一格里。两个入口做同一件事的代价是判据漂两份（第二十五到
+       * 第二十九刀一共在它们之间搬了三次家），这次收成一处。
+       */
+      const [fxField, setFxField] = React.useState('')
+      const [fxValue, setFxValue] = React.useState('')
+      /*
+       * 此刻张着的是哪一格的下拉（`'field'` / `'value'` / `undefined`）。
+       *
+       * 两格**互斥**：同一时刻只有一个下拉在屏幕上。两格同时张开会让「方向键现在挪的是哪一张
+       * 清单」变成一个猜谜（分组框那边没有这个问题——它只有一格）。
+       */
+      const [fxOpen, setFxOpen] = React.useState(undefined)
+      // 下拉里「当前那一行」（−1 = 没选中：值那一格允许打任意串，见 pure.js 的 choiceMove）
+      const [fxIndex, setFxIndex] = React.useState(-1)
+      /*
+       * 值那一格的 DOM 句柄（只用于**把焦点挪过去**）。
+       *
+       * 真机读数（第三十刀第二版）：从左格选中一个字段之后，焦点还留在左格——用户接着打字，
+       * 字打到的是**字段名**而不是值。选字段的下一个动作必然是填值（这也是右格自动张开的原因），
+       * 所以焦点要跟着一起过去。
+       */
+      const fxValueRef = React.useRef(null)
+      /*
+       * 值清单的缓存：键是 `fieldValuesKey`（字段 + 来源 + 窗口 + 查询串 + 筛选），值是那一格的状态。
+       * 键里带全条件，所以「条件一变，旧的答案自动不会被读到」——不需要手动清缓存（清了反而要
+       * 多写一条「什么时候清」，而那正是会忘的地方）。
+       */
+      const [valueCache, setValueCache] = React.useState({})
       const [querying, setQuerying] = React.useState(false)
       const [docker, setDocker] = React.useState(false)
       const [containers, setContainers] = React.useState([])
@@ -1825,6 +3410,22 @@ window.__ModuleLoader__.load({
         return key
       }
 
+      /**
+       * 排序档位的名字（第十三刀；**第十八刀起它也是按钮上唯一的字**）。
+       *
+       * 历史：原先有两个出口——`sortLabel`（按钮上的整句「排序：时间」）与 `sortName`（档位名「时间」）。
+       * 图标化之后按钮上只剩档位名（「这是排序」由图标说），`sortLabel` 与 `btn.sortTime|Level|Message`
+       * 三个目录键一起退场——留着就是三个再也不会被显示的死字符串。
+       *
+       * `{order}` 收的必须是**档位名**（第一版塞了整句，真机画出来是「本页排序：排序：时间」）。
+       * 逐条列字面量（与 kindLabel / levelLabel 同一条：动态拼 `'meta.sort' + key` 静态 i18n 闸门扫不到）。
+       */
+      function sortName(mode) {
+        if (mode === 'level') return t('meta.sortLevel')
+        if (mode === 'message') return t('meta.sortMessage')
+        return t('meta.sortTime')
+      }
+
       /** 截断理由 → 文案（同样逐条列字面量）。 */
       function reasonText(reason) {
         if (reason === 'hit_limit') return t('status.hit_limit')
@@ -1967,6 +3568,8 @@ window.__ModuleLoader__.load({
           // 屏幕上留着的还是上一次那份。
           setLastRun(effective)
           setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
+          // 翻页是**追加**（已展开的行还在），重查是**换一整份**（旧行没了，展开态必须跟着收）
+          if (!append) setExpandedId(undefined)
           setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
           // 两份聚合并行（互不依赖）：分布与榜都是附加信息，谁拿不到都不该拖住结果列表
           await Promise.all([loadHistogram(data, append, effective), loadGroups(data, append, effective)])
@@ -2024,6 +3627,186 @@ window.__ModuleLoader__.load({
         const next = { ...query, filters: filterRemove(current, field) }
         setQuery(next)
         await runQuery(false, next)
+      }
+
+      /** 在「完整 / 紧凑」之间切换，并把选择记在本机浏览器里（拿不到 localStorage 就只在本次生效）。 */
+      const toggleDensity = () => {
+        setDenseResults((current) => {
+          const next = !current
+          try {
+            if (typeof localStorage === 'object' && localStorage !== null) {
+              localStorage.setItem('loglens.density', next ? 'compact' : 'full')
+            }
+          } catch {
+            /* 私隐模式 / 存储满：切换照常生效，只是不记住 */
+          }
+          return next
+        })
+      }
+
+      /**
+       * 「本页排序」（第十三刀）：在**时间倒序 / 严重度 / 正文**三档之间循环，并记在本机浏览器里
+       * （与显示密度同一条：那是「这个人怎么看日志」的偏好，不是这台日志的来源配置）。
+       *
+       * 为什么是循环而不是三颗按钮：元信息行已经有「字段 / 紧凑 / 清空结果」三颗，再加两颗会把
+       * 一行挤成两行；而这一个动作只有三档、顺序固定，循环点是最省的入口。当前档位写在按钮上
+       * （「排序：严重度」），不靠图标让人猜。
+       */
+      const cycleSort = () => {
+        const keys = sortKeys()
+        setSortBy((current) => {
+          const at = keys.indexOf(sortKeyOf(current))
+          const next = keys[(at + 1) % keys.length]
+          try {
+            if (typeof localStorage === 'object' && localStorage !== null) {
+              localStorage.setItem('loglens.sort', next)
+            }
+          } catch {
+            /* 私隐模式 / 存储满：切换照常生效，只是不记住 */
+          }
+          return next
+        })
+      }
+
+      /**
+       * 字段侧栏点「列」：加一列 / 去掉同一列（同一个入口是全集的开与关）。
+       * 满员时把 pure.js 那条判据翻成人话落在错误行上——点不动却不说为什么，比不给这个入口更坏。
+       */
+      const toggleColumn = (field) => {
+        const result = columnToggle(columns, field)
+        if (result.problem === 'columnLimit') {
+          setError(t('hint.columnLimit', { count: RESULT_COLUMN_MAX }))
+          return
+        }
+        if (result.problem !== '') return
+        setColumns(result.columns)
+        setError('')
+      }
+
+      /** 去掉某一列（列芯片上的 × 与侧栏的「列」是同一个开关）。 */
+      const removeColumn = (field) => {
+        setColumns(columnToggle(columns, field).columns)
+      }
+
+      /**
+       * 字段面板的开关与锚点（第二十刀定位）。
+       *
+       * 点开时记下**按钮此刻在屏幕上的位置**：存视口坐标而不是相对父容器的偏移，因为面板是
+       * `position:fixed`，与按钮不在同一个定位上下文里（换算相对坐标反而多一层错）。
+       *
+       * 第三十刀起只剩一个入口（筛选行那颗「＋ 筛选」与它的弹层一起退场），所以这里不再需要
+       * 「哪一颗按的」——同一颗再点就是收起，横向永远右缘对齐（那颗按钮在整行右侧）。
+       */
+      const toggleFields = (event) => {
+        if (fieldsOpen) {
+          setFieldsOpen(false)
+          return
+        }
+        const el = event === null || event === undefined ? undefined : event.currentTarget
+        const rect = el !== undefined && el !== null && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : undefined
+        setFieldsAnchor(rect === undefined ? undefined : {
+          align: 'right',
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          top: Math.round(rect.top),
+          bottom: Math.round(rect.bottom),
+        })
+        setFieldsOpen(true)
+      }
+
+      /**
+       * 拉某个字段的 top 值给筛选框的右格用（第三十刀：原来只服务侧栏的展开区）。
+       *
+       * 三条判据（原来那三条照旧）：
+       *   - 这一格里**已经有同一份条件的答案**就不重问（缓存键带全条件，见 fieldValuesKey）；
+       *   - 拿不到窗口（还没查过 / 回显不全）就不发请求，直接说「先查一次」——
+       *     发一个没有窗口的聚合请求只会得到后端一句莫名其妙的报错；
+       *   - 来源不支持聚合（Loki）就不发（调用方已经先说清为什么，见 openValueChoices）。
+       */
+      const loadFieldValues = async (field) => {
+        const key = fieldValuesKey(query, outcome, field)
+        if (key === null) {
+          setValueCache((current) => ({ ...current, ['!no-window::' + field]: { state: 'error', error: t('error.fieldValuesWindow') } }))
+          return
+        }
+        setValueCache((current) => ({ ...current, [key]: { state: 'loading' } }))
+        const payload = fieldValuesPayload(query, outcome, field, FIELD_VALUES_SIZE)
+        if (payload === null) {
+          setValueCache((current) => ({ ...current, [key]: { state: 'error', error: t('error.fieldValuesWindow') } }))
+          return
+        }
+        try {
+          const parsed = await api('/api/dsh-loglens/facets', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+          setValueCache((current) => ({
+            ...current,
+            [key]: { state: 'ok', buckets: Array.isArray(parsed.buckets) ? parsed.buckets : [], warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [] },
+          }))
+        } catch (err) {
+          setValueCache((current) => ({ ...current, [key]: { state: 'error', error: err.message } }))
+        }
+      }
+
+      /** 某个字段此刻的 top 值那一格（没到 / 在途 / 失败 / 有值；键带全条件）。 */
+      const valuesOf = (field) => {
+        const key = fieldValuesKey(query, outcome, field)
+        return key === null ? valueCache['!no-window::' + field] : valueCache[key]
+      }
+
+      /**
+       * 打开**值**那一格的下拉：先把那一格张开，再按需拉一次 top 值。
+       *
+       * 「先开、再拉」与分组候选同一条（见 openPick）：开是立刻的，下拉里立刻有「加载中…」这
+       * 一格，不会出现「点了没反应」。同一个字段同一份条件已经拉过就不重拉（键带全条件）。
+       */
+      const openValueChoices = (field) => {
+        setFxOpen('value')
+        setFxIndex(-1)
+        const name = String(field == null ? '' : field).trim()
+        if (name === '') return
+        // 不支持聚合（Loki）：发了也只会回一句报错，直接说清为什么（与分布 / 榜同一条）
+        if (supportsAggregation(outcome) !== true) return
+        const key = fieldValuesKey(query, outcome, name)
+        if (key !== null && valueCache[key] !== undefined) return
+        void loadFieldValues(name)
+      }
+
+      /**
+       * 点下拉里的一个字段：填进左格，**接着把右格打开**——选字段的下一步必然是填值，
+       * 让人再点一下右格是纯白给的一步（与「点开就拉」同一条判据）。
+       *
+       * 右格此刻已经有值时**不动它**：改字段不该顺手把用户打的字吞掉。
+       */
+      const pickFilterField = (name) => {
+        setFxField(name)
+        setFxIndex(-1)
+        openValueChoices(name)
+        // 焦点跟着挪到右格（否则接着打的字会打进字段名里，见 fxValueRef 的注释）
+        const el = fxValueRef.current
+        if (el !== null && el !== undefined && typeof el.focus === 'function') el.focus()
+      }
+
+      /**
+       * 提交两段式筛选框：走的是与行上标签 / 榜上下钻**同一个** `drillDown`（加一条结构化
+       * 筛选并立刻重查）。空值不发——筛选表达不了「字段缺失」（filterProblem 那条）。
+       *
+       * 提交完把两格清空、收起下拉：这两格是**往里加**一条条件的入口，条件已经生效之后
+       * 留着上一次的字，会让下一条条件的开头是上一笔的残留。
+       */
+      const submitFilter = async (field, value) => {
+        const problem = filterProblem(field, value)
+        if (problem !== '') {
+          setError(problem === 'needFilterField' ? t('error.needFilterField') : t('error.needFilterValue'))
+          return
+        }
+        setFxOpen(undefined)
+        setFxIndex(-1)
+        setFxField('')
+        setFxValue('')
+        await drillDown(field, value)
       }
 
       /**
@@ -2290,6 +4073,10 @@ window.__ModuleLoader__.load({
         setCursor(undefined)
         setHistogram(undefined)
         setGroups(undefined)
+        // 行都没了，展开的那一行与正在填的筛值也一并撤掉（留着它们指向的是一份已经不存在的结果）
+        setExpandedId(undefined)
+        setFxOpen(undefined)
+        setFxIndex(-1)
         setError('')
         setOk('')
       }
@@ -2322,6 +4109,20 @@ window.__ModuleLoader__.load({
         selectedDraft === undefined ? '' : selectedDraft.dockerTarget,
         containersSource,
       ])
+
+      /*
+       * 字段侧栏要用的字段清单：**查询成功之后按需拉一次**（同一个来源不重复拉，见 fieldFetchNeeded）。
+       *
+       * 为什么不是「每次查询都拉」：字段清单随索引长、不随一次查询变，缓存键是来源 id，换来源才重拉；
+       * 为什么不是「另设一个按钮」：侧栏本身就是「这一页有哪些字段」的答案，点开卡片还要先按一下
+       * 「拉字段」等于把一件事拆成两步（与分组候选「点开即拉」同一条判据）。
+       * 拉不到只落在侧栏里（fieldsError），不影响已经查到的结果——它是附加信息。
+       */
+      React.useEffect(() => {
+        // 收起时不拉字段清单：没人看那一栏，凭什么为它多打一枪（分组候选打开时仍会自己拉）
+        if (!fieldsOpen || !open || outcome === undefined || isDocker || selectedDraft === undefined) return
+        if (fieldFetchNeeded(fieldsSource, selectedDraft.id)) loadFields(selectedDraft.id)
+      }, [fieldsOpen, open, outcome, isDocker, selectedDraft === undefined ? '' : selectedDraft.id, fieldsSource])
 
       /*
        * 页面一滚，「＋N」浮层锚定的那颗按钮就离开了原来的位置——直接收起，别让它漂在别处。
@@ -2382,6 +4183,22 @@ window.__ModuleLoader__.load({
        */
       const chosenTarget = selectedDraft === undefined ? '' : selectedDraft.id
       /*
+       * 标题右侧那句摘要（第十五刀）：收起来源列表之后，「现在有几条来源」必须仍然看得见
+       * ——否则整块收成一行，屏幕上看不出「还查不查得动」。
+       *
+       * 三类状态各有各的话，**都说真话**：加载中就说加载中（不写一个还没到的 0）、
+       * 空就说空、有就报个数并把当前来源带上（它就是「查询」那一下真正会打的那一条）。
+       * 只在**有东西可说**时报，不为了填满这一格编一句话。
+       */
+      const sourcesSummary = () => {
+        if (loading) return t('list.loading')
+        if (drafts.length === 0) return t('list.emptyShort')
+        const active = selectedDraft === undefined ? '' : (selectedDraft.label === '' ? selectedDraft.id : selectedDraft.label)
+        return active === ''
+          ? t('meta.sourceCount', { count: drafts.length })
+          : t('meta.sourceActive', { count: drafts.length, label: active })
+      }
+      /*
        * 屏幕上那份结果是不是**已经不是当前条件的**（判据在 pure.js 的 queryStale）。
        *
        * 拿 `{ ...query, target: chosenTarget }` 去比，不是拿 `query` 比：`query.target` 在「只有
@@ -2397,6 +4214,762 @@ window.__ModuleLoader__.load({
        */
       const labelLine = labelPanel === undefined ? undefined : lines.find((line) => line.id === labelPanel.id)
       const labelTags = labelLine === undefined ? [] : allRowLabels(labelLine)
+
+      /*
+       * 字段侧栏的三分区（判据在 pure.js 的 pageFieldUsage / fieldSections）：
+       * 「这一页命中的」只数这一页（行模型里只有 labels 随响应回来），「其余可用字段」来自 /fields，
+       * 「类型冲突」是 /fields 里 conflict: true 的那一小撮——三处同一份判据。
+       */
+      const pageUsage = pageFieldUsage(lines)
+      const fieldGroups = fieldSections(fields, pageUsage, fieldFilter)
+      /*
+       * 有额外列时的行模板（pure.js 的 resultColumnsTemplate）：正文有 198px 下限，窗口不够就
+       * 让结果区**横向滚动**——不许把正文压成一行一个字（真机：4 列时 flex 把正文挤到 0 宽）。
+       */
+      const columnsTemplate = resultColumnsTemplate(columns)
+      /*
+       * 这一页按哪一档摆（第十三刀）：**只影响渲染顺序**，不改 `lines` 本身——「字段面板的本页命中」
+       * 与「下一页追加」读的都是宿主给的那一份，顺序才是它们要的东西。
+       */
+      const shownLines = sortLines(lines, sortBy)
+      const sortMode = sortKeyOf(sortBy)
+      /*
+       * 时间分布横轴（第十三刀）：刻度的判据在 pure.js 的 `histogramAxis`（首尾各一个、中间按整点
+       * 挑、最多 4 个），时间精度按窗口跨度由 `formatTickTime` 决定。
+       *
+       * 窗口取的是**柱子铺出来的那一段**（首桶起点 → 末桶起点 + 一格），不是请求参数：两张图之间
+       * 可能差过一次缩放（`histogram.bars` 才是真正画出来的那一段）。刻度回空就不画轴——一条只有
+       * 两端的轴等于没标，反而多一行字把图往下推。
+       */
+      const histTicks = histogram === undefined || histogram.error !== undefined || !Array.isArray(histogram.bars) || histogram.bars.length < 2
+        ? []
+        : histogramAxis(
+          histogram.bars,
+          histogram.bars[0].ts,
+          histogram.bars[histogram.bars.length - 1].ts + histogram.stepMs,
+          4,
+        )
+      const histSpan = histTicks.length === 0 ? 0 : histogram.bars[histogram.bars.length - 1].ts + histogram.stepMs - histogram.bars[0].ts
+      /*
+       * 峰值那一根（第十六刀）：标题写着「峰值 N 条」，图上必须能指出是哪一根——
+       * 681 与常态 460 只差一截，61 根里肉眼挑不出来（判据在 pure.js 的 `histogramPeakTs`）。
+       */
+      const histPeakTs = histogram === undefined || histogram.error !== undefined || !Array.isArray(histogram.bars)
+        ? undefined
+        : histogramPeakTs(histogram.bars)
+      /*
+       * 柱子怎么画（第十六刀）：数据挤成一条平带时改用**基线裁剪**，把差异拉开。
+       * 判据与代价在 pure.js 的 `histogramScale` 头注释里；这里只负责「把计算结果接上」。
+       */
+      const histScale = histogram === undefined || histogram.error !== undefined || !Array.isArray(histogram.bars)
+        ? { mode: 'flat', floor: 0, max: 0, note: '' }
+        : histogramScale(histogram.bars)
+      /*
+       * 这一根占**全窗**的比例（读数条常驻显示它）。
+       *
+       * 分母用**真的加起来**的和，不用 `histogram.total`：那个是宿主给的合计，截断时它可能小于
+       * 图上这些柱子的和（少画的部分不在图上）。读数条讲的是「屏幕上这张图里的占比」，
+       * 分母就得是屏幕上这些柱子加起来——两个数指着不同的东西时，读者会算出个对不上的百分比。
+       *
+       * 全窗为 0（一条日志都没有）时写 0，不除零。
+       */
+      const histSum = histogram === undefined || !Array.isArray(histogram.bars)
+        ? 0
+        : histogram.bars.reduce((sum, bar) => sum + (Number.isFinite(bar.count) ? bar.count : 0), 0)
+      const histPeakShare = histSum <= 0 ? '0' : String(Math.round((histogram.max / histSum) * 100))
+      /*
+       * 悬停中的那一根（第十六刀）。存 **ts** 而不是整个柱对象：柱子每次渲染都是新的，
+       * 存对象等于让读数条显示一份可能已经过期的快照；ts 在这份窗口里是稳定的键。
+       *
+       * 读数条要的三样东西都从当前 `histogram.bars` 里**现找**——不另存一份，也就不存在两份真相。
+       */
+      const hoverBarInfo = hoverBar === undefined || histogram === undefined || !Array.isArray(histogram.bars)
+        ? undefined
+        : histogram.bars.find((bar) => bar.ts === hoverBar)
+      const hoverBarCount = hoverBarInfo === undefined ? 0 : hoverBarInfo.count
+      const hoverBarShare = hoverBarInfo === undefined || histSum <= 0
+        ? '0'
+        : String(Math.round((hoverBarInfo.count / histSum) * 100))
+      // 悬停的那一根是不是「正在放大」的那一档（读数条据此说「再点一次取消」还是「点一下放大」）
+      const hoverBarIsActive = hoverBarInfo !== undefined && zoomedBar !== undefined && zoomedBar.from === hoverBarInfo.ts
+      /*
+       * 读数条摆在哪（第十七刀）：**跟着那根柱子走**，不再钉在最左边。
+       *
+       * 上一版的读数条是 `display:flex` 常驻左端的一行——真机上柱子在图中间、读数在最左，
+       * 中间隔着大半个屏（维护者原话：「柱子和信息隔得太远了」）。读者的眼睛要横跨整张图
+       * 才能把「我指着的那根」与「它多少条」对上，而这个动作每移一格都要做一次。
+       *
+       * 现在：悬停时读数条**贴在那一根的正上方**（`left` 按柱中心算，再用 `translateX(-50%)` 居中），
+       * 柱子与它的数字在同一列里——一眼就是一件事。
+       *
+       * 三条边界：
+       *   ① 不悬停时读数条**不画**（常驻那一行留着就还是「信息在别处」那个问题）；
+       *      「峰值在哪一根」由读数条 + 峰值柱的强调色一起说，不靠一行常驻摘要；
+       *   ② 靠边的柱子会让读数条一半落在图外——`left` 夹到 [0, 100]%，再用 CSS 的
+       *      `max(0px, …)` 让它在两端自己靠边站（见 .ll_histReadout 的 translate 规则）；
+       *   ③ 位置由**柱序号**算（`index + 0.5) / 总数`），不从 ts 算：
+       *      柱宽是 `flex:1` 等分的，序号才是它在屏幕上的真实位置。
+       */
+      const hoverBarAt = (() => {
+        if (hoverBarInfo === undefined || histogram === undefined || !Array.isArray(histogram.bars) || histogram.bars.length === 0) return undefined
+        const at = histogram.bars.findIndex((bar) => bar.ts === hoverBar)
+        if (at < 0) return undefined
+        // 柱中心 = 这一根的**中点**（不是起点：柱子有宽度，指着柱子中间才是「这一根」）
+        return Math.round(((at + 0.5) / histogram.bars.length) * 1000) / 10
+      })()
+
+      /**
+       * 一个字段行（第三十刀：**只剩选列一种用途**）。
+       *
+       * 第二十五刀把这一行拆成「选列 / 筛选」两种用途时，筛选那半还是要的——它当时是这个来源
+       * 唯一的加条件入口。第三十刀之后筛选有了自己的两段式输入框（选字段 · 填值都在那一格里），
+       * 于是这一行剩下的职责只有一件事：**把这些字段选出来当列**。
+       *
+       * 所以 `mode` 这个参数整个去掉了：名字不可点（没有值清单可展开）、没有手填按钮、
+       * 也没有第五刀那个「列 / 筛」动作桶。行就是一行名字 + 一个勾选框。
+       */
+      const renderFieldBlock = (item) => {
+        const conflictNote = Array.isArray(item.esTypes) && item.esTypes.length > 0
+          ? '（' + t('badge.conflict') + '：' + item.esTypes.join(' / ') + '）'
+          : (item.conflict === true ? '（' + t('badge.conflict') + '）' : '')
+        return jsxs('div', {
+          className: 'll_fieldBlock',
+          children: [
+            jsxs('div', {
+              className: 'll_fieldRow',
+              children: [
+                /*
+                 * 名字是**纯文本**（第三十刀）：选列面板里点名字只该是「选它」，而那条路已经由
+                 * 外层 `<label>` 与勾选框承担了（第二十六刀）。原来那个「点名字展开 top 值」的
+                 * 按钮是筛选那半的入口，跟着筛选一起搬进了两段式输入框。
+                 *
+                 * 行上只写**末段**（第二十一刀）：父路径由组头说。`container.labels.*` 那 58 个
+                 * 长名字因此从折行变短词——悬停里仍是完整名（复制 / 核对要用）。
+                 */
+                jsx('span', {
+                  className: 'll_fieldNameCell',
+                  children: jsx('span', {
+                    className: 'll_fieldName ll_fieldNameStatic',
+                    title: item.name + conflictNote,
+                    children: fieldNameBreaks(fieldLeaf(item.name)).flatMap((part, at, all) => (at === all.length - 1
+                      ? [part]
+                      : [part, jsx('wbr', {}, 'll-wbr-' + item.name + '-' + String(at))])),
+                  }),
+                }),
+                item.conflict === true ? jsx('span', { className: 'll_fieldBadge', children: t('badge.conflict') }) : null,
+                typeof item.count === 'number' ? jsx('span', {
+                  className: 'll_fieldCount',
+                  title: t('hint.fieldCount', { count: item.count }),
+                  children: String(item.count),
+                }) : null,
+              ],
+            }),
+          ],
+        }, 'll-field-block-' + item.name)
+      }
+
+      /**
+       * 一组字段展不展开（第二十一刀）。
+       *
+       * 默认值按**这一组是拿来干什么的**分，两条：
+       *   - **有过滤词**：全展开。搜索的时候匹配上的本来就没几行，再让人点开就是多一步；
+       *   - **没有过滤词**：命中区展开（那些是这个来源**真在用**的字段，多半就是你要的），
+       *     其余与冲突折叠（那是「去里面找一条」的清单，组头带计数让人挑）。
+       *
+       * 判据是**目视长度**：真机 92 个字段里 58 个是 `container.labels.*`，全展开要滚 7 屏；
+       * 折叠之后「其余可用字段」只剩 11 行组头。
+       */
+      const groupOpen = (sectionKey, groupKey) => {
+        const override = groupOverride[sectionKey + '::' + groupKey]
+        if (override !== undefined) return override
+        if (fieldFilter.trim() !== '') return true
+        return sectionKey === 'hit'
+      }
+
+      const toggleGroup = (sectionKey, groupKey) => {
+        const at = sectionKey + '::' + groupKey
+        setGroupOverride((current) => ({ ...current, [at]: !groupOpen(sectionKey, groupKey) }))
+      }
+
+      /**
+       * 一行字段（第二十六刀：选列面板的「列」按钮换成**勾选**）。
+       *
+       * 「列」那个字是**操作名**，摆在一列字段名右边像是数字/单位的一部分；而这一栏做的事
+       * 其实就是「把这些字段选出来」。所以列模式整行是一个 `<label>`：点名字、点数字、点勾选框
+       * 都算选它（一颗 16px 的勾选框对鼠标太小，整行可点才是正常的清单交互）。
+       *
+       * 勾选框是**真的** `<input type=checkbox>`（不是自己画的方块）：键盘空格、读屏、
+       * 「已选几项」这些都不用另写。`accent-color` 用宿主品牌色（与设置页那些开关同一套）。
+       *
+       * 满员时未选的行**禁用**并说明原因——但不能连「取消勾选」一起禁掉（那会让 4 列一个都去不掉）。
+       */
+      const renderFieldRow = (item) => {
+        const state = columnPickState(columns, item.name)
+        const disabled = querying || state === 'limit'
+        return jsxs('label', {
+          className: state === 'picked' ? 'll_fieldPick ll_fieldPickOn' : 'll_fieldPick',
+          title: state === 'limit' ? t('hint.columnLimit', { count: RESULT_COLUMN_MAX }) : (state === 'picked' ? t('hint.columnRemove', { field: item.name }) : t('hint.columnAdd', { field: item.name })),
+          children: [
+            jsx('input', {
+              type: 'checkbox',
+              className: 'll_fieldCheck',
+              checked: state === 'picked',
+              disabled,
+              'aria-label': t(state === 'picked' ? 'hint.columnRemove' : 'hint.columnAdd', { field: item.name }),
+              onChange: () => { if (!disabled) toggleColumn(item.name) },
+            }, 'll-column-act-' + item.name),
+            renderFieldBlock(item),
+          ],
+        }, 'll-field-pick-' + item.name)
+      }
+
+      /** 一组字段（组头 + 组内的行）。组头永远画：它说的就是这批字段的共同父路径。 */
+      const renderFieldGroup = (sectionKey, group) => {
+        const open = groupOpen(sectionKey, group.key)
+        const label = group.key === '' ? t('field.topLevel') : group.key
+        return jsxs('div', {
+          className: 'll_fieldGroup',
+          children: [
+            jsxs('button', {
+              type: 'button',
+              className: open ? 'll_fieldGroupHead ll_fieldGroupHeadOpen' : 'll_fieldGroupHead',
+              'aria-expanded': open,
+              title: t('hint.fieldGroupToggle', { name: label, count: group.items.length }),
+              onClick: () => { toggleGroup(sectionKey, group.key) },
+              children: [
+                jsx('span', { className: 'll_fieldGroupChevron', 'aria-hidden': 'true', children: open ? '▾' : '▸' }),
+                jsx('span', { className: 'll_fieldGroupName', children: label }),
+                jsx('span', { className: 'll_fieldGroupCount', children: String(group.items.length) }),
+              ],
+            }, 'll-field-group-head-' + sectionKey + '-' + group.key),
+            open ? jsx('div', {
+              className: 'll_fieldGroupBody',
+              // 组内的行**只显示末段**：父路径由组头说（真机那 58 个 labels 字段因此从折行变短词）
+              children: group.items.map((item) => renderFieldRow(item)),
+            }) : null,
+          ],
+        }, 'll-field-group-' + sectionKey + '-' + group.key)
+      }
+
+      /** 侧栏的一个分区；`titleKey` 的文案里带 {count}（过滤后的数）。 */
+      const renderFieldSection = (key, titleKey, items) => {
+        if (items.length === 0) return null
+        return jsxs('div', {
+          className: 'll_fieldSection',
+          children: [
+            jsx('span', { className: 'll_fieldSectionTitle', children: t(titleKey, { count: items.length }) }),
+            // 分区内**按父路径分组**（第二十一刀）：组内保持这一分区原来的顺序，不重排
+            ...groupFieldsByParent(items.slice(0, FIELD_LIST_MAX)).map((group) => renderFieldGroup(key, group)),
+            items.length > FIELD_LIST_MAX ? jsx('p', {
+              className: 'll_hint',
+              children: t('hint.fieldsTooMany', { shown: FIELD_LIST_MAX, count: items.length }),
+            }) : null,
+          ],
+        }, 'll-field-section-' + key)
+      }
+
+      /*
+       * 字段浮层（浮在结果表左边那一块上的面板）。
+       *
+       * 三个分区互斥（见 pure.js fieldSections）：命中区只数**这一页**、只有它能加列；
+       * 「其余可用」没有逐行值，所以只有「筛」一个动作。清单可能很长（全集群通配来源上百字段）：
+       * 子串过滤 + 分区内滚动 + 「共 N 个」，不引虚拟滚动（与字段候选浮层同一条）。
+       *
+       * 它**不占布局**：高度跟结果区走（`top:0;bottom:0`），结果表始终是整行宽度；收起靠
+       * 再点「字段」或点面板外那层遮罩。
+       */
+      /*
+       * 面板落在哪儿（第二十刀定位）：由 `fieldsAnchor`（按下触发它的那一刻、那颗按钮的
+       * 视口坐标）算出来，判据全在 pure.js 的 `panelPlacement`（有单测）：
+       *
+       *   ① **横向右缘对齐**按钮（它在整行右侧，左对齐要向左伸出去 300px），并夹在视口内；
+       *   ② **纵向优先往下开**（按钮下沿 +4px，与「＋N」浮层同一个间距）；下面放不下就上翻——
+       *      元信息行在结果表下方，真机上它经常已经在视口底部；
+       *   ③ 高度用 `fieldPanelHeight`（与 `.ll_fields` 的 `max-height:min(520px,70vh)` 同口径），
+       *      只用来判断会不会溢出。
+       */
+      /** 面板位置：由锚点（点下去那一刻的按钮坐标）+ 视口算出来（判据在 pure.js 的 panelPlacement）。 */
+      const fieldPlacementOf = (anchor) => {
+        if (anchor === undefined) return undefined
+        const vw = typeof window === 'object' && window !== null && Number.isFinite(window.innerWidth) ? window.innerWidth : 0
+        const vh = typeof window === 'object' && window !== null && Number.isFinite(window.innerHeight) ? window.innerHeight : 0
+        return panelPlacement(anchor, { width: FIELD_PANEL_WIDTH, height: fieldPanelHeight(vh), margin: 8, vw, vh })
+      }
+      const fieldsPlacement = fieldPlacementOf(fieldsAnchor)
+
+      /**
+       * 字段面板的骨架（第三十刀：**只剩选列这一种用途**）。
+       *
+       * 它曾经是一个骨架两种用途（第二十五刀：选列 / 筛选）。第三十刀把筛选搬进两段式输入框
+       * 之后，面板的职责收成一件：**本页命中的字段里挑几个当列**。于是：
+       *   - 分区只剩一个（`可加列的字段`），「其余可用 / 类型冲突」两个分区跟着筛选一起退场；
+       *   - 每行只剩一个勾选框（第二十六刀那条路），名字不再可点、没有值清单、没有手填按钮；
+       *   - 脚注只说列的那件事。
+       *
+       * 搜索框、按父路径分组、折叠规则、滚动、已选列那一格**逐字照旧**——它们与筛选无关，
+       * 是「92 个字段怎么在一张 340px 的浮层里看得完」这件事的答案。
+       */
+      const renderColumnAside = () => {
+        const total = fieldGroups.totals.hit
+        return jsxs('aside', {
+          className: 'll_fields ll_fieldsColumn',
+          'aria-label': t('panel.fieldsColumn'),
+          // 位置由按钮的视口坐标算（见 fieldsPlacement）；拿不到坐标就不写 style
+          style: fieldsPlacement === undefined ? undefined : fieldsPlacement,
+          children: [
+            jsxs('div', {
+              className: 'll_fieldsHead',
+              children: [
+                jsx('span', { className: 'll_fieldsTitle', children: t('panel.fieldsColumn') }),
+                /*
+                 * 右上角那一格（第二十一刀）：不搜索时报「共 N 个字段」，搜索时报**命中几个**。
+                 * 多一行就把列表又往下推 18px，而这个面板的高度本来就稀缺；搜索时最要紧的反馈
+                 * 就是「还剩几个」。
+                 */
+                jsx('span', {
+                  className: 'll_fieldsTotal',
+                  children: fieldFilter.trim() === ''
+                    ? (total > 0 ? t('hint.fieldsCount', { count: total }) : '')
+                    : t('meta.fieldsMatched', { count: total }),
+                }),
+              ],
+            }),
+            /*
+             * 过滤框（第十九刀）：放大镜 + 有内容才出现的清除按钮。
+             *
+             * 它是这个面板**唯一**的导航方式（真机 45 行可加列的字段），而它原来就是一个
+             * 光秃秃的输入框，连「这是搜索」都要靠占位符猜。
+             */
+            jsxs('div', {
+              className: 'll_fieldsFilterRow',
+              children: [
+                jsx('span', { className: 'll_fieldsFilterIcon', children: actionIcon('search') }),
+                jsx('input', {
+                  className: 'll_input ll_fieldsFilter',
+                  'aria-label': t('placeholder.fieldFilter'),
+                  placeholder: t('placeholder.fieldFilter'),
+                  value: fieldFilter,
+                  onChange: (event) => {
+                    setFieldFilter(event.target.value)
+                    // 换过滤词 = 换了一批要看的组：上一轮点开 / 收起的选择不跟过来
+                    setGroupOverride({})
+                  },
+                }),
+                fieldFilter === '' ? null : jsx('button', {
+                  type: 'button',
+                  className: 'll_fieldsFilterClear',
+                  title: t('hint.fieldFilterClear'),
+                  onClick: () => { setFieldFilter(''); setGroupOverride({}) },
+                  children: '×',
+                }),
+              ],
+            }),
+            /*
+             * 已选列（第二十一刀）：面板里就能看见 / 去掉当前加进来的列。
+             *
+             * 列芯片画在结果表上方那一行，而面板**浮在它上面**——从面板里点了「列」，芯片正好被
+             * 挡住，看不见自己刚加的那一列。这一格把同一个列集摆在面板里，入口与出口在同一处。
+             */
+            columns.length === 0 ? null : jsxs('div', {
+              className: 'll_fieldsPicked',
+              children: [
+                jsx('span', { className: 'll_fieldsPickedLabel', children: t('section.columnsPicked', { count: columns.length }) }),
+                ...columns.map((name) => jsxs('span', {
+                  className: 'll_columnChip',
+                  children: [
+                    jsx('span', { className: 'll_columnName', title: name, children: name }),
+                    jsx('button', {
+                      type: 'button',
+                      className: 'll_colRemove',
+                      title: t('hint.columnRemove', { field: name }),
+                      onClick: () => { removeColumn(name) },
+                      children: '×',
+                    }),
+                  ],
+                }, 'll-picked-' + name)),
+              ],
+            }),
+            jsxs('div', {
+              className: 'll_fieldsScroll',
+              children: [
+                fieldsBusy ? jsx('p', { className: 'll_hint', children: t('list.loading') }) : null,
+                fieldsError === '' ? null : jsx('p', { className: 'll_hint ll_warn', children: t('error.fields', { message: fieldsError }) }),
+                // 清单、错误、命中区都没有东西时才说「这个来源没返回字段名」——有命中区就不该说这句
+                !fieldsBusy && fieldsError === '' && fields.length === 0 && total === 0
+                  ? jsx('p', { className: 'll_hint', children: t('msg.fieldsEmpty') })
+                  : null,
+                // 没有本页命中时**不是**「没找到」，而是「这一页没有可加列的字段」（两者空态不一样）
+                total === 0 && fieldFilter.trim() === '' && !fieldsBusy && fieldsError === ''
+                  ? jsx('p', { className: 'll_hint', children: t('msg.noColumnableFields') })
+                  : null,
+                renderFieldSection('hit', 'section.columnsPickable', fieldGroups.hit),
+                total === 0 && fieldFilter.trim() !== ''
+                  ? jsx('p', { className: 'll_hint', children: t('hint.noFieldsMatch') })
+                  : null,
+              ],
+            }),
+            jsx('p', {
+              className: 'll_hint ll_hintElide',
+              title: t('hint.fieldsColumnFull'),
+              children: t('hint.fieldsColumn'),
+            }),
+          ],
+        })
+      }
+
+      /*
+       * 两段式筛选框（第三十刀）：左格选字段、右格填值 / 挑 top 值。
+       *
+       * 为什么是一格而不是「按钮 + 弹层」：真实机器上那条路是四步（点「＋ 筛选」→ 在 92 个字段里
+       * 找一个 → 点字段看值 → 点值），而**这条路上每一步都在做同一个决定的两半**。写成一行两格
+       * 之后，整个过程是：点左边挑字段（能打能搜）→ 右边自动张开该字段的 top 值（能打能挑）→ 回车。
+       *
+       * 三条判据值得单说：
+       *
+       *   ① **右边那一格跟着左边走**：选定字段就把它的 top 值拉出来（`openValueChoices`），
+       *      不用再点第二下。这正是用户那句话「一边选字段，一边可输可选」——两格是**一个**
+       *      输入框的两半，不是两个独立控件。
+       *   ② **两边都能手打**：值那一格不要求从候选里选。长尾值、带空格/引号的值、`*` 通配
+       *      都只有手打表达得了（候选只有 top 8）。所以「没选中任何候选」是一个正常状态，
+       *      回车取的是**打的那串字**（判据在 pure.js 的 choiceMove：−1 是合法档位）。
+       *   ③ **方向键与回车归下拉，Backspace 归两格之间**：Backspace 在值格有字时删字、值格空了
+       *      退到字段格（判据在 pure.js 的 filterBoxBack）。
+       */
+      const filterChoices = filterFieldChoices(fieldGroups, fxField)
+      const valueChoiceRows = (() => {
+        const name = String(fxField == null ? '' : fxField).trim()
+        if (name === '') return []
+        const entry = valuesOf(name)
+        if (entry === undefined || entry.state !== 'ok') return []
+        const active = filterOf(activeFilters, name)
+        return valueChoices(name, entry.buckets, active, FIELD_VALUES_SIZE)
+      })()
+
+      /** 那一刻能提交的「字段 = 值」：候选没选中就用用户打的字（见判据 ②）。 */
+      const submitFilterBox = () => {
+        const picked = fxOpen === 'value' && fxIndex >= 0 && fxIndex < valueChoiceRows.length
+          ? valueChoiceRows[fxIndex].value
+          : fxValue
+        void submitFilter(fxField, picked)
+      }
+
+      const filterValueEntry = () => {
+        const name = String(fxField == null ? '' : fxField).trim()
+        if (name === '') return undefined
+        return valuesOf(name)
+      }
+
+      /**
+       * 值那一格的下拉内容：四种状态各说一句话（与分组候选同一条：**不许出现一个空盒子**）。
+       *
+       * 与分组候选的差别：这里**没有**「命中 0 个就不画」那条——值那一格允许随便打，
+       * 打了什么都没匹配上时下拉里那句「直接回车就按这个值筛」才是它该说的话。
+       */
+      const renderFilterValueList = () => {
+        const entry = filterValueEntry()
+        if (supportsAggregation(outcome) !== true) {
+          return jsx('div', { className: 'll_fxState', children: t('hint.aggregationUnsupported') })
+        }
+        if (entry === undefined || entry.state === 'loading') {
+          return jsx('div', { className: 'll_fxState', children: t('list.loading') })
+        }
+        if (entry.state === 'error') {
+          return jsx('div', { className: 'll_fxState ll_warn', children: t('error.fieldValues', { message: entry.error }) })
+        }
+        if (valueChoiceRows.length === 0) {
+          return jsx('div', { className: 'll_fxState', children: t('msg.fieldValuesEmpty') })
+        }
+        return valueChoiceRows.map((row, at) => jsxs('button', {
+          type: 'button',
+          className: at === fxIndex ? 'll_fxItem ll_fxItemOn' : 'll_fxItem',
+          title: row.active ? t('hint.valueActive', { value: row.value }) : t('hint.valueDrill', { field: fxField, value: row.value }),
+          // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
+          onMouseDown: (event) => { event.preventDefault() },
+          onMouseEnter: () => { setFxIndex(at) },
+          onClick: () => { void submitFilter(fxField, row.value) },
+          children: [
+            jsx('span', { className: 'll_fxItemText', title: row.value, children: row.value }),
+            jsx('span', { className: 'll_fxItemCount', children: String(row.count) }),
+            // 已经在筛的那一条：勾一下（再点是取消，与榜上同一条）
+            row.active ? jsx('span', { className: 'll_fxItemOn2', children: '✓' }) : null,
+          ],
+        }, 'll-fx-value-' + row.value))
+      }
+
+      const renderFilterBox = () => {
+        const busy = saving || querying
+        const valueEntry = filterValueEntry()
+        return jsxs('div', {
+          className: 'll_fx',
+          children: [
+            jsx('span', { className: 'll_filtersLabel', children: t('field.filters') }),
+            ...activeFilters.map((chip) => jsxs('span', {
+              className: 'll_chip',
+              children: [
+                // 值**原样**显示（与下发的那一份逐字相同：键名里的空格是内容的一部分）
+                jsx('span', { className: 'll_chipText', title: chip.field + ' = ' + chip.value, children: chip.field + ' = ' + chip.value }),
+                jsx('button', {
+                  type: 'button',
+                  className: 'll_chipBtn',
+                  title: t('btn.filterRemove'),
+                  disabled: busy,
+                  onClick: () => { removeFilter(chip.field) },
+                  children: '×',
+                }),
+              ],
+            }, 'll-filter-' + chip.field)),
+            jsxs('div', {
+              // 焦点离开整格才收下拉：在**两格之间**挪不算离开（判据用 relatedTarget，与分组候选同一条）
+              className: 'll_fxBox',
+              onBlur: (event) => {
+                const next = event.relatedTarget
+                const inside = next !== null && next !== undefined && typeof event.currentTarget.contains === 'function'
+                  ? event.currentTarget.contains(next)
+                  : false
+                if (!inside) setFxOpen(undefined)
+              },
+              children: [
+                /*
+                 * 左格：字段。类名**不带 `input` 结尾**（`ll_fxFieldBox` 而不是 `ll_fxInput`）——
+                 * 输入框族检查按「类名以 input / select 结尾」抓，而这一格与右格是同一条发丝线
+                 * 围起来的**一整格**，不是宿主那种独立输入档，几何由 `.ll_fxBox` 统一管。
+                 */
+                jsxs('div', {
+                  className: fxOpen === 'field' ? 'll_fxFieldBox ll_fxOpen' : 'll_fxFieldBox',
+                  children: [
+                    jsx('input', {
+                      className: 'll_fxField',
+                      'aria-label': t('placeholder.filterField'),
+                      placeholder: t('placeholder.filterField'),
+                      value: fxField,
+                      disabled: busy,
+                      onFocus: () => { setFxOpen('field'); setFxIndex(-1) },
+                      onClick: () => { setFxOpen('field'); setFxIndex(-1) },
+                      onChange: (event) => {
+                        setFxField(event.target.value)
+                        setFxOpen('field')
+                        setFxIndex(-1)
+                      },
+                      onKeyDown: (event) => {
+                        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                          event.preventDefault()
+                          setFxOpen('field')
+                          setFxIndex((current) => choiceMove(current, event.key === 'ArrowDown' ? 1 : -1, filterChoices.length))
+                          return
+                        }
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          // 选中候选就取它，否则取**打的字**（打了半个名字就回车 = 按它筛）
+                          if (fxOpen === 'field' && fxIndex >= 0 && fxIndex < filterChoices.length) pickFilterField(filterChoices[fxIndex].name)
+                          else if (fxField.trim() !== '') pickFilterField(fxField.trim())
+                          return
+                        }
+                        if (event.key === 'Escape') setFxOpen(undefined)
+                        // 字段格是空的、按 Backspace：什么都不做（没有可退的上一格）
+                        if (event.key === 'Backspace' && fxField === '' && fxOpen === 'field') setFxOpen(undefined)
+                      },
+                    }),
+                    /*
+                     * 右缘那颗小 caret 是**装饰**（与分组框那颗同一条，`pointer-events:none`）：
+                     * 它说的是「这一格能拉开」，而整格本来就点得开。
+                     */
+                    jsx('svg', {
+                      width: '12',
+                      height: '12',
+                      viewBox: CHEVRON_VIEWBOX,
+                      fill: 'none',
+                      strokeWidth: CHEVRON_STROKE,
+                      xmlns: 'http://www.w3.org/2000/svg',
+                      'aria-hidden': 'true',
+                      className: 'll_fxChevron',
+                      children: jsx('path', { d: CHEVRON_PATH, stroke: 'currentColor' }),
+                    }),
+                  ],
+                }),
+                // 两格之间的那个「=」：它就是这条条件的形状（字段 = 值）
+                jsx('span', { className: 'll_fxEq', 'aria-hidden': 'true', children: '=' }),
+                /*
+                 * 右格：值。点开就把这个字段的 top 值列出来（`openValueChoices` 先开再按需拉）。
+                 *
+                 * 字段还空着时禁用：没有字段就没有「这个字段的值」可列，让人在一个空列表里打字
+                 * 只会以为它坏了。禁用态在 hover 时说清楚（title）。
+                 */
+                jsxs('div', {
+                  className: fxOpen === 'value' ? 'll_fxValueBox ll_fxOpen' : 'll_fxValueBox',
+                  children: [
+                    jsx('input', {
+                      className: 'll_fxValue',
+                      ref: fxValueRef,
+                      'aria-label': t('placeholder.filterValue'),
+                      placeholder: fxField.trim() === '' ? t('placeholder.filterFieldFirst') : t('placeholder.filterValue'),
+                      value: fxValue,
+                      disabled: busy || fxField.trim() === '',
+                      title: fxField.trim() === '' ? t('hint.filterValueFirst') : undefined,
+                      onFocus: () => { openValueChoices(fxField) },
+                      onClick: () => { openValueChoices(fxField) },
+                      onChange: (event) => {
+                        setFxValue(event.target.value)
+                        setFxOpen('value')
+                        setFxIndex(-1)
+                      },
+                      onKeyDown: (event) => {
+                        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                          event.preventDefault()
+                          if (fxOpen !== 'value') openValueChoices(fxField)
+                          setFxIndex((current) => choiceMove(current, event.key === 'ArrowDown' ? 1 : -1, valueChoiceRows.length))
+                          return
+                        }
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          submitFilterBox()
+                          return
+                        }
+                        if (event.key === 'Escape') {
+                          setFxOpen(undefined)
+                          setFxIndex(-1)
+                          return
+                        }
+                        // 值格空了再按 Backspace：退到字段格（判据在 pure.js 的 filterBoxBack）
+                        if (event.key === 'Backspace' && filterBoxBack(fxField, fxValue) === 'field') {
+                          event.preventDefault()
+                          setFxValue('')
+                          setFxOpen('field')
+                          setFxIndex(-1)
+                        }
+                      },
+                    }),
+                    jsx('svg', {
+                      width: '12',
+                      height: '12',
+                      viewBox: CHEVRON_VIEWBOX,
+                      fill: 'none',
+                      strokeWidth: CHEVRON_STROKE,
+                      xmlns: 'http://www.w3.org/2000/svg',
+                      'aria-hidden': 'true',
+                      className: 'll_fxChevron',
+                      children: jsx('path', { d: CHEVRON_PATH, stroke: 'currentColor' }),
+                    }),
+                  ],
+                }),
+                // 提交：**只在能提交时出现**（两格都非空）——一颗永远灰着的按钮只是噪音
+                filterProblem(fxField, fxValue) === ''
+                  ? jsx('button', {
+                    type: 'button',
+                    className: 'll_fxGo',
+                    title: t('hint.addFilter'),
+                    disabled: busy,
+                    // 保住输入框焦点：点了之后下拉该收起，但焦点要回到打字的地方
+                    onMouseDown: (event) => { event.preventDefault() },
+                    onClick: () => { submitFilterBox() },
+                    children: t('btn.apply'),
+                  }, 'll-fx-go')
+                  : null,
+                /*
+                 * 下拉（两格共用一层，一次只画一张）：挂在**盒子**上（`.ll_fxBox` 是相对定位），
+                 * 不是挂在这一整行上。
+                 *
+                 * 真机读数（第三十刀第一版）：挂 `.ll_fx` 时下拉左缘在 105，而值那一格在 539——
+                 * 下拉离它要补的那一格 430px，看着像是另一样东西的菜单。挂盒子上之后，字段那张
+                 * 从盒子的左缘长出（贴着字段格），值那张从**右缘**长出（贴着值格）。
+                 *
+                 * absolute 够用：这一格的祖先里没有 `overflow:hidden` 的滚动容器（`.ll_cardBody`
+                 * 只有 padding），与字段面板那套 `fixed` 不是一个场景。
+                 */
+                fxOpen === undefined ? null : jsx('div', {
+                  className: fxOpen === 'field' ? 'll_fxList ll_fxListField' : 'll_fxList',
+                  // 鼠标点下拉里的行不该先失焦收起（那些行自己 preventDefault 保住焦点）
+                  children: fxOpen === 'field'
+                    ? (filterChoices.length === 0
+                      ? jsx('div', { className: 'll_fxState', children: t('hint.noFieldsMatch') })
+                      : filterChoices.map((row, at) => jsxs('button', {
+                        type: 'button',
+                        className: at === fxIndex ? 'll_fxItem ll_fxItemOn' : 'll_fxItem',
+                        title: row.name,
+                        onMouseDown: (event) => { event.preventDefault() },
+                        onMouseEnter: () => { setFxIndex(at) },
+                        onClick: () => { pickFilterField(row.name) },
+                        children: [
+                          jsx('span', { className: 'll_fxItemText', children: row.name }),
+                          // 这一页命中的字段给一小截标记：它们是刚看过的那些，通常就是要筛的
+                          row.group === 'hit' ? jsx('span', { className: 'll_fxItemTag', children: t('badge.pageField') }) : null,
+                        ],
+                      }, 'll-fx-field-' + row.name)))
+                    : renderFilterValueList(),
+                }),
+              ],
+            }),
+            /*
+             * 还没选字段时**不排**那句长说明（那是「条件是怎么下发的」的科普，没有条件时
+             * 没有可解释的东西——与第二十二刀那条同一条判据）；有芯片时它自成一行。
+             */
+            activeFilters.length === 0 ? null : jsx('span', { className: 'll_hint ll_filtersHint', children: t('hint.filters') }),
+          ],
+        })
+      }
+
+      /** 结果表上面那排「列：… ×」：既说明多出来那几列是什么，也是去掉它们的入口。 */
+      const renderColumnChips = () => columns.length === 0 ? null : jsxs('div', {
+        className: 'll_columns',
+        children: [
+          jsx('span', { className: 'll_columnsLabel', children: t('field.columns') }),
+          ...columns.map((name) => jsxs('span', {
+            className: 'll_columnChip',
+            children: [
+              jsx('span', { className: 'll_columnName', title: name, children: name }),
+              jsx('button', {
+                type: 'button',
+                className: 'll_colRemove',
+                title: t('hint.columnRemove', { field: name }),
+                onClick: () => { removeColumn(name) },
+                children: '×',
+              }),
+            ],
+          }, 'll-column-' + name)),
+          columns.length > 1 ? jsx('span', { className: 'll_columnsHint', children: t('hint.columnsScroll') }) : null,
+        ],
+      })
+
+      /**
+       * 行详情：全部标签 + 原文。
+       *
+       * 原文的截断判据在 pure.js 的 rawPreview（超长截断并报原长）——详情里贴一段没有上限的
+       * JSON 会把整页卡住，而「截了却不说」又会被当成完整原文。
+       */
+      const renderRowDetail = (line) => {
+        const detailTags = allRowLabels(line)
+        const raw = rawPreview(line.raw)
+        return jsxs('div', {
+          className: 'll_rowDetail',
+          children: [
+            // 行上只给 3 行，完整消息在这里看（长 SQL / 堆栈在行上展开会把一屏挤成两三行）
+            jsx('span', { className: 'll_detailLabel', children: t('panel.message') }),
+            jsx('div', { className: 'll_detailMsg', children: line.message }),
+            detailTags.length === 0
+              ? jsx('p', { className: 'll_hint', children: t('hint.noLabels') })
+              : jsxs('div', {
+                children: [
+                  jsx('span', { className: 'll_detailLabel', children: t('panel.labels') }),
+                  jsx('div', {
+                    className: 'll_detailGrid',
+                    children: detailTags.flatMap((tag) => [
+                      jsx('span', { className: 'll_detailKey', title: tag.field, children: tag.field }, 'll-detail-key-' + line.id + '-' + tag.field),
+                      jsx('span', { className: 'll_detailValue', title: tag.value, children: tag.display }, 'll-detail-value-' + line.id + '-' + tag.field),
+                    ]),
+                  }),
+                ],
+              }),
+            jsx('span', { className: 'll_detailLabel', children: t('panel.raw') }),
+            raw.text === ''
+              ? jsx('p', { className: 'll_hint', children: t('hint.noRaw') })
+              : jsx('pre', { className: 'll_rowRaw', children: raw.text }),
+            raw.truncated
+              ? jsx('p', { className: 'll_hint', children: t('hint.rawTruncated', { shown: raw.text.length, total: raw.total }) })
+              : null,
+            // 敏感字段这句只在**真的看到原文**的地方说（不再常驻在结果列表上方）
+            jsx('p', { className: 'll_hint', children: t('hint.rowSensitive') }),
+          ],
+        })
+      }
 
       const rows = drafts.map((draft, index) => jsxs('div', {
         className: 'll_row',
@@ -2513,10 +5086,24 @@ window.__ModuleLoader__.load({
             children: jsxs('div', {
               className: 'll_panel',
               children: [
+                /*
+                 * 标题行 = 「来源」+ 一句摘要 + 启用开关 + 一颗「编辑来源」折叠把手（第十五刀）。
+                 *
+                 * 改之前这里是**标题 + 三行说明 + 新增按钮 + 表头 + 两行表单**：真机 816×782 上
+                 * 量到 300px（占面板 28%），而查日志时这一块基本不动——结果区被挤到 240px，
+                 * 一屏装不下「查询 + 结果 + 分布」三件事。
+                 *
+                 * 现在收起态只占一行（摘要），展开才铺开原来的整块。摘要里必须留着**来源还剩几个**：
+                 * 收起之后那是唯一能看出「我配了几条 / 还查不查得动」的地方。
+                 *
+                 * 默认展开的判据在下面（`sourcesOpen` 的初值）：设置卡里「配来源」是主任务，
+                 * 插件页里「查日志」才是——两边要的默认值不一样。
+                 */
                 jsxs('div', {
                   className: 'll_panelHeader',
                   children: [
                     jsx('span', { className: 'll_panelTitle', children: t('panel.title') }),
+                    jsx('span', { className: 'll_panelSummary', children: sourcesSummary() }),
                     jsxs('label', {
                       className: 'll_switch',
                       children: [
@@ -2531,39 +5118,55 @@ window.__ModuleLoader__.load({
                     }),
                   ],
                 }),
-                jsx('p', { className: 'll_hint', children: t('hint.notImplemented') }),
-                jsxs('div', {
-                  className: 'll_toolbar',
+                jsx('button', {
+                  type: 'button',
+                  className: 'll_sourcesToggle',
+                  'aria-expanded': sourcesOpen,
+                  title: sourcesOpen ? t('hint.sourcesCollapse') : t('hint.sourcesExpand'),
+                  onClick: () => { setSourcesOpen((current) => !current) },
                   children: [
-                    jsx('button', {
-                      type: 'button',
-                      className: 'll_btnGhost',
-                      disabled: saving,
-                      onClick: addDraft,
-                      children: t('btn.add'),
-                    }),
-                    jsx('div', { className: 'll_toolbarSpacer' }),
-                    error ? jsx('p', { className: 'll_error', children: error }) : (ok ? jsx('p', { className: 'll_ok', children: ok }) : null),
+                    jsx('span', { 'aria-hidden': 'true', children: sourcesOpen ? '▾' : '▸' }),
+                    jsx('span', { children: sourcesOpen ? t('btn.sourcesHide') : t('btn.sourcesShow') }),
                   ],
                 }),
-                loading ? jsx('div', { className: 'll_loading', children: t('list.loading') }) : null,
-                !loading && drafts.length === 0 ? jsx('div', { className: 'll_empty', children: t('list.empty') }) : null,
-                drafts.length > 0 ? jsx('div', {
-                  className: 'll_list',
+                !sourcesOpen ? null : jsxs('div', {
+                  className: 'll_sourcesBody',
                   children: [
+                    jsx('p', { className: 'll_hint', children: t('hint.notImplemented') }),
                     jsxs('div', {
-                      className: 'll_head',
+                      className: 'll_toolbar',
                       children: [
-                        jsx('span', { children: t('field.kind') }),
-                        jsx('span', { children: t('field.label') }),
-                        jsx('span', { children: t('field.url') }),
-                        jsx('span', {}),
-                        jsx('span', {}),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost',
+                          disabled: saving,
+                          onClick: addDraft,
+                          children: t('btn.add'),
+                        }),
+                        jsx('div', { className: 'll_toolbarSpacer' }),
+                        error ? jsx('p', { className: 'll_error', children: error }) : (ok ? jsx('p', { className: 'll_ok', children: ok }) : null),
                       ],
                     }),
-                    ...rows,
+                    loading ? jsx('div', { className: 'll_loading', children: t('list.loading') }) : null,
+                    !loading && drafts.length === 0 ? jsx('div', { className: 'll_empty', children: t('list.empty') }) : null,
+                    drafts.length > 0 ? jsx('div', {
+                      className: 'll_list',
+                      children: [
+                        jsxs('div', {
+                          className: 'll_head',
+                          children: [
+                            jsx('span', { children: t('field.kind') }),
+                            jsx('span', { children: t('field.label') }),
+                            jsx('span', { children: t('field.url') }),
+                            jsx('span', {}),
+                            jsx('span', {}),
+                          ],
+                        }),
+                        ...rows,
+                      ],
+                    }) : null,
                   ],
-                }) : null,
+                }),
                 drafts.length > 0 ? jsxs('div', {
                   className: 'll_query',
                   children: [
@@ -2596,7 +5199,29 @@ window.__ModuleLoader__.load({
                           // 回车即查（查询栏里最常做的事，见 runOnEnter）
                           onKeyDown: runOnEnter,
                         }),
-                        isDocker ? null : jsx('select', {
+                        isDocker ? null : jsx('button', {
+                          type: 'button',
+                          className: 'll_btn',
+                          disabled: saving || querying,
+                          onClick: () => { runQuery(false) },
+                          children: querying ? t('btn.querying') : t('btn.query'),
+                        }),
+                      ],
+                    }),
+                    /*
+                     * 选项行：时间窗 · 级别 · 条数 · 分组字段 · 「分组」（第十五刀）。
+                     *
+                     * 这几格都是「设一次就不常动」的参数，不该跟查询串抢同一行的宽度。分组字段原来是
+                     * 单独一行、右边还留着一列永远空着的「回话」位——并进这一行之后，那一列消失、
+                     * 行高也省了一整行。
+                     *
+                     * 「分组」只在来源**明确说**能聚合时可用——不知道（旧版宿主）按直方图同款处理，
+                     * 不替对方说一句没依据的话，也不发一个可能永远失败的请求。
+                     */
+                    isDocker ? null : jsxs('div', {
+                      className: 'll_groupGrid',
+                      children: [
+                        jsx('select', {
                           className: 'll_input',
                           title: t('field.window'),
                           value: query.preset,
@@ -2604,7 +5229,7 @@ window.__ModuleLoader__.load({
                           onChange: (event) => { changePreset(event.target.value) },
                           children: windowChoices(query.preset).map((key) => jsx('option', { value: key, children: windowLabel(key) }, key)),
                         }),
-                        isDocker ? null : jsx('select', {
+                        jsx('select', {
                           className: 'll_input',
                           title: t('field.level'),
                           value: levelFilterOf(query),
@@ -2614,7 +5239,7 @@ window.__ModuleLoader__.load({
                           onChange: (event) => { setQuery((current) => ({ ...current, level: event.target.value })) },
                           children: levelChoices().map((key) => jsx('option', { value: key, children: levelLabel(key) }, 'll-level-' + (key === '' ? 'any' : key))),
                         }),
-                        isDocker ? null : jsx('input', {
+                        jsx('input', {
                           className: 'll_input',
                           title: t('field.limit'),
                           type: 'number',
@@ -2625,21 +5250,6 @@ window.__ModuleLoader__.load({
                           // 条数也是这一行的输入框：回车即查与查询串同一口径（不然只有一半的框认回车）
                           onKeyDown: runOnEnter,
                         }),
-                        isDocker ? null : jsx('button', {
-                          type: 'button',
-                          className: 'll_btn',
-                          disabled: saving || querying,
-                          onClick: () => { runQuery(false) },
-                          children: querying ? t('btn.querying') : t('btn.query'),
-                        }),
-                      ],
-                    }),
-                    // 分组那一行：字段名 + 「有哪些字段」（候选）+ 「分组」（沿用上一次查询的窗口）。
-                    // 「分组」只在来源**明确说**能聚合时可用——不知道（旧版宿主）按直方图同款处理，
-                    // 不替对方说一句没依据的话，也不发一个可能永远失败的请求。
-                    isDocker ? null : jsxs('div', {
-                      className: 'll_groupGrid',
-                      children: [
                         /*
                          * 分组字段那一格 = 输入框 + 官方 chevron + **自画的候选浮层**。
                          *
@@ -2790,31 +5400,28 @@ window.__ModuleLoader__.load({
                         }),
                       ],
                     }),
-                    // 生效中的筛选：一行芯片（每条一个 ×）。只在有筛选时出现——没有筛选时这一行
-                    // 不占位、也不说一句话（说「当前没有筛选」等于往界面上加噪音）。
-                    isDocker || activeFilters.length === 0 ? null : jsxs('div', {                      className: 'll_filters',
-                      children: [
-                        jsx('span', { className: 'll_filtersLabel', children: t('field.filters') }),
-                        ...activeFilters.map((chip) => jsxs('span', {
-                          className: 'll_chip',
-                          children: [
-                            // 值**原样**显示（与下发的那一份逐字相同：键名里的空格是内容的一部分）
-                            jsx('span', { className: 'll_chipText', title: chip.field + ' = ' + chip.value, children: chip.field + ' = ' + chip.value }),
-                            jsx('button', {
-                              type: 'button',
-                              className: 'll_chipBtn',
-                              title: t('btn.filterRemove'),
-                              disabled: saving || querying,
-                              onClick: () => { removeFilter(chip.field) },
-                              children: '×',
-                            }),
-                          ],
-                        }, 'll-filter-' + chip.field)),
-                        jsx('span', { className: 'll_hint ll_filtersHint', children: t('hint.filters') }),
-                      ],
-                    }),
+                    /*
+                     * 筛选行（第三十刀）：**生效中的条件 + 一条能直接写的条件**，同一行。
+                     *
+                     * 这一行的来历值得记一笔，因为它是这六七刀里改得最多的一处：
+                     *   - 第二十二刀把它从「有筛选才出现」改成常驻，并把「＋ 筛选」放在这儿
+                     *     （条件显示在这儿，加条件的入口也得在这儿）；
+                     *   - 第二十五刀把「＋ 筛选」接到一整块字段弹层上（选字段 / 看值 / 手填都在里面）；
+                     *   - 第三十刀把弹层整个撤掉，换成一个**两格输入框**：左边选字段、右边填值。
+                     *
+                     * 撤掉弹层的理由不是「弹层不好」，而是**它做的是同一件事**：弹层要占一屏、
+                     * 要滚、要在 92 个字段里找；而这条条件的形状本来就只是「字段 = 值」两个词。
+                     * 两个词的形状用一行两格表达，比用一屏表达更贴。弹层里那些还成立的判据
+                     * （top 值带计数、点值直接筛、手填长尾值、按父路径分组）一样进了这一格。
+                     *
+                     * 常驻的判据照旧：跑过一次查询就出现，空着时只有「筛选 + 两格」几截，
+                     * 不说一句「当前没有筛选」（那是往界面上加噪音）。
+                     */
+                    isDocker || (activeFilters.length === 0 && outcome === undefined) ? null : renderFilterBox(),
                     isDocker ? jsxs('div', {
-                      className: 'll_queryGrid',
+                      // Docker 那一档五格（容器 / 时间窗 / 条数 / 刷新 / 看日志）：它有自己的模板，
+                      // 套普通查询那套三列会把「看日志」那一格挤到换行
+                      className: 'll_dockerGrid',
                       children: [
                         jsx('select', {
                           className: 'll_input',
@@ -2891,7 +5498,7 @@ window.__ModuleLoader__.load({
                             ? t('hint.containersEmpty')
                             : (docker ? t('hint.docker') : t('hint.dockerMissing')),
                       })
-                      : jsx('p', { className: 'll_hint', children: t('hint.query') }),
+                      : (outcome === undefined ? jsx('p', { className: 'll_hint', children: t('hint.query') }) : null),
                     /*
                      * 级别筛选那句**边界声明**：宿主是在返回的这一页上筛的，counts / truncation 仍是未筛的
                      * 整页。不说出来就会把「这一页里的 error」读成「窗口里一共多少 error」（同一屏上两个
@@ -2899,7 +5506,6 @@ window.__ModuleLoader__.load({
                      * 不看回显：查询在途的那几秒也该在场。
                      */
                     isDocker || !levelFiltered(query) ? null : jsx('p', { className: 'll_hint', children: t('hint.levelPaged') }),
-                    isDocker || outcome === undefined ? null : jsx('p', { className: 'll_hint', children: t('hint.rowSensitive') }),
                     isDocker && dockerOpened && dockerLogLines(dockerLogs).length > 0 ? jsx('div', {
                       className: 'll_results',
                       children: dockerLogLines(dockerLogs).map((text, at) => jsx('div', {
@@ -2917,6 +5523,13 @@ window.__ModuleLoader__.load({
                       className: 'll_hint ll_warn',
                       children: t('hint.staleResults'),
                     }),
+                    /*
+                     * 元信息分两层（第十五刀）：**短句 + 动作**一行，**长句**另起一块。
+                     *
+                     * 改之前它们同在一个 `flex-wrap` 行里：宿主那句 90 字的级别 warning 独占一整行，
+                     * 四颗按钮被推到第三行——真机 816×782 量到这一行 **102px**（三行）。现在短句那层
+                     * 永远是 28px（按钮在右），长句各自成行、按自己的宽度换行，谁也不再推走谁。
+                     */
                     outcome === undefined || isDocker ? null : jsxs('div', {
                       className: 'll_queryMeta',
                       children: [
@@ -2924,84 +5537,82 @@ window.__ModuleLoader__.load({
                         outcome.truncation !== undefined && outcome.truncation.truncated === true
                           ? jsx('span', { className: 'll_warn', children: t('meta.truncated', { reasons: (outcome.truncation.reasons === undefined ? [] : outcome.truncation.reasons).map((reason) => reasonText(reason)).join(' / ') }) })
                           : null,
-                        outcome.hint === undefined ? null : jsx('span', { className: 'll_warn', children: outcome.hint }),
-                        // warnings 是宿主对这次查询做过什么调整（夹了 limit、兜了时间窗）——**不许吞掉**：
-                        // agent 工具看得到的东西，面板也得看得到
-                        ...(outcome.warnings === undefined ? [] : outcome.warnings.map((text, at) => jsx('span', { className: 'll_warn', children: text }, 'll-warn-' + String(at)))),
-                        jsx('button', { type: 'button', className: 'll_btnGhost', disabled: querying, onClick: clearResults, children: t('btn.clear') }),
+                        // 从这里开始是**动作**：与计数之间用 flex:1 的弹簧分开（窄屏换行时按钮仍成组靠右）
+                        jsx('span', { className: 'll_metaGap' }),
+                        // 字段面板开关：默认收起，展开是浮层（浮在结果上，结果表不跟着变窄）
+                        jsx('button', {
+                          type: 'button',
+                          className: fieldsOpen ? 'll_btnGhost ll_btnGhostIcon ll_btnGhostOn' : 'll_btnGhost ll_btnGhostIcon',
+                          title: t('hint.fieldsToggle'),
+                          'aria-pressed': fieldsOpen,
+                          /*
+                           * 点开时**记住按钮此刻在屏幕上的位置**（第二十刀）。
+                           *
+                           * 面板原来钉在结果区左端（`left:0`），而按钮在整行右侧——真机量到两者
+                           * 横向差 **123px**：按的是右边那颗，展开的东西出现在最左边，中间隔着整块图。
+                           * 现在面板贴在按钮下方展开（与宿主自己的下拉菜单同一条：从触发它的那颗长出来）。
+                           *
+                           * 存的是**视口坐标**而不是相对父容器的偏移：面板与按钮不在同一个定位上下文里
+                           * （面板是 `position:fixed` 的浮层，按钮在元信息行里），换算相对坐标反而多一层错。
+                           */
+                          onClick: (event) => { toggleFields(event, 'meta') },
+                          children: [actionIcon('fields'), t('btn.fields')],
+                        }),
+                        // 显示密度：默认完整，点一下切紧凑（记住选择；看日志时少一次点击比多几行重要）
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost ll_btnGhostIcon',
+                          title: t('hint.density'),
+                          onClick: toggleDensity,
+                          children: [actionIcon('density'), denseResults ? t('btn.densityFull') : t('btn.densityCompact')],
+                        }),
+                        /*
+                         * 排序（第十三刀）：三档循环，按钮上写的是**当前档位**（不靠图标让人猜）。
+                         *
+                         * 档名一律带「本页」的前提说明（title）：宿主没有服务端排序，这里排的是
+                         * **已返回的这一页**——把它读成「排序全部命中」是这一格唯一会出的事故，
+                         * 所以入口自己先把话说清（设计 §9.3 #8 的边界）。
+                         */
+                        jsx('button', {
+                          type: 'button',
+                          className: sortMode === 'time' ? 'll_btnGhost ll_btnGhostIcon' : 'll_btnGhost ll_btnGhostIcon ll_btnGhostOn',
+                          /*
+                           * 图标化了（第十八刀）：按钮上只剩**档位名**（时间 / 级别 / 正文），
+                           * 「这是排序」由图标说、「排的是哪一档」由字说。原来那句「排序：时间」
+                           * 里「排序」两个字是**重复**的——它旁边的图标（上下双箭头）已经在说这件事，
+                           * 而这一行还要塞下另外三颗按钮。
+                           *
+                           * 语义一个字没丢：完整句子仍在 `aria-label` 与 `title` 里（读屏与悬停都能读全），
+                           * 那条「只排这一页」的边界说明也还在。
+                           */
+                          title: t('hint.sort', { order: sortName(sortMode) }),
+                          'aria-label': t('hint.sort', { order: sortName(sortMode) }),
+                          onClick: cycleSort,
+                          children: [actionIcon('sort'), sortName(sortMode)],
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost ll_btnGhostIcon',
+                          disabled: querying,
+                          onClick: clearResults,
+                          children: [actionIcon('reset'), t('btn.clear')],
+                        }),
                       ],
                     }),
-                    lines.length > 0 && !isDocker ? jsx('div', {
-                      className: 'll_results',
-                      // 列表一滚，浮层锚的那个按钮就不在原来的位置了——直接收起，别让它漂在别处
-                      onScroll: closeLabelPanel,
-                      children: lines.map((line) => {
-                        /*
-                         * 一行 = 时间 · 级别 · 正文 · **谁写的**（1 个身份标签 + 「＋N」）。
-                         *
-                         * 为什么只摆 1 个（2026-10-17 第九刀）：真机 100 行里 `container.name` 有 4 个值、
-                         * `host.name` 只有 1 个（而且值是容器 ID 风格的 hostname）、`log.file.path` 与
-                         * container.name 一一对应；3 个 chip + 「另有 N 个」会把行高撑到 4 行，而正文常常
-                         * 只有 1～2 行——标签成了主角。现在行上只留**宿主优先顺序的第一个**（通常是
-                         * container.name，仍是一键筛选入口），其余收进「＋N」浮层（`allRowLabels`）。
-                         *
-                         * 顺序仍是宿主给的（`LABEL_PRIORITY` 排的就是「排查时先问什么」），这里不重挑；
-                         * 悬停 title 里也仍然有**全部**标签与原文。
-                         */
-                        const tags = rowLabels(line, 1)
-                        const more = rowLabelOverflow(line, 1)
-                        const panelOpen = labelPanel !== undefined && labelPanel.id === line.id
-                        return jsxs('div', {
-                          className: 'll_resultRow',
-                          title: lineTitle(line),
-                          children: [
-                            jsx('span', { className: 'll_resultTime', children: formatTime(line.ts) }),
-                            jsx('span', { className: 'll_resultLevel', children: line.level === undefined ? '' : line.level }),
-                            jsx('span', { className: 'll_resultMsg', children: line.message }),
-                            tags.length === 0 && more === 0 ? null : jsxs('span', {
-                              className: 'll_resultTags',
-                              children: [
-                                ...tags.map((tag) => (rowFilterProblem(tag) === '' ? jsxs('button', {
-                                  type: 'button',
-                                  // 类名不带 `btn`（按钮族几何检查按 /btn/i 抓类名）——与直方图柱子同一条
-                                  className: 'll_resultTag ll_resultTagHit',
-                                  title: t('hint.rowLabelFilter', { field: tag.field, value: tag.value }),
-                                  disabled: querying,
-                                  // 保住这一次点击：按钮在行里，行本身没有 onMouseDown 的约定，
-                                  // 但焦点落到按钮上再重渲染会把 ::focus-visible 跳走，所以先不抢焦点
-                                  onMouseDown: (event) => { event.preventDefault() },
-                                  onClick: () => { drillDown(tag.field, tag.value) },
-                                  children: [
-                                    jsx('span', { className: 'll_resultTagKey', children: tag.field }),
-                                    jsx('span', { className: 'll_resultTagValue', children: tag.display }),
-                                  ],
-                                }, 'll-tag-' + tag.field) : jsx('span', {
-                                  // 不可点的标签（空值那类）：照旧摆出来，只是没有那个入口
-                                  className: 'll_resultTag',
-                                  children: [
-                                    jsx('span', { className: 'll_resultTagKey', children: tag.field }),
-                                    jsx('span', { className: 'll_resultTagValue', children: tag.display }),
-                                  ],
-                                }, 'll-tag-' + tag.field))),
-                                more > 0 ? jsx('button', {
-                                  type: 'button',
-                                  // 类名不带 `btn`：这是行内的小标记，几何本来就跟按钮族不同（与柱子同一条）
-                                  className: 'll_resultTagMore',
-                                  title: t('hint.rowLabelPanel', { count: more }),
-                                  // 浮层开着时说明它属于哪一行（读屏与键盘都能听出来）
-                                  'aria-expanded': panelOpen,
-                                  'aria-haspopup': 'dialog',
-                                  disabled: querying,
-                                  onMouseDown: (event) => { event.preventDefault() },
-                                  onClick: (event) => { openLabelPanel(event, line) },
-                                  children: t('hint.rowMoreLabels', { count: more }),
-                                }, 'll-more-' + line.id) : null,
-                              ],
-                            }),
-                          ],
-                        }, 'll-line-' + line.id)
-                      }),
-                    }) : null,
+                    /*
+                     * 长句那一层：`outcome.hint`（游标过期 / 不支持翻页的走法）与 `outcome.warnings`
+                     * （宿主对这次查询做过什么调整：夹了 limit、兜了时间窗、级别是页内筛）。
+                     *
+                     * **不许吞掉**——agent 工具看得到的东西，面板也得看得到。但也不必把它们塞进
+                     * 按钮那一行：它们本来就长，各占一行反而读得清。
+                     */
+                    outcome === undefined || isDocker ? null : jsx('div', {
+                      className: 'll_queryNote',
+                      children: [
+                        outcome.hint === undefined ? null : jsx('span', { className: 'll_warn', children: outcome.hint }),
+                        ...(outcome.warnings === undefined ? [] : outcome.warnings.map((text, at) => jsx('span', { className: 'll_warn', children: text }, 'll-warn-' + String(at)))),
+                      ],
+                    }),
                     // 时间分布：拿不到就把那句话说出来（不动结果列表），**不支持**就说清不支持，
                     // **不知道**（宿主没给 capabilities）什么都不说——「不知道 ≠ 不支持」。
                     // 两句聚合（分布 / 榜）共用这一句「不支持」：它们是同一个能力，说两遍只是噪音。
@@ -3023,9 +5634,25 @@ window.__ModuleLoader__.load({
                               histogram.truncated ? jsx('span', { className: 'll_warn', children: t('hint.histogramTruncated') }) : null,
                             ],
                           }),
+                          /*
+                           * 图（第十六刀）：柱子 + **自画的悬停读数** + **峰值记号**。
+                           *
+                           * 三处改动都来自真机那张放大图：
+                           *   ① 原生 tooltip 会**盖住横轴刻度**（灰框正压在 18:27 上），而且它写的是
+                           *      `18:28:00.000`——1 分钟一档的桶标到毫秒，纯噪音。改成自画的读数条：
+                           *      位置在图的**上方**固定一行（不跟着鼠标跑），时刻按分桶宽度选精度。
+                           *   ② 标题写着「峰值 681 条」，可**图上哪一根是 681 完全看不出来**（681 与常态
+                           *      460 只差一截，61 根里肉眼挑不出来）。给峰值那根加一道顶部记号 + 数值。
+                           *   ③ 悬停时柱子只换个颜色，读者仍得去读 tooltip。现在读数条同时给出**时刻 ·
+                           *      条数 · 占全窗的比例**，一眼就是这段量级。
+                           *
+                           * 读数条**常驻一行**（不悬停时显示当前视图的摘要，即「峰值那一段」）：
+                           * 高度不变，鼠标移进移出时下面的横轴不会跳。
+                           */
                           jsx('div', {
                             className: 'll_histBars',
-                            children: histogram.bars.map((bar) => {
+                            children: [
+                              ...histogram.bars.map((bar) => {
                               /*
                                * 一根柱 = 「这一段有多少条」。点它 = 把窗口夹到这一段重查一次
                                * （与点榜上一行同一条套路：改草稿 → 立刻重查，不拿本地行数糊一个结果）。
@@ -3039,28 +5666,130 @@ window.__ModuleLoader__.load({
                                * 是内联的、每条都不一样，本来就谈不上同族）。
                                */
                               const barClass = bar.count === 0 ? 'll_histBar ll_histBarEmpty' : 'll_histBar ll_histBarClick'
-                              // 空桶给 2% 的底座：否则「那段时间一条都没有」与「这一段没画」看起来一样
-                              const style = { height: String(Math.max(bar.ratio * 100, 2)) + '%' }
-                              const label = t('meta.histBucket', { time: formatTime(bar.ts), count: bar.count })
+                              /*
+                               * 柱高（第十六刀）：按 `histScale` 那一档算。
+                               *
+                               * - `linear`：诚实的「占峰值的比例」（从零起）；
+                               * - `clipped`：从 `floor` 起画，把挤在顶部的那一大团拉开——
+                               *   **柱高不再与条数成正比**，所以界面必须有那句说明（见下面的 note）；
+                               * - `flat`：全一样，怎么画都一样。
+                               *
+                               * 空桶（count = 0）**永远**只是那条 2% 的底座，不参与裁剪：
+                               * 「零」是一个真实的值，把它抬到 floor 之上就撒了谎。
+                               */
+                              const style = {
+                                height: String(
+                                  bar.count === 0
+                                    ? 2
+                                    : histScale.mode === 'clipped'
+                                      ? Math.max(((bar.count - histScale.floor) / (histScale.max - histScale.floor)) * 100, 2)
+                                      : Math.max(bar.ratio * 100, 2),
+                                ) + '%',
+                              }
+                              // 峰值那一根：加一道记号（不然标题里的「峰值 N 条」在图上找不到落点）
+                              const isPeak = histPeakTs !== undefined && bar.ts === histPeakTs
+                              const peakClass = isPeak ? ' ll_histBarPeak' : ''
+                              // 悬停里仍留一个原生 title 作为**兜底**（键盘聚焦也想看到数）：
+                              // 但正文已经搬到读数条上，这里只留最短的一句，不再写毫秒
+                              const label = t('meta.histBucket', { time: histogramBucketClock(bar.ts, histogram.stepMs), count: bar.count })
+                              const hoverIn = () => { setHoverBar(bar.ts) }
+                              const hoverOut = () => { setHoverBar(undefined) }
                               if (bar.count === 0) {
-                                return jsx('div', { className: barClass, style, title: label }, 'll-hist-' + String(bar.ts))
+                                return jsx('div', {
+                                  className: barClass + peakClass,
+                                  style,
+                                  // **不挂 title**：原生 tooltip 会盖住横轴刻度（真机截图里正压在 18:27 上），
+                                  // 而它说的那件事读数条已经说了。空桶本来也点不动，没有动作要提示。
+                                  onMouseEnter: hoverIn,
+                                  onMouseLeave: hoverOut,
+                                }, 'll-hist-' + String(bar.ts))
                               }
                               // 正在放大的那一档：与榜上「正在按它下钻」同一个高亮（看得出这一屏是收窄过的）
                               const active = zoomedBar !== undefined && zoomedBar.from === bar.ts
                               return jsx('button', {
                                 type: 'button',
-                                className: active ? barClass + ' ll_histBarActive' : barClass,
+                                className: (active ? barClass + ' ll_histBarActive' : barClass) + peakClass,
                                 style,
-                                // 悬停说全：条数 + 这一根此刻点下去会做什么。**正在放大的那一根说的是
-                                // 「再点一次取消」**——同一个手势在这一档上是撤销，不说清就成了「点不动」的错觉
-                                title: label + '\n' + (active ? t('hint.zoomBarCancel') : t('hint.zoomBar')),
+                                /*
+                                 * **不挂 title**（第十六刀）：那是浏览器的原生 tooltip，它会
+                                 *   - 停在鼠标旁边、**盖住横轴刻度**（真机截图里那道灰框正压在 18:27 上）；
+                                 *   - 悬停约 1 秒才出来，而读数条是即时跟着鼠标走的；
+                                 *   - 说的内容与读数条重复，等于同一个数在一屏上说两遍。
+                                 * 读数条接管「这一段是多少」，「点下去做什么」也搬过去（悬停时显示）。
+                                 *
+                                 * aria-label 仍然给全：读屏用户没有读数条可看，这里是唯一的完整句子。
+                                 */
+                                'aria-label': label + '；' + (active ? t('hint.zoomBarCancel') : t('hint.zoomBar')),
                                 disabled: querying,
+                                onMouseEnter: hoverIn,
+                                onMouseLeave: hoverOut,
+                                // 键盘用户：聚焦等于悬停（读数条跟着走，不然 Tab 过来只有一圈焦点环）
+                                onFocus: hoverIn,
+                                onBlur: hoverOut,
                                 onClick: () => { zoomToBarAt(bar.ts, histogram.stepMs) },
                               }, 'll-hist-' + String(bar.ts))
+                              }),
+                                                            /*
+                           * 读数条（第十七刀）：**贴在悬停那根柱子的正上方**，不再是左端常驻的一行。
+                           *
+                           * 真机原话是「柱子和信息隔得太远了」——上一版读数条固定在容器左端，柱子在
+                           * 图中间，两者之间隔着大半个屏，每移一格都要横跨一次。现在它就是那根柱子的
+                           * 标签：柱子与它的时刻 · 条数 · 占比在同一列上。
+                           *
+                           * 不悬停时**不画**：一行常驻的「峰值在 …」还是「信息在别处」那个毛病。
+                           * 峰值在哪一根由读数条（悬停峰值柱时）+ 峰值柱的强调色两处指认。
+                           */
+                          hoverBarAt === undefined ? null : jsx('div', {
+                            className: 'll_histReadout',
+                            // 位置由柱序号算（柱宽是 flex:1 等分，序号才是屏幕上的真实位置）
+                            style: { left: String(hoverBarAt) + '%' },
+                            // 读屏：读数变化要能听到（这是一个状态提示，不是装饰）
+                            role: 'status',
+                            children: [
+                              jsx('span', { className: 'll_histReadoutTime', children: histogramBucketClock(hoverBar, histogram.stepMs) }),
+                              jsx('span', {
+                                className: 'll_histReadoutCount',
+                                children: t('meta.histBucketCount', { count: hoverBarCount }),
+                              }),
+                              jsx('span', {
+                                className: 'll_histReadoutShare',
+                                children: t('meta.histPeakShare', { percent: hoverBarShare }),
+                              }),
+                              jsx('span', {
+                                className: 'll_histReadoutHint',
+                                children: hoverBarIsActive ? t('hint.zoomBarCancel') : t('hint.zoomBarShort'),
+                              }),
+                            ],
+                          }),
+                            ],
+                          }),
+                          /*
+                           * 横轴（第十三刀）：柱子下面那行时刻。刻度在渲染前算好（见 `histTicks`），
+                           * 回空就不画轴——**一条只有两端的轴等于没标**，反而多一行字把图往下推。
+                           *
+                           * 时刻精度按**窗口跨度**选（`formatTickTime`）：15 分钟的窗里写 `HH:mm` 就够，
+                           * 1 分钟档的窗才需要秒，跨天的窗才需要日期。
+                           */
+                          histTicks.length === 0 ? null : jsx('div', {
+                            className: 'll_histAxis',
+                            children: histTicks.map((tick, at, all) => {
+                              const edge = at === 0 ? ' ll_histTickStart' : (at === all.length - 1 ? ' ll_histTickEnd' : '')
+                              return jsx('span', {
+                                className: 'll_histTick' + edge,
+                                // 首尾用 left / right 钉住，中间按比例摆（内联 style：每根刻度位置都不同）
+                                style: at === 0 || at === all.length - 1 ? undefined : { left: String(tick.at) + '%' },
+                                children: formatTickTime(tick.ts, histSpan),
+                              }, 'll-tick-' + String(tick.ts))
                             }),
                           }),
                           // 被下限夹过要**说出来**（`clamped`）：窗不是他点的那么宽，静默收窄比报错更难查
                           zoomClamped ? jsx('p', { className: 'll_hint', children: t('hint.zoomClamped') }) : null,
+                          /*
+                           * 裁剪了就**必须说**（第十六刀）：`clipped` 那一档的柱高不与条数成正比，
+                           * 不说的话「这根比那根高一倍」会被读成两倍的量——那正是这张图唯一的用处。
+                           * 不裁剪（linear / flat）时不写这句：没发生的事不用解释。
+                           */
+                          histScale.note === '' ? null : jsx('p', { className: 'll_hint', children: t('hint.histogramClipped') }),
                           jsx('p', { className: 'll_hint', children: t('hint.histogram') }),
                         ],
                       }) : jsx('p', { className: 'll_warn', children: t('error.histogram', { message: histogram.error }) })),
@@ -3118,6 +5847,160 @@ window.__ModuleLoader__.load({
                         jsx('p', { className: 'll_hint', children: t('hint.groups') }),
                       ],
                     }) : jsx('p', { className: 'll_warn', children: t('error.groups', { message: groups.error }) })),
+                    /*
+                     * 字段面板那一层（P8-乙 / 第十二刀起，第二十二刀挪出结果区）。
+                     *
+                     * 它原来画在 `.ll_workbench` 里、而那个壳的判据是 `lines.length > 0`——于是
+                     * **查询回来 0 行时，元信息行的「字段」按钮按下去什么都不会发生**（面板根本没画）。
+                     * 浮层本来就是 `position:fixed` 的、不占结果区的布局，所以它不再需要挂在结果区里：
+                     * 这一层用 `display:contents` 只是给两个绝对定位的孩子一个位置（自身不生成盒子，
+                     * `.ll_panel` 那个 `gap:12px` 的纵向布局不会被多插一个空档）。
+                     *
+                     * 遮罩只在浮层打开时存在：点面板外任何地方都先收起（一次点击=一件事）。
+                     */
+                    !isDocker && fieldsOpen ? jsxs('div', {
+                      className: 'll_fieldLayer',
+                      children: [
+                        jsx('div', {
+                          className: 'll_fieldScrim',
+                          onClick: () => { setFieldsOpen(false) },
+                        }),
+                        renderColumnAside(),
+                      ],
+                    }) : null,
+                    /*
+                     * 结果区 = 结果表（字段面板是上面那一层，不在这个壳里）。
+                     *
+                     * 它是**浮层**而不是布局里的一栏：真机两轮反馈（常驻「占地方」→ 改成开关后展开
+                     * 仍把正文从 577px 挤到 389px）说的是同一件事——看日志的时候宽度全归日志。所以
+                     * 面板绝对定位浮在结果上，`.ll_main` 永远是整行宽度；点面板外（遮罩）或再点
+                     * 触发它那颗按钮收起。
+                     */
+                    lines.length > 0 && !isDocker ? jsxs('div', {
+                      className: 'll_workbench',
+                      children: [
+                        jsxs('div', {
+                          className: 'll_main',
+                          children: [
+                            renderColumnChips(),
+                            jsx('div', {
+                              // 有额外列时改成 grid 行 + 横向滚动（见 columnsTemplate）；0 列仍是原来的 flex 行
+                              className: columnsTemplate === '' ? 'll_results' : 'll_results ll_resultsWide',
+                              // 列表一滚，浮层锚的那个按钮就不在原来的位置了——直接收起，别让它漂在别处
+                              onScroll: closeLabelPanel,
+                              // 排序只改**摆的顺序**（判据在 pure.js 的 sortLines）；`lines` 本身不动
+                              children: shownLines.map((line) => {
+                                /*
+                                 * 一行 = 展开箭头 · 时间 · 级别 · 正文 ·（额外列）· **谁写的**（1 个身份标签 + 「＋N」）。
+                                 *
+                                 * 为什么行上只摆 1 个（2026-10-17 第九刀）：真机 100 行里 `container.name`
+                                 * 有 4 个值、`host.name` 只有 1 个（而且值是容器 ID 风格的 hostname）、
+                                 * `log.file.path` 与 container.name 一一对应；3 个 chip + 「另有 N 个」会把
+                                 * 行高撑到 4 行，而正文常常只有 1～2 行——标签成了主角。现在行上只留**宿主
+                                 * 优先顺序的第一个**（通常是 container.name，仍是一键筛选入口），其余收进
+                                 * 「＋N」浮层（`allRowLabels`）。
+                                 *
+                                 * 顺序仍是宿主给的（`LABEL_PRIORITY` 排的就是「排查时先问什么」），这里
+                                 * 不重挑；悬停 title 里也仍然有**全部**标签与原文。
+                                 *
+                                 * 额外列的值取自 `line.labels[field]`（pure.js 的 columnValue）：这一行没带
+                                 * 那个字段就画 `—`，悬停说明「这一行没有这个字段」——不造一个假值。
+                                 */
+                                const tags = rowLabels(line, 1)
+                                const more = rowLabelOverflow(line, 1)
+                                const panelOpen = labelPanel !== undefined && labelPanel.id === line.id
+                                const expanded = expandedId === line.id
+                                return jsxs('div', {
+                                  className: 'll_resultItem',
+                                  children: [
+                                    jsxs('div', {
+                                      // 展开的那一行淡淡地标出来（整行可点，箭头只是键盘/读屏的明确入口）
+                                      className: expanded ? 'll_resultRow ll_resultRowOpen' : 'll_resultRow',
+                                      // 有额外列：用固定的列宽模板（正文有下限），窗口不够就横向滚动
+                                      style: columnsTemplate === ''
+                                        ? undefined
+                                        : { display: 'grid', boxSizing: 'border-box', width: '100%', gridTemplateColumns: columnsTemplate },
+                                      title: lineTitle(line),
+                                      /*
+                                       * 整行点一下 = 展开/收起详情（日志大多很长，展开入口不能只有那颗 14px 的箭头）。
+                                       * 行里的按钮（身份标签 / ＋N / 展开箭头）各自有动作：**命中 button 就不处理**，
+                                       * 否则「点标签筛一次」会顺手把详情翻出来（一次点击干两件事）。
+                                       */
+                                      onClick: (event) => {
+                                        const target = event === null || event === undefined ? undefined : event.target
+                                        if (target !== undefined && target !== null && typeof target.closest === 'function' && target.closest('button') !== null) return
+                                        setExpandedId(expanded ? undefined : line.id)
+                                      },
+                                      children: [
+                                        // 展开这一行（全部标签 + 原文）：自带一个可见的箭头，整行点开
+                                        // 会把「点标签筛」那些入口一起吃掉，所以只给这一颗
+                                        jsx('button', {
+                                          type: 'button',
+                                          className: 'll_rowToggle',
+                                          'aria-expanded': expanded,
+                                          title: expanded ? t('hint.collapseRow') : t('hint.expandRow'),
+                                          onClick: () => { setExpandedId(expanded ? undefined : line.id) },
+                                          children: expanded ? '▾' : '▸',
+                                        }, 'll-toggle-' + line.id),
+                                        jsx('span', { className: 'll_resultTime', children: formatTime(line.ts) }),
+                                        jsx('span', { className: 'll_resultLevel ll_resultLevel' + (levelTone(line.level) === 'error' ? 'Error' : levelTone(line.level) === 'warn' ? 'Warn' : levelTone(line.level) === 'info' ? 'Info' : 'Muted'), children: line.level === undefined ? '' : line.level }),
+                                        jsx('span', { className: denseResults ? 'll_resultMsg ll_resultMsgCompact' : 'll_resultMsg', children: line.message }),
+                                        ...columns.map((name) => {
+                                          const value = columnValue(line, name)
+                                          return jsx('span', {
+                                            className: 'll_resultCell',
+                                            title: value === undefined ? t('hint.columnNoValue', { field: name }) : name + ' = ' + value,
+                                            children: value === undefined ? '—' : value,
+                                          }, 'll-cell-' + line.id + '-' + name)
+                                        }),
+                                        tags.length === 0 && more === 0 ? null : jsxs('span', {
+                                          className: 'll_resultTags',
+                                          children: [
+                                            ...tags.map((tag) => (rowFilterProblem(tag) === '' ? jsxs('button', {
+                                              type: 'button',
+                                              // 类名不带 `btn`（按钮族几何检查按 /btn/i 抓类名）——与直方图柱子同一条
+                                              className: 'll_resultTag ll_resultTagHit',
+                                              title: t('hint.rowLabelFilter', { field: tag.field, value: tag.value }),
+                                              disabled: querying,
+                                              // 保住这一次点击：按钮在行里，行本身没有 onMouseDown 的约定，
+                                              // 但焦点落到按钮上再重渲染会把 ::focus-visible 跳走，所以先不抢焦点
+                                              onMouseDown: (event) => { event.preventDefault() },
+                                              onClick: () => { drillDown(tag.field, tag.value) },
+                                              // 行上只摆**值**：字段名在行悬停、＋N 浮层与左侧字段栏里都有；
+                                              // 键名挤在这 220px 里只会把值切掉（真机：长服务名被切成 `app-svc-…`，后面看不见）
+                                              children: jsx('span', { className: 'll_resultTagValue', children: tag.display }),
+                                            }, 'll-tag-' + tag.field) : jsx('span', {
+                                              // 不可点的标签（空值那类）：照旧摆出来，只是没有那个入口
+                                              className: 'll_resultTag',
+                                              children: jsx('span', { className: 'll_resultTagValue', children: tag.display }),
+                                            }, 'll-tag-' + tag.field))),
+                                            more > 0 ? jsx('button', {
+                                              type: 'button',
+                                              // 类名不带 `btn`：这是行内的小标记，几何本来就跟按钮族不同（与柱子同一条）
+                                              className: 'll_resultTagMore',
+                                              title: t('hint.rowLabelPanel', { count: more }),
+                                              // 浮层开着时说明它属于哪一行（读屏与键盘都能听出来）
+                                              'aria-expanded': panelOpen,
+                                              'aria-haspopup': 'dialog',
+                                              disabled: querying,
+                                              onMouseDown: (event) => { event.preventDefault() },
+                                              onClick: (event) => { openLabelPanel(event, line) },
+                                              children: t('hint.rowMoreLabels', { count: more }),
+                                            }, 'll-more-' + line.id) : null,
+                                          ],
+                                        }),
+                                      ],
+                                    }, 'll-line-' + line.id),
+                                    // 行详情挂在行**下面**（列表本身是纵向 flex）：一次只开一行，换行时上一行收起
+                                    expanded ? renderRowDetail(line) : null,
+                                  ],
+                                }, 'll-item-' + line.id)
+                              }),
+                            }),
+                          ],
+                        }),
+                      ],
+                    }) : null,
                     outcome !== undefined && lines.length === 0 && !isDocker ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
                     /*
                      * 「下一页」只在**条件没被改过**时才给。

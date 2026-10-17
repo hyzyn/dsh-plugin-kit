@@ -79,6 +79,16 @@ export async function runSearch(deps, input) {
     if (backend === undefined)
         throw new Error(adapterHint(picked.target.kind));
     const caps = backend.capabilities();
+    /*
+     * `filters` 必须**原样传下去**（2026-10-17 真机抓到的洞）：这一层被抽出来的时候漏了它，
+     * 而下面的 `runFacets` 那份传了——于是结构化筛选只收窄了榜与分布，**行**照旧是全量：
+     * 真机上 `filters: {container.name: prometheus}` 发出去，回来的 100 行里躺着 6 个容器，
+     * matched 也是未筛的 26264（面板那句「行、时间分布与分组榜都跟着收窄」里，第一个是假的）。
+     *
+     * 一起漏掉的还有 Loki 那句**诚实的报错**：适配器见不得 filters 就抛「暂不支持结构化 filters」，
+     * 传不到它那儿就变成「静默给了全量」——正是那段注释里说的最坏情况。守卫见
+     * `test/query-route.test.ts`：走 /query 路由，断言桩后端真的收到了 filters、Loki 真的回了 400。
+     */
     const normalized = normalizeQuery({
         targetId: picked.target.id,
         q: input.q,
@@ -87,6 +97,7 @@ export async function runSearch(deps, input) {
         limit: input.limit,
         direction: input.direction,
         cursor: input.cursor,
+        filters: input.filters,
     }, caps);
     if (!normalized.ok)
         throw new Error(normalized.error);

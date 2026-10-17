@@ -5,6 +5,31 @@ import { describe, expect, it } from 'vitest'
 import {
   allRowLabels,
   appendLines,
+  columnPickState,
+  columnToggle,
+  columnValue,
+  fieldSections,
+  fieldFilterTerms,
+  fieldMatches,
+  fieldLeaf,
+  fieldParent,
+  groupFieldsByParent,
+  pageFieldUsage,
+  panelPlacement,
+  fieldPanelHeight,
+  fieldNameBreaks,
+  fieldValuesKey,
+  fieldValuesPayload,
+  valueBars,
+  valueChoices,
+  filterFieldChoices,
+  filterBoxBack,
+  choiceMove,
+  FIELD_VALUES_SIZE,
+  FIELD_PANEL_CEILING,
+  FIELD_PANEL_WIDTH,
+  rawPreview,
+  resultColumnsTemplate,
   countsParts,
   draftFromTarget,
   draftPayload,
@@ -24,6 +49,11 @@ import {
   groupPayload,
   groupProblem,
   histogramBars,
+  histogramAxis,
+  histogramBucketClock,
+  histogramPeakTs,
+  histogramScale,
+  formatTickTime,
   histogramInterval,
   histogramPayload,
   kindOptions,
@@ -48,12 +78,19 @@ import {
   levelChoices,
   levelFiltered,
   levelFilterOf,
+  levelTone,
   lineTitle,
   ROW_LABEL_MAX,
   ROW_LABEL_VALUE_MAX,
+  RESULT_COLUMN_MAX,
+  FIELD_LIST_MAX,
+  RAW_PREVIEW_MAX,
   rowFilterProblem,
   rowLabelOverflow,
   rowLabels,
+  sortKeyOf,
+  sortKeys,
+  sortLines,
   unzoomQuery,
 } from '../client-src/pure.js'
 
@@ -450,6 +487,107 @@ describe('dockerLogTextOf：Docker /logs 的两种形状', () => {
   })
 })
 
+describe('字段过滤与分组（第二十一刀）', () => {
+  it('过滤词按空白分词、转小写、去重、丢空串（`cont name` 是两个词）', () => {
+    expect(fieldFilterTerms('  CONTAINER   name ')).toEqual(['container', 'name'])
+    expect(fieldFilterTerms('a a A b')).toEqual(['a', 'b'])
+    expect(fieldFilterTerms('')).toEqual([])
+    expect(fieldFilterTerms('   ')).toEqual([])
+    expect(fieldFilterTerms(null)).toEqual([])
+    expect(fieldFilterTerms(undefined)).toEqual([])
+  })
+
+  it('**反例（本格的核心）**：`container name`（中间有空格）必须命中 container.name', () => {
+    // 改前是单串子串匹配：打得出来「container name」却得到 0 个结果——那不是「没找到」，
+    // 是「你打的方式这个框不认」，而它是 92 个字段唯一的导航方式
+    const terms = fieldFilterTerms('container name')
+    expect(fieldMatches('container.name', terms)).toBe(true)
+    expect(fieldMatches('container.image.name', terms)).toBe(true)
+    expect(fieldMatches('container.labels.foo', terms)).toBe(false) // 缺 name
+    expect(fieldMatches('host.name', terms)).toBe(false) // 缺 container
+  })
+
+  it('**接线**：fieldSections 真的用了多词过滤（不是只有 fieldMatches 认）', () => {
+    // 这条盯的是「判据写对了、但没接上」——单测 fieldMatches 全绿、面板却还是单串匹配
+    // 正是这种漏法（反例实测：把 fieldSections 退回单串，上面几条照样绿）
+    const sections = fieldSections(
+      [{ name: 'container.name' }, { name: 'host.name' }],
+      [{ name: 'container.name', count: 2 }, { name: 'host.name', count: 1 }],
+      'cont name',
+    )
+    expect(sections.hit.map((item) => item.name)).toEqual(['container.name'])
+    expect(sections.totals).toEqual({ hit: 1, conflict: 0, rest: 0 })
+  })
+
+  it('每个词都要命中（AND，不是 OR）；空词表全命中', () => {
+    expect(fieldMatches('host.name', fieldFilterTerms('host name'))).toBe(true)
+    expect(fieldMatches('host.name', fieldFilterTerms('host zzz'))).toBe(false)
+    expect(fieldMatches('anything', [])).toBe(true)
+    expect(fieldMatches('', fieldFilterTerms('x'))).toBe(false)
+  })
+
+  it('大小写不敏感；坏输入不抛', () => {
+    expect(fieldMatches('Container.Name', fieldFilterTerms('CONTAINER'))).toBe(true)
+    expect(fieldMatches(null, [])).toBe(true)
+    expect(fieldMatches(undefined, fieldFilterTerms('a'))).toBe(false)
+  })
+
+  it('fieldLeaf / fieldParent：最后一段与它前面的父路径；没有点就是自己 / 空串', () => {
+    expect(fieldLeaf('container.labels.com_docker_compose_image')).toBe('com_docker_compose_image')
+    expect(fieldParent('container.labels.com_docker_compose_image')).toBe('container.labels')
+    expect(fieldLeaf('stream')).toBe('stream')
+    expect(fieldParent('stream')).toBe('')
+    expect(fieldLeaf('')).toBe('')
+    expect(fieldParent(null)).toBe('')
+  })
+
+  it('按父路径分组：顶层组排最前，组按名字排，组内保持入参顺序', () => {
+    const groups = groupFieldsByParent([
+      { name: 'host.os.name' }, { name: 'stream' }, { name: 'container.name' },
+      { name: 'host.name' }, { name: 'agent.name' }, { name: 'container.labels.a' },
+      { name: 'message' },
+    ])
+    expect(groups.map((group) => group.key)).toEqual(['', 'agent', 'container', 'container.labels', 'host', 'host.os'])
+    // 顶层组：两个都在，顺序按入参（调用方已经排好）
+    expect(groups[0].items.map((item) => item.name)).toEqual(['stream', 'message'])
+    // container 组只装直接子字段（labels 那一坨在自己的组里）
+    expect(groups[2].items.map((item) => item.name)).toEqual(['container.name'])
+    expect(groups[3].items.map((item) => item.name)).toEqual(['container.labels.a'])
+    // 组内保持入参顺序（不重排：那是第二份判据）
+    expect(groups[4].items.map((item) => item.name)).toEqual(['host.name'])
+  })
+
+  it('分组**不改项的形状**（叶子名由 fieldLeaf 现算，不往数据里塞第二份真相）', () => {
+    const item = { name: 'container.name', count: 3, kind: 'indexed' }
+    const groups = groupFieldsByParent([item])
+    expect(groups[0].items[0]).toBe(item)
+  })
+
+  it('分组忽略没有名字的项；坏输入回空数组', () => {
+    expect(groupFieldsByParent([undefined, null, { name: '' }, { name: 'a.b' }]).map((g) => g.key)).toEqual(['a'])
+    expect(groupFieldsByParent(undefined)).toEqual([])
+    expect(groupFieldsByParent(null)).toEqual([])
+  })
+
+  it('**真机那一份数据**：58 个 `container.labels.*` 收成一个可折叠的组', () => {
+    // 2026-10-17 在 3085 上量到的真实分布（92 个字段）
+    const labels = Array.from({ length: 58 }, (_, i) => ({ name: 'container.labels.k' + String(i) }))
+    const items = [
+      { name: 'container.name' }, { name: 'container.image.name' }, { name: 'container.id' },
+      ...labels,
+      { name: 'host.name' }, { name: 'host.os.name' }, { name: 'log.file.path' }, { name: 'stream' },
+    ]
+    const groups = groupFieldsByParent(items)
+    const labelGroup = groups.find((group) => group.key === 'container.labels')
+    expect(labelGroup.items).toHaveLength(58)
+    // 关键成效：`container` 那一组从 61 个降到 **2 个**直接子字段
+    // （`container.image.name` 的父路径是 `container.image`，它自成一组——父路径这条规则不认「第一段」）
+    expect(groups.find((group) => group.key === 'container').items.map((i) => i.name)).toEqual(['container.name', 'container.id'])
+    expect(groups.find((group) => group.key === 'container.image').items.map((i) => i.name)).toEqual(['container.image.name'])
+    expect(groups.find((group) => group.key === 'host').items.map((i) => i.name)).toEqual(['host.name'])
+  })
+})
+
 describe('时间分布：间隔怎么挑（P6 直方图）', () => {
   it('柱数落在看得清的区间里：15m→30s、1h→1m、6h→15m、24h→30m', () => {
     expect(histogramInterval(15 * 60 * 1000)).toEqual({ ms: 30 * 1000, key: '30s' })
@@ -549,6 +687,120 @@ describe('时间分布：柱子怎么铺（空档必须补 0）', () => {
   })
 })
 
+describe('时间分布：柱子怎么归一化（第十六刀）', () => {
+  const bar = (ts, count) => ({ ts, count })
+
+  it('**反例（本格的核心）**：数据挤成一条平带时改用基线裁剪，否则图上根本看不出差异', () => {
+    // 真机读数：常态 ~460、峰值 681（比 1.47）——线性画法下 50/61 根落在 60~70% 这一档
+    const bars = [bar(0, 681), ...Array.from({ length: 60 }, (_, i) => bar((i + 1) * 60_000, 440 + (i % 5) * 8))]
+    const scale = histogramScale(bars)
+    expect(scale.mode).toBe('clipped')
+    // 裁剪之后：最低那根贴近底部、最高那根到顶 —— 差异被拉开
+    const floor = scale.floor
+    const low = (440 - floor) / (scale.max - floor)
+    const high = (681 - floor) / (scale.max - floor)
+    expect(high).toBe(1)
+    expect(low).toBeGreaterThan(0)
+    expect(low).toBeLessThan(0.6)
+  })
+
+  it('差异本来就大（最大 ≥ 最小 × 3）时走**线性**，不裁剪也不说那句废话', () => {
+    const scale = histogramScale([bar(0, 900), bar(60_000, 20), bar(120_000, 300)])
+    expect(scale.mode).toBe('linear')
+    expect(scale.floor).toBe(0)
+    expect(scale.note).toBe('')
+  })
+
+  it('裁剪时必须给出去说明的那个键（柱高不再与条数成正比，说了才不算骗）', () => {
+    const scale = histogramScale([bar(0, 500), bar(60_000, 460)])
+    expect(scale.mode).toBe('clipped')
+    expect(scale.note).toBe('hint.histogramClipped')
+  })
+
+  it('全一样 / 只有一个非零桶 → flat，且**不写**裁剪说明（没发生的事不用解释）', () => {
+    for (const input of [[bar(0, 300), bar(60_000, 300)], [bar(0, 300), bar(60_000, 0)], [bar(0, 5)]]) {
+      const scale = histogramScale(input)
+      expect(scale.mode).toBe('flat')
+      expect(scale.note).toBe('')
+    }
+  })
+
+  it('一条都没有 / 坏输入 → flat、max 0，不除零', () => {
+    for (const input of [[], undefined, null, [bar(0, 0), bar(60_000, 0)], [null, bar(0, NaN)]]) {
+      const scale = histogramScale(input)
+      expect(scale.mode).toBe('flat')
+      expect(scale.max).toBe(0)
+      expect(Number.isFinite(scale.floor)).toBe(true)
+    }
+  })
+
+  it('floor 留 10% 余量：**最小那根也要看得见**（贴着基线就分不清「很少」与「没有」）', () => {
+    // 500 / 200 = 2.5 < 3 → 落在裁剪那一档（差得够开的数据不会走到这里）
+    const scale = histogramScale([bar(0, 500), bar(60_000, 200)])
+    expect(scale.mode).toBe('clipped')
+    // 200 × 0.9 = 180 → 最小那根落在 180 之上，柱高还有一小截
+    expect(scale.floor).toBe(180)
+    expect(scale.floor).toBeLessThan(200)
+  })
+
+  it('floor 至少是 1（条数是整数，基线下限不能是 0.9 这种）', () => {
+    const scale = histogramScale([bar(0, 1), bar(60_000, 1.5)])
+    expect(Number.isInteger(scale.floor)).toBe(true)
+    expect(scale.floor).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('时间分布：峰值记号与读数条的时刻（第十六刀）', () => {
+  const STEP = 60 * 1000
+
+  it('峰值那根回它的 ts；**并列取第一根**（确定性：同高时从左读到右）', () => {
+    const bars = [{ ts: 0, count: 5 }, { ts: STEP, count: 9 }, { ts: 2 * STEP, count: 9 }, { ts: 3 * STEP, count: 2 }]
+    expect(histogramPeakTs(bars)).toBe(STEP)
+  })
+
+  it('一条都没有 / 全是 0 / 坏输入 → undefined（界面据此**不画峰值记号**，不画一根假的）', () => {
+    for (const input of [[], undefined, null, [{ ts: 0, count: 0 }, { ts: STEP, count: 0 }], [{ ts: NaN, count: 3 }], [{ ts: 0, count: NaN }]]) {
+      expect(histogramPeakTs(input)).toBeUndefined()
+    }
+  })
+
+  it('负计数不算峰值（畸形数据不配当「最忙的那一段」）', () => {
+    expect(histogramPeakTs([{ ts: 0, count: -5 }, { ts: STEP, count: 3 }])).toBe(STEP)
+  })
+
+  it('读数条的时刻：桶 ≥ 1 分钟时**不写秒**（每一根都写 :00 只是噪音，真机上就这样）', () => {
+    const ts = new Date(2026, 9, 17, 18, 28, 0, 0).getTime()
+    expect(histogramBucketClock(ts, 60 * 1000)).toBe('18:28')
+    expect(histogramBucketClock(ts, 5 * 60 * 1000)).toBe('18:28')
+  })
+
+  it('分桶窄于 1 分钟时才写秒（15s 一档里秒是有效信息）', () => {
+    const ts = new Date(2026, 9, 17, 18, 28, 45, 0).getTime()
+    expect(histogramBucketClock(ts, 15 * 1000)).toBe('18:28:45')
+    expect(histogramBucketClock(ts, 1000)).toBe('18:28:45')
+  })
+
+  it('**反例（本格的核心）**：同一根柱，分桶宽度不同时读数条的写法可以不同，但**绝不能带毫秒**', () => {
+    const ts = new Date(2026, 9, 17, 18, 28, 0, 123).getTime()
+    for (const step of [1000, 15 * 1000, 60 * 1000, 60 * 60 * 1000]) {
+      const text = histogramBucketClock(ts, step)
+      expect(text).not.toContain('.')
+      expect(text.split(':').length).toBeLessThanOrEqual(3)
+    }
+  })
+
+  it('坏输入不抛：ts / step 不是数时按 0 / 整分兜底（**输出的是本地时刻**，别按 UTC 断言）', () => {
+    expect(() => histogramBucketClock(NaN, NaN)).not.toThrow()
+    // 「按 0 兜底」= epoch 0 的**本地**时刻；这个函数和 formatTime / formatTickTime 同一条口径
+    // （界面上显示的是本机时间），所以断言只能拿同一个 Date 算，不能写死 '00:00'
+    const epochLocal = new Date(0)
+    const pad = (n) => String(n).padStart(2, '0')
+    const expected = pad(epochLocal.getHours()) + ':' + pad(epochLocal.getMinutes())
+    expect(histogramBucketClock(NaN, NaN)).toBe(expected)
+    expect(histogramBucketClock(0, 0)).toBe(expected)
+  })
+})
+
 describe('时间分布：请求载荷', () => {
   const outcome = {
     target: { id: 't1', kind: 'elasticsearch', label: 'es' },
@@ -581,6 +833,156 @@ describe('时间分布：请求载荷', () => {
     const payload = histogramPayload({}, outcome, '5m')
     expect(payload.q).toBe('')
     expect(payload.interval).toBe('5m')
+  })
+})
+
+describe('时间分布：横轴刻度（第十三刀）', () => {
+  /** 铺一段窗口的柱子（只关心 ts，count 随便给）。 */
+  function barsOf(from, to, step) {
+    const bars = []
+    for (let ts = from; ts < to; ts += step) bars.push({ ts, count: 1 })
+    return bars
+  }
+
+  it('首尾各一个刻度，中间按整点挑（不超过上限）', () => {
+    const step = 60 * 1000
+    const from = Date.UTC(2026, 9, 17, 2, 0, 0)
+    const to = from + 60 * step
+    const ticks = histogramAxis(barsOf(from, to, step), from, to, 4)
+    expect(ticks.length).toBeGreaterThanOrEqual(2)
+    expect(ticks.length).toBeLessThanOrEqual(4)
+    // 首尾就是窗口两端：右端说的是**窗口右沿**（最后一根柱代表 [ts, ts+step)）
+    expect(ticks[0]).toEqual({ ts: from, at: 0 })
+    expect(ticks[ticks.length - 1]).toEqual({ ts: to, at: 100 })
+    // 中间刻度都落在整点上（是 step 的整数倍），且严格在窗口内
+    for (const tick of ticks.slice(1, -1)) {
+      expect(tick.ts % step).toBe(0)
+      expect(tick.ts).toBeGreaterThan(from)
+      expect(tick.ts).toBeLessThan(to)
+      expect(tick.at).toBeGreaterThan(0)
+      expect(tick.at).toBeLessThan(100)
+    }
+  })
+
+  it('**反例（本格的核心）**：同一个窗口连查两次，刻度必须逐字一致（刻度乱跳就再也找不到「刚才那根高的」）', () => {
+    const step = 60 * 1000
+    const from = Date.UTC(2026, 9, 17, 2, 0, 17)
+    const to = from + 60 * step
+    expect(histogramAxis(barsOf(from, to, step), from, to, 4))
+      .toEqual(histogramAxis(barsOf(from, to, step), from, to, 4))
+  })
+
+  it('窗口越长刻度越稀（不是越多）：1h 与 24h 都不超上限', () => {
+    for (const hours of [1, 6, 24]) {
+      const step = hours === 1 ? 60 * 1000 : hours === 6 ? 15 * 60 * 1000 : 30 * 60 * 1000
+      const from = Date.UTC(2026, 9, 17, 0, 0, 0)
+      const to = from + hours * 60 * 60 * 1000
+      const ticks = histogramAxis(barsOf(from, to, step), from, to, 4)
+      expect(ticks.length).toBeLessThanOrEqual(4)
+      expect(ticks[ticks.length - 1].ts).toBe(to)
+    }
+  })
+
+  it('认不出的输入回空数组——界面据此**不画轴**（只有两端的轴等于没标）', () => {
+    expect(histogramAxis([], 0, 1000, 4)).toEqual([])
+    expect(histogramAxis([{ ts: 0, count: 1 }], 0, 1000, 4)).toEqual([])
+    expect(histogramAxis(undefined, 0, 1000, 4)).toEqual([])
+    expect(histogramAxis([{ ts: 10, count: 1 }, { ts: 10, count: 2 }], 0, 1000, 4)).toEqual([])
+    expect(histogramAxis([{ ts: 0, count: 1 }, { ts: 10, count: 2 }], 100, 100, 4)).toEqual([])
+  })
+
+  it('上限给 1 / 0 / 非整数时按 4 处理（首尾两格是硬要求，上限管的是**中间**那几格）', () => {
+    const step = 1000
+    // 60 个柱宽、上限回落成 4 → 窗口等分点 20s / 40s 各吸附到柱网格，加首尾共 4 格
+    const expected = [0, 20 * step, 40 * step, 60 * step]
+    expect(histogramAxis(barsOf(0, 60 * step, step), 0, 60 * step, 1).map((tick) => tick.ts)).toEqual(expected)
+    expect(histogramAxis(barsOf(0, 60 * step, step), 0, 60 * step, 0).map((tick) => tick.ts)).toEqual(expected)
+    expect(histogramAxis(barsOf(0, 60 * step, step), 0, 60 * step, '4').map((tick) => tick.ts)).toEqual(expected)
+  })
+
+  it('中间刻度**间距均匀**且吸附在柱网格上（第一版按「从整点起走 N 根柱」，真机上剩下的第一格就贴着左端那个刻度）', () => {
+    const step = 60 * 1000
+    // 窗口不从整点开始（真机的 1 小时窗就是「现在往前推一小时」，几乎不可能整点）
+    const from = Date.UTC(2026, 9, 17, 2, 13, 37)
+    const to = from + 60 * step
+    const ticks = histogramAxis(barsOf(Math.floor(from / step) * step, to, step), from, to, 4)
+    expect(ticks.map((tick) => tick.ts)).toEqual([
+      from,
+      Math.round((from + 20 * step) / step) * step,
+      Math.round((from + 40 * step) / step) * step,
+      to,
+    ])
+    // 位置按吸附后的 ts 算：标签上的时刻与画在哪儿是同一件事
+    for (const tick of ticks) expect(tick.at).toBeCloseTo(((tick.ts - from) / (to - from)) * 100, 1)
+  })
+})
+
+describe('时间分布：刻度上的时刻（按窗口跨度选精度）', () => {
+  const ts = new Date(2026, 9, 17, 18, 5, 42).getTime()
+
+  it('三档：秒 / 时分 / 日期+时分', () => {
+    expect(formatTickTime(ts, 90 * 1000)).toBe('18:05:42')
+    expect(formatTickTime(ts, 60 * 60 * 1000)).toBe('18:05')
+    expect(formatTickTime(ts, 24 * 60 * 60 * 1000)).toBe('10-17 18:05')
+  })
+
+  it('边界取「不晚于」：正好 2 分钟仍是秒档，正好 12 小时才带日期', () => {
+    expect(formatTickTime(ts, 2 * 60 * 1000)).toBe('18:05:42')
+    expect(formatTickTime(ts, 2 * 60 * 1000 + 1)).toBe('18:05')
+    expect(formatTickTime(ts, 12 * 60 * 60 * 1000)).toBe('10-17 18:05')
+  })
+
+  it('畸形输入不抛错（刻度上是 NaN 也照样渲染出一个字符串）', () => {
+    expect(typeof formatTickTime(Number.NaN, Number.NaN)).toBe('string')
+    expect(typeof formatTickTime(0, 0)).toBe('string')
+  })
+})
+
+describe('本页排序（第十三刀）', () => {
+  const rows = [
+    { id: 'a', ts: 3, level: 'debug', message: 'zebra' },
+    { id: 'b', ts: 2, level: 'error', message: 'alpha' },
+    { id: 'c', ts: 1, level: undefined, message: 'mike' },
+    { id: 'd', ts: 0, level: 'warn', message: 'bravo' },
+  ]
+
+  it('time = 宿主原序（**不许**按 ts 重排：同纳秒的多行是切不开的一组，游标依赖原序）', () => {
+    expect(sortLines(rows, 'time').map((row) => row.id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(sortLines(rows, 'bogus').map((row) => row.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('level = 严重度从重到轻，无级别垫底；同档保持宿主原序', () => {
+    expect(sortLines(rows, 'level').map((row) => row.id)).toEqual(['b', 'd', 'a', 'c'])
+  })
+
+  it('message = 按正文；同值时保持宿主原序（显式稳定，不赌运行时实现）', () => {
+    const same = [{ id: 'x', message: 'dup' }, { id: 'y', message: 'dup' }, { id: 'z', message: 'aaa' }]
+    expect(sortLines(same, 'message').map((row) => row.id)).toEqual(['z', 'x', 'y'])
+  })
+
+  it('排序改的是**摆的顺序**：回一个新数组，入参数组的内容与身份都不动（下一页还要接着追加）', () => {
+    const input = rows.slice()
+    const sorted = sortLines(input, 'level')
+    expect(input.map((row) => row.id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(sorted).not.toBe(input)
+    expect(sorted.map((row) => row.id)).toEqual(['b', 'd', 'a', 'c'])
+  })
+
+  it('档位收口：不认识的回 time；空 / 单行原样回（不白造一个数组）', () => {
+    expect(sortKeyOf('level')).toBe('level')
+    expect(sortKeyOf('LEVEL')).toBe('time')
+    expect(sortKeyOf(undefined)).toBe('time')
+    expect(sortKeys()).toEqual(['time', 'level', 'message'])
+    expect(sortLines([], 'level')).toEqual([])
+    const one = [{ id: 'only', level: 'error' }]
+    expect(sortLines(one, 'level')).toEqual(one)
+  })
+
+  it('档位是**判据**、文案在组件里：pure.js 不回键名（文案由 client-src/index.js 逐条列字面量）', () => {
+    // 本包的分工与 levelTone 一致：纯模块只回答「哪一档」，键名交给组件——静态 i18n 闸门
+    // 只扫得到字面量键（`'btn.sort' + key` 会被报成「域不在白名单里」的同类问题）。
+    expect(sortKeys()).toEqual(['time', 'level', 'message'])
+    for (const key of sortKeys()) expect(sortKeyOf(key)).toBe(key)
   })
 })
 
@@ -1031,5 +1433,579 @@ describe('取消放大（再点一次那一档）', () => {
     expect(zoomed.query.preset).toBe('custom')
     const back = unzoomQuery(zoomed.query, draft.preset)
     expect(back).toEqual({ ...draft })
+  })
+})
+
+describe('字段侧栏：这一页的字段使用情况', () => {
+  it('按行数数，空值不算；同次数按名字排（顺序稳定，不随对象键漂）', () => {
+    const usage = pageFieldUsage([
+      { labels: { 'container.name': 'a', 'host.name': 'h1', 'log.file.path': '/a' } },
+      { labels: { 'container.name': 'a', 'host.name': '' } },
+      { labels: { 'container.name': 'b', 'host.name': 'h2', 'log.file.path': '' } },
+    ])
+    expect(usage).toEqual([
+      { name: 'container.name', count: 3 },
+      { name: 'host.name', count: 2 },
+      // 第三行那个是空串（不占位），所以只算 1 行
+      { name: 'log.file.path', count: 1 },
+    ])
+  })
+
+  it('不认畸形的行 / labels：只数真带上来的（空串不占位）', () => {
+    expect(pageFieldUsage(undefined)).toEqual([])
+    expect(pageFieldUsage([undefined, null, 42, { labels: undefined }, { labels: 'x' }, { labels: {} }])).toEqual([])
+    expect(pageFieldUsage([{ labels: { a: null, b: undefined, c: '' } }])).toEqual([])
+    // 数字与布尔也照字符串算（与 flattenLabels 同一条：有值就算）
+    expect(pageFieldUsage([{ labels: { n: 0, b: true } }])).toEqual([
+      { name: 'b', count: 1 },
+      { name: 'n', count: 1 },
+    ])
+  })
+})
+
+describe('字段侧栏：三分区（本页命中 / 其余可用 / 类型冲突）', () => {
+  const fields = [
+    { name: 'container.name', kind: 'indexed', preferred: true },
+    { name: 'host.name', kind: 'indexed' },
+    { name: 'service.name', kind: 'indexed', preferred: true },
+    { name: 'bad.field', kind: 'indexed', conflict: true, esTypes: ['date', 'text'] },
+    { name: 'zeta', kind: 'indexed' },
+  ]
+  const usage = [
+    { name: 'container.name', count: 3 },
+    { name: 'host.name', count: 1 },
+  ]
+
+  it('三分区互斥：命中优先（哪怕它也标了冲突）；冲突不进「其余」', () => {
+    const sections = fieldSections(fields, usage, '')
+    expect(sections.hit.map((item) => item.name)).toEqual(['container.name', 'host.name'])
+    expect(sections.rest.map((item) => item.name)).toEqual(['service.name', 'zeta'])
+    expect(sections.conflict.map((item) => item.name)).toEqual(['bad.field'])
+    // 冲突标记要跟着这一行走（侧栏在冲突分区里靠它画小标记）
+    expect(sections.conflict[0].conflict).toBe(true)
+    expect(sections.conflict[0].esTypes).toEqual(['date', 'text'])
+    expect(sections.totals).toEqual({ hit: 2, conflict: 1, rest: 2 })
+
+    // 命中里带上 `/fields` 的类型信息（行上没有类型，侧栏要能悬停给人看）
+    expect(sections.hit[0].kind).toBe('indexed')
+    expect(sections.hit[0].preferred).toBe(true)
+    // 冲突字段不会被重复摆到「其余」里
+    expect(sections.rest.some((item) => item.name === 'bad.field')).toBe(false)
+  })
+
+  it('命中字段若在 /fields 里也标了冲突，仍然留在命中区并带上冲突标记（它这一页真能画列）', () => {
+    const sections = fieldSections(
+      [{ name: 'bad.field', kind: 'indexed', conflict: true, esTypes: ['date', 'text'] }],
+      [{ name: 'bad.field', count: 2 }],
+      '',
+    )
+    expect(sections.hit[0].conflict).toBe(true)
+    expect(sections.hit[0].esTypes).toEqual(['date', 'text'])
+    expect(sections.conflict).toEqual([])
+  })
+
+  it('子串过滤（不区分大小写）作用在三个分区上，totals 报的是过滤后的数', () => {
+    const sections = fieldSections(fields, usage, 'NAME')
+    expect(sections.hit.map((item) => item.name)).toEqual(['container.name', 'host.name'])
+    expect(sections.rest.map((item) => item.name)).toEqual(['service.name'])
+    expect(sections.totals).toEqual({ hit: 2, conflict: 0, rest: 1 })
+    expect(fieldSections(fields, usage, '  nomatch  ').totals).toEqual({ hit: 0, conflict: 0, rest: 0 })
+  })
+
+  it('其余字段的排序：常用（preferred）优先，再按名字；列表外的垃圾字段被忽略', () => {
+    const sections = fieldSections(
+      [undefined, null, { name: '' }, { name: 'b' }, { name: 'a' }, { name: 'z', preferred: true }, { name: 'a' }],
+      [],
+      '',
+    )
+    expect(sections.rest.map((item) => item.name)).toEqual(['z', 'a', 'b'])
+  })
+
+  it('字段清单还没拉到（空）时，命中区仍然可用——它只靠这一页的 labels', () => {
+    const sections = fieldSections(undefined, usage, '')
+    expect(sections.hit.map((item) => item.name)).toEqual(['container.name', 'host.name'])
+    expect(sections.hit[0].kind).toBeUndefined()
+    expect(sections.rest).toEqual([])
+    expect(sections.conflict).toEqual([])
+  })
+})
+
+describe('字段侧栏：结果表列集', () => {
+  it('加一列 / 再去掉同一列（同一个入口是全集的开关）', () => {
+    const first = columnToggle([], 'container.name')
+    expect(first).toEqual({ columns: ['container.name'], problem: '' })
+    expect(columnToggle(first.columns, 'host.name').columns).toEqual(['container.name', 'host.name'])
+    expect(columnToggle(['container.name', 'host.name'], 'container.name')).toEqual({
+      columns: ['host.name'],
+      problem: '',
+    })
+    // 纯函数：入参不被改（界面靠新数组触发重渲染）
+    const original = ['a']
+    columnToggle(original, 'b')
+    expect(original).toEqual(['a'])
+  })
+
+  it('上限 4 列：到顶再加回 columnLimit，且列集不变（不是静默丢掉）', () => {
+    let columns = []
+    for (const name of ['a', 'b', 'c', 'd']) columns = columnToggle(columns, name).columns
+    expect(columns).toHaveLength(RESULT_COLUMN_MAX)
+    const full = columnToggle(columns, 'e')
+    expect(full.problem).toBe('columnLimit')
+    expect(full.columns).toEqual(columns)
+    // 满员时仍能**去掉**已有的那一列（出口不能被上限堵住）
+    expect(columnToggle(columns, 'c').columns).toEqual(['a', 'b', 'd'])
+  })
+
+  it('空字段名不给加（那是界面的 bug，不该变成一列空值）', () => {
+    expect(columnToggle([], '').problem).toBe('badColumn')
+    expect(columnToggle(undefined, null).problem).toBe('badColumn')
+  })
+
+  it('列值取行标签的原值；这一行没带就回 undefined（界面画 —，不造假值）', () => {
+    const line = { labels: { 'container.name': 'app-1', 'log.level': '' } }
+    expect(columnValue(line, 'container.name')).toBe('app-1')
+    expect(columnValue(line, 'host.name')).toBeUndefined()
+    expect(columnValue(line, 'log.level')).toBeUndefined()
+    expect(columnValue(undefined, 'container.name')).toBeUndefined()
+    expect(columnValue(line, '')).toBeUndefined()
+  })
+})
+
+describe('行详情：原文截断（必须明说）', () => {
+  it('没超长就原样给（truncated 为假）', () => {
+    expect(rawPreview('hello')).toEqual({ text: 'hello', truncated: false, total: 5 })
+    expect(rawPreview('', 10)).toEqual({ text: '', truncated: false, total: 0 })
+  })
+
+  it('超长截断并报原文长度（截断的信号跟着结果走，不静默）', () => {
+    const raw = 'x'.repeat(RAW_PREVIEW_MAX + 5)
+    const preview = rawPreview(raw)
+    expect(preview.text).toHaveLength(RAW_PREVIEW_MAX)
+    expect(preview.truncated).toBe(true)
+    expect(preview.total).toBe(RAW_PREVIEW_MAX + 5)
+    // 自定义上限（用例侧）：边界正好等于上限时不算截断
+    expect(rawPreview('abcde', 5)).toEqual({ text: 'abcde', truncated: false, total: 5 })
+    expect(rawPreview('abcdef', 5)).toEqual({ text: 'abcde', truncated: true, total: 6 })
+  })
+
+  it('缺席 / 畸形输入回空串，不抛错', () => {
+    expect(rawPreview(undefined)).toEqual({ text: '', truncated: false, total: 0 })
+    expect(rawPreview(null, 0)).toEqual({ text: '', truncated: false, total: 0 })
+    expect(rawPreview(42, -1)).toEqual({ text: '42', truncated: false, total: 2 })
+  })
+})
+
+describe('侧栏分区渲染上限（字段多的时候不把 DOM 撑爆）', () => {
+  it('FIELD_LIST_MAX 是一个正整数上限（界面按它截断，并报出「共 N 个」）', () => {
+    expect(Number.isInteger(FIELD_LIST_MAX)).toBe(true)
+    expect(FIELD_LIST_MAX).toBeGreaterThan(0)
+    // 分区本身不截断：界面按 totals 说数、按 FIELD_LIST_MAX 渲染——两件事各归各
+    const fields = Array.from({ length: FIELD_LIST_MAX + 7 }, (_, at) => ({ name: 'f' + String(at) }))
+    const sections = fieldSections(fields, [], '')
+    expect(sections.totals.rest).toBe(FIELD_LIST_MAX + 7)
+    expect(sections.rest).toHaveLength(FIELD_LIST_MAX + 7)
+  })
+})
+
+describe('结果表列宽模板（有额外列时改用 grid + 横向滚动，正文不许被挤成 0 宽）', () => {
+  it('0 列回空串（界面退回原来的 flex 行，行为一点不变）', () => {
+    expect(resultColumnsTemplate([])).toBe('')
+    expect(resultColumnsTemplate(undefined)).toBe('')
+  })
+
+  it('每个额外列一条 96px；正文有 198px 下限，身份标签固定 250px', () => {
+    const one = resultColumnsTemplate(['container.name'])
+    expect(one.split(' ')).toEqual(['14px', '90px', '36px', 'minmax(198px,1fr)', '96px', '250px'])
+    const two = resultColumnsTemplate(['a', 'b'])
+    expect(two.split(' ').filter((track) => track === '96px')).toHaveLength(2)
+    // 正文下限**必须**在：没有它，4 列时正文会被挤成 0 宽（真机复现过）
+    expect(resultColumnsTemplate(['a', 'b', 'c', 'd'])).toContain('minmax(198px,1fr)')
+  })
+
+  it('模板列数与列集对齐：最多 4 列（与 columnToggle 的上限同一条）', () => {
+    for (let count = 1; count <= RESULT_COLUMN_MAX; count += 1) {
+      const columns = Array.from({ length: count }, (_, at) => 'f' + String(at))
+      // 2（箭头/时间/级别/正文/标签里的固定 4 个 + 标签）+ 额外列
+      expect(resultColumnsTemplate(columns).split(' ')).toHaveLength(count + 5)
+    }
+    const over = Array.from({ length: RESULT_COLUMN_MAX + 2 }, (_, at) => 'f' + String(at))
+    expect(resultColumnsTemplate(over).split(' ')).toHaveLength(RESULT_COLUMN_MAX + 5)
+  })
+})
+
+describe('级别配色（一眼扫过去先看哪行）', () => {
+  it('error / fatal 红、warn 橙、info 次要、debug / trace / 无级别灰', () => {
+    expect(levelTone('error')).toBe('error')
+    expect(levelTone('fatal')).toBe('error')
+    expect(levelTone('warn')).toBe('warn')
+    expect(levelTone('info')).toBe('info')
+    expect(levelTone('debug')).toBe('muted')
+    expect(levelTone('trace')).toBe('muted')
+    // 没有级别 = 不知道，**不许**染成告警色
+    expect(levelTone(undefined)).toBe('muted')
+    expect(levelTone('')).toBe('muted')
+    expect(levelTone('bogus')).toBe('muted')
+    // 大小写 / 空格不影响判据
+    expect(levelTone(' ERROR ')).toBe('error')
+  })
+})
+
+/*
+ * 第二十二刀：字段面板的定位与开关（两个入口）。
+ *
+ * 这一格原来只有「真机量出来的一个数」当判据（右缘对齐 600），而定位的三条边界——夹在视口内、
+ * 下面放不下时上翻、拿不到视口尺寸时不夹——全靠手点和肉眼看。定位提成纯函数之后，边界能一条条
+ * 钉住；这也是「两个入口」必须复用的那份判据（筛选行那颗要左对齐，元信息那颗要右对齐）。
+ */
+describe('浮层定位：对齐哪条边、夹进视口、放不下就上翻（第二十二刀）', () => {
+  /** 元信息行的「字段」按钮：整行右侧，60×28。 */
+  const metaAnchor = { align: 'right', left: 840, right: 900, top: 272, bottom: 300 }
+  /** 筛选行的「＋ 筛选」：同一行的左侧。 */
+  const rowAnchor = { align: 'left', left: 100, right: 160, top: 400, bottom: 422 }
+
+  it('拿不到锚点就不给位置（CSS 兜底，而不是算一个 NaN 出去）', () => {
+    expect(panelPlacement(undefined, { width: 300, vw: 816 })).toBeUndefined()
+    expect(panelPlacement(null, { width: 300, vw: 816 })).toBeUndefined()
+  })
+
+  it('拿不到视口尺寸时不做夹取、也不上翻：位置按按钮算，顶边贴下沿 +4', () => {
+    // 无浏览器 / 测试桩的那条路（真机外的用例走的就是它）
+    expect(panelPlacement(metaAnchor, { width: 300 })).toEqual({ left: 600, top: 304 })
+    expect(panelPlacement({ align: 'left', left: 20, right: 80, top: 10, bottom: 30 }, { width: 300 }))
+      .toEqual({ left: 20, top: 34 })
+  })
+
+  it('元信息那颗按钮在整行右侧：右缘对齐（左对齐会向左伸出去 300px）', () => {
+    expect(panelPlacement(metaAnchor, { width: 300, vw: 1200 })).toEqual({ left: 600, top: 304 })
+    expect(panelPlacement(metaAnchor, { width: 300, vw: 816 })).toEqual({ left: 508, top: 304 })
+  })
+
+  it('筛选行那颗在左侧：左缘对齐（右对齐会缩回最左边，离按钮很远）', () => {
+    expect(panelPlacement(rowAnchor, { width: 300, vw: 1200 })).toEqual({ left: 100, top: 426 })
+    // 窗口很窄时按钮贴到右边缘：宁可夹回视口内，也不许伸出去
+    expect(panelPlacement({ align: 'left', left: 700, right: 780, top: 10, bottom: 32 }, { width: 300, vw: 816 }))
+      .toEqual({ left: 508, top: 36 })
+    // 窗口窄到连左边距都放不下面板：左缘仍然从边距起（不许是负数）
+    expect(panelPlacement(rowAnchor, { width: 300, vw: 240 })).toEqual({ left: 8, top: 426 })
+  })
+
+  it('下面放得下**想要的高度**：照旧往下开，一个像素都不动（高度交给 CSS）', () => {
+    expect(panelPlacement({ align: 'left', left: 100, right: 160, top: 100, bottom: 128 }, { width: 300, height: 200, vw: 1200, vh: 800 }))
+      .toEqual({ left: 100, top: 132 })
+  })
+
+  it('下面放不下、上面放得下：**上翻**（面板底边停在按钮上沿之上）', () => {
+    // 元信息行在结果表下方，真机上它常常已经在视口底部
+    expect(panelPlacement({ align: 'left', left: 100, right: 160, top: 672, bottom: 700 }, { width: 300, height: 200, vw: 1200, vh: 800 }))
+      .toEqual({ left: 100, top: 468 })
+  })
+
+  it('两边都放不下：挑宽的那一边、把高度收进那边——**不许**挪到屏幕中央盖住按钮', () => {
+    // 真机 816×782 的常见情形：面板想要 520（70vh），上下各只剩 300 多。
+    // 收的是高度（面板自己滚），位置仍然贴住按钮：这才是「能打开它的东西和它本身在同一处」。
+    expect(panelPlacement(metaAnchor, { width: 300, height: 520, margin: 8, vw: 816, vh: 782 }))
+      .toEqual({ left: 508, top: 304, maxHeight: 470 })
+    // 上面更宽：翻到上方，且高度正好贴到按钮上沿（400 - 4 - 388 = 8）
+    expect(panelPlacement({ align: 'left', left: 16, right: 90, top: 400, bottom: 422 }, { width: 300, height: 520, margin: 8, vw: 816, vh: 782 }))
+      .toEqual({ left: 16, top: 8, maxHeight: 388 })
+  })
+
+  it('锚点缺字段也不抛：缺 bottom 从边距起，缺 right 贴左边距，缺 top 就只往下开', () => {
+    expect(panelPlacement({ align: 'right' }, { width: 300, margin: 8 })).toEqual({ left: 8, top: 8 })
+    expect(panelPlacement({ align: 'left' }, { width: 300, margin: 8 })).toEqual({ left: 8, top: 8 })
+    // 缺 top = 上翻无从判断：往下开；下面那点空间放不下想要的高度就收进去
+    expect(panelPlacement({ align: 'left', left: 10, right: 70, bottom: 780 }, { width: 300, height: 520, margin: 8, vw: 1200, vh: 800 }))
+      .toEqual({ left: 10, top: 784, maxHeight: 8 })
+    expect(panelPlacement({ align: 'left', left: 10, right: 70, bottom: 200 }, { width: 300, height: 520, margin: 8, vw: 1200, vh: 800 }))
+      .toEqual({ left: 10, top: 204 })
+  })
+
+  it('位置一律取整：半像素的发丝线落在小数坐标上会糊', () => {
+    // 没有 `align` 时按**右对齐**算（历史行为：这个面板一直是从右侧那颗按钮长出来的）
+    const placed = panelPlacement({ align: 'left', left: 100.4, right: 160.6, top: 400.5, bottom: 422.6 }, { width: 300, vw: 1200 })
+    expect(placed).toEqual({ left: 100, top: 427 })
+    expect(panelPlacement({ left: 100.4, right: 160.6, top: 400.5, bottom: 422.6 }, { width: 300, vw: 1200 }).left).toBe(8)
+  })
+
+  it('面板高度上限与 CSS 的 `max-height:min(520px,70vh)` 同一口径', () => {
+    expect(fieldPanelHeight(0)).toBe(FIELD_PANEL_CEILING)
+    expect(fieldPanelHeight(Number.NaN)).toBe(FIELD_PANEL_CEILING)
+    // 782 是这台机器上真机验收用的视口高：70vh = 547 > 520，上限仍是 520
+    expect(fieldPanelHeight(782)).toBe(520)
+    // 矮窗口才轮到 70vh 生效
+    expect(fieldPanelHeight(600)).toBe(420)
+  })
+})
+
+/*
+ * 第二十三刀：面板宽度与名字的断行点。
+ *
+ * 两件事都不大，但都有真机读数在后面：① 面板宽度同时决定 CSS 画多宽、以及「右缘对齐」算出的左缘
+ * ——两处各写一个数就会漂；② 长末段（`com_docker_compose_config-hash`）原来被浏览器按
+ * `overflow-wrap:anywhere` 从词中间切开，读起来像两个残词。
+ */
+describe('字段名断行点：只在分隔符之后断（第二十三刀）', () => {
+  it('下划线 / 连字符 / 点都是断点，且**分隔符留在前一段**', () => {
+    expect(fieldNameBreaks('com_docker_compose_config-hash'))
+      .toEqual(['com_', 'docker_', 'compose_', 'config-', 'hash'])
+    expect(fieldNameBreaks('log.level')).toEqual(['log.', 'level'])
+    expect(fieldNameBreaks('stream')).toEqual(['stream'])
+  })
+
+  it('拼回去**逐字**等于入参：显示的名字不许与真实字段名差一个字符', () => {
+    for (const name of [
+      'com_docker_compose_config-hash',
+      'com_docker_compose_project_environment_file',
+      'log.level',
+      'a__b',
+      'ends_with_',
+      '_starts',
+      'host.os.version',
+      'x',
+      '',
+      '中文也能断_吗',
+    ]) {
+      expect(fieldNameBreaks(name).join('')).toBe(name)
+    }
+  })
+
+  it('不出空段、不丢尾部：连续分隔符与结尾分隔符都不生出一个空串', () => {
+    // 连续分隔符算一处断点（`a__b` → `a__` / `b`），结尾的分隔符跟着最后一段走
+    expect(fieldNameBreaks('a__b')).toEqual(['a__', 'b'])
+    expect(fieldNameBreaks('ends_with_')).toEqual(['ends_', 'with_'])
+    expect(fieldNameBreaks('_starts')).toEqual(['_', 'starts'])
+    expect(fieldNameBreaks('')).toEqual([])
+    expect(fieldNameBreaks(undefined)).toEqual([])
+    expect(fieldNameBreaks(null)).toEqual([])
+  })
+
+  it('长末段确实被切成多段（这就是给浏览器的断点）', () => {
+    const leaf = 'com_docker_compose_project_environment_file'
+    expect(fieldNameBreaks(leaf).length).toBeGreaterThan(4)
+    // 最长的一段要短到能在名字列里放下（真机名字列 ~200px、11px 等宽 ≈ 30 个字符）
+    const longest = Math.max(...fieldNameBreaks(leaf).map((part) => part.length))
+    expect(longest).toBeLessThanOrEqual(30)
+  })
+
+  it('面板宽度是**一个**常量：CSS 与「右缘对齐」都读它（漂了面板就不贴按钮了）', () => {
+    expect(FIELD_PANEL_WIDTH).toBe(340)
+    // 真机 816 宽的视口里，340 的面板右缘对齐左侧按钮时仍然整块放得下
+    const placed = panelPlacement({ align: 'right', right: 900, top: 272, bottom: 300 }, { width: FIELD_PANEL_WIDTH, vw: 1200, vh: 782 })
+    expect(placed.left).toBe(900 - FIELD_PANEL_WIDTH)
+  })
+})
+
+/*
+ * 第二十四刀：字段的 top 值（点字段 → 看值 → 点值直接筛）。
+ *
+ * 这一格要守的是**「值」与「行」是同一个子集**：请求体与榜共用同一个信封（窗口 / 查询串 / 筛选），
+ * 少带一样就会给出「上一次条件下的一组值」——那比不展开更坏，因为它看起来是这一次的。
+ */
+describe('字段 top 值：请求体、缓存键、画出来的行（第二十四刀）', () => {
+  const outcome = {
+    ok: true,
+    target: { id: 'es', kind: 'elasticsearch', label: '内网 ES' },
+    window: { from: 1_700_000_000_000, to: 1_700_000_600_000 },
+    counts: { returned: 0, totalKnown: false },
+    truncation: { truncated: false, reasons: [] },
+    lines: [],
+    warnings: [],
+  }
+
+  it('请求体与「榜」同一个信封：只多一个 size', () => {
+    const draft = { ...emptyQuery(), target: 'es', q: 'level:error' }
+    expect(fieldValuesPayload(draft, outcome, 'container.name')).toEqual({
+      target: 'es',
+      q: 'level:error',
+      from: 1_700_000_000_000,
+      to: 1_700_000_600_000,
+      by: 'container.name',
+      size: FIELD_VALUES_SIZE,
+    })
+  })
+
+  it('筛选也要带上（不然值的计数是整窗口的、行却是筛过的）', () => {
+    const draft = { ...emptyQuery(), target: 'es', filters: [{ field: 'host.name', value: 'node-1' }] }
+    expect(fieldValuesPayload(draft, outcome, 'container.name')?.filters).toEqual({ 'host.name': 'node-1' })
+  })
+
+  it('拿不到窗口就不发（返回 null），空字段名也不发', () => {
+    expect(fieldValuesPayload({ ...emptyQuery(), q: '' }, undefined, 'a')).toBeNull()
+    expect(fieldValuesPayload({ ...emptyQuery() }, { ...outcome, window: undefined }, 'a')).toBeNull()
+    expect(fieldValuesPayload({ ...emptyQuery() }, outcome, '   ')).toBeNull()
+    expect(fieldValuesKey({ ...emptyQuery() }, outcome, '  ')).toBeNull()
+  })
+
+  it('缓存键带上**全部**条件：改任何一样都得重新问', () => {
+    const base = { ...emptyQuery(), target: 'es' }
+    const key = fieldValuesKey(base, outcome, 'container.name')
+    expect(key).not.toBeNull()
+    expect(fieldValuesKey({ ...base, q: 'x' }, outcome, 'container.name')).not.toBe(key)
+    expect(fieldValuesKey({ ...base, filters: [{ field: 'a', value: 'b' }] }, outcome, 'container.name')).not.toBe(key)
+    expect(fieldValuesKey(base, outcome, 'container.id')).not.toBe(key)
+    expect(fieldValuesKey(base, { ...outcome, window: { from: 0, to: 1 } }, 'container.name')).not.toBe(key)
+    // 同一份条件：键稳定（否则缓存永远不命中，等于没缓存）
+    expect(fieldValuesKey(base, outcome, 'container.name')).toBe(key)
+  })
+
+  it('筛选的顺序不影响键（同一份条件只有一种答案）', () => {
+    const a = { ...emptyQuery(), target: 'es', filters: [{ field: 'a', value: '1' }, { field: 'b', value: '2' }] }
+    const b = { ...emptyQuery(), target: 'es', filters: [{ field: 'b', value: '2' }, { field: 'a', value: '1' }] }
+    expect(fieldValuesKey(a, outcome, 'x')).toBe(fieldValuesKey(b, outcome, 'x'))
+  })
+
+  it('画出来的行：按本格条数截断，但在场的那几条仍是**整批**的比例', () => {
+    const buckets = [
+      { key: 'a', count: 100 },
+      { key: 'b', count: 50 },
+      { key: 'c', count: 10 },
+    ]
+    const two = valueBars(buckets, 2)
+    expect(two.rows.map((row) => row.key)).toEqual(['a', 'b'])
+    expect(two.truncated).toBe(true)
+    // 截断只影响「画几行」，不该让头条忽然变成满格（它本来就是最大的，这条是恒等）
+    expect(two.rows[1].ratio).toBeCloseTo(0.5)
+    expect(two.max).toBe(100)
+  })
+
+  it('空值行标出来（它不能点：筛选表达不了「字段缺失」）', () => {
+    const bars = valueBars([{ key: '', count: 3 }, { key: 'a', count: 1 }], 8)
+    expect(bars.rows[0].blank).toBe(true)
+    expect(bars.rows[1].blank).toBe(false)
+    expect(bars.truncated).toBe(false)
+  })
+
+  it('形状不对的桶跳过（不造 0 计数的假行）', () => {
+    expect(valueBars([{ key: 'a', count: 1 }, null, { key: 'b' }, { count: 9 }, { key: 3, count: 2 }], 8).rows.map((row) => row.key))
+      .toEqual(['a'])
+  })
+})
+
+/*
+ * 第三十刀：筛选行 = 两格输入框（左边字段、右边值）。
+ *
+ * 四个判据各自都能独立坏掉，所以分开钉：
+ *   - 候选里**没有空值那一档**（筛不了「字段缺失」）；
+ *   - 正在筛的那个值**有标记**（点一下是取消）；
+ *   - 顺序**保持后端给的**（不按计数重排）；
+ *   - 字段候选**这一页命中优先**，且收窄规则与侧栏过滤框**同一条**（多词 AND）。
+ */
+describe('筛选框候选：值那一格（第三十刀）', () => {
+  it('空白值不进来：筛选只能表达「字段 = 某值」', () => {
+    const rows = valueChoices('container.name', [
+      { key: 'grafana', count: 42 },
+      { key: '', count: 2 },
+      { key: '   ', count: 1 },
+      { key: 'prometheus', count: 8 },
+    ], undefined, 8)
+    expect(rows.map((row) => row.value)).toEqual(['grafana', 'prometheus'])
+  })
+
+  it('正在筛的那个值打上 active（它还在候选里：再点是取消）', () => {
+    const rows = valueChoices('container.name', [{ key: 'grafana', count: 42 }, { key: 'prometheus', count: 8 }], 'grafana', 8)
+    expect(rows.map((row) => row.active)).toEqual([true, false])
+  })
+
+  it('保持后端给的顺序（按计数排序是后端的结论，不再排一次）', () => {
+    const rows = valueChoices('f', [{ key: 'b', count: 1 }, { key: 'a', count: 99 }], undefined, 8)
+    expect(rows.map((row) => row.value)).toEqual(['b', 'a'])
+  })
+
+  it('按条数截断；字段名为空回空表', () => {
+    const rows = valueChoices('f', [{ key: 'a', count: 3 }, { key: 'b', count: 2 }, { key: 'c', count: 1 }], undefined, 2)
+    expect(rows.map((row) => row.value)).toEqual(['a', 'b'])
+    expect(valueChoices('  ', [{ key: 'a', count: 1 }], undefined, 8)).toEqual([])
+  })
+
+  it('形状不对的桶跳过（不造 0 计数的假行）', () => {
+    const rows = valueChoices('f', [{ key: 'a', count: 1 }, null, { key: 'b' }, { count: 9 }, { key: 3, count: 2 }], undefined, 8)
+    expect(rows.map((row) => row.value)).toEqual(['a'])
+  })
+})
+
+describe('筛选框候选：字段那一格（第三十刀）', () => {
+  const sections = {
+    hit: [{ name: 'container.name' }],
+    rest: [{ name: 'service.name' }, { name: 'host.name' }],
+    conflict: [{ name: 'mixed.type' }],
+  }
+
+  it('这一页命中的排在前面，其余按分区顺序跟上', () => {
+    expect(filterFieldChoices(sections, '').map((row) => row.name))
+      .toEqual(['container.name', 'service.name', 'host.name', 'mixed.type'])
+    expect(filterFieldChoices(sections, '')[0].group).toBe('hit')
+  })
+
+  it('收窄规则与侧栏过滤框**同一条**：多词 AND、不分大小写、不分先后', () => {
+    // 单看子串 `cont name` 是 0 个——所以这条钉的是「两处用的是同一个判据」
+    expect(filterFieldChoices(sections, 'cont name').map((row) => row.name)).toEqual(['container.name'])
+    expect(filterFieldChoices(sections, 'NAME cont').map((row) => row.name)).toEqual(['container.name'])
+    expect(filterFieldChoices(sections, 'HOST').map((row) => row.name)).toEqual(['host.name'])
+    expect(filterFieldChoices(sections, 'nomatch')).toEqual([])
+  })
+})
+
+describe('Backspace 在两格之间退（第三十刀）', () => {
+  it('值格有字 → 删字；值格空了 → 退回字段格；两格都空 → 什么都不做', () => {
+    expect(filterBoxBack('container.name', 'graf')).toBe('value')
+    expect(filterBoxBack('container.name', '')).toBe('field')
+    expect(filterBoxBack('', '')).toBe('none')
+    // 字段没选但值里有字：仍是删字（值优先——打错一个字母不该把整条条件清掉）
+    expect(filterBoxBack('', 'abc')).toBe('value')
+  })
+})
+
+describe('候选里「当前那一行」的落点（第三十刀）', () => {
+  /*
+   * 与 `pickMove` 的差别是判据不是风格：分组框的输入框里**只有**候选那条路（打进的字就是结论），
+   * 所以永远有一行被选中；筛选框的值那一格允许打任何东西（长尾值 / 带空格 / 通配），
+   * 「没选中任何候选」（−1）是一个正常状态——回车取的是用户打的字。
+   */
+  it('能从「没选中」（−1）往下走到第一行，也能退回来', () => {
+    expect(choiceMove(-1, 1, 3)).toBe(0)
+    expect(choiceMove(0, -1, 3)).toBe(-1)
+  })
+
+  it('到头就停（不绕回：绕回会让「按了一下」看起来像跳过了几行）', () => {
+    expect(choiceMove(-1, -1, 3)).toBe(-1)
+    expect(choiceMove(2, 1, 3)).toBe(2)
+    expect(choiceMove(0, -5, 3)).toBe(-1)
+  })
+
+  it('空列表停在 −1（那种情况下界面不画下拉，也就无所谓哪一行）', () => {
+    expect(choiceMove(0, 1, 0)).toBe(-1)
+    expect(choiceMove(2, 1, 0)).toBe(-1)
+  })
+})
+
+/*
+ * 第二十六刀：选列面板的「列」按钮换成勾选。
+ *
+ * `columnPickState` 单独一条判据（而不是在渲染里现算）：它决定**画成什么样**，
+ * 而 `columnToggle` 决定「改完之后是什么」。合成一个就得在渲染时先算一遍结果、再假装没算。
+ */
+describe('勾选态：已选永远可点，满员只挡未选（第二十六刀）', () => {
+  it('空列集：都能选', () => {
+    expect(columnPickState([], 'a')).toBe('ok')
+  })
+
+  it('已选的永远可点——满员也不行（否则满员之后一个都去不掉）', () => {
+    expect(columnPickState(['a'], 'a')).toBe('picked')
+    const full = ['a', 'b', 'c', 'd']
+    expect(columnPickState(full, 'a')).toBe('picked')
+    expect(columnPickState(full, 'd')).toBe('picked')
+  })
+
+  it('满员时**未选**的才是 limit', () => {
+    const full = Array.from({ length: RESULT_COLUMN_MAX }, (_, at) => 'f' + String(at))
+    expect(columnPickState(full, 'other')).toBe('limit')
+    // 差一个才满：仍可选
+    expect(columnPickState(full.slice(0, -1), 'other')).toBe('ok')
+  })
+
+  it('空字段名是 bad（不画一个点了会下发的勾选框）', () => {
+    expect(columnPickState([], '')).toBe('bad')
+    expect(columnPickState(['a'], undefined)).toBe('bad')
+    expect(columnPickState(undefined, 'a')).toBe('ok')
   })
 })

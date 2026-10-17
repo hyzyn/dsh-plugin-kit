@@ -543,6 +543,23 @@ export function rowLabelOverflow(line, max) {
 }
 
 /**
+ * 级别该染什么色（界面用三个色档，不按 severity 数字自己调色）：
+ * error / fatal → 红；warn → 橙；info → 次要前景；debug / trace / 没有级别 → 灰。
+ *
+ * 为什么值得单独一条：`level` 是从正文推断出来的也照样显示（`levelInferred`），原来一律染
+ * `state-warn-primary`——满屏 debug 看着像一片告警。颜色是「一眼扫过去先看哪行」的第一层信号，
+ * 不能所有级别都同一个颜色。
+ */
+export function levelTone(level) {
+  const value = typeof level === 'string' ? level.trim().toLowerCase() : ''
+  if (value === 'error' || value === 'fatal') return 'error'
+  if (value === 'warn') return 'warn'
+  if (value === 'info') return 'info'
+  // 没有级别 = 不知道，不染成告警色；debug / trace 也只是灰
+  return 'muted'
+}
+
+/**
  * 行的悬停文案：时间 + 级别（**推断出来的标出来**）+ 全部标签 + 原文。
  *
  * `levelInferred` 必须写出来：`level` 是筛选项，「文档说它是 error」与「我从正文看着像 error」是两种
@@ -599,6 +616,69 @@ export function countsParts(counts) {
   if (typeof counts.scannedBytes === 'number') parts.push({ key: 'scannedBytes', value: counts.scannedBytes })
   return parts
 }
+
+/**
+ * 结果列表「本页排序」（第十三刀）。
+ *
+ * 为什么是**本页**：宿主没有服务端排序（`NormalizedQuery.sort` 属于 P8-丁，要动契约，见
+ * design.md §9.5）。而宿主给的顺序是**时间倒序**（`direction` 默认 backward，见 src/query.ts），
+ * 于是「这一页里 error 在哪」只能靠眼睛从 100 行里翻——排序这一页解决的是**扫读**，不是
+ * 「排序全部命中」；界面上的标题必须写明「本页」，不许让人读成后者（设计 §9.3 #8 的同一条边界）。
+ *
+ * 三档（`time` 是宿主原序，不重排）：
+ * - `time`：原样（= 后端顺序，`appendLines` 追加的下一页也接着排）
+ * - `level`：严重度**从重到轻**（fatal → error → warn → info → debug → trace → 无级别最后），
+ *   同档内保持宿主原序（稳定排序：`Array.prototype.sort` 在 ES2019 起是稳定的，但这里**显式**
+ *   用原下标兜底，免得将来换实现的运行时改变结果）
+ * - `message`：按正文的 `localeCompare`，其余同上
+ *
+ * **为什么 `time` 要单列一档而不是「排序的一个方向」**：宿主原序不是「按 ts 排序」——同一纳秒的
+ * 多行是**切不开的一组**（末组会略超 limit，见 README 的翻页取舍）。按 ts 重排会把那一组打散，
+ * 于是一页之内的顺序与**翻页游标**描述的顺序不再一致。原序是唯一与游标同源的顺序，它必须留着。
+ */
+const LEVEL_RANK = { fatal: 0, error: 1, warn: 2, info: 3, debug: 4, trace: 5 }
+
+/** 排序档位的键（下标就是界面上循环切换的顺序）。 */
+export function sortKeys() {
+  return ['time', 'level', 'message']
+}
+
+/** 把排序请求收成能用的那一档：不认识的一律回原序（`time`）。 */
+export function sortKeyOf(key) {
+  const value = String(key == null ? '' : key)
+  return sortKeys().includes(value) ? value : 'time'
+}
+
+/**
+ * 这一页按哪一档排（返回**新数组**，不改入参）。
+ *
+ * 空 / 单行原样返回：没有必要为一页 0 行造一个新数组（也不会在渲染里白白换一次引用）。
+ */
+export function sortLines(lines, key) {
+  const rows = Array.isArray(lines) ? lines.slice() : []
+  const mode = sortKeyOf(key)
+  if (mode === 'time' || rows.length < 2) return rows
+  const rank = (line) => {
+    const level = line !== null && typeof line === 'object' && typeof line.level === 'string' ? line.level.trim().toLowerCase() : ''
+    return LEVEL_RANK[level] === undefined ? 6 : LEVEL_RANK[level]
+  }
+  const text = (line) => (line !== null && typeof line === 'object' && line.message !== undefined ? String(line.message) : '')
+  // 带原下标：同值时按「宿主给的顺序」排（显式稳定，不依赖运行时的 sort 实现）
+  const indexed = rows.map((line, index) => ({ line, index }))
+  indexed.sort((left, right) => {
+    const delta = mode === 'level'
+      ? rank(left.line) - rank(right.line)
+      : text(left.line).localeCompare(text(right.line))
+    return delta !== 0 ? delta : left.index - right.index
+  })
+  return indexed.map((item) => item.line)
+}
+
+/*
+ * 档位的**文案**不在这里：本包的做法是「逐条列字面量、放在组件里」（见 index.js 的 kindLabel /
+ * levelLabel / windowLabel / reasonText），静态 i18n 闸门才扫得到那些键。这里只留**判据**
+ * （哪一档、收口到哪一档）——与 levelTone 只回色档、文案由界面拼是同一条分工。
+ */
 
 /* ============================ 时间分布（直方图，P6） ============================ */
 
@@ -735,6 +815,174 @@ export function histogramBars(overTime, from, to, intervalMs) {
   }
   for (const bar of bars) bar.ratio = max === 0 ? 0 : bar.count / max
   return { bars, max, total, truncated: wanted > cap }
+}
+
+/**
+ * 时间分布柱子的**画法**（第十六刀）：把「每段多少条」变成柱高。
+ *
+ * 为什么不是简单的 `count / max`：真机那张图上 61 根柱子里 **50 根落在 60~70% 这一档**
+ * （常态 ~460 条、峰值 681），线性归一化之后整张图是一条平带——**图的意义是看差异**，
+ * 而峰值把差异压平了。这不是数据的问题（日志量本来就在那个量级上很稳），是画法的问题。
+ *
+ * 三档做法，按数据自己挑（**不让人选**：多一个开关就多一个要解释的东西）：
+ *
+ * ① `linear`：全部柱子都用「零起点」的诚实比例。**只在数据本来就铺得开时用**（最大 / 最小 ≥ 3）——
+ *    那种时候线性轴最容易读，也不需要解释；
+ * ② `clipped`：数据挤在一起时，从 **`floor`** 起画（基线裁剪），把 [floor, max] 这一段的差异拉开。
+ *    这是**统计图表的通行做法**，但它有一个必须付的代价：**柱高不再与条数成正比**。
+ *    所以界面**必须明说**（见 `histogramScaleNote`），否则读到的是错的量级；
+ * ③ `flat`：全是同一个值（或一条都没有）——怎么画都一样，老实画平带，也不写那句裁剪说明
+ *    （说了反而让人以为被裁过）。
+ *
+ * `floor` 取 `min × 0.9` 再向下取整到「好读的台阶」：留 10% 余量是为了让**最小那根也看得见**
+ * （贴着基线的那根柱子分不清「很少」与「没有」）。
+ *
+ * @returns `{ mode, floor, max, note }`：`mode` 是 `linear` / `clipped` / `flat`，
+ *   `note` 是**界面上该说的那句话的键**（`linear`/`flat` 不需要说明，回空串）。
+ */
+export function histogramScale(bars) {
+  const list = Array.isArray(bars) ? bars : []
+  let max = 0
+  let min = Number.POSITIVE_INFINITY
+  let seen = 0
+  for (const bar of list) {
+    if (bar === null || typeof bar !== 'object') continue
+    const count = Number.isFinite(bar.count) && bar.count > 0 ? bar.count : 0
+    if (count <= 0) continue
+    seen += 1
+    if (count > max) max = count
+    if (count < min) min = count
+  }
+  if (seen === 0 || max <= 0) return { mode: 'flat', floor: 0, max: 0, note: '' }
+  // 全一样（或只有一个非零桶）：没有差异可放大，画平带
+  // 只有一个非零桶、或非零桶的值全都一样：**没有差异可放大**，老实画平带
+  if (seen < 2 || max === min) return { mode: 'flat', floor: 0, max: max, note: '' }
+  /*
+   * 挤在一起 → 基线裁剪。**这条判据是「最大 / 最小 < 3」**：真机那组是 681 / 278 ≈ 2.4，
+   * 落在这一档里。而「差异本来就大」的数据（比如夜里 0 条、白天 900 条，比例几百倍）
+   * 走 linear——那种图本来就一目了然，给它加一句「柱高不是从零起」纯属多话。
+   */
+  if (max / min < 3) {
+    const floor = Math.max(1, Math.floor(min * 0.9))
+    return { mode: 'clipped', floor: floor, max: max, note: 'hint.histogramClipped' }
+  }
+  return { mode: 'linear', floor: 0, max: max, note: '' }
+}
+
+/**
+ * 峰值那根柱的起点 ts（第十六刀）；空输入 / 全是 0 返回 undefined。
+ *
+ * 为什么值得一个函数：标题上写着「峰值 681 条」，而真机那张图上**哪一根是 681 完全看不出来**
+ * ——61 根柱子里最高的那根只比别人高一点点（681 vs 常态 ~460），肉眼根本挑不出来。图上必须
+ * 给那根一个记号，否则那个数字只能靠挨个悬停去找。
+ *
+ * **并列时取第一根**（不是随便取）：两根一样高时说「峰值在左边那根」与「在右边那根」都对，
+ * 取第一根至少是确定性的，且与「从左到右读图」的习惯一致。
+ */
+export function histogramPeakTs(bars) {
+  const list = Array.isArray(bars) ? bars : []
+  let best
+  let bestCount = 0
+  for (const bar of list) {
+    if (bar === null || typeof bar !== 'object') continue
+    const count = Number.isFinite(bar.count) ? bar.count : 0
+    if (count <= 0) continue
+    if (count > bestCount) {
+      bestCount = count
+      best = bar.ts
+    }
+  }
+  return bestCount > 0 && Number.isFinite(best) ? best : undefined
+}
+
+/**
+ * 一根柱在悬停 / 读屏里该念的那句话（第十六刀）。
+ *
+ * 改之前柱子的悬停是浏览器的原生 tooltip，里面写着 `18:28:00.000 · 429 条`：
+ *   - **毫秒对 1 分钟一档的分桶是纯噪音**（每一根都这么长，读的人得先跳过它才看见条数）；
+ *   - 原生 tooltip 还会**盖住横轴刻度**（真机截图里那个灰框正压在 18:27 上）；
+ *   - 图上一个时间点都没有时，读者分不清 `18:28` 指的是「这一分钟的开始」还是「这一段」。
+ *
+ * 所以时刻按**分桶宽度**选精度（`bucketClock`），并在末尾带上「这一段」的范围说明。
+ * 返回纯文本（不进 i18n：这是数据 + 数字，标签那半句由界面拼）。
+ */
+export function histogramBucketClock(ts, stepMs) {
+  const value = Number.isFinite(ts) ? ts : 0
+  const step = Number.isFinite(stepMs) && stepMs > 0 ? stepMs : 0
+  const date = new Date(value)
+  const pad = (number) => String(number).padStart(2, '0')
+  const clock = pad(date.getHours()) + ':' + pad(date.getMinutes())
+  // 分桶 ≥ 1 分钟：秒一定是 00（桶按整分对齐），写出来只是噪音
+  if (step === 0 || step >= 60 * 1000) return clock
+  return clock + ':' + pad(date.getSeconds())
+}
+
+/**
+ * 时间分布横轴要标哪几个时刻（第十三刀）。
+ *
+ * 真机读数（2026-10-17，test-logs @ 3085，真 ES，1 小时窗 / 61 根柱）：图上除了「每根柱子 1m /
+ * 峰值 / 合计」三句话，**一个时间点都没有**——那根最高的柱子是哪一分钟，只能靠数的：从左端
+ * 往后数第 N 根再乘 1 分钟。横轴刻度把这件事变成一眼。判据四条：
+ *
+ * ① **首尾各标一个**（`to` 用窗口右端、不是最后一根柱的起点：柱子代表的是 [ts, ts+step) 那一段，
+ *    把右端标成柱子起点会让「最后这一分钟的量」看起来落在窗口之外）；
+ * ② 中间的刻度**按窗口等分**挑（1/3、2/3），再**吸附到柱子的网格上**（`ts` 取整到 step 的倍数）——
+ *    等分保证间距均匀（第一版按「从整点起每 N 根柱」走，首格经常与左端那个刻度重叠，于是
+ *    实际只剩一个中间刻度、右边空出一大段）；
+ * ③ 刻度**位置由吸附后的 ts 算**（不是由等分点算）：标签上的时刻与它画在哪儿必须是同一件事，
+ *    宁可位置偏半根柱，也不许「写着 17:48、画在 17:47 的位置」；
+ * ④ **最多 4 个**：再密就糊成一条灰带，而轴上的字比柱子本身更抢眼。
+ *
+ * 认不出的输入回空数组：界面据此**不画轴**（画一条只有首尾两端的轴等于没标）。
+ */
+export function histogramAxis(bars, from, to, maxTicks) {
+  const list = Array.isArray(bars) ? bars : []
+  const start = Number.isFinite(from) ? from : 0
+  const end = Number.isFinite(to) ? to : 0
+  const limit = Number.isInteger(maxTicks) && maxTicks >= 2 ? maxTicks : 4
+  if (list.length < 2 || !(end > start)) return []
+  const step = Number.isFinite(list[1].ts) && Number.isFinite(list[0].ts) ? list[1].ts - list[0].ts : 0
+  if (!(step > 0)) return []
+  const span = end - start
+  const ticks = [{ ts: start, at: 0 }]
+  /*
+   * 中间刻度：窗口的 1/(n+1) 等分点，各吸附到最近的柱子边界（`round` 而不是 `ceil`：吸附误差
+   * 最多半根柱，取最近的才不会把 1/3 处的刻度系统性推到右边）。
+   */
+  const wanted = Math.max(limit - 2, 0)
+  for (let index = 1; index <= wanted; index += 1) {
+    const target = start + (span * index) / (wanted + 1)
+    const ts = Math.round(target / step) * step
+    if (!(ts > start) || !(ts < end)) continue
+    // 位置按**窗口比例**给（刻度位置与标签上的时刻同源：同一个 ts 算出来的）。
+    // 四舍五入到 0.1%：内联 style 里也该是一眼读得懂的数。
+    ticks.push({ ts, at: Math.round(((ts - start) / span) * 1000) / 10 })
+  }
+  ticks.push({ ts: end, at: 100 })
+  return ticks
+}
+
+/**
+ * 横轴刻度上的时刻（本地时间，**不经过 locale**）。
+ *
+ * 为什么不复用界面里那个 `formatTime`：那个带毫秒、且只会在「跨天」时才补日期——刻度上需要的是
+ * 另一套取舍（**按窗口跨度选精度**），而且它必须是**纯函数**才能进 vitest（刻度是坐标，
+ * 错了整张图读出来的时刻全是错的）。
+ *
+ * 三档：
+ * - 窗口 ≤ 2 分钟：`HH:mm:ss`（1 分钟档的分桶里，秒是有效信息）
+ * - 窗口 < 12 小时：`HH:mm`
+ * - 更长：`MM-DD HH:mm`（跨天时只写时分会读成同一天的两个时刻）
+ */
+export function formatTickTime(ts, spanMs) {
+  const value = Number.isFinite(ts) ? ts : 0
+  const span = Number.isFinite(spanMs) ? spanMs : 0
+  const date = new Date(value)
+  const pad = (number) => String(number).padStart(2, '0')
+  const clock = pad(date.getHours()) + ':' + pad(date.getMinutes())
+  if (span > 0 && span <= 2 * 60 * 1000) return clock + ':' + pad(date.getSeconds())
+  if (span >= 12 * 60 * 60 * 1000) return pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + clock
+  return clock
 }
 
 /* ============================ 按字段分组（terms 榜，P6 第二格） ============================ */
@@ -988,4 +1236,555 @@ export function dockerLogTextOf(payload) {
   if (typeof logs === 'string') return logs
   if (logs !== null && typeof logs === 'object' && typeof logs.text === 'string') return logs.text
   return ''
+}
+
+/* ============================ 字段侧栏与结果表列集（P8-乙） ============================ */
+
+/**
+ * 结果表能加的额外列上限。
+ *
+ * 为什么有上限：行是 flex（正文 `flex:1`），每加一列都在抢同一行宽度；四列之后窄卡片里正文会先被
+ * 挤到看不清。宁可在「加不动」时明说一句，也不让人自己加到一个看不出东西的表。
+ */
+export const RESULT_COLUMN_MAX = 4
+
+/** 侧栏一个分区最多渲染多少行（再多就靠子串过滤收窄；界面报「共 N 个」）。 */
+export const FIELD_LIST_MAX = 200
+
+/**
+ * 这一页的标签字段使用情况：`[{ name, count }]`，count = 这一页里带这个字段的行数。
+ *
+ * 为什么只数**这一页**：行模型里只有 labels 随响应回来（其余字段没有逐行值），而这一页被
+ * `limit` 截断过——界面上必须写「本页」，不能让人读成「全窗口」。排序：出现次数降序、同次数按
+ * 名字（稳定顺序，不随对象键顺序漂）。
+ */
+export function pageFieldUsage(lines) {
+  const counts = new Map()
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const labels = line !== null && typeof line === 'object' && line.labels !== null && typeof line.labels === 'object' ? line.labels : {}
+    for (const [name, value] of Object.entries(labels)) {
+      const text = String(value == null ? '' : value)
+      if (text === '') continue
+      counts.set(name, (counts.get(name) || 0) + 1)
+    }
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+}
+
+function fieldNameOf(item) {
+  return item !== null && typeof item === 'object' && typeof item.name === 'string' ? item.name : ''
+}
+
+/**
+ * 字段名的**最后一段**（`container.labels.com_docker_compose_image` → `com_docker_compose_image`）。
+ *
+ * 为什么要它（第二十一刀）：真机上这台来源有 **92 个字段，其中 58 个是 `container.labels.*`**
+ * ——一层平铺的列表把 `agent.name` 这种短名字和 `container.labels.com_docker_compose_project_environment_file`
+ * 这种长名字混排在一起，长名字折成两三行、行高参差，扫起来全是噪音。
+ * 分组之后行里只写末段，父路径由组头说——`container.labels` 组从 58 行折行文字变成 58 行短词。
+ *
+ * 没有点的名字（`stream`）就是它自己。
+ */
+export function fieldLeaf(name) {
+  const text = String(name == null ? '' : name)
+  const at = text.lastIndexOf('.')
+  return at === -1 ? text : text.slice(at + 1)
+}
+
+/**
+ * 字段名的**父路径**（`container.labels.foo` → `container.labels`）；没有点就是空串。
+ *
+ * 分组键。选「父路径」而不是「第一段」是因为真机数据：按第一段分，`container` 仍是 61 个的一坨
+ * （其中 58 个是 labels）；按父路径分，那 58 个收成**一个可折叠的组**，而 `container` 组只剩 3 个
+ * 直接子字段。组的名字就是「这批字段的共同父路径」，没有额外规则要记。
+ */
+export function fieldParent(name) {
+  const text = String(name == null ? '' : name)
+  const at = text.lastIndexOf('.')
+  return at === -1 ? '' : text.slice(0, at)
+}
+
+/**
+ * 过滤词拆成多个词（第二十一刀）：按空白切分、转小写、去重、丢空串。
+ *
+ * 为什么不是单个子串：真机上这个框是 92 个字段**唯一**的导航方式，而人打字是分词的
+ * （「cont name」想找 container 那边带 name 的字段）。单串匹配要求用户记得确切连写形式，
+ * 打 `container name` 会得到 0 个结果——那不是「没找到」，是「你打的方式这个框不认」。
+ */
+export function fieldFilterTerms(text) {
+  const words = String(text == null ? '' : text).toLowerCase().split(/\s+/)
+  return [...new Set(words.filter((word) => word !== ''))]
+}
+
+/** 一个字段名是否命中**全部**词（每个词都是一段子串；空词表 = 全命中）。 */
+export function fieldMatches(name, terms) {
+  const lower = String(name == null ? '' : name).toLowerCase()
+  const list = Array.isArray(terms) ? terms : []
+  return list.every((term) => lower.includes(term))
+}
+
+/**
+ * 把一组字段按**父路径**分组（第二十一刀）。
+ *
+ * 返回 `[{ key, items }]`，`key` 是父路径（顶层字段是空串）。组按名字排、**顶层组永远排最前**
+ * （`stream` / `message` 这类是通常最先要看的），组内保持入参顺序（调用方已经按
+ * 「常用优先 / 出现次数」排好了，这里不重排——重排就是第二份判据）。
+ *
+ * 入参的每一项**原样保留**（不改形状）：叶子名由 `fieldLeaf` 现算，分组不往数据里塞字段，
+ * 少一个会与 `name` 漂的第二份真相。
+ */
+export function groupFieldsByParent(items) {
+  const groups = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    const name = fieldNameOf(item)
+    if (name === '') continue
+    const key = fieldParent(name)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(item)
+  }
+  return [...groups.entries()]
+    .sort((left, right) => {
+      const a = left[0]
+      const b = right[0]
+      if (a === b) return 0
+      if (a === '') return -1
+      if (b === '') return 1
+      return a < b ? -1 : 1
+    })
+    .map(([key, groupItems]) => ({ key, items: groupItems }))
+}
+
+/**
+ * 侧栏三分区（字段清单来自 `/fields`，使用情况来自 `pageFieldUsage`）：
+ *   hit      = 这一页的行里真有值的字段（**只有这些能加列**——列的值来自行标签）
+ *   conflict = `/fields` 标了 `conflict: true` 的字段（同名在不同索引里类型不一致）
+ *   rest     = 其余可用字段（不能加列，但可以按值筛 / 填进分组框）
+ *
+ * `filterText` 是**多词过滤**（空白分词、每词都要命中、不区分大小写；空串不过滤，见
+ * `fieldFilterTerms`）。三个分区**互斥**：hit 优先——哪怕它在
+ * `/fields` 里也标了冲突，这一页的行确实带着值，列就能画。
+ * `totals` 是过滤后各自的总数（界面拿它说「共 N 个」；渲染可以再截断到 `FIELD_LIST_MAX`）。
+ *
+ * 为什么「其余」也能筛但写着不能加列：筛选下发的是「字段 = 值」，不需要逐行值；列要逐行画，
+ * 而行里没有它的值——给它一个能点、画出来全是 `—` 的入口，比不给更坏。
+ */
+export function fieldSections(fields, usage, filterText) {
+  // 多词 AND（判据在 fieldFilterTerms / fieldMatches）：`cont name` → container.name
+  const terms = fieldFilterTerms(filterText)
+  const match = (name) => fieldMatches(name, terms)
+  const byName = new Map()
+  for (const field of Array.isArray(fields) ? fields : []) {
+    const name = fieldNameOf(field)
+    if (name === '' || byName.has(name)) continue
+    byName.set(name, field)
+  }
+  const hitNames = new Set()
+  const hit = []
+  for (const item of Array.isArray(usage) ? usage : []) {
+    const name = fieldNameOf(item)
+    if (name === '' || hitNames.has(name) || !match(name)) continue
+    hitNames.add(name)
+    const field = byName.get(name)
+    hit.push({
+      name,
+      count: Number.isFinite(item.count) ? item.count : 0,
+      ...(field === undefined ? {} : {
+        ...(typeof field.kind === 'string' ? { kind: field.kind } : {}),
+        ...(field.preferred === true ? { preferred: true } : {}),
+        ...(field.conflict === true ? { conflict: true } : {}),
+        ...(Array.isArray(field.esTypes) ? { esTypes: field.esTypes.slice() } : {}),
+      }),
+    })
+  }
+  const rest = []
+  const conflict = []
+  for (const [name, field] of byName) {
+    if (hitNames.has(name) || !match(name)) continue
+    const item = {
+      name,
+      ...(typeof field.kind === 'string' ? { kind: field.kind } : {}),
+      ...(field.preferred === true ? { preferred: true } : {}),
+      // 冲突标记要**跟着这一行走**：侧栏在「类型冲突」分区里靠它画那个小标记
+      ...(field.conflict === true ? { conflict: true } : {}),
+      ...(Array.isArray(field.esTypes) ? { esTypes: field.esTypes.slice() } : {}),
+    }
+    if (field.conflict === true) conflict.push(item)
+    else rest.push(item)
+  }
+  // 其余字段按「常用优先、再按名字」：宿主已经把优先键标成 preferred，别在这里重挑
+  rest.sort((left, right) => (left.preferred === right.preferred ? 0 : left.preferred === true ? -1 : 1)
+    || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+  conflict.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+  return { hit, conflict, rest, totals: { hit: hit.length, conflict: conflict.length, rest: rest.length } }
+}
+
+/**
+ * 点「列」：已在列集里 → 去掉；不在 → 加到最后。返回 `{ columns, problem }`，
+ * problem 是 `badColumn` / `columnLimit`（满员的说法由界面翻成人话）。
+ * 不可变：返回新数组（调用方 setState 才有意义）。
+ */
+export function columnToggle(columns, field) {
+  const list = Array.isArray(columns) ? columns.slice() : []
+  const name = String(field == null ? '' : field)
+  if (name === '') return { columns: list, problem: 'badColumn' }
+  const at = list.indexOf(name)
+  if (at !== -1) {
+    list.splice(at, 1)
+    return { columns: list, problem: '' }
+  }
+  if (list.length >= RESULT_COLUMN_MAX) return { columns: list, problem: 'columnLimit' }
+  list.push(name)
+  return { columns: list, problem: '' }
+}
+
+/**
+ * 结果表的列宽（有额外列时用 CSS grid，宽了由结果区**横向滚动**）：
+ * 展开箭头 · 时间 · 级别 · 正文（min 198px，有富余时吃满）· 每个额外列 96px · 身份标签 250px。
+ *
+ * 为什么不是「让 flex 自己挤」：正文是唯一可伸缩的那一格，额外列一多它就归零
+ * （真机上 4 列时正文 0px、一行 1176px 高）。这里给正文一个下限，宁可让表横向滚动，
+ * 也不把日志正文压成一行一个字。0 列时返回空串（界面退回原来的 flex 行，行为一点不变）。
+ */
+const RESULT_COLUMN_TRACKS = {
+  toggle: '14px',
+  time: '90px',
+  level: '36px',
+  message: 'minmax(198px,1fr)',
+  cell: '96px',
+  tags: '250px',
+}
+export function resultColumnsTemplate(columns) {
+  const list = Array.isArray(columns) ? columns.slice(0, RESULT_COLUMN_MAX) : []
+  if (list.length === 0) return ''
+  return [
+    RESULT_COLUMN_TRACKS.toggle,
+    RESULT_COLUMN_TRACKS.time,
+    RESULT_COLUMN_TRACKS.level,
+    RESULT_COLUMN_TRACKS.message,
+    ...list.map(() => RESULT_COLUMN_TRACKS.cell),
+    RESULT_COLUMN_TRACKS.tags,
+  ].join(' ')
+}
+
+/**
+ * 行里某一列的显示值：取行标签里的原值；没有（这一页这行没带）就是 undefined——
+ * 界面画 `—` 并在悬停里说「这一行没有这个字段」，**不造一个假值**。
+ */
+export function columnValue(line, field) {
+  const name = String(field == null ? '' : field)
+  if (name === '') return undefined
+  const labels = line !== null && typeof line === 'object' && line.labels !== null && typeof line.labels === 'object' ? line.labels : {}
+  const value = labels[name]
+  if (value === undefined || value === null) return undefined
+  const text = String(value)
+  return text === '' ? undefined : text
+}
+
+/**
+ * 行详情里的原文：超长截断并**明说截断**（设计 §9.6「raw 超长截断 + 已截断」）。
+ * 返回 `{ text, truncated, total }`；`total` 是原文字符数（界面用它在提示里报数）。
+ */
+export const RAW_PREVIEW_MAX = 20000
+export function rawPreview(raw, max) {
+  const text = String(raw == null ? '' : raw)
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : RAW_PREVIEW_MAX
+  if (text.length <= limit) return { text, truncated: false, total: text.length }
+  return { text: text.slice(0, limit), truncated: true, total: text.length }
+}
+
+/* ------------------------------------------------------------------ *
+ * 浮层定位与开关（第二十二刀）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 浮层落在哪儿：给**触发它的那颗按钮**的视口坐标（`anchor`），算出浮层的视口坐标。
+ *
+ * 三条边界（浮层跑出屏幕、或者反过来盖住触发它的那颗按钮，都是这一类东西的通病）：
+ *   ① 横向：`align: 'right'` 右缘对齐按钮右缘（元信息行那颗在整行右侧，左对齐要向左伸 300px）；
+ *      `align: 'left'` 左缘对齐按钮左缘（筛选行那颗在左侧，右对齐会缩回最左边去）；
+ *      两种都夹进视口（`margin` ~ `vw - width - margin`）。
+ *   ② 纵向优先**往下开**（`bottom + gap`）：下面放得下 `height`（面板想要的高度）就一个像素都不动。
+ *   ③ 下面放不下就**上翻**；两边都放不下（真机 816×782 上一抓就是——面板想要 520，上下各只剩
+ *      300 多）就挑宽的那一边，把高度收进那一边的空间（`maxHeight`，面板自己滚）。**不许**为了
+ *      「整块都留在屏幕里」把面板挪到屏幕中央：那会让它反过来盖住触发它的那颗按钮，而这个面板
+ *      之所以存在，就是因为「能打开它的东西和它本身在同一处」（第二十刀）。
+ *
+ * `vw` / `vh` 拿不到（无浏览器 / 测试桩）时不做夹取、也不上翻：**能打开**比位置精确重要。
+ * 坐标一律取整，免得半像素的发丝线落在小数上糊掉。
+ */
+export function panelPlacement(anchor, options) {
+  if (anchor === null || anchor === undefined || typeof anchor !== 'object') return undefined
+  const spec = options === null || options === undefined ? {} : options
+  const width = Number.isFinite(spec.width) ? spec.width : 0
+  const height = Number.isFinite(spec.height) ? spec.height : 0
+  const margin = Number.isFinite(spec.margin) ? spec.margin : 8
+  const gap = Number.isFinite(spec.gap) ? spec.gap : 4
+  const vw = Number.isFinite(spec.vw) && spec.vw > 0 ? spec.vw : 0
+  const vh = Number.isFinite(spec.vh) && spec.vh > 0 ? spec.vh : 0
+  // 左对齐只有按钮左缘可用时才算数；拿不到就退回右对齐那一套（右缘也没有就贴左边距）
+  const leftAligned = anchor.align === 'left' && Number.isFinite(anchor.left)
+  const rawLeft = leftAligned
+    ? anchor.left
+    : (Number.isFinite(anchor.right) ? anchor.right - width : margin)
+  const left = vw > 0
+    ? Math.min(Math.max(margin, rawLeft), Math.max(margin, vw - width - margin))
+    : Math.max(margin, rawLeft)
+  let top = Number.isFinite(anchor.bottom) ? anchor.bottom + gap : margin
+  let maxHeight
+  if (vh > 0 && height > 0) {
+    const below = vh - margin - top
+    const above = Number.isFinite(anchor.top) ? anchor.top - gap - margin : Number.NaN
+    if (below < height && above >= height) {
+      // 上翻：面板底边停在按钮上沿之上
+      top = anchor.top - gap - height
+    } else if (below < height) {
+      // 两边都放不下：挑宽的那一边，高度收进那边的空间（面板自己滚）
+      const room = Number.isFinite(above) ? Math.max(below, above) : below
+      if (room > 0) {
+        maxHeight = Math.floor(room)
+        if (Number.isFinite(above) && above > below) top = anchor.top - gap - maxHeight
+      }
+    }
+  }
+  const placed = { left: Math.round(left), top: Math.round(top) }
+  if (maxHeight !== undefined) placed.maxHeight = maxHeight
+  return placed
+}
+
+/**
+ * 字段面板**想要**的高度：与 CSS 的 `.ll_fields{max-height:min(520px,70vh)}` 同一口径。
+ *
+ * 渲染由 CSS 管（它才是真正决定画多高的那个），这个数只用来判断「往下开放不放得下、要不要上翻」。
+ * 两者漂开的最坏后果是面板早一步上翻或早一步收窄，不会把位置算错——所以它没有做成两处共享的
+ * 常量（JS 读不到 CSS）。`client-smoke.mjs` 里有一条断言盯着 CSS 那一行，改一边会红。
+ */
+export const FIELD_PANEL_CEILING = 520
+export function fieldPanelHeight(vh) {
+  if (!Number.isFinite(vh) || vh <= 0) return FIELD_PANEL_CEILING
+  return Math.min(FIELD_PANEL_CEILING, Math.round(vh * 0.7))
+}
+
+/**
+ * 字段面板的宽度：与 CSS 的 `.ll_fields{width:…}` 同一口径。
+ *
+ * 为什么要一个常量：它有两处用处——CSS 决定画多宽，`panelPlacement` 用它算「右缘对齐」的左缘。
+ * 两处各写一个数就会漂（漂了之后面板不是贴着按钮，而是差几十像素，看着像随机偏了一点）。
+ * 340 而不是 300：真机上 `container.labels.*` 那一串末段（`com_docker_compose_service` 这类
+ * 27 个字符）在 300px 里正好差一点点放不下，多出来的 40px 让它们一行读完。
+ * `client-smoke.mjs` 有一条断言盯着 CSS 那一行，改一边会红。
+ */
+export const FIELD_PANEL_WIDTH = 340
+
+/**
+ * 一个字段名（末段）能在哪儿断行：在每个 `_` / `-` / `.` **之后**给一个断点。
+ *
+ * 为什么要这个：CSS 那边原来用 `overflow-wrap:anywhere`——浏览器会把一整行**填满**再断，
+ * 于是 `com_docker_compose_config-hash` 被切成 `com_docker_compose_conf` / `ig-hash`
+ * （真机截图里就是这样，一个词从中间裂开）。给不出断点时浏览器只能这么切；给出断点之后，
+ * 它会在 `com_docker_compose_` 后面断，读起来是"两个词"而不是"半个词"。
+ *
+ * 返回**逐段保留分隔符**的数组（`['com_','docker_','compose_','config-','hash']`），
+ * 拼回去逐字等于入参——这一点有用例钉着（错一个字符就会让行上显示的名字与真实字段名不符，
+ * 而那正是「点错了字段」的来源）。
+ */
+export function fieldNameBreaks(name) {
+  const text = String(name == null ? '' : name)
+  if (text === '') return []
+  const separators = new Set(['_', '-', '.'])
+  const out = []
+  let current = ''
+  for (let at = 0; at < text.length; at += 1) {
+    const ch = text[at]
+    current += ch
+    // 连续分隔符算**一处**断点：`a__b` 断成 `a__` / `b`，不是 `a_` / `_` / `b`
+    const next = at + 1 < text.length ? text[at + 1] : ''
+    if (separators.has(ch) && !separators.has(next)) {
+      out.push(current)
+      current = ''
+    }
+  }
+  if (current !== '') out.push(current)
+  return out
+}
+
+/* ------------------------------------------------------------------ *
+ * 筛选组合框（第三十刀）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 筛选框右边那一格的候选：把一个字段的 top 值摊成「可选的候选行」。
+ *
+ * 与 `valueBars`（画横条的版本）**分开**：那个版本把比例与截断一起算好，是给「看长短」用的；
+ * 筛选框的候选只需要「这个值能不能点、点了筛什么」——它没有条，也就不该带上一条用不上的比例。
+ *
+ * 三条判据：
+ *   - **空白值不进来**：筛选只能表达「字段 = 某值」，表达不了「字段缺失」（与 `filterProblem`
+ *     同一条，界面上那一桶本来也不给点）。把一个点了没反应的行摆出来，比不摆更坏。
+ *   - **已经在筛的那个值打标记**（`active`）：它还在候选里（点一下是取消，与榜上同一条），
+ *     只是要让人看得出「这一条已经生效了」。
+ *   - **保持后端给的顺序**：按计数排序是后端的结论，再排一次等于把它盖掉（与 `groupBars` 同一条）。
+ */
+export function valueChoices(field, buckets, active, limit) {
+  const name = String(field == null ? '' : field).trim()
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_VALUES_MAX
+  if (name === '') return []
+  const rows = []
+  for (const bucket of Array.isArray(buckets) ? buckets : []) {
+    if (rows.length >= cap) break
+    if (bucket == null || typeof bucket.key !== 'string' || !Number.isFinite(bucket.count)) continue
+    // 空白值：筛不了（见上），不占一格
+    if (bucket.key.trim() === '') continue
+    rows.push({
+      value: bucket.key,
+      count: bucket.count,
+      active: active !== undefined && active !== null && String(active) === bucket.key,
+    })
+  }
+  return rows
+}
+
+/**
+ * 两段式筛选框的候选里「当前那一行」上下挪一格：**允许停在「没选」那一档**（−1）。
+ *
+ * 与 `pickMove` 的差别是判据，不是风格：分组框的输入框里**只有**候选那条路（打进的字就是
+ * 结论），所以必须永远有一行被选中；筛选框的值那一格可以打任何东西（长尾值、带空格的、
+ * 带引号的），「没选中任何候选」是一个**正常状态**——回车该取的是用户打的那串字。
+ *
+ * 所以这里能从 −1 往下走到第一行，也能从第一行往上退回 −1（再往上就停住）。
+ */
+export function choiceMove(current, delta, length) {
+  const count = Number.isInteger(length) && length > 0 ? length : 0
+  const step = Number.isFinite(delta) ? Math.trunc(delta) : 0
+  if (count === 0) return -1
+  const at = Number.isInteger(current) ? current : -1
+  const next = at + step
+  return Math.min(Math.max(next, -1), count - 1)
+}
+
+/**
+ * 筛选框左边那一格的候选：**全部字段**按输入收窄，且「这一页命中」的排在前面。
+ *
+ * 与 `fieldChoices`（分组框的候选）分开：那个保持宿主顺序、不做分区；筛选框这里有一个
+ * 实际差别——**这一页命中的字段是刚看过的那些**，它们才是此刻大概率要筛的。所以先排命中区、
+ * 再排其余（三个分区内部都保持 `fieldSections` 已经算好的顺序，不重排）。
+ *
+ * 收窄规则**复用** `fieldFilterTerms` + `fieldMatches`（多词 AND，别在这儿另写一套）：同一个
+ * 来源的两个相框——一个在侧栏里筛字段名、一个在筛选行里筛字段名——对 `cont name` 给出不同的
+ * 答案，是那种「用着用着发现它时灵时不灵」的毛病。判据只有一个，两处共用。
+ */
+export function filterFieldChoices(sections, typed, limit) {
+  const terms = fieldFilterTerms(typed)
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_LIST_MAX
+  const out = []
+  const take = (items, group) => {
+    for (const item of Array.isArray(items) ? items : []) {
+      if (out.length >= cap) return
+      const name = String(item == null || item.name == null ? '' : item.name)
+      if (name === '' || !fieldMatches(name, terms)) continue
+      out.push({ name, group })
+    }
+  }
+  take(sections == null ? undefined : sections.hit, 'hit')
+  take(sections == null ? undefined : sections.rest, 'rest')
+  take(sections == null ? undefined : sections.conflict, 'conflict')
+  return out
+}
+
+/**
+ * 两段式筛选框里「当前那一段」该退到哪儿（Backspace / 删除键的判据）。
+ *
+ * 三态：
+ *   - 值那一格**有字**：退掉最后一个字（`'value'`，调用方把 value 去掉尾字）；
+ *   - 值那一格**空了、字段已选**：退到字段那一格（`'field'`），字段名留着、值清空——
+ *     这是「我要换个字段」最自然的手势，而不是逼人先点一下左边；
+ *   - 字段也没选：什么都不做（`'none'`）。
+ *
+ * 为什么值优先：写值的时候按 Backspace 是指望删字，不是指望换字段。反过来会让人在打错一个
+ * 字母时**把整条条件清掉**。
+ */
+export function filterBoxBack(field, value) {
+  if (String(value == null ? '' : value) !== '') return 'value'
+  if (String(field == null ? '' : field).trim() !== '') return 'field'
+  return 'none'
+}
+
+/* ------------------------------------------------------------------ *
+ * 字段的 top 值（第二十四刀）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 取某个字段 top 值时向聚合要几个值。
+ *
+ * 8 是**目视**算出来的：每个值一行 18px，8 行 = 144px —— 下拉里一眼扫得完，也不会把
+ * 它下面的东西顶出屏幕。筛选框（第三十刀）与它的候选共用这个数：一处改了另一处跟着改。
+ */
+export const FIELD_VALUES_SIZE = 8
+/** 画出来的上限（与请求数一致；后端要是多给了，多的不画）。 */
+export const FIELD_VALUES_MAX = 8
+
+/**
+ * 取某个字段 top 值的请求体：与榜（`groupPayload`）**同一个信封**，只多一个 `size`。
+ *
+ * 信封相同不是巧合——它保证「值」与「行」「分布」画的是**同一个子集**（同一个窗口、同一个查询串、
+ * 同一份筛选），见 `facetsEnvelope` 那段注释。窗口回显不全就返回 null，不发畸形请求。
+ */
+export function fieldValuesPayload(draft, outcome, field, size) {
+  const name = String(field == null ? '' : field).trim()
+  if (name === '') return null
+  const envelope = facetsEnvelope(draft, outcome)
+  if (envelope === null) return null
+  const wanted = Number.isFinite(size) && size > 0 ? Math.floor(size) : FIELD_VALUES_SIZE
+  return { ...envelope, by: name, size: wanted }
+}
+
+/**
+ * 值清单的缓存键：**同一份条件只能有一种答案**。
+ *
+ * 键里带字段名与整个信封（来源 + 窗口 + 查询串 + 筛选）：改了任何一个，这一格就必须重新问后端。
+ * 少带一样都会给出「上一次条件下的一组值」——那比不展开更坏，因为它看起来是这一次的。
+ * 拿不到信封时返回 null（调用方据此显示「不知道窗口，先查一次」那类话，而不是发一个畸形请求）。
+ */
+export function fieldValuesKey(draft, outcome, field) {
+  const payload = fieldValuesPayload(draft, outcome, field)
+  if (payload === null) return null
+  const filters = payload.filters === undefined
+    ? ''
+    : Object.keys(payload.filters).sort().map((key) => key + '=' + payload.filters[key]).join('&')
+  return [payload.by, payload.target, String(payload.from), String(payload.to), payload.q, filters].join('\u0000')
+}
+
+/**
+ * top 值 → 可画的行（复用榜那套归一化，再按本格的条数截一刀）。
+ *
+ * `ratio` 用的是**整批**的最大值（不是截断之后的最大值）：截断只影响「画几行」，
+ * 不该让头条忽然变成满格——那会让「8 条里最大的一条」看起来与「50 条里最大的一条」一样重。
+ */
+export function valueBars(buckets, limit) {
+  const spec = groupBars(buckets)
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_VALUES_MAX
+  const rows = spec.bars.slice(0, cap)
+  return { rows, max: spec.max, truncated: spec.truncated || spec.bars.length > rows.length }
+}
+
+/**
+ * 选列面板里**这一行此刻能不能点**（第二十六刀：把「列」按钮换成勾选）。
+ *
+ * 三种情形，判据一句话说得完：
+ *   - 已选：**永远能点**（取消勾选不能被「满员」挡住——否则满员之后一个都去不掉，
+ *     这正是「点不动却不说为什么」的另一种形态）；
+ *   - 未选且**满员**：`limit`——界面据此画禁用态并说明「最多 4 列」；
+ *   - 其余：`ok`。
+ *
+ * 与 `columnToggle` 分开是因为两者的读者不同：那个决定「改完之后是什么」，
+ * 这个决定「画成什么样」。合成一个就得在渲染时先算一遍结果、再假装没算。
+ */
+export function columnPickState(columns, field) {
+  const list = Array.isArray(columns) ? columns : []
+  const name = String(field == null ? '' : field)
+  if (name === '') return 'bad'
+  if (list.indexOf(name) !== -1) return 'picked'
+  if (list.length >= RESULT_COLUMN_MAX) return 'limit'
+  return 'ok'
 }
