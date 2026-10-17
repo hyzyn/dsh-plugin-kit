@@ -118,7 +118,9 @@ export function relativeLinkViolations(text: string, filePath: string, repoRoot:
     if (!target.includes('../')) continue
     // 绝对 URL 不可能含 ../（真含了也是外部地址，不归本守卫管）
     if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
-    out.push(`${relative(repoRoot, filePath)} 里有仓内相对链接：](${raw})`)
+    // 报出来的路径跨平台同形：Windows 上 `relative()` 给反斜杠，而这条串是给人看的定位信息
+    // （与 client-lint / check-doc-links 的既有归一写法一致；2026-10-17 扫全仓归一化时发现的唯一漏网）
+    out.push(`${relative(repoRoot, filePath).replaceAll('\\', '/')} 里有仓内相对链接：](${raw})`)
   }
   return out
 }
