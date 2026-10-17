@@ -1172,7 +1172,7 @@ P6 真要做 tail 时把 `stream()` 与消费者一起落地，再把这一位�
 结论 PASS，没验到的也逐条列在那一节。第一轮当时被沙箱挡住的那一步（起 test profile 的宿主会写
 `$DSH_HOME/profiles/*`，在 workspace 之外，`workspace-write` 会拒）在补验收时**逐条授权**后走通了：
 隔离靠的是**复制一份 profile**（真 `DSH_HOME`，设置与凭据都在），不是隔离 home——方案见
-[real-test 车道](../../.dsh/skills/dsh-plugin-kit/references/real-test.md)。
+[真机测试 runbook](../../docs/agent-real-test.md)。
 
 #### 真机验收：真宿主 + 真 ES 的 terms 榜（2026-10-13）
 
@@ -1859,3 +1859,141 @@ TSDB 维度等一起带下来，我们只带了「类型」这一轴；它的字
 **还没做的（如实记下）**：与第六刀一样**没跑真机**。真机上还没看过的是：回车在 `type=number` 那格上的
 真实行为（有的浏览器对数字框的回车有自己的处理）、以及连点放大后取消这条路上高亮是否始终跟手。
 要真机时按 [design.md §9.7](./docs/design.md#97-验收口径) 的口径跑。
+
+### 面板第八刀：条件改了就不许拿旧结果翻页 + 查询串方言（2026-10-17）
+
+维护者：「优化一下 loglens es 的 ui 交互，可以使用 test-logs（3085）profile 验证」。这一刀对着
+**test-logs（3085）+ 真 ES** 实际点出来的几处，不是凭感觉列。
+
+| 症状（核过的事实） | 证据 |
+|---|---|
+| **条件改了还能点「下一页」**：`runQuery(true)` 用**当前草稿**拼载荷，却把 `cursor` 原样带上是**上一次查询**的 | `runQuery` 里 `payload = queryPayload(effective…)` + `if (append && cursor !== undefined) payload.cursor = cursor`；条件变了没有任何一处清游标。ES 的游标是 PIT + `search_after`：**不会报错**，只会把旧快照里的位置当成新条件的下一页（少行 / 错位都看不出来）。真机复现：1 小时查完 → 时间窗改 15 分钟 → 点「下一页」，请求体是**新窗口 + 旧游标**，列表从 100 行变成 200 行 |
+| **查询串占位符对 ES 说 LogQL** | `placeholder.query` 写死「Loki 是 LogQL」；ES / OpenSearch 走的是 Lucene 的 `query_string`（`capabilities().queryLanguage` 也是 `lucene`） |
+| **级别下拉的提示指了一条走不通的路** | 原话「要按级别看全量请用分组榜」。真机这台 ES：`log.level` 在字段清单里，但按它 terms 聚合返回 **0 个桶**（一小时窗口里 26272 行）；级别是 `levelInferred: true` 从正文推断的——分组榜拿不到级别。宿主那条 `level=…` warning 也写着「请用聚合（loglens_facets）」，且 `**返回的这一页**` 的星号会原样漏在面板上 |
+| **结果行的正文被标签挤成 0 宽**（真机 1470px） | 行是 grid，标签列 `auto` 的 max-content（3 个 220px 芯片 + 「另有 N 个」）吃掉正文那列 `minmax(0,1fr)`——正文变成一字一行。这一处在本轮起手时工作区已有一版未提交的 flex 修法，本轮保留、并在真机上复核（读数见下） |
+
+| 判据 | 落点 |
+|---|---|
+| **条件指纹只取会影响请求的字段**：来源 / 查询串 / 预设档 / custom 窗口 / 级别（与载荷同一条归一）/ 条数 / 筛选（按字段排序，一个字段一条） | `pure.js` 的 `querySignature` |
+| **预设档只比档名**：`1h` 每次查都是「到此刻为止」，比绝对毫秒会把时钟走动误判成改动；`custom` 才比真实 from/to | 同上 |
+| **查询串不 trim**：`queryPayload` 原样下发，比较也必须原样（末尾多一个空格也算改过） | 同上 |
+| **「过期」= 与上一次「成功」跑的那份草稿不同**；还没查过 / 刚清空不算过期（那时屏上根本没有结果） | `pure.js` 的 `queryStale`；`index.js` 的 `lastRun`（在 `runQuery` 成功分支写 `effective`，`clearResults` 一并撤） |
+| **条件改了要明说**：结果区顶上一句「下面这份还是上一次查询的」 | 新键 `hint.staleResults`；`index.js` 的 `.ll_hint.ll_warn` |
+| **「下一页」只在条件没变时给**：游标属于上一次查询；ES 的 PIT 混着用不会报错 | `index.js` 的 `cursor === undefined || isDocker || stale ? null` |
+| **「分组」同样停**：它取当前查询串 + 上一次回显的窗口（`facetsEnvelope`），条件变了会画出「新查询串 + 旧窗口」的榜 | `disabled: … || stale` |
+| **占位提示按来源方言**：ES / OpenSearch → Lucene，Loki → LogQL，其余通用；**逐条列字面量**（静态闸门扫不到动态键） | `index.js` 的 `queryPlaceholder` + 3 条 `placeholder.query*` |
+| **级别提示说实话**：页内筛的边界不变；补上「要按级别看全量得后端真有级别字段（ES 上常为空），否则只能搜关键字」 | `hint.levelPaged`（中英都改）；宿主 `src/execute.ts` 那条 warning 同步去 Markdown 星号；`src/tools.ts` 里 `loglens_search.level` 的参数说明也改掉（agent 会把这句错建议转述给人） |
+| **行排版用 flex**：正文 `flex:1` 永远分得到宽度；标签最多 38% 且可换行 | `.ll_resultRow` / `.ll_resultMsg` / `.ll_resultTags` |
+
+**用例**：`client-pure.test.ts` **+8**（同一份条件不算过期 / 七类字段逐项改都算 / 查询串不 trim /
+预设档不看绝对毫秒 / custom 档看真实窗口 / 筛选不看数组顺序 / 级别与载荷同一条归一 /
+`lastRun` 缺席与垃圾入参）；`client-smoke` **+3**（ES 占位是 Lucene、Loki 才是 LogQL /
+条件改了提示在场 + 「下一页」收起 + 「分组」禁用 + 重查后恢复且翻页带新窗口 /
+只改级别也走同一份判据）。另修通 `hint.levelPaged` 与宿主 warning 的文案。
+
+**反例（拆掉判据必须变红，逐条实跑过）**——**7 条**：
+
+| 拆法 | 变红的用例 |
+|---|---|
+| `queryStale` 恒 false | pure：3 条（七类字段 / 不 trim / custom 窗口） |
+| 条件指纹不取 `q` | pure：2 条（七类字段 / 不 trim） |
+| 条件指纹直接用原始级别（不与载荷同口径） | pure：`级别与载荷同一条归一` |
+| 不写 `lastRun`（查完也判不出过期） | smoke：2 条（条件改了 / 只改级别） |
+| 「下一页」不判 `stale` | smoke：2 条（条件改了 / 只改级别） |
+| 「分组」不判 `stale` | smoke：`条件改了…` |
+| ES 占位符改回 LogQL | smoke：查询串占位 |
+
+**真机验收（test-logs profile @ 3085，真 ES；内网地址不入库）**，逐条读数：
+
+| 步骤 | 读数 | 结论 |
+|---|---|---|
+| 选 ES 来源 | 查询串占位 = `查询串（Lucene，如 level:error 或 "timeout"；留空即全量）` | PASS |
+| 1 小时窗查询 | 返回 100 行 / 命中 26272 / `已截断：达到条数上限`；无「条件改过」误报 | PASS |
+| 时间窗 1h → 15m（不查） | 橙色提示在场；「下一页」消失；「分组」禁用；没有新请求 | PASS |
+| 点「查询」 | 提示撤掉；「下一页」/「分组」恢复；命中 6571（15 分钟） | PASS |
+| 点「下一页」 | 请求体 `to - from = 900000`（15 分钟）+ 游标；列表 100 → 200 行 | PASS（旧游标不再配新条件） |
+| 分组 `container.name` | 榜首一个服务 15235 条，其后 9988 / 288 / 239 / 177 / 123… | PASS |
+| 点榜上一条下钻 | 芯片 `container.name = <服务>`；行 / 分布 / 榜一起收窄；**不误报「条件改过」**（`lastRun` 跟着 override 走） | PASS |
+| 级别 = error（不查） | 提示出现、「下一页」收起、「分组」禁用；页面级提示改成「后端要有级别字段」 | PASS |
+| 级别上再下钻（真查） | 宿主 warning：`100 / 100 行被筛掉`、无 `**` 原样漏出；这套 ES 的级别确实是推断的 | PASS |
+| 按 `log.level` 分组 | `buckets: []`（窗口内 26272 行） | 证明原提示是死路，已改 |
+| 行排版（1470px 宽） | 正文分到约 59% 宽度、标签最多 38% 且悬停给全 | PASS（观感项，无自动守卫） |
+
+**门槛**：本包单测 **367 条**（原 359；`client-pure.test.ts` 114）；`client-smoke` **50/50**（原 47）；
+`client-lint` 通过（样式变量 130 / 自定义属性 132 / 中性边框 11 处全 0.5px）；`check-i18n` 本包
+**129 条键**（+`placeholder.queryLogql` +`placeholder.queryLucene` +`hint.staleResults`）；
+全仓 `pnpm typecheck && build && aggregate` 绿，`test` **2925 / 2927**——**红的 2 条不在本包**：
+`scripts/test/os-consent-scope.test.ts` 的「OS 级同意」升级绊线（本机 DSH `0.2.1-alpha.5` 与方案基准
+`0.2.1-alpha.2` 不一致，是那条绊线**按设计**该在宿主升级时报的红，与本刀无关）。顺带修掉
+`ROADMAP.md` 里一条指向仓外 skill 目录的死链（改成仓内 [真机测试 runbook](../../docs/agent-real-test.md)）。
+
+**还没做的（如实记下）**：
+- 条件改了**不自动重查**（既有判据：一改就查会在连点时打出一串请求），也没有把旧结果灰掉 / 清空——
+  只做「明说 + 收起两个会静默出错的入口」。要不要在改条件时直接清空结果，留给下一轮决定。
+- 结果行仍没有「展开看 raw / 复制正文」（design.md §9.3 第 2 项的后半）。
+- 行排版的 flex 修法是**观感项**，只有真机读数，没有自动守卫（现有 smoke 里没有可信的 CSS 布局落点）。
+
+### 面板第九刀：行上只留 1 个身份标签 + 「＋N」浮层（2026-10-17）
+
+维护者发了一张截图，箭头指着一行里的 `host.name 38ed…`：「这个标签的必要性如何」。先量，再改：
+
+| 量到的事实（同一来源，100 行） | 读数 |
+|---|---|
+| `container.name` | 4 个值（哪个服务） |
+| `host.name` | **1 个值**（容器 ID 风格的 hostname）——整页恒定，且看不出是谁 |
+| `log.file.path` | 4 个值，与 `container.name` 一一对应（一个容器一条路径） |
+| `stream` | 2 个值（stdout / stderr），但按固定优先级轮不到它 |
+| 行高 | 3 个 chip + 「另有 17 个」= 4 行（约 72px）；短消息行被撑到约 74px，一屏 5 行 |
+
+结论不是「标签没用」——它是**没有先验知识时唯一的一键筛选入口**；问题是**固定优先级挑出的 3 个**
+对这份数据并不都有信息量（恒定值 + 冗余值占了 2/3 的位置）。所以不删机制，只把行内占用压下去。
+
+| 判据 | 落点 |
+|---|---|
+| 行上只摆**宿主顺序的第一个**有值标签（仍一键筛） | `index.js` 的 `rowLabels(line, 1)` |
+| 其余收进「＋N」（N = 有值标签数 - 1；**0 时不画**） | `rowLabelOverflow(line, 1)`；`hint.rowMoreLabels` 改为 `＋{count}` |
+| 「＋N」点开**全部标签**浮层，每条仍可点筛（与行上走同一个 `drillDown`） | `labelPanel` 状态 + `allRowLabels`；`index.js` 的 `ll_labelPanel` |
+| 浮层**画在 `.ll_results` 外面**：那个容器 `max-height:420px; overflow-y:auto` 会把绝对定位的子元素裁掉 | `.ll_labelLayer{position:fixed}` + 视口坐标（锚在被点的按钮上，左右 / 上下夹在视口内） |
+| 收起：点背景 / × / Esc / **任何滚动**（页面或列表）、重查后行没了 | `.ll_labelBackdrop` / `.ll_chipBtn` / `closeOnEscape` / capture 的 scroll 监听 |
+| 空白值不列（与行上同一条判据），列出来也点不动 | `allRowLabels` 复用 `labelRows`（与 `rowLabels` 同源）；`rowFilterProblem` 挡 |
+| 标签的**口径只有一份**：行上前 N 个、浮层全部、「还有几个」都从 `labelRows` 出 | `pure.js` 的 `labelRows`（`rowLabels` / `allRowLabels` / `rowLabelOverflow` 都走它） |
+| 悬停仍是全部标签 + 原文（不变） | `lineTitle` |
+
+**用例**：`client-pure.test.ts` **+1**（`allRowLabels` 全部 / 顺序 / 截断 / 空值 / 垃圾入参，且前 N 个与
+`rowLabels` 逐项相等）；`client-smoke` 更新 3 条 + **+1**（只摆 1 个 + 「＋4」 / 「＋N」浮层：
+结构上不在 `.ll_results` 里、锚点坐标、全部标签、点一条即筛并收起、点背景收起 /
+身份标签点筛 / 空值不占位且没有「＋N」）。
+
+**反例（拆掉判据必须变红，逐条实跑过）**——**5 条**：
+
+| 拆法 | 变红的用例 |
+|---|---|
+| 行上改回摆 3 个 | smoke：只摆 1 个 |
+| 有溢出却不画「＋N」 | smoke：只摆 1 个 / 浮层 |
+| 浮层里点一条不 `drillDown` | smoke：浮层 |
+| `allRowLabels` 只回前 3 个 | pure：allRowLabels + smoke：浮层 |
+| 点背景不收起 | smoke：浮层 |
+
+**真机验收（test-logs profile @ 3085，真 ES）**：
+
+| 读数 | 结果 |
+|---|---|
+| 行上标签 | `container.name <服务>` + `＋19`（这条来源有 20 个有值标签） |
+| 短消息行高 | **42px**（标签 18px、正文 36px）；改前同数据是 3 chip + 「另有 N 个」共 4 行、约 74px |
+| 浮层 | 点「＋19」出现：`position:fixed`、320×300、全在视口内；标题「全部标签 + 时间」；20 条可点 |
+| 点浮层里的 `host.name` | 浮层收起 + 芯片 `host.name = <值>` + 真重查（命中数变了） |
+| 点背景 / 页面滚动 | 都收起（滚动用 capture 监听，列表内滚也收） |
+
+**门槛**：本包单测 **368 条**（原 367；`client-pure.test.ts` 115）；`client-smoke` **51/51**（原 50）；
+`client-lint` 通过（样式变量 149 / 自定义属性 154 / 中性边框 12 处全 0.5px / 字号 32 处配对）；
+`check-i18n` 本包 **132 条键**（+`panel.labels` +`hint.rowLabelPanel` +`btn.closeLabels`）；
+全仓 `pnpm typecheck && build && aggregate` 绿，`test` **2926 / 2928**——红的 2 条仍是
+`scripts/test/os-consent-scope.test.ts` 的 DSH 升级绊线（本机 `0.2.1-alpha.5` ≠ 方案基准 `0.2.1-alpha.2`，
+与本刀无关）；`check-doc-links` / `check-no-public-ip` / `aggregate:check` 全绿。
+
+**还没做的**：
+- 没做「常量抑制」（选项 B）：当前列表里所有行都相同的标签仍会在每行的 `＋N` 里出现，只是不再
+  逐行画。要按「这一页是不是恒定」动态收，是下一轮的事。
+- 浮层是视口坐标（fixed）：宿主若把卡片放进一个**带 transform 的祖先**里，fixed 会相对那个祖先
+  而不是视口——真机上当前没有这种祖先，但换宿主版本要复核这一点。
+- 没有「按标签值复制」；`raw` 仍只在悬停里。

@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  allRowLabels,
   appendLines,
   countsParts,
   draftFromTarget,
@@ -28,6 +29,8 @@ import {
   kindOptions,
   queryPayload,
   queryProblem,
+  querySignature,
+  queryStale,
   supportsAggregation,
   windowChoices,
   windowOptions,
@@ -246,6 +249,65 @@ describe('查询表单（P6 面板侧）', () => {
       { key: 'matchedAtLeast', value: 10000 },
       { key: 'scannedBytes', value: 2048 },
     ])
+  })
+})
+
+describe('查询条件「变了没有」（陈旧结果与游标）', () => {
+  const ran = { target: 'es', q: 'level:error', preset: '1h', limit: 100, filters: [{ field: 'container.name', value: 'app' }], level: 'warn' }
+
+  it('同一份条件不算过期：七类字段逐项都不动', () => {
+    expect(queryStale({ ...ran }, ran)).toBe(false)
+    // 多一个界面上从来不会出现的键（window）也不该算改：预设档根本不看它
+    expect(queryStale({ ...ran, window: { from: 1, to: 2 } }, ran)).toBe(false)
+  })
+
+  it('改任何一项影响请求的条件都算过期（查询串 / 来源 / 时间窗 / 级别 / 条数 / 筛选）', () => {
+    expect(queryStale({ ...ran, q: 'level:error timeout' }, ran)).toBe(true)
+    expect(queryStale({ ...ran, target: 'loki' }, ran)).toBe(true)
+    expect(queryStale({ ...ran, preset: '15m' }, ran)).toBe(true)
+    expect(queryStale({ ...ran, level: 'error' }, ran)).toBe(true)
+    expect(queryStale({ ...ran, limit: 20 }, ran)).toBe(true)
+    expect(queryStale({ ...ran, filters: [] }, ran)).toBe(true)
+    expect(queryStale({ ...ran, filters: [{ field: 'container.name', value: 'other' }] }, ran)).toBe(true)
+  })
+
+  it('查询串**不 trim**：末尾多一个空格也是改过（载荷原样下发，判据必须同口径）', () => {
+    expect(queryStale({ ...ran, q: 'level:error ' }, ran)).toBe(true)
+  })
+
+  it('预设档只比档名：绝对毫秒随「现在」走动，不该把时钟当成用户改动', () => {
+    const before = { ...ran, preset: '15m', window: { from: 0, to: 1 } }
+    const after = { ...ran, preset: '15m', window: { from: 999_000, to: 1_000_000 } }
+    expect(queryStale(before, after)).toBe(false)
+  })
+
+  it('custom 档比真实窗口：点柱放大换了一段就是改了', () => {
+    const zoomed = { ...ran, preset: 'custom', window: { from: 1_000, to: 2_000 } }
+    const other = { ...ran, preset: 'custom', window: { from: 1_000, to: 3_000 } }
+    expect(queryStale(other, zoomed)).toBe(true)
+    expect(queryStale(zoomed, { ...zoomed })).toBe(false)
+  })
+
+  it('筛选只看「字段 = 值」，不看数组顺序（一个字段只有一条）', () => {
+    const a = { ...ran, filters: [{ field: 'a', value: '1' }, { field: 'b', value: '2' }] }
+    const b = { ...ran, filters: [{ field: 'b', value: '2' }, { field: 'a', value: '1' }] }
+    expect(queryStale(a, b)).toBe(false)
+  })
+
+  it('级别与载荷同一条归一：认不出的值等于「不限」', () => {
+    // 界面上下发时认不出的值会被收成「不限」（levelFilterOf）；比较也必须同口径，
+    // 否则草稿里一个永远不会下发的垃圾值会让整屏结果被标成「过期」。
+    expect(queryStale({ ...ran, level: 'nonsense' }, { ...ran, level: '' })).toBe(false)
+    expect(queryStale({ ...ran, level: ' ERROR ' }, { ...ran, level: 'error' })).toBe(false)
+  })
+
+  it('还没查过（lastRun 缺席）不算过期；垃圾入参不抛', () => {
+    expect(queryStale(ran, undefined)).toBe(false)
+    expect(queryStale(ran, null)).toBe(false)
+    expect(querySignature(undefined)).toBe(querySignature(null))
+    expect(queryStale(undefined, undefined)).toBe(false)
+    // 形状稳定的指纹（纯函数：同一份草稿两次得到同一个字符串）
+    expect(querySignature(ran)).toBe(querySignature({ ...ran }))
   })
 })
 
@@ -888,6 +950,24 @@ describe('行上的标签（谁写的）', () => {
     expect(rowLabelOverflow({ labels: { a: '', b: '', c: 'v' } }, 3)).toBe(0)
     expect(rowLabelOverflow({}, 3)).toBe(0)
     expect(rowLabelOverflow(undefined, 3)).toBe(0)
+  })
+
+  it('allRowLabels：摆**全部**有值的标签（「＋N」浮层用），顺序与判据同 rowLabels', () => {
+    // 顺序就是宿主装进 labels 的顺序（行上一格与浮层同一条，不在浮层里重排）
+    expect(allRowLabels(line).map((row) => row.field)).toEqual([
+      'container.name', 'host.name', 'log.file.path', 'stream', 'kubernetes.pod.name',
+    ])
+    // 与 rowLabels(line, N) 逐项同源：前 N 个就是它（display 截断 / value 不截）
+    expect(allRowLabels(line).slice(0, 2)).toEqual(rowLabels(line, 2))
+    const long = 'x'.repeat(ROW_LABEL_VALUE_MAX + 1)
+    const [only] = allRowLabels({ labels: { long } })
+    expect(only.display.endsWith('…')).toBe(true)
+    expect(only.value).toBe(long)
+    // 空值不摆；垃圾入参不炸
+    expect(allRowLabels({ labels: { a: '', b: 'v' } })).toEqual([{ field: 'b', value: 'v', display: 'v' }])
+    expect(allRowLabels(undefined)).toEqual([])
+    expect(allRowLabels(null)).toEqual([])
+    expect(allRowLabels({ labels: 'nope' })).toEqual([])
   })
 
   it('悬停文案：时间 + 级别（**推断出来的要标出来**）+ 全部标签 + 原文', () => {

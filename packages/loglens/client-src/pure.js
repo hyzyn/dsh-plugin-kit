@@ -338,6 +338,56 @@ export function queryPayload(draft, targets, nowMs) {
   return payload
 }
 
+/* ============================ 查询条件「变了没有」（P6 第八刀） ============================ */
+
+/**
+ * 一次查询的**条件指纹**：只取会影响请求的那几个字段。
+ *
+ * 用途只有一个：判断屏幕上那份结果**还是不是当前条件的**。面板里查询串 / 时间窗 / 级别 /
+ * 条数 / 筛选 / 来源都是草稿（改了不自动重查——一改就查会在连点时打出一串请求），于是结果
+ * 列表与查询栏可能一直说的不是同一件事。ES / OpenSearch 尤其不能糊过去：「下一页」带的是
+ * **上一次查询**的 PIT + search_after，拿它配新条件翻页，等于把旧快照里的位置当成新查询的
+ * 下一页——少掉的行、错位的行都**看不出来**（ES 的 `_search` 不会因此报错）。
+ *
+ * 三条判据：
+ * - **预设档只比档名**：`1h` 每次查都是「到此刻为止」，比绝对毫秒只会把时钟走动误判成
+ *   「用户改了条件」；`custom` 档（点柱放大）比那一段真实的 from/to——换了一段就是改了。
+ * - **筛选按字段排序后比**：界面上一个字段只有一条筛选，数组顺序没有语义（见 `filtersOf`）。
+ * - **查询串不 trim**：`queryPayload` 原样下发，这里也必须原样比；否则「末尾多一个空格」
+ *   这种改动会被判成没变。
+ */
+export function querySignature(draft) {
+  const row = draft === null || draft === undefined || typeof draft !== 'object' ? {} : draft
+  const preset = String(row.preset == null ? '' : row.preset)
+  const filters = filtersOf(row.filters)
+  return JSON.stringify({
+    target: String(row.target == null ? '' : row.target),
+    q: String(row.q == null ? '' : row.q),
+    preset,
+    // `window` 只对 custom 有意义：预设档的绝对毫秒随「现在」变，比它等于把时钟当改动
+    window: preset === 'custom' ? [Number(row.window && row.window.from), Number(row.window && row.window.to)] : null,
+    // 与载荷同一条归一（认不出的级别当「不限」，见 levelFilterOf）：界面怎么下发，就怎么比
+    level: levelFilterOf(row),
+    limit: Number(row.limit),
+    filters: filters === undefined ? [] : Object.keys(filters).sort().map((key) => [key, filters[key]]),
+  })
+}
+
+/**
+ * 「屏幕上的那份结果还是不是当前条件的」：与**上一次真正跑成功的那份草稿**比。
+ *
+ * `lastRun` 缺席（还没查过、或刚清空结果）时**不算过期**——那时界面上根本没有结果，
+ * 说一句「结果过期了」是凭空多出来的噪音。
+ *
+ * 它挡的是两件事，不是观感：
+ * ① 「下一页」把旧游标（ES 的 PIT）配新条件用（见 querySignature 的函数头）；
+ * ② 「分组」把当前查询串配上一次回显的窗口发出去——行、分布、榜三处说的不是同一件事。
+ */
+export function queryStale(draft, lastRun) {
+  if (lastRun === null || lastRun === undefined) return false
+  return querySignature(draft) !== querySignature(lastRun)
+}
+
 /* ============================ 结构化筛选（点桶下钻，P6 第三格） ============================ */
 
 /*
@@ -429,31 +479,31 @@ export function filtersOf(list) {
  * 的判据从组件闭包里拿出来（规矩 ②：要判对错的逻辑留在闭包里等于没有测试入口）。
  */
 
-/** 行上直接摆出来的标签最多几个（其余的收进悬停的 title 里）。 */
+/** 行上直接摆出来的标签最多几个（其余的点「＋N」在浮层里看）。 */
 export const ROW_LABEL_MAX = 3
 
 /** 单个标签值在行上显示的长度上限（与 `src/line.ts` 的 `LABEL_VALUE_MAX` 同一口径，多留 40 给省略号）。 */
 export const ROW_LABEL_VALUE_MAX = 160
 
 /**
- * 一行上直接摆哪几个标签：**按宿主给的顺序取前 N 个**。
+ * 一行的 labels → 「只有有值的那几个」标签行，**顺序就是宿主给的顺序**。
  *
- * 为什么不自己挑（比如挑最短的、或挑「看起来像身份」的）：顺序**已经是判据**——`src/line.ts` 的
- * `LABEL_PRIORITY` 已经把它排成「排查时先问什么」（容器 → 机器 → 服务 → 文件 → 流），`flattenLabels`
- * 就是按这个顺序装进 `labels` 的。这里再挑一次就是第二份会漂的判据（一边说容器名最先，一边把它藏起来）。
+ * 为什么顺序不在这里重挑（比如挑最短的、或挑「看起来像身份」的）：`src/line.ts` 的
+ * `LABEL_PRIORITY` 已经把它排成「排查时先问什么」（容器 → 机器 → 服务 → 文件 → 流），
+ * `flattenLabels` 就是按这个顺序装进 `labels` 的；再挑一次就是第二份会漂的判据。
  *
- * 空值的键**不摆**（没有值的标签占了行上的位子，反而把有值的挤掉）；值按 `ROW_LABEL_VALUE_MAX` 截断
- * ——`raw` 里永远有全文，行上不该被一段堆栈撑爆。
+ * 空串不是「有值」：摆一个 `host.name=` 只是占位（与 `filterProblem` 挡空值是同一条）。
+ * `display` 按 `ROW_LABEL_VALUE_MAX` 截断并带 `…`；`value` 永远是不截断的原值（点它下发的是原值）。
+ *
+ * **只此一份**：`rowLabels`（行上摆前 N 个）、`allRowLabels`（「＋N」浮层摆全部）与
+ * `rowLabelOverflow`（「还有几个」）都走这里——三处口径想漂都漂不了。
  */
-export function rowLabels(line, max) {
-  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : ROW_LABEL_MAX
+function labelRows(line) {
   const labels = line === null || line === undefined || typeof line !== 'object' ? undefined : line.labels
   if (labels === null || typeof labels !== 'object') return []
   const rows = []
   for (const [key, value] of Object.entries(labels)) {
-    if (rows.length >= limit) break
     const text = String(value == null ? '' : value)
-    // 空串不是「有值」：摆一个 `host.name=` 只是占位（与 `filterProblem` 挡空值是同一条）
     if (text === '') continue
     rows.push({
       field: String(key),
@@ -466,15 +516,30 @@ export function rowLabels(line, max) {
 }
 
 /**
- * 这一行有没有「还有标签没摆出来」（摆不下的那些只在悬停里看得到）。
+ * 一行上直接摆哪几个标签：按宿主顺序取前 N 个。
  *
- * 数的口径必须与 `rowLabels` **逐字一致**：只数**有值的**。空值那些本来就不该占位——
- * 把它们算进来，行尾就会写「还有 2 个」，而点开悬停只有两行空值，那句话就成了假的。
+ * 摆不下的由 `rowLabelOverflow` 报数，点「＋N」在浮层里用 `allRowLabels` 看全部。
+ */
+export function rowLabels(line, max) {
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : ROW_LABEL_MAX
+  return labelRows(line).slice(0, limit)
+}
+
+/**
+ * 这一行的**全部**有值标签（「＋N」浮层用）——与 `rowLabels` 同一条判据，只是不设上限。
+ */
+export function allRowLabels(line) {
+  return labelRows(line)
+}
+
+/**
+ * 这一行还有几个标签没摆出来（「＋N」）。
+ *
+ * 数的口径与 `rowLabels` **同源**（两者都走 `labelRows`）：只数**有值的**。空值那些本来就不该
+ * 占位——把它们算进来，行尾就会写「还有 2 个」，而点开浮层只有两行空值，那句话就成了假的。
  */
 export function rowLabelOverflow(line, max) {
-  const labels = line === null || line === undefined || typeof line.labels !== 'object' || line.labels === null ? {} : line.labels
-  const withValue = Object.values(labels).filter((value) => String(value == null ? '' : value) !== '').length
-  return Math.max(withValue - rowLabels(line, max).length, 0)
+  return Math.max(labelRows(line).length - rowLabels(line, max).length, 0)
 }
 
 /**

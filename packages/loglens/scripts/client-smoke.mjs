@@ -1590,57 +1590,125 @@ const TAG_LINE = {
   id: '0:0',
 }
 
-/** 结果行里可点的那些标签（类名不带 btn，所以用 ll_resultTagHit 找）。 */
+/** 结果行里可点的那个身份标签（类名不带 btn，所以用 ll_resultTagHit 找）。 */
 function tagChips(tree) {
   return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_resultTagHit'))
 }
 
-await test('行上的标签：摆出前 3 个（宿主顺序）、超出的在悬停里、可点的每个都带「按它加筛选」的悬停', async () => {
+/** 行尾的「＋N」（点开全部标签的浮层）。 */
+function moreButton(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_resultTagMore'))[0]
+}
+
+/** 全部标签浮层 / 它里面的标签行 / 点它收起的透明底。 */
+function labelPanel(tree) {
+  return treeFind(tree, (node) => hasClass(node, 'll_labelPanel'))[0]
+}
+function labelPanelRows(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_labelRow'))
+}
+function labelBackdrop(tree) {
+  return treeFind(tree, (node) => hasClass(node, 'll_labelBackdrop'))[0]
+}
+
+/** 点「＋N」时要用的视口矩形（桩里没有真 DOM，给一份固定坐标）。 */
+const MORE_RECT = { top: 80, bottom: 100, left: 380, right: 500, width: 120, height: 20 }
+
+await test('行上的标签：只摆**1 个身份标签**（宿主顺序第一个）+「＋N」，其余收进悬停', async () => {
   serverRoutes = {
     '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), lines: [TAG_LINE] },
     '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
   }
   const { tree } = await runPanelQueryFull('es')
   const chips = tagChips(tree)
-  assert.equal(chips.length, 3, '行上直接摆的该是 3 个（ROW_LABEL_MAX），实得 ' + String(chips.length))
-  // **顺序就是宿主给的顺序**（LABEL_PRIORITY 排的是「排查时先问什么」）；
-  // 这里若自己挑一次（比如挑最短的），容器名就可能被挤掉——那正是这一格要解决的事
-  assert.deepEqual(chips.map((node) => treeText(node)), ['container.nameapp-svc-1', 'host.namenode-7', 'log.file.path/var/log/app.log'])
+  assert.equal(chips.length, 1, '行上只摆 1 个（顺序里的第一个），实得 ' + String(chips.length))
+  // 顺序就是宿主给的顺序（container → host → …），不重挑
+  assert.equal(treeText(chips[0]), 'container.nameapp-svc-1')
   assert.ok(String(chips[0].props.title).includes('按 container.name = app-svc-1 加一条筛选'),
     '可点的标签必须说清点它会做什么：' + String(chips[0].props.title))
-  // 摆不下的收进悬停：行 title 里有**全部**标签与原文
+  // 其余 4 个（host / file / stream / pod）收进「＋4」
+  const more = moreButton(tree)
+  assert.ok(more !== undefined, '还有标签没摆出来时该给「＋N」')
+  assert.equal(treeText(more), '＋4', '实得：' + treeText(more))
+  // 悬停里仍然有**全部**标签与原文
   const row = treeFind(tree, (node) => hasClass(node, 'll_resultRow'))[0]
-  assert.ok(String(row.props.title).includes('kubernetes.pod.name = app-1-abc'), '悬停该有摆不下那些标签')
+  assert.ok(String(row.props.title).includes('kubernetes.pod.name = app-1-abc'), '悬停该有全部标签')
   assert.ok(String(row.props.title).includes('{"message":"boom"'), '悬停该有原文（raw）')
   assert.ok(String(row.props.title).includes('error（从正文推断）'), '推断出来的级别必须标出来（两种可信度）')
-  assert.ok(treeText(tree).includes('另有 2 个标签'), '行尾该说还有几个没摆出来：' + treeText(tree).slice(0, 300))
   // 敏感字段那句话在场（raw 原样来自后端）
   assert.ok(treeText(tree).includes('可能有敏感字段'), '行详情里可能有敏感字段，这句话该在')
 })
 
-await test('行上的标签：点一下 = 按「字段 = 值」加一条筛选并**立刻重查**（判据只有一份：与点榜下钻同一个 drillDown）', async () => {
+await test('「＋N」：点开**全部标签**浮层（不嵌在滚动列表里，否则会被裁），点一条即筛、点背景收起', async () => {
   serverRoutes = {
     '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), lines: [TAG_LINE] },
     '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
   }
   const { runtime, tree } = await runPanelQueryFull('es')
-  const chip = tagChips(tree)[1]
-  assert.equal(treeText(chip), 'host.namenode-7', '第二格是 host.name')
+  assert.equal(labelPanel(tree), undefined, '默认不画浮层')
+  // 结构判据：浮层**不能在** .ll_results 里面——那个容器 max-height:420px + overflow-y:auto，会把它裁掉
+  const results = treeFind(tree, (node) => hasClass(node, 'll_results'))[0]
+  assert.equal(treeFind(results, (node) => hasClass(node, 'll_labelLayer')).length, 0,
+    '浮层画在结果列表外面（fixed 一层），否则列表一滚/一裁就看不见了')
+
+  // 点「＋4」→ 浮层出现，列出**全部**标签（顺序同宿主，前 1 个与行上那颗重复也照样列出）
+  moreButton(runtime.tree).props.onClick({ currentTarget: { getBoundingClientRect: () => MORE_RECT } })
+  runtime.tick()
+  await runtime.update()
+  const panel = labelPanel(runtime.tree)
+  assert.ok(panel !== undefined, '点「＋N」该出浮层')
+  assert.ok(treeText(panel).includes('全部标签'), '浮层该有标题：' + treeText(panel))
+  assert.deepEqual(labelPanelRows(runtime.tree).map((node) => treeText(node)), [
+    'container.nameapp-svc-1', 'host.namenode-7', 'log.file.path/var/log/app.log', 'streamstderr', 'kubernetes.pod.nameapp-1-abc',
+  ])
+  // 位置来自被点的那颗按钮（不是随便丢在屏幕中间）
+  assert.equal(String(panel.props.style.left), '180px', 'left 该按按钮右缘 - 320 算（500 - 320）')
+  assert.equal(String(panel.props.style.top), '104px', 'top 该在按钮下方 4px（100 + 4）')
+
+  // 点浮层里的 host.name → 收起 + 按它筛（与行上那颗走同一条 drillDown）
+  calls.length = 0
+  const hostRow = labelPanelRows(runtime.tree).find((node) => treeText(node).startsWith('host.name'))
+  await clickAndSettle(runtime, hostRow)
+  assert.equal(labelPanel(runtime.tree), undefined, '选完该收起')
+  const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+  assert.ok(query !== undefined, '点浮层里的标签必须真的重查一次')
+  assert.deepEqual(query.body.filters, { 'host.name': 'node-7' }, '筛选该是「字段 = 值」：' + JSON.stringify(query.body.filters))
+  assert.ok(treeText(runtime.tree).includes('host.name = node-7'), '芯片行该出现这条筛选')
+
+  // 再开一次 → 点背景收起（点「＋N」自己也能收起：再点一次 = 关）
+  moreButton(runtime.tree).props.onClick({ currentTarget: { getBoundingClientRect: () => MORE_RECT } })
+  runtime.tick()
+  await runtime.update()
+  assert.ok(labelPanel(runtime.tree) !== undefined, '再点「＋N」该能打开')
+  labelBackdrop(runtime.tree).props.onClick()
+  runtime.tick()
+  await runtime.update()
+  assert.equal(labelPanel(runtime.tree), undefined, '点背景该收起')
+})
+
+await test('行上的标签：点身份标签 = 按「字段 = 值」加一条筛选并**立刻重查**（与点榜下钻同一个 drillDown）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': { ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true), lines: [TAG_LINE] },
+    '/api/dsh-loglens/facets': facetsRoute([], HIST_OK),
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  const chip = tagChips(tree)[0]
+  assert.equal(treeText(chip), 'container.nameapp-svc-1', '行上第一颗是 container.name')
 
   calls.length = 0
   await clickAndSettle(runtime, chip)
   const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
   assert.ok(query !== undefined, '点标签必须真的重查一次（不拿这一页在本地过一遍——那一页被 limit 截断过）')
-  assert.deepEqual(query.body.filters, { 'host.name': 'node-7' }, '筛选该是「字段 = 值」：' + JSON.stringify(query.body.filters))
+  assert.deepEqual(query.body.filters, { 'container.name': 'app-svc-1' }, '筛选该是「字段 = 值」：' + JSON.stringify(query.body.filters))
   // 聚合跟着同一份筛选（同一屏三个数字说的必须是同一件事）
   const facets = calls.filter((call) => call.path === '/api/dsh-loglens/facets')
   assert.ok(facets.length >= 1, '聚合该重拉')
-  for (const call of facets) assert.deepEqual(call.body.filters, { 'host.name': 'node-7' }, '聚合必须带同一份筛选')
+  for (const call of facets) assert.deepEqual(call.body.filters, { 'container.name': 'app-svc-1' }, '聚合必须带同一份筛选')
   // 芯片行出现，且它和榜上那条高亮说的是同一件事（可断言：筛选进了 activeFilters）
-  assert.ok(treeText(runtime.tree).includes('host.name = node-7'), '芯片行该出现这条筛选')
+  assert.ok(treeText(runtime.tree).includes('container.name = app-svc-1'), '芯片行该出现这条筛选')
 })
 
-await test('行上的标签：空值那类**不给点**（筛选表达不了「字段缺失」），但仍然摆出来', async () => {
+await test('行上的标签：空值那类**不摆**（筛选表达不了「字段缺失」），也不占「＋N」', async () => {
   serverRoutes = {
     '/api/dsh-loglens/query': {
       ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
@@ -1653,6 +1721,7 @@ await test('行上的标签：空值那类**不给点**（筛选表达不了「�
   const chips = tagChips(tree)
   assert.equal(chips.length, 1, '空值不占位：实得 ' + String(chips.length))
   assert.equal(treeText(chips[0]), 'host.namenode-7')
+  assert.equal(moreButton(tree), undefined, '只剩 1 个有值标签时不该有「＋N」')
 })
 
 /* ------------------------------------------------------------------ *
@@ -1813,6 +1882,98 @@ await test('放大后取消：连点两根柱（第二次从自定义档再放�
   assert.equal(query.body.to - query.body.from, 60 * 60 * 1000,
     '连点之后取消仍要回到最初那一档（1 小时），实得 ' + String(query.body.to - query.body.from))
   assert.equal(windowSelect(runtime.tree).props.value, '1h', '下拉回到最初那一档')
+})
+
+/* ------------------------------------------------------------------ *
+ * 面板第八刀：条件改了就别拿旧结果翻页（ES 的 PIT 游标）+ 查询串方言提示
+ * ------------------------------------------------------------------ */
+
+/** 查询成功时带回一个游标（真 ES 回的是 PIT + search_after），并让聚合有东西可画。 */
+function staleRoutes() {
+  return {
+    '/api/dsh-loglens/query': (body) => ({
+      ...queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+      window: { from: body.from, to: body.to },
+      nextCursor: 'cursor-1',
+    }),
+    '/api/dsh-loglens/facets': (body) => ({
+      ok: true,
+      overTime: [{ ts: Math.floor(Number(body.from) / 60_000) * 60_000, count: 3 }],
+      interval: body.interval,
+      warnings: [],
+    }),
+  }
+}
+
+await test('查询串占位按**来源方言**说：ES 是 Lucene，Loki 才是 LogQL（别对 ES 说 LogQL）', async () => {
+  serverRoutes = {}
+  const es = await runPanelQueryFull('es', { skipQuery: true })
+  const esBox = queryInput(es.tree)
+  assert.ok(esBox !== undefined, '找不到查询串输入框')
+  assert.ok(String(esBox.props.placeholder).includes('Lucene'), 'ES 的查询串是 Lucene，实得：' + String(esBox.props.placeholder))
+  assert.equal(String(esBox.props.placeholder).includes('LogQL'), false, 'ES 上不该出现 LogQL：' + String(esBox.props.placeholder))
+
+  const loki = await runPanelQueryFull('local', { skipQuery: true })
+  const lokiBox = queryInput(loki.tree)
+  assert.ok(String(lokiBox.props.placeholder).includes('LogQL'), 'Loki 的查询串是 LogQL，实得：' + String(lokiBox.props.placeholder))
+  assert.equal(String(lokiBox.props.placeholder).includes('Lucene'), false, 'Loki 上不该出现 Lucene：' + String(lokiBox.props.placeholder))
+})
+
+await test('条件改了：结果被明说成「上一次的」，「下一页」收起、「分组」禁用（游标属于上一次查询）', async () => {
+  serverRoutes = staleRoutes()
+  const { runtime } = await runPanelQueryFull('es')
+  assert.equal(treeText(runtime.tree).includes('查询条件已经改过'), false, '刚查完就说「条件改过」是误报')
+  assert.ok(buttonByText(runtime.tree, '下一页') !== undefined, '有游标时该给「下一页」')
+  assert.equal(buttonByText(runtime.tree, '分组').props.disabled, false, '刚查完「分组」该能用')
+
+  // 只改时间窗（不查）：界面上必须出现那句提示，且两处入口一起收起来
+  windowSelect(runtime.tree).props.onChange({ target: { value: '15m' } })
+  runtime.tick()
+  await runtime.update()
+  const text = treeText(runtime.tree)
+  assert.ok(text.includes('查询条件已经改过'), '条件改了就要说出来，实得：' + text.slice(0, 400))
+  assert.ok(text.includes('上一次查询'), '得说清下面这份是**上一次**的结果：' + text.slice(0, 400))
+  assert.equal(buttonByText(runtime.tree, '下一页'), undefined,
+    '条件改了还留「下一页」= 把旧 PIT 游标配新条件翻页（ES 会静默少行）')
+  assert.equal(buttonByText(runtime.tree, '分组').props.disabled, true,
+    '条件改了「分组」也得停：它会把新查询串配上一次回显的窗口')
+  // 没点查询，就**不该**打枪（改下拉只是改草稿）
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/query').length, 1, '改窗不该自己重查')
+
+  // 改回**原条件**（1 小时）就不是过期了：提示要能自己撤掉、入口要回来（否则会一直卡在那句上）
+  windowSelect(runtime.tree).props.onChange({ target: { value: '1h' } })
+  runtime.tick()
+  await runtime.update()
+  assert.equal(treeText(runtime.tree).includes('查询条件已经改过'), false, '改回原条件不该继续说过期')
+  assert.ok(buttonByText(runtime.tree, '下一页') !== undefined, '改回原条件「下一页」该回来')
+  // 再改回 15 分钟，走下面那条「重查 → 翻页」的主线
+  windowSelect(runtime.tree).props.onChange({ target: { value: '15m' } })
+  runtime.tick()
+  await runtime.update()
+
+  // 点查询：提示撤掉、翻页回来，且翻的页带的是**新条件**（窗口 15 分钟）
+  calls.length = 0
+  await clickAndSettle(runtime, buttonByText(runtime.tree, '查询'))
+  assert.equal(treeText(runtime.tree).includes('查询条件已经改过'), false, '重查之后那句该撤掉')
+  const next = buttonByText(runtime.tree, '下一页')
+  assert.ok(next !== undefined, '重查之后「下一页」该回来')
+  assert.equal(buttonByText(runtime.tree, '分组').props.disabled, false, '重查之后「分组」该能用')
+
+  await clickAndSettle(runtime, next)
+  const page = calls.filter((call) => call.path === '/api/dsh-loglens/query').pop()
+  assert.equal(page.body.cursor, 'cursor-1', '翻页要带游标：' + JSON.stringify(page.body))
+  assert.equal(page.body.to - page.body.from, 15 * 60 * 1000,
+    '翻的必须是**新条件**那一页（15 分钟），实得 ' + String(page.body.to - page.body.from))
+})
+
+await test('只改级别也算改条件（同一份判据，不为每个控件各写一遍）', async () => {
+  serverRoutes = staleRoutes()
+  const { runtime } = await runPanelQueryFull('es')
+  levelSelect(runtime.tree).props.onChange({ target: { value: 'error' } })
+  runtime.tick()
+  await runtime.update()
+  assert.ok(treeText(runtime.tree).includes('查询条件已经改过'), '改级别也是改条件：' + treeText(runtime.tree).slice(0, 400))
+  assert.equal(buttonByText(runtime.tree, '下一页'), undefined, '改级别之后「下一页」也得收起')
 })
 
 let failed = 0

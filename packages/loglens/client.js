@@ -362,6 +362,56 @@ window.__ModuleLoader__.load({
       return payload
     }
 
+    /* ============================ 查询条件「变了没有」（P6 第八刀） ============================ */
+
+    /**
+     * 一次查询的**条件指纹**：只取会影响请求的那几个字段。
+     *
+     * 用途只有一个：判断屏幕上那份结果**还是不是当前条件的**。面板里查询串 / 时间窗 / 级别 /
+     * 条数 / 筛选 / 来源都是草稿（改了不自动重查——一改就查会在连点时打出一串请求），于是结果
+     * 列表与查询栏可能一直说的不是同一件事。ES / OpenSearch 尤其不能糊过去：「下一页」带的是
+     * **上一次查询**的 PIT + search_after，拿它配新条件翻页，等于把旧快照里的位置当成新查询的
+     * 下一页——少掉的行、错位的行都**看不出来**（ES 的 `_search` 不会因此报错）。
+     *
+     * 三条判据：
+     * - **预设档只比档名**：`1h` 每次查都是「到此刻为止」，比绝对毫秒只会把时钟走动误判成
+     *   「用户改了条件」；`custom` 档（点柱放大）比那一段真实的 from/to——换了一段就是改了。
+     * - **筛选按字段排序后比**：界面上一个字段只有一条筛选，数组顺序没有语义（见 `filtersOf`）。
+     * - **查询串不 trim**：`queryPayload` 原样下发，这里也必须原样比；否则「末尾多一个空格」
+     *   这种改动会被判成没变。
+     */
+    function querySignature(draft) {
+      const row = draft === null || draft === undefined || typeof draft !== 'object' ? {} : draft
+      const preset = String(row.preset == null ? '' : row.preset)
+      const filters = filtersOf(row.filters)
+      return JSON.stringify({
+        target: String(row.target == null ? '' : row.target),
+        q: String(row.q == null ? '' : row.q),
+        preset,
+        // `window` 只对 custom 有意义：预设档的绝对毫秒随「现在」变，比它等于把时钟当改动
+        window: preset === 'custom' ? [Number(row.window && row.window.from), Number(row.window && row.window.to)] : null,
+        // 与载荷同一条归一（认不出的级别当「不限」，见 levelFilterOf）：界面怎么下发，就怎么比
+        level: levelFilterOf(row),
+        limit: Number(row.limit),
+        filters: filters === undefined ? [] : Object.keys(filters).sort().map((key) => [key, filters[key]]),
+      })
+    }
+
+    /**
+     * 「屏幕上的那份结果还是不是当前条件的」：与**上一次真正跑成功的那份草稿**比。
+     *
+     * `lastRun` 缺席（还没查过、或刚清空结果）时**不算过期**——那时界面上根本没有结果，
+     * 说一句「结果过期了」是凭空多出来的噪音。
+     *
+     * 它挡的是两件事，不是观感：
+     * ① 「下一页」把旧游标（ES 的 PIT）配新条件用（见 querySignature 的函数头）；
+     * ② 「分组」把当前查询串配上一次回显的窗口发出去——行、分布、榜三处说的不是同一件事。
+     */
+    function queryStale(draft, lastRun) {
+      if (lastRun === null || lastRun === undefined) return false
+      return querySignature(draft) !== querySignature(lastRun)
+    }
+
     /* ============================ 结构化筛选（点桶下钻，P6 第三格） ============================ */
 
     /*
@@ -453,31 +503,31 @@ window.__ModuleLoader__.load({
      * 的判据从组件闭包里拿出来（规矩 ②：要判对错的逻辑留在闭包里等于没有测试入口）。
      */
 
-    /** 行上直接摆出来的标签最多几个（其余的收进悬停的 title 里）。 */
+    /** 行上直接摆出来的标签最多几个（其余的点「＋N」在浮层里看）。 */
     const ROW_LABEL_MAX = 3
 
     /** 单个标签值在行上显示的长度上限（与 `src/line.ts` 的 `LABEL_VALUE_MAX` 同一口径，多留 40 给省略号）。 */
     const ROW_LABEL_VALUE_MAX = 160
 
     /**
-     * 一行上直接摆哪几个标签：**按宿主给的顺序取前 N 个**。
+     * 一行的 labels → 「只有有值的那几个」标签行，**顺序就是宿主给的顺序**。
      *
-     * 为什么不自己挑（比如挑最短的、或挑「看起来像身份」的）：顺序**已经是判据**——`src/line.ts` 的
-     * `LABEL_PRIORITY` 已经把它排成「排查时先问什么」（容器 → 机器 → 服务 → 文件 → 流），`flattenLabels`
-     * 就是按这个顺序装进 `labels` 的。这里再挑一次就是第二份会漂的判据（一边说容器名最先，一边把它藏起来）。
+     * 为什么顺序不在这里重挑（比如挑最短的、或挑「看起来像身份」的）：`src/line.ts` 的
+     * `LABEL_PRIORITY` 已经把它排成「排查时先问什么」（容器 → 机器 → 服务 → 文件 → 流），
+     * `flattenLabels` 就是按这个顺序装进 `labels` 的；再挑一次就是第二份会漂的判据。
      *
-     * 空值的键**不摆**（没有值的标签占了行上的位子，反而把有值的挤掉）；值按 `ROW_LABEL_VALUE_MAX` 截断
-     * ——`raw` 里永远有全文，行上不该被一段堆栈撑爆。
+     * 空串不是「有值」：摆一个 `host.name=` 只是占位（与 `filterProblem` 挡空值是同一条）。
+     * `display` 按 `ROW_LABEL_VALUE_MAX` 截断并带 `…`；`value` 永远是不截断的原值（点它下发的是原值）。
+     *
+     * **只此一份**：`rowLabels`（行上摆前 N 个）、`allRowLabels`（「＋N」浮层摆全部）与
+     * `rowLabelOverflow`（「还有几个」）都走这里——三处口径想漂都漂不了。
      */
-    function rowLabels(line, max) {
-      const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : ROW_LABEL_MAX
+    function labelRows(line) {
       const labels = line === null || line === undefined || typeof line !== 'object' ? undefined : line.labels
       if (labels === null || typeof labels !== 'object') return []
       const rows = []
       for (const [key, value] of Object.entries(labels)) {
-        if (rows.length >= limit) break
         const text = String(value == null ? '' : value)
-        // 空串不是「有值」：摆一个 `host.name=` 只是占位（与 `filterProblem` 挡空值是同一条）
         if (text === '') continue
         rows.push({
           field: String(key),
@@ -490,15 +540,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 这一行有没有「还有标签没摆出来」（摆不下的那些只在悬停里看得到）。
+     * 一行上直接摆哪几个标签：按宿主顺序取前 N 个。
      *
-     * 数的口径必须与 `rowLabels` **逐字一致**：只数**有值的**。空值那些本来就不该占位——
-     * 把它们算进来，行尾就会写「还有 2 个」，而点开悬停只有两行空值，那句话就成了假的。
+     * 摆不下的由 `rowLabelOverflow` 报数，点「＋N」在浮层里用 `allRowLabels` 看全部。
+     */
+    function rowLabels(line, max) {
+      const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : ROW_LABEL_MAX
+      return labelRows(line).slice(0, limit)
+    }
+
+    /**
+     * 这一行的**全部**有值标签（「＋N」浮层用）——与 `rowLabels` 同一条判据，只是不设上限。
+     */
+    function allRowLabels(line) {
+      return labelRows(line)
+    }
+
+    /**
+     * 这一行还有几个标签没摆出来（「＋N」）。
+     *
+     * 数的口径与 `rowLabels` **同源**（两者都走 `labelRows`）：只数**有值的**。空值那些本来就不该
+     * 占位——把它们算进来，行尾就会写「还有 2 个」，而点开浮层只有两行空值，那句话就成了假的。
      */
     function rowLabelOverflow(line, max) {
-      const labels = line === null || line === undefined || typeof line.labels !== 'object' || line.labels === null ? {} : line.labels
-      const withValue = Object.values(labels).filter((value) => String(value == null ? '' : value) !== '').length
-      return Math.max(withValue - rowLabels(line, max).length, 0)
+      return Math.max(labelRows(line).length - rowLabels(line, max).length, 0)
     }
 
     /**
@@ -1008,17 +1073,25 @@ window.__ModuleLoader__.load({
       '.ll_groupGrid{display:grid;grid-template-columns:minmax(180px,2fr) auto minmax(0,1fr);gap:8px;align-items:center}',
       '.ll_queryMeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
-      '.ll_resultRow{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:8px;align-items:baseline;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
+      /*
+       * 行 = 时间 · 级别 · 正文 · 标签。**用 flex 不用 grid**：标签列若按 `auto` 量，
+       * 它的 max-content（三个 220px 芯片 + 「另有 N 个」）会把正文那列 `minmax(0,1fr)` 挤成
+       * **0 宽**——正文于是变成一字一行（真机 1470px 面板上复现）。flex 里正文 `flex:1`，
+       * 标签最多拿 38% 且可换行，正文永远分得到剩余宽度；没标签的行（Docker 日志）正文直接占满。
+       */
+      '.ll_resultRow{display:flex;align-items:baseline;gap:8px;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
       '.ll_resultRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
-      '.ll_resultTime{color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
-      '.ll_resultLevel{color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
-      '.ll_resultMsg{color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word}',
+      '.ll_resultTime{flex:none;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.ll_resultLevel{flex:none;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
+      '.ll_resultMsg{flex:1 1 0;min-width:0;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word}',
       /*
        * 行上的标签（「这行是谁写的」）。排版与榜上那些条同一族：等宽、小号、发丝描边。
        * **类名刻意不带 `btn`**（`scripts/client-style-spec.mjs` 的 BUTTON_CLASS = /btn/i 会把它们卷进
        * 「同族几何一致」——这些是行内的小标签，几何本来就和按钮不同族），与直方图柱子同一条做法。
        */
-      '.ll_resultTags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}',
+      // `flex:0 1 auto` + `max-width:38%`：标签按内容取宽（放得下就一行），最多占 38%，再长就在自己这格里换行。
+      // 上限压在 38% 是为了让正文（flex:1）始终比标签宽——标签是「谁写的」的旁注，不是主角。
+      '.ll_resultTags{flex:0 1 auto;min-width:0;max-width:38%;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}',
       '.ll_resultTag{display:inline-flex;align-items:center;gap:4px;max-width:220px;padding:0 4px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
       // 可点的标签值：点一下就是「按它加一条筛选」（照 .ll_groupRowBtn 的配方：背景/边框归零 + hover 底）
       '.ll_resultTagHit{cursor:pointer;color:var(--dsw-alias-label-primary)}',
@@ -1026,7 +1099,30 @@ window.__ModuleLoader__.load({
       '.ll_resultTagHit:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
       '.ll_resultTagKey{color:var(--dsw-alias-label-tertiary)}',
       '.ll_resultTagValue{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.ll_resultTagMore{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      // 「＋N」现在是个按钮（点开全部标签的浮层）：按掉 UA 外观，几何仍与标签同一族（小号等宽）
+      '.ll_resultTagMore{flex:none;padding:0;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;cursor:pointer}',
+      '.ll_resultTagMore:hover:not(:disabled){color:var(--dsw-alias-label-primary)}',
+      '.ll_resultTagMore:disabled{opacity:.4;cursor:not-allowed}',
+      '.ll_resultTagMore:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      /*
+       * 全部标签浮层：**画在 .ll_results 外面**（fixed + 全屏透明底），否则会被列表的
+       * `max-height:420px; overflow-y:auto` 裁掉。面板取宿主菜单配方（与字段候选同一套：
+       * 4px 内边距、lg 圆角、描边投影），行高/圆角/hover 底照宿主列表项。
+       */
+      '.ll_labelLayer{position:fixed;inset:0;z-index:150}',
+      '.ll_labelBackdrop{position:absolute;inset:0;background:transparent}',
+      '.ll_labelPanel{position:absolute;box-sizing:border-box;width:320px;max-width:calc(100vw - 16px);max-height:300px;display:flex;flex-direction:column;padding:4px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      '.ll_labelHead{flex:none;display:flex;align-items:center;gap:8px;padding:6px 8px 8px;border-bottom:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.ll_labelTitle{flex:1;min-width:0;color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.ll_labelScroll{min-height:0;overflow-y:auto;padding-top:4px}',
+      '.ll_labelRow{display:flex;align-items:baseline;gap:8px;box-sizing:border-box;width:100%;min-height:30px;padding:4px 8px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;text-align:left;cursor:pointer}',
+      '.ll_labelRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_labelRow:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
+      // 空白值那一行不可点：与行上那颗不可点的标签同一条判据（筛不了「字段 = 空白」）
+      '.ll_labelRowStatic{cursor:default}',
+      '.ll_labelRowStatic:hover{background:transparent}',
+      '.ll_labelKey{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px}',
+      '.ll_labelValue{flex:1;min-width:0;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;word-break:break-all;white-space:pre-wrap}',
       '.ll_warn{color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px}',
       // 时间分布（直方图）。柱子高度是**内联** style（每根都不一样，写不进类里）；类只管外观。
       '.ll_hist{display:flex;flex-direction:column;gap:6px}',
@@ -1133,6 +1229,7 @@ window.__ModuleLoader__.load({
       'panel.title': '日志来源',
       'panel.histogram': '时间分布',
       'panel.groups': '按字段分组',
+      'panel.labels': '全部标签',
       'meta.histInterval': '每根柱子 {interval}',
       'meta.histPeak': '峰值 {count} 条',
       'meta.histTotal': '共 {count} 条',
@@ -1194,7 +1291,11 @@ window.__ModuleLoader__.load({
       'error.badKind': '类型不认识（支持 Loki / Elasticsearch / OpenSearch / Docker）',
       'section.query': '查询',
       'hint.query': '面板直查当前来源：走的是与 agent 工具同一套执行层（同一份归一化与截断信号）。',
-      'placeholder.query': '查询串（Loki 是 LogQL；留空即全量）',
+      // 占位提示按来源方言分三条：原来那条写死「Loki 是 LogQL」，对实际在用的 ES 是错的
+      // （ES / OpenSearch 走 Lucene 的 query_string）。挑哪一条由 queryPlaceholder 逐条列字面量。
+      'placeholder.query': '查询串（留空即全量）',
+      'placeholder.queryLogql': '查询串（LogQL，如 {job="app"} |= "error"；留空即全量）',
+      'placeholder.queryLucene': '查询串（Lucene，如 level:error 或 "timeout"；留空即全量）',
       'placeholder.groupBy': 'container.name',
       'field.target': '来源',
       'field.window': '时间窗',
@@ -1224,11 +1325,21 @@ window.__ModuleLoader__.load({
       'option.levelWarn': 'warn 及以上',
       'option.levelError': 'error 及以上',
       'option.levelFatal': 'fatal',
-      // 页内筛的**边界**必须说出来：宿主是在返回的这一页上过滤的，counts / truncation 仍是未筛的整页
-      'hint.levelPaged': '级别是在**返回的这一页**上筛的（宿主口径）：计数与截断提示仍是未筛的整页，要按级别看全量请用分组榜。',
+      // 页内筛的**边界**必须说出来：宿主是在返回的这一页上过滤的，counts / truncation 仍是未筛的整页。
+      // 后半句要带前提：分组榜能给出「按级别的全量」**只在后端真有级别字段时**成立——ES 上
+      // `log.level` 常常整列是空的（级别是从正文推断的，见 src/line.ts），那时分组也是空桶，
+      // 原句「要按级别看全量请用分组榜」就成了指一条走不通的路。
+      // 边界少用 Markdown 强调符号：这句是**一句人话**，渲染出来会原样带 `**`（宿主不把文案当 Markdown）。
+      'hint.levelPaged': '级别是在「返回的这一页」上筛的（宿主口径）：计数与截断提示仍是未筛的整页。要按级别看全量只能靠后端真有级别字段——索引里没有时（ES 常从正文推断），分组榜也会是空的。',
+      // 条件改了但结果没重查：屏幕上的行/计数属于**上一次**。必须说出来，尤其是 ES：
+      // 「下一页」带的是旧 PIT 游标，配新条件翻页会静默少行。
+      'hint.staleResults': '查询条件已经改过——下面这份结果还是上一次查询的。先点「查询」按新条件刷新；在那之前「分组」与「下一页」都收着（翻页的游标属于上一次查询）。',
       // 行上的标签：点值即按它加一条筛选（「这行是谁写的」→「看它写的其它行」）
       'hint.rowLabelFilter': '按 {field} = {value} 加一条筛选（再点榜上那条或芯片上的 × 可去掉）',
-      'hint.rowMoreLabels': '另有 {count} 个标签（悬停看全部）',
+      // 行上只留 1 个身份标签；「＋N」点开**全部标签**浮层（每行仍可点筛）
+      'hint.rowMoreLabels': '＋{count}',
+      'hint.rowLabelPanel': '查看全部 {count} 个标签（点一个就按「字段 = 值」筛）',
+      'btn.closeLabels': '关闭',
       'hint.rowSensitive': '行详情里可能有敏感字段（原文与标签原样来自日志后端）',
       'meta.returned': '返回 {count} 行',
       'meta.matched': '命中 {count}',
@@ -1270,6 +1381,7 @@ window.__ModuleLoader__.load({
       'panel.title': 'Log sources',
       'panel.histogram': 'Volume over time',
       'panel.groups': 'Grouped by field',
+      'panel.labels': 'All labels',
       'meta.histInterval': 'each bar = {interval}',
       'meta.histPeak': 'peak {count}',
       'meta.histTotal': '{count} total',
@@ -1329,7 +1441,9 @@ window.__ModuleLoader__.load({
       'error.badKind': 'Unknown kind (Loki / Elasticsearch / OpenSearch / Docker)',
       'section.query': 'Query',
       'hint.query': 'Queries the selected source through the same execution layer the agent tools use (identical normalization and truncation signals).',
-      'placeholder.query': 'Query string (LogQL for Loki; empty means everything)',
+      'placeholder.query': 'Query string (empty means everything)',
+      'placeholder.queryLogql': 'Query string (LogQL, e.g. {job="app"} |= "error"; empty means everything)',
+      'placeholder.queryLucene': 'Query string (Lucene, e.g. level:error or "timeout"; empty means everything)',
       'placeholder.groupBy': 'container.name',
       'field.target': 'Source',
       'field.window': 'Time window',
@@ -1358,9 +1472,12 @@ window.__ModuleLoader__.load({
       'option.levelWarn': 'warn and up',
       'option.levelError': 'error and up',
       'option.levelFatal': 'fatal',
-      'hint.levelPaged': 'The level filter is applied to the returned page (the host’s own semantics): the counts and truncation signals still describe the unfiltered page. Use the group ranking for per-level totals.',
+      'hint.levelPaged': 'The level filter is applied to the returned page (the host’s own semantics): the counts and truncation signals still describe the unfiltered page. Per-level totals need a real level field in the backend — when the index has none (ES often infers the level from the message), the group ranking is empty too.',
+      'hint.staleResults': 'The query conditions changed — the results below are still from the previous run. Run the query again first; until then “Group” and “Next page” stay off (the paging cursor belongs to the previous query).',
       'hint.rowLabelFilter': 'Add a filter {field} = {value} (remove it via the ranking row or the × on the chip)',
-      'hint.rowMoreLabels': '{count} more labels (hover to see all)',
+      'hint.rowMoreLabels': '+{count}',
+      'hint.rowLabelPanel': 'Show all {count} labels (click one to filter by “field = value”)',
+      'btn.closeLabels': 'Close',
       'hint.rowSensitive': 'Row details can contain sensitive fields (raw and labels come verbatim from the log backend)',
       'meta.returned': '{count} rows',
       'meta.matched': '{count} matched',
@@ -1446,6 +1563,23 @@ window.__ModuleLoader__.load({
       return kind
     }
 
+    /**
+     * 查询串输入框的占位提示：**按来源的方言**说，别对所有来源都说 LogQL。
+     *
+     * 这句原来是写死的「Loki 是 LogQL」——维护者实际用的是 ES，占位符等于在告诉他一个错的
+     * 语法名（ES / OpenSearch 走的是 Lucene 的 `query_string`，见 src/backends/elastic.ts 的
+     * `capabilities().queryLanguage`）。逐条列字面量、不拼 `'placeholder.query' + kind`
+     * ——静态闸门扫不到动态键（同 kindLabel / windowLabel 的注释）。
+     *
+     * 能力自述要等第一次查询才回来，而占位符在**打字之前**就得对；来源的 kind 是配置里已经
+     * 有的东西，用它不制造第二份运行期判据（方言本身仍是宿主说的，这里只挑提示文案）。
+     */
+    function queryPlaceholder(kind) {
+      if (kind === 'elasticsearch' || kind === 'opensearch') return t('placeholder.queryLucene')
+      if (kind === 'loki') return t('placeholder.queryLogql')
+      return t('placeholder.query')
+    }
+
     /* ================================ 设置卡片 ================================ */
 
     /**
@@ -1496,6 +1630,16 @@ window.__ModuleLoader__.load({
        */
       const [zoomFrom, setZoomFrom] = React.useState('')
       const [outcome, setOutcome] = React.useState(undefined)
+      /*
+       * 屏幕上这份结果**是哪一份草稿跑出来的**（查询成功那一刻的有效草稿）。
+       *
+       * 只用来回答一个诚实问题：「查询条件改了，下面还是上一次的结果」。判据在
+       * pure.js 的 `queryStale`——这里存的是**真正发出去的那一份**（含回落后的来源），
+       * 不是点按钮那一刻的闭包值（下钻 / 放大都走 override，那才是真正查的那份）。
+       * 它同时是「下一页」的闸：ES 的游标是 PIT + search_after，拿旧游标配新条件翻页
+       * 不会报错，只会静默少行 / 错位。
+       */
+      const [lastRun, setLastRun] = React.useState(undefined)
       const [lines, setLines] = React.useState([])
       const [cursor, setCursor] = React.useState(undefined)
       const [histogram, setHistogram] = React.useState(undefined)
@@ -1509,6 +1653,15 @@ window.__ModuleLoader__.load({
       // 拉字段失败时宿主那句话（只落在浮层里，不动卡片顶部那条错误行）
       // 字段候选面板开着没有（自画的那个浮层；原生 datalist 的替身，见下面 fieldChoices 那一段）
       const [pickOpen, setPickOpen] = React.useState(false)
+      /*
+       * 「＋N」点开的**全部标签**浮层：`{ id, top, left }` 或 `undefined`。
+       *
+       * 行上只摆 1 个身份标签之后，其余标签得有个看得见、点得动的去处——就是这里。
+       * 存的是**视口坐标**：浮层用 `position:fixed` 画在 `.ll_results`（`overflow-y:auto`）
+       * 外面，否则会被那个滚动容器裁掉（列表只有 420px 高）。
+       * `id` 是行 id，浮层里显示的是**那一行**的全部标签（列表刷新后行没了就不画）。
+       */
+      const [labelPanel, setLabelPanel] = React.useState(undefined)
       // 浮层里「当前那一行」（方向键挪它、回车取它；打字时回到第一条）
       const [pickIndex, setPickIndex] = React.useState(0)
       // 此刻要摆的候选（纯判据在 pure.js 的 fieldChoices：子串过滤 / 保持宿主顺序 / 命中 0 个回空）
@@ -1809,6 +1962,10 @@ window.__ModuleLoader__.load({
             body: JSON.stringify(payload),
           })
           setOutcome(data)
+          // 记下**这一枪真正用的那份草稿**（含回落后的来源、以及 override 里刚算出的筛选 /
+          // 窗口）：界面据此判断「下面这份结果还是不是当前条件的」。只在成功时记——失败时
+          // 屏幕上留着的还是上一次那份。
+          setLastRun(effective)
           setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
           setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
           // 两份聚合并行（互不依赖）：分布与榜都是附加信息，谁拿不到都不该拖住结果列表
@@ -1867,6 +2024,41 @@ window.__ModuleLoader__.load({
         const next = { ...query, filters: filterRemove(current, field) }
         setQuery(next)
         await runQuery(false, next)
+      }
+
+      /**
+       * 「＋N」→ 打开这一行的**全部标签**浮层；再点同一颗 = 收起。
+       *
+       * 位置锚在**点它的那颗按钮**上（视口坐标，`getBoundingClientRect`），并夹在视口内：
+       * 行贴着列表底边时往下开会被裁掉——那种情况下往上收（`top` 取 `bottom + 4` 与
+       * `vh - 300` 的较小值，配合浮层 `max-height` 不会完全跑出屏）。窗口尺寸拿不到
+       * （无浏览器 / 测试桩）就退回一个固定位置：**能打开**比位置精确重要。
+       */
+      const openLabelPanel = (event, line) => {
+        if (labelPanel !== undefined && labelPanel.id === line.id) {
+          setLabelPanel(undefined)
+          return
+        }
+        const el = event === null || event === undefined ? undefined : event.currentTarget
+        const rect = el !== undefined && el !== null && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : undefined
+        const width = 320
+        const margin = 8
+        const vw = typeof window === 'object' && window !== null && Number.isFinite(window.innerWidth) ? window.innerWidth : 0
+        const vh = typeof window === 'object' && window !== null && Number.isFinite(window.innerHeight) ? window.innerHeight : 0
+        const rawLeft = rect === undefined ? 120 : rect.right - width
+        const rawTop = rect === undefined ? 120 : rect.bottom + 4
+        const left = vw > 0 ? Math.min(Math.max(margin, rawLeft), Math.max(margin, vw - width - margin)) : Math.max(margin, rawLeft)
+        const top = vh > 0 ? Math.min(Math.max(margin, rawTop), Math.max(margin, vh - 300)) : rawTop
+        setLabelPanel({ id: line.id, top: Math.round(top), left: Math.round(left) })
+      }
+
+      const closeLabelPanel = () => setLabelPanel(undefined)
+
+      /** 浮层里的键盘出口：焦点在任何一行上按 Esc 都收起（点背景 / 关闭按钮也行）。 */
+      const closeOnEscape = (event) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        closeLabelPanel()
       }
 
       /**
@@ -2091,6 +2283,9 @@ window.__ModuleLoader__.load({
 
       const clearResults = () => {
         setOutcome(undefined)
+        // 结果都没了，「上一次跑的是哪份草稿」也一并撤掉：留着它只会让下一轮的空屏
+        // 多算一次「过期」（判据是 outcome 在不在，但状态干净些没坏处）
+        setLastRun(undefined)
         setLines([])
         setCursor(undefined)
         setHistogram(undefined)
@@ -2127,6 +2322,23 @@ window.__ModuleLoader__.load({
         selectedDraft === undefined ? '' : selectedDraft.dockerTarget,
         containersSource,
       ])
+
+      /*
+       * 页面一滚，「＋N」浮层锚定的那颗按钮就离开了原来的位置——直接收起，别让它漂在别处。
+       *
+       * 用 `capture:true` 捕**所有**滚动容器（settings 页自己会滚，`.ll_results` 也会滚；
+       * scroll 不冒泡，只有捕获能一处收全）。测试桩没有 addEventListener：没有就跳过，
+       * 别为了一个关闭手势让整张卡片在无浏览器的用例里崩掉。
+       */
+      React.useEffect(() => {
+        if (labelPanel === undefined) return
+        if (typeof window === 'undefined' || window === null || typeof window.addEventListener !== 'function') return
+        const close = () => setLabelPanel(undefined)
+        window.addEventListener('scroll', close, true)
+        return () => {
+          if (typeof window.removeEventListener === 'function') window.removeEventListener('scroll', close, true)
+        }
+      }, [labelPanel === undefined ? '' : labelPanel.id])
 
       /*
        * 容器下拉**第一项**（占位项）此刻该说哪一种状态：判据全在 pure.js 的 `containerSlotState`，
@@ -2169,8 +2381,22 @@ window.__ModuleLoader__.load({
        * 「下拉写着没选、请求却打一个已经不存在的 id」。
        */
       const chosenTarget = selectedDraft === undefined ? '' : selectedDraft.id
+      /*
+       * 屏幕上那份结果是不是**已经不是当前条件的**（判据在 pure.js 的 queryStale）。
+       *
+       * 拿 `{ ...query, target: chosenTarget }` 去比，不是拿 `query` 比：`query.target` 在「只有
+       * 一个来源」时是空串，而真正查的是回落后的那一项——不套这一步，一进卡片就会误报「过期」。
+       * 其余字段原样带上（含 override 留给草稿的 filters / window）。
+       */
+      const stale = queryStale({ ...query, target: chosenTarget }, lastRun)
       // 当前生效的筛选（芯片那一行、榜上「正在按它下钻」的高亮都用它）
       const activeFilters = Array.isArray(query.filters) ? query.filters : []
+      /*
+       * 「＋N」浮层要显示的那一行：**按 id 现找**（不把整行塞进 state——行会随重查换掉，
+       * 存旧对象等于让浮层显示一份可能已经不存在的快照）。行没了就不画（见渲染处）。
+       */
+      const labelLine = labelPanel === undefined ? undefined : lines.find((line) => line.id === labelPanel.id)
+      const labelTags = labelLine === undefined ? [] : allRowLabels(labelLine)
 
       const rows = drafts.map((draft, index) => jsxs('div', {
         className: 'll_row',
@@ -2362,7 +2588,8 @@ window.__ModuleLoader__.load({
                         }),
                         isDocker ? null : jsx('input', {
                           className: 'll_input',
-                          placeholder: t('placeholder.query'),
+                          // 方言按**选中来源的 kind** 说（ES / OpenSearch 是 Lucene，不是 LogQL）
+                          placeholder: queryPlaceholder(selectedDraft === undefined ? '' : selectedDraft.kind),
                           value: query.q,
                           disabled: saving || querying,
                           onChange: (event) => { setQuery((current) => ({ ...current, q: event.target.value })) },
@@ -2551,7 +2778,13 @@ window.__ModuleLoader__.load({
                         jsx('button', {
                           type: 'button',
                           className: 'll_btnGhost',
-                          disabled: saving || querying || grouping || outcome === undefined || supportsAggregation(outcome) !== true,
+                          /*
+                           * `stale` 也算「现在不能分组」：榜的窗口取**上一次回显**的那一份，
+                           * 查询串却取当前草稿（见 pure.js 的 facetsEnvelope）——条件改了还点，
+                           * 榜画的会是「新查询串 + 旧窗口」，与屏幕上那排结果不是同一个子集。
+                           * 先点「查询」把两者对齐，比默默画一张对不上的榜诚实。
+                           */
+                          disabled: saving || querying || grouping || stale || outcome === undefined || supportsAggregation(outcome) !== true,
                           onClick: () => { runGroups() },
                           children: grouping ? t('btn.grouping') : t('btn.group'),
                         }),
@@ -2678,6 +2911,12 @@ window.__ModuleLoader__.load({
                       className: 'll_empty',
                       children: t('list.noLogs'),
                     }) : null,
+                    // 条件改了、结果还是上一次的：**必须说出来**。不说的话，下面这份行/计数会被
+                    // 当成新条件的答案；而 ES 的「下一页」还会拿旧 PIT 游标配新条件翻页（静默少行）。
+                    isDocker || outcome === undefined || !stale ? null : jsx('p', {
+                      className: 'll_hint ll_warn',
+                      children: t('hint.staleResults'),
+                    }),
                     outcome === undefined || isDocker ? null : jsxs('div', {
                       className: 'll_queryMeta',
                       children: [
@@ -2694,21 +2933,24 @@ window.__ModuleLoader__.load({
                     }),
                     lines.length > 0 && !isDocker ? jsx('div', {
                       className: 'll_results',
+                      // 列表一滚，浮层锚的那个按钮就不在原来的位置了——直接收起，别让它漂在别处
+                      onScroll: closeLabelPanel,
                       children: lines.map((line) => {
                         /*
-                         * 一行 = 时间 · 级别 · 正文 · **谁写的**（标签）。
+                         * 一行 = 时间 · 级别 · 正文 · **谁写的**（1 个身份标签 + 「＋N」）。
                          *
-                         * 标签本来随响应回来却没人渲染——「这行是哪个容器写的」在卡片里看不到，想按它
-                         * 筛得先填「分组字段」再点榜，三步。这里把值直接做成可点的**筛选入口**：
-                         * 点一下 = 加一条「字段 = 值」并立刻重查（与点榜上下钻走**同一个** drillDown，
-                         * 判据只有一份）。
+                         * 为什么只摆 1 个（2026-10-17 第九刀）：真机 100 行里 `container.name` 有 4 个值、
+                         * `host.name` 只有 1 个（而且值是容器 ID 风格的 hostname）、`log.file.path` 与
+                         * container.name 一一对应；3 个 chip + 「另有 N 个」会把行高撑到 4 行，而正文常常
+                         * 只有 1～2 行——标签成了主角。现在行上只留**宿主优先顺序的第一个**（通常是
+                         * container.name，仍是一键筛选入口），其余收进「＋N」浮层（`allRowLabels`）。
                          *
-                         * 摆哪几个、怎么截断全在 pure.js（`rowLabels`）：按宿主给的顺序取前 3 个——
-                         * 顺序已经是判据（`LABEL_PRIORITY` 排的就是「排查时先问什么」），这里再挑一次
-                         * 就是第二份会漂的规则。摆不下的收进悬停（title 里有全部标签与原文）。
+                         * 顺序仍是宿主给的（`LABEL_PRIORITY` 排的就是「排查时先问什么」），这里不重挑；
+                         * 悬停 title 里也仍然有**全部**标签与原文。
                          */
-                        const tags = rowLabels(line, ROW_LABEL_MAX)
-                        const more = rowLabelOverflow(line, ROW_LABEL_MAX)
+                        const tags = rowLabels(line, 1)
+                        const more = rowLabelOverflow(line, 1)
+                        const panelOpen = labelPanel !== undefined && labelPanel.id === line.id
                         return jsxs('div', {
                           className: 'll_resultRow',
                           title: lineTitle(line),
@@ -2741,7 +2983,19 @@ window.__ModuleLoader__.load({
                                     jsx('span', { className: 'll_resultTagValue', children: tag.display }),
                                   ],
                                 }, 'll-tag-' + tag.field))),
-                                more > 0 ? jsx('span', { className: 'll_resultTagMore', children: t('hint.rowMoreLabels', { count: more }) }) : null,
+                                more > 0 ? jsx('button', {
+                                  type: 'button',
+                                  // 类名不带 `btn`：这是行内的小标记，几何本来就跟按钮族不同（与柱子同一条）
+                                  className: 'll_resultTagMore',
+                                  title: t('hint.rowLabelPanel', { count: more }),
+                                  // 浮层开着时说明它属于哪一行（读屏与键盘都能听出来）
+                                  'aria-expanded': panelOpen,
+                                  'aria-haspopup': 'dialog',
+                                  disabled: querying,
+                                  onMouseDown: (event) => { event.preventDefault() },
+                                  onClick: (event) => { openLabelPanel(event, line) },
+                                  children: t('hint.rowMoreLabels', { count: more }),
+                                }, 'll-more-' + line.id) : null,
                               ],
                             }),
                           ],
@@ -2865,7 +3119,15 @@ window.__ModuleLoader__.load({
                       ],
                     }) : jsx('p', { className: 'll_warn', children: t('error.groups', { message: groups.error }) })),
                     outcome !== undefined && lines.length === 0 && !isDocker ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
-                    cursor === undefined || isDocker ? null : jsx('button', {
+                    /*
+                     * 「下一页」只在**条件没被改过**时才给。
+                     *
+                     * 游标属于**上一次查询**：ES / OpenSearch 是 PIT + search_after，Loki 是查询串与
+                     * 时间窗编码进去的那一份。条件改了还点，宿主不会报错——它会把旧快照里的位置当成
+                     * 新条件的下一页，少行 / 错位都静默。收起来（`stale` 为真时不画）并把原因写在上
+                     * 面那句提示里，比留一个点了会静默错的入口诚实。
+                     */
+                    cursor === undefined || isDocker || stale ? null : jsx('button', {
                       type: 'button',
                       className: 'll_btnGhost',
                       disabled: querying,
@@ -2874,6 +3136,67 @@ window.__ModuleLoader__.load({
                     }),
                   ],
                 }) : null,
+                /*
+                 * 「＋N」浮层：**画在结果列表外面**（`position:fixed`，见 .ll_labelLayer）。
+                 * `.ll_results` 有 `max-height:420px; overflow-y:auto`——放在行里会被它裁掉，
+                 * 所以是视口坐标 + 全屏一层透明底，点底或 × 收起；行没了（重查后）就不画。
+                 */
+                labelPanel === undefined || labelLine === undefined ? null : jsxs('div', {
+                  className: 'll_labelLayer',
+                  children: [
+                    jsx('div', { className: 'll_labelBackdrop', onClick: closeLabelPanel }),
+                    jsxs('div', {
+                      className: 'll_labelPanel',
+                      style: { top: String(labelPanel.top) + 'px', left: String(labelPanel.left) + 'px' },
+                      tabIndex: -1,
+                      onKeyDown: closeOnEscape,
+                      children: [
+                        jsxs('div', {
+                          className: 'll_labelHead',
+                          children: [
+                            jsx('span', { className: 'll_labelTitle', children: t('panel.labels') }),
+                            jsx('span', { children: formatTime(labelLine.ts, true) }),
+                            jsx('button', {
+                              type: 'button',
+                              className: 'll_chipBtn',
+                              title: t('btn.closeLabels'),
+                              onClick: closeLabelPanel,
+                              children: '×',
+                            }),
+                          ],
+                        }),
+                        jsx('div', {
+                          className: 'll_labelScroll',
+                          children: labelTags.map((tag) => (rowFilterProblem(tag) === ''
+                            ? jsxs('button', {
+                              type: 'button',
+                              className: 'll_labelRow',
+                              title: t('hint.rowLabelFilter', { field: tag.field, value: tag.value }),
+                              onMouseDown: (event) => { event.preventDefault() },
+                              onKeyDown: closeOnEscape,
+                              onClick: () => {
+                                closeLabelPanel()
+                                drillDown(tag.field, tag.value)
+                              },
+                              children: [
+                                jsx('span', { className: 'll_labelKey', children: tag.field }),
+                                jsx('span', { className: 'll_labelValue', children: tag.display }),
+                              ],
+                            }, 'll-panel-tag-' + tag.field)
+                            : jsxs('div', {
+                              // 空白值表达不了「字段 = 值」：与行上那颗标签同一条判据，只是不可点
+                              className: 'll_labelRow ll_labelRowStatic',
+                              title: t('error.needFilterValue'),
+                              children: [
+                                jsx('span', { className: 'll_labelKey', children: tag.field }),
+                                jsx('span', { className: 'll_labelValue', children: tag.display }),
+                              ],
+                            }, 'll-panel-tag-' + tag.field))),
+                        }),
+                      ],
+                    }),
+                  ],
+                }),
               ],
             }),
           }) : null,

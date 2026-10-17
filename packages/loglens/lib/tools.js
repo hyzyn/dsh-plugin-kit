@@ -229,7 +229,8 @@ export function registerLoglensTools(deps) {
                 type: 'string',
                 description: '只要这个级别**及以上**的行（trace / debug / info / warn / error / fatal）。'
                     + '注意：级别可能是从正文推断的（lines[].levelInferred），且来源侧没有统一的级别字段——'
-                    + '所以这是在**返回的这一页**上筛的，counts 仍是整页；要按级别看全量用 loglens_facets',
+                    + '所以这是在**返回的这一页**上筛的，counts 仍是整页。要按级别看全量，后端得真有级别字段'
+                    + '（ES 上 log.level 常为空、级别是从正文推断的，按它分组也是空桶）；没有时只能在查询串里搜级别关键字',
             },
         },
         output: {

@@ -153,15 +153,24 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
    *
    * 为什么不推给后端：级别字段在各家索引里名字与存在性都不一样（这套集群里 log.level 是空桶，
    * 级别其实长在正文里），推下去就会变成「有时候筛了、有时候静默没筛」。所以本层如实做页内筛 +
-   * 一条明说范围的 warning：counts 与 truncation 仍是**未筛的整页**，要按级别统计该用聚合。
+   * 一条明说范围的 warning：counts 与 truncation 仍是**未筛的整页**。**不要**在这里指一条
+   * 「用聚合看全量」的路——ES 上 log.level 常为空，按它分组也是空桶（真机实测）；后端没有
+   * 级别字段时，面板与 agent 都只能页内筛 + 在查询串里搜关键字。
    */
   let lines = result.lines
   if (wanted.level !== undefined) {
     const kept = lines.filter((line) => levelMatches(line.level, wanted.level as CanonicalLevel))
+    /*
+     * 这句 warning 是**原话照抄**到面板上的（meta 行里那个 `.ll_warn`），所以不写 Markdown
+     * 的 `**`——宿主不把文案当 Markdown 渲染，界面上会原样露出星号。另外，后半句要给一条
+     * **走得通**的路：ES 上 `log.level` 常常整列是空的（级别从正文推断），那种来源连
+     * `loglens_facets` 按它分组也是空桶（真机 2026-10-17 实测），只指聚合等于指一条死路。
+     */
     warnings.push(
-      'level=' + wanted.level + '（' + levelHint(wanted.level) + '）是按**返回的这一页**筛的：'
+      'level=' + wanted.level + '（' + levelHint(wanted.level) + '）是按「返回的这一页」筛的：'
       + String(lines.length - kept.length) + ' / ' + String(lines.length) + ' 行被筛掉，'
-      + 'counts 与 truncation 仍是未筛的整页——要按级别看全量请用聚合（loglens_facets）',
+      + 'counts 与 truncation 仍是未筛的整页——按级别看全量要求后端真有级别字段'
+      + '（ES 上 log.level 常为空、级别是从正文推断的），否则只能在查询串里搜级别关键字',
     )
     lines = kept
   }
