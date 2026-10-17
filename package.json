@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-plugin-kit",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "type": "module",
   "description": "通用 DSH 插件库（pnpm monorepo）：模板插件、插件开发工具包、一键聚合安装包。根包同时是全家桶 bundle（dsh.bundle.patch），DSH 与插件市场可直接识别安装。",
   "main": "lib/index.js",
@@ -45,7 +45,8 @@
     "i18n:check": "node scripts/check-i18n.mjs --self-test && node scripts/check-i18n.mjs",
     "no-public-ip:check": "node scripts/check-no-public-ip.mjs --self-test && node scripts/check-no-public-ip.mjs",
     "no-public-ip:message": "node scripts/check-no-public-ip.mjs",
-    "release:publish": "node scripts/release-publish-tag.mjs"
+    "release:publish": "node scripts/release-publish-tag.mjs",
+    "release:preflight": "node scripts/release-publish-tag.mjs --preflight"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "3.2.7",
@@ -76,16 +77,16 @@
     "access": "public"
   },
   "dependencies": {
-    "@hyzyn/dsh-codegraph": "0.6.9",
-    "@hyzyn/dsh-docker": "0.13.1",
-    "@hyzyn/dsh-env": "0.3.9",
+    "@hyzyn/dsh-codegraph": "0.6.10",
+    "@hyzyn/dsh-docker": "0.13.2",
+    "@hyzyn/dsh-env": "0.3.10",
     "@hyzyn/dsh-kit-settings": "0.2.6",
-    "@hyzyn/dsh-mcp": "0.3.5",
-    "@hyzyn/dsh-profile": "0.2.8",
-    "@hyzyn/dsh-prompt": "0.2.8",
-    "@hyzyn/dsh-rss": "0.4.8",
-    "@hyzyn/dsh-search": "0.4.8",
-    "@hyzyn/dsh-tty": "0.32.2"
+    "@hyzyn/dsh-mcp": "0.3.6",
+    "@hyzyn/dsh-profile": "0.2.9",
+    "@hyzyn/dsh-prompt": "0.2.9",
+    "@hyzyn/dsh-rss": "0.4.9",
+    "@hyzyn/dsh-search": "0.4.9",
+    "@hyzyn/dsh-tty": "0.32.3"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1"

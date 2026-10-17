@@ -106,6 +106,9 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    `node_modules`——两份 kit 就是两套单例，`kit D11` 的症状会回来。所以 bump kit 时必须
    跟齐**每一个**消费者，一次发完；`node scripts/check-kit-pins.mjs` 兜底（CI 与 Release
    workflow 都跑）。
+   **这条规矩的另一半同样成立：`packages/kit` 的 `src` / `lib` 只要有改动，就必须 bump kit
+   ——即使没有任何消费者需要改代码。** 理由见下面第 6 条：npm 上一个版本号只能对应一份内容，
+   而发布流按版本号跳过；kit 内容变了却没 bump，消费者钉到的就还是旧内容。
 5. 可安装插件必须用 `peerDependencies` 声明 DSH 兼容范围。DSH 0.1.7-rc.1 起
    **安装前与启动时**都强制校验，且只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`
    的 peer（预发布参与范围匹配）。写法统一为**逐 cohort 写全**：
@@ -136,6 +139,28 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    CI 与 Release workflow 都会跑
    `node scripts/check-dsh-peers.mjs` 兜底；本机装了对应 cohort 时可用
    `--app-boot <path>` 让 DSH 自己的判定器对**每一档**再核一遍。
+6. **已发布版本的内容必须与本仓一致**。`pnpm release:preflight`（`release:publish` 在真正
+   publish 之前会自动跑一遍，所有包都还没发）对每个**已在 registry** 的「包名@版本」下载
+   tarball，把 `lib/**`（不含 `.map`）/ `client.js` / `cordis.patch.yml` 与本仓逐字节比对；
+   不一致立即中止，并点名包、版本与文件。判据与实现见
+   [`scripts/lib/published-content.mjs`](scripts/lib/published-content.mjs) 头注释。
+   这一条补的是发布流的**版本级跳过**：跳过只看「版本在不在」，而 npm 上一个版本号只能对应
+   一份内容——**内容变了就必须 bump**，否则消费者钉到的还是旧内容。
+
+   **2026-10-17 的现场（外部 issue #12）**：CG67 修复往 `@hyzyn/dsh-kit` 加了
+   `stripEmptyFlowSequenceRoot` / `…RootLines` 两个导出并让 codegraph / mcp / env / prompt
+   直接消费，但 kit 的版本仍停在 0.5.2（10-07 发的那份），`lib/` 却已重建入库。发版提交只
+   bump 了消费者，发布流对 kit@0.5.2 打印「已在 registry，跳过」，四个消费者带着新 import
+   发了出去。用户装到 codegraph 0.6.9 + kit 0.5.2 就是
+   `The requested module '@hyzyn/dsh-kit' does not provide an export named
+   'stripEmptyFlowSequenceRootLines'`，整条 entry 不激活。**当时十几道闸门全绿**：
+   kit 钉子闸只比版本号是否一致（本地 kit 的版本就是 0.5.2，自洽）、开发与测试走 workspace
+   link 永远解析到本地新 kit、`artifacts:check` 只比「入库产物 vs 重新构建」、
+   `package-contents:check` 只比「声明的入口在不在 tarball 里」。没有一道闸门问过
+   「npm 上这个版本里的代码，和本仓这份代码是不是同一份」。
+
+   **推论（写进日常）**：只要动了 `packages/kit` 的 `src` / `lib`，就顺手 bump kit 版本；
+   发 tag 前先跑 `pnpm release:preflight`，红了先 bump 再打 tag。
 
 ## 攒批
 
@@ -154,14 +179,15 @@ git switch main && git pull
 # 2. pnpm aggregate                  # 重新生成聚合层（钉新版本）
 # 3. pnpm install --lockfile-only    # 必须在 aggregate 之后：聚合层重钉要进 lockfile
 # 4. 提交全部改动并推送 main（CI 先绿）
+# 5. pnpm release:preflight          # 已发布版本的内容必须与本仓一致；红了先 bump，别打 tag
 git tag "v$(node -p "require('./packages/all/package.json').version")"
 git push origin main --tags
 ```
 
 tag 推上去后 Release workflow 接管：校验 tag 与 `@hyzyn/dsh-all` 版本一致 →
-build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上已存在的「包名@版本」
-自动跳过，未 bump 的包不拦路）→ 逐包回查 registry 核实 → 建 GitHub Release
-（Highlights 自动过滤 chore 提交，并附全部 workspace 包的版本清单）。
+build + typecheck + 聚合检查 → 按依赖序发布全部包（**先对 registry 上已存在的「包名@版本」做
+内容预检，内容与本仓不一致即整体中止；一致的跳过，未 bump 的包不拦路**）→ 逐包回查 registry
+核实 → 建 GitHub Release（Highlights 自动过滤 chore 提交，并附全部 workspace 包的版本清单）。
 
 发布中途失败：修复后删除并重打同一个 tag 再推即可，已发出的包重跑时自动跳过（幂等）。
 兜底的手动发布：`node scripts/release-publish-all.mjs [6位OTP] [only=]包目录,...`
@@ -171,6 +197,7 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上�
 
 | 症状 | 原因与处理 |
 | --- | --- |
+| 用户报 `The requested module '@hyzyn/dsh-kit' does not provide an export named …`（或整条 entry 报 `failed to import`） | **kit 的内容变了但版本号没 bump**：发布流按「版本已在 registry」跳过，消费者钉到的还是旧 kit 内容（2026-10-17 事故，外部 issue #12：codegraph 0.6.9 / env 0.3.9 / mcp 0.3.5 / prompt 0.2.8 四个包中招）。修法：bump kit → 全仓消费者钉子跟齐 → `pnpm aggregate` → 发新版；旧包只能靠回滚（codegraph 0.6.8 / env 0.3.8 / mcp 0.3.4 / prompt 0.2.7）。`pnpm release:preflight` 现在会在发布前拦下这一类（发布门槛第 6 条） |
 | workflow 绿了、但日志里有 `::warning::` 说「窗口内未核实 / 无法判定」 | publish 命令已退出 0（真失败会在发布那一步直接红），只是回查没在窗口内读到目标版本。**先别删 tag 重打**：`curl -s https://registry.npmjs.org/<包名>/<版本>` 直查，在就无需处理；确实不在才重跑（幂等）。回查用单版本小端点 + 随机 `?cb=`（详见 `scripts/release-publish-tag.mjs` 顶部注释），只有当权威文档**已刷新到本次发布之后**却仍没有该版本时才判红 |
 | `ERR_PNPM_OUTDATED_LOCKFILE ... specifiers in the lockfile don't match` | lockfile 与 package.json 脱节：aggregate 晚于 `install --lockfile-only`，聚合层重钉的 specifier 没进 lockfile（v0.1.24）。按「bump → aggregate → install --lockfile-only」顺序重跑；已发包的修复直接追加 lockfile 提交、删 tag 重打（幂等） |
 | `403 ... Two-factor authentication or granular access token with bypass 2fa` | 缺动态码或 token 不是 bypass-2FA：换 bypass granular token |
