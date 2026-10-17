@@ -197,6 +197,14 @@
   [`scripts/test/git-hooks.test.ts`](../scripts/test/git-hooks.test.ts)——**行为式**的：
   真起临时仓库、挂真钩子、真跑 `git commit`，看它到底往这一笔里装了什么。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
+- **推含 `.github/workflows/` 改动的提交需要 `workflow` scope**（2026-10-17 实测）。`gh` 的
+  OAuth token 默认只有 `repo` / `gist` / `read:org` / `admin:public_key`，推 workflow 文件时
+  GitHub 直接拒：`refusing to allow an OAuth App to create or update workflow … without workflow scope`。
+  **不含 workflow 的提交照常能推**，所以这个限制往往很晚才暴露（第一次改 CI 时）。两条出路：
+  `gh auth refresh -h github.com -s workflow`，或把远端配成 SSH。
+  用 SSH 时注意：若本机有 `url.https://github.com/.insteadof git@github.com:` 这类全局改写，
+  必须写 **`ssh://git@github.com/<owner>/<repo>.git`** 这种形式——`git@github.com:` 短写会被
+  改回 HTTPS，于是又撞上同一个 scope 限制（这条踩过一次）。
 
 ## Issue（提 issue 的格式约束）
 
