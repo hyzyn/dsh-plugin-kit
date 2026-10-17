@@ -189,6 +189,13 @@
   真实内网 IP、真实主机名一律换成文档网段 / 中性取值。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
   `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 扫公网 IP。
+  产物**只跟着「这一笔提交的源码」走**（2026-10-17 修）：只有 `src` / `client-src` 的改动
+  已经躺在 index 里的包，它的产物才会被加进来；若某个包已暂存的源码在工作区**还有**未暂存
+  改动（产物没法与「提交里的源码」同步），钩子**直接中止**并给出两条出路。为什么要有这条：
+  在脏树上做部分提交时，无条件 `git add` 会把**按未提交源码重建**的产物卷进这一笔
+  （实测形状：一份只暂存 9 个文件的提交里混进了 5 个包的 `lib/`）。判据与反例见
+  [`scripts/test/git-hooks.test.ts`](../scripts/test/git-hooks.test.ts)——**行为式**的：
+  真起临时仓库、挂真钩子、真跑 `git commit`，看它到底往这一笔里装了什么。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
 
 ## Issue（提 issue 的格式约束）
