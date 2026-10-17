@@ -3,8 +3,9 @@
 > 执行对象：AI 代理。本文自包含，按 PR 顺序执行；每节末尾有可勾选验收项。
 > **状态**：**方案已定，代码未动（2026-10-07）**。§0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
-> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.2`** 现算的
-> （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 随宿主升级逐条复核，见 §2.1 末「升级复核」）。
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.5`** 现算的
+> （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 复核于 `0.2.1-alpha.2`，
+> 2026-10-16 复核于 `0.2.1-alpha.5`，见 §2.1 末「升级复核」）。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
@@ -83,7 +84,7 @@
 
 ## 2. 现算事实与那条实现约束
 
-### 2.1 三条实测事实（DSH `0.2.1-alpha.2`，2026-10-07 首测 · 10-09 复核）
+### 2.1 三条实测事实（DSH `0.2.1-alpha.5`，2026-10-07 首测 · 10-09 / 10-16 复核）
 
 **事实 1：审批瀑布的答案今天由「页面」给出。**
 
@@ -147,13 +148,15 @@ CSP 管不了**同源**脚本。所以它不是「因为没 CSP 才成立」，�
 
 ```
 `dsh-host-directory-picker-native` 的 `pickNativeDirectory`
-darwin: osascript -e 'choose folder with prompt "…"'   → 读 .stdout
+darwin: osascript -l JavaScript -e <JXA：AppKit NSOpenPanel>  → 读 .stdout（取消返回空串）
 linux:  zenity --file-selection --directory            → 读 .stdout；kdialog 兜底
 win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
 ```
 
-它是**能力证明**：技术上弹得出原生框，且**答案是子进程的 stdout / 退出码**（`:239/251/263` 的
-`.stdout`，`:241` 用 `errorCode === 1` 判取消）——**整条通路在宿主侧，页面够不着**。
+它是**能力证明**：技术上弹得出原生框，且**答案（含「取消」）都从子进程的 stdout 读回**——
+`pickNativeDirectory` 三条平台路径都取 `.stdout`：macOS 那段 JXA 在取消时 `return ''`、
+由 `outputPath()` 归一成 `null`；Linux 的 zenity / kdialog 则按 `errorCode(error) === 1` 判取消。
+**整条通路在宿主侧，页面够不着**。
 
 **升级复核（2026-10-09，宿主 `0.2.1-alpha.1` → `0.2.1-alpha.2`）**：三条事实逐条重跑，都还成立——
 ① 审批瀑布仍是 `dsh-user-approval` 的 `ctx.waterfall(…, "approval/request", req, () => Promise.resolve("unavailable"))`，
@@ -169,6 +172,40 @@ script，`dsh-web-frontend/dist/index.html` 与 `dsh-host-webserver` / `dsh-host
 仍无 CSP）与 `dsh-cordis-client-runner` 的 `client.js`（`new Function(…)` 与 `__ModuleLoader__.load` 仍在）。
 同一轮里 `scripts/test/os-consent-scope.test.ts` 的 18 条结构断言全绿，红的只有「基准版本对不上」
 这条绊线——本节基准随之更新到 `0.2.1-alpha.2`。
+
+**升级复核（2026-10-16，宿主 `0.2.1-alpha.2` → `0.2.1-alpha.5`）**：三条事实逐条重跑，
+**结论都还成立**；picker 的判据口径也没变（仍是 §4 第 2 条那四条准则）——
+① 审批瀑布仍是 `dsh-user-approval` 的 `ctx.waterfall(…, "approval/request", req, () => Promise.resolve("unavailable"))`，
+浏览器侧 answerer 仍是 `dsh-client-ui-approval` 的 `.$on("approval/request", …)` → `answerApproval(…)`，
+`dsh-acp` 仍监听 `approval/request`，`approval/request` 仍在 `dsh-api-remotes` 的 forwarded 白名单里且
+仍是 `mode: "waterfall"`；答案回传端点仍是 `dsh-api-gateway` 的 `$events/result`（该包这轮被拆成
+`lib/client.browser.js` / `lib/client.node.js`，端点本身未变）；
+② `dsh-client-modules` 的 `defaultLoadBundle` 仍走 `createElement("script")`、说明文案仍是
+`same-origin external classic script`，`dsh-web-frontend/dist/index.html` 与 `dsh-host-webserver` /
+`dsh-host-frontend-static` 仍是 **0** 处 CSP；
+③ `dsh-host-directory-picker-native` 仍有原生框能力、答案仍从子进程 stdout 读回、
+`resolveDirectoryPickerBackend` 那四条准则（`allowsRemoteAuthorities`、`!isLoopbackHost(bindHost)`、
+`launchedThroughSsh`、`DISPLAY` 或 `WAYLAND_DISPLAY`）逐条仍在；**但「取消」的判定口径这一轮变了**——
+macOS 路径从 AppleScript `choose folder`（取消靠 `errorCode === 1 && /(?:User canceled|-128)/i`
+匹配 stderr）换成 `osascript -l JavaScript` 的 JXA + AppKit `NSOpenPanel`（取消 `return ''` →
+`outputPath()` → `null`，darwin 分支已无 try/catch，`-128` 文本匹配在宿主里**已不存在**）；
+Linux 的 zenity / kdialog 仍是 `errorCode(error) === 1`。事实 3 的正文已按新口径改写（顺带去掉了
+会随实现漂移的宿主行号，回到 §0 的「只写包名 + 符号名」）。
+
+载体包的逐字节比对：**这一轮确实变了**（别照抄上一轮那句「除 `package.json` 外无变化」）——
+`dsh-client-modules`（`lib/client.js` / `lib/index.js` / `lib/types/**`）、`dsh-api-gateway`（拆包 +
+新增 `lib/types/access.d.ts`）、`dsh-api-remotes`（`lib/client.js` / `lib/index.js`）、
+`dsh-cordis-client-runner`（`lib/client.js`）、`dsh-host-directory-picker-native`（`lib/index.js` /
+`lib/types/index.d.ts`）、`dsh-web-frontend`（dist 重建，`index.html` 仍无 CSP）逐字节有差异；
+`dsh-user-approval` 与 `dsh-client-ui-approval` 只多了 `locale/{en,zh}.json`；
+`dsh-host-frontend-static` 与 `dsh-acp` 除 `package.json` 外**逐字节相同**。变的是实现，三条事实的
+结论一条没动。同一轮里 `scripts/test/os-consent-scope.test.ts` 的结构断言仍全绿
+（`checkHostWorld()` 返回空数组），红的只有「基准版本对不上」这条绊线——本节基准随之更新到
+`0.2.1-alpha.5`。**这一轮同时把那个盲区补上了**：上面那条「取消口径」此前 `checkHostWorld()`
+覆盖不到（旧判据只钉 osascript / `.stdout` / zenity 与「原生框不在页面通道上」），所以它是在绊线
+「只报基准版本」的情况下静默漂过的——现在判据多了两条：macOS 必须仍在用 AppKit `NSOpenPanel`
+（`NSModalResponseOK`），且「退出码 + stderr 文本」（`-128` / `User canceled`）不许回来；两条都配了
+反例。它再变就不是静默漂过，而是直接报红。
 
 ### 2.2 把事实合起来：两个形态，只有一个成立
 
@@ -222,6 +259,10 @@ script，`dsh-web-frontend/dist/index.html` 与 `dsh-host-webserver` / `dsh-host
       宿主在而文件缺失则**判红**；另有「基准版本对得上」的升级绊线；
       **2026-10-09 宿主升到 `0.2.1-alpha.2` 时它按设计红过一次**（基准版本 + picker 判据两处口径），
       三条事实与那份 resolver 逐条复核后已收敛，复核记录见 §2.1 末与 §4 第 2 条；
+      **2026-10-16 宿主升到 `0.2.1-alpha.5` 时同样按设计红过一次**（这次只有基准版本一处——
+      三条事实的结构判据全绿），复核记录见 §2.1 末；同一轮按复核发现补了「取消口径」那两条判据
+      （`NSModalResponseOK` 必须在、「退出码 + stderr 文本」不许回来），各配一条反例——那正是
+      旧判据的盲区，它当时是靠「基准版本对不上」间接顶住的；
 - [ ] **真机（macOS）**：点一次框 → 授权生效、审计行出现；**并且**用 CDP 在页面里跑
       `ctx.remote.$on('approval/request', …)` 抢答 —— 在形态 B 下**应当抢不到任何东西**
       （提权根本不走那条瀑布）。这一条是形态 B 与形态 A 的**判别实验**。

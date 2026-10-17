@@ -44,6 +44,7 @@
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
+| **上游问题报告**（`dsh-plugin-market` 的兼容性判定没实现规则的后半句「engines.dsh, **else** peerDependencies」：只靠 `peerDependencies` 声明兼容范围的包，在市场上被无条件判「兼容」。**2026-10-17 已发**：<https://github.com/deepseek-ai/deepseek-harness/discussions/9907>） | L0 [`docs/discussion-body-dsh-market-compat.md`](./discussion-body-dsh-market-compat.md)（**提给 DSH 上游 GitHub Discussions 的帖子正文副本**：代码归属 `deepseek-ai/deepseek-harness`，但该仓 **issues 已关闭**、`CONTRIBUTING.md` 指定 bug 走 Discussions；正文英文、示例已脱敏，宿主路径一律行内代码、不做相对链接）。本仓为何仍坚持强制只靠多段 peer、不写顶层 `engines.dsh`，见 [`scripts/check-dsh-peers.mjs`](../scripts/check-dsh-peers.mjs) 头部的两字段说明 |
 | **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
 | **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体六条硬规矩) ④ |
@@ -108,7 +109,7 @@
 |---|---|---|
 | `docker` | `D` | `D01`–`D167` |
 | `tty` | `D` | `D01`–`D101` |
-| `codegraph` | `CG` | `CG01`–`CG66` |
+| `codegraph` | `CG` | `CG01`–`CG68` |
 | `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D14` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
 | 其它包 | 需要时自定，从 `01` 起 | — |
 
@@ -117,6 +118,14 @@
 > [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) **现算**核对：
 > **改了台账就要同步改这里，否则 CI 红**。反向禁止：守卫报红时**只改文档侧**，
 > 绝不为让它变绿去增删 / 重排 / 改号任何台账行——「编号不回收、不重号、不丢失」比「数字对得上」硬得多。
+
+同一道守卫还会**现算核对引用本身**（判据 8，2026-10-17 补）：全仓 `<包名> <前缀><号>` 形式的
+跨包引用，引的号必须在**该包台账里真实存在**（前缀一致、落在 `01`–最大号内、不是空号）。
+凭空写一个号，读者会去找一条并不存在的缺陷，下一个要编号的人还可能把它当成「已经用过的号」
+——而这类引用原先**没有任何东西会红**：它不是链接（`check-doc-links.mjs` 只管链接与锚点），
+也不是台账行（上面那几类复述只看台账自己写了什么）。
+**连带代价**：正文里不能**整串**引用一个不存在的号（哪怕是为了说明它不存在），那串字本身就会
+被抓成悬空引用——改述或拆开写；夹具里的假号请按「现算最大号 + 1」算，不要写死字面量。
 
 **硬规矩**：
 

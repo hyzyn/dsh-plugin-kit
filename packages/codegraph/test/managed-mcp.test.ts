@@ -590,3 +590,51 @@ describe('CG47：写前复核必须双向（含「不存在 → 被创建」）'
     expect(shouldRecheckPatchWrite('1:10', '2:20', 3)).toBe(false)
   })
 })
+
+describe('CG67：`[]` 根不得被当成可追加的前缀', () => {
+  // `[]` 是**完整**的 YAML 文档（flow 序列根）。旧实现把托管块接在它后面，整份
+  // cordis.patch.yml 变成非法 YAML——宿主启动时 parsePatchList 直接抛、插件整层
+  // 起不来；热路径被 HMR 的 catch 吞成一条 warn，卡片上完全看不见。
+  const parseHost = (lines: string[]): unknown => yaml.load(lines.join('\n'))
+
+  it('只有 `[]`：结果是合法列表，且不再有独立根', () => {
+    const out = syncManagedMcpRow(['[]'], decision(indexedDir))
+    expect(parseHost(out.lines)).toHaveLength(1)
+    expect(out.lines.some((line) => line.trim() === '[]')).toBe(false)
+    expect(out.status.mode).toBe('own')
+  })
+
+  it('`[]` 带结尾换行：同上', () => {
+    const out = syncManagedMcpRow(['[]', ''], decision(indexedDir))
+    expect(parseHost(out.lines)).toHaveLength(1)
+  })
+
+  it('宿主模板（注释 + `[]`）：注释保留、根被替换', () => {
+    const text = ['# Your patch layer', '# a top-level YAML array', '[]', '']
+    const out = syncManagedMcpRow(text, decision(indexedDir))
+    expect(out.lines[0]).toBe('# Your patch layer')
+    expect(out.lines[1]).toBe('# a top-level YAML array')
+    expect(parseHost(out.lines)).toHaveLength(1)
+  })
+
+  it('旧版本写出的坏文件（`[]` + 本插件区块）：下一次写入自愈', () => {
+    const broken = ['[]', '', OWN_MARK_START, '- insert:', '    - id: mcp-codegraph-managed', '      name: x', '      config:', '        serverName: codegraph', '        cwd: /tmp/old', OWN_MARK_END, '']
+    const out = syncManagedMcpRow(broken, decision(indexedDir))
+    expect(parseHost(out.lines)).toHaveLength(1)
+    expect(out.status.mode).toBe('own')
+  })
+
+  it('正常块序列补丁文件不受影响（不误摘用户行）', () => {
+    const lines = ['- insert:', '    - id: keep', '      name: x', '']
+    const out = syncManagedMcpRow(lines, decision(indexedDir))
+    expect(out.lines[0]).toBe('- insert:')
+    expect(out.lines[1]).toBe('    - id: keep')
+  })
+
+  it('dryRun 不改写：坏根原样返回（只读快照不谎报已修）', () => {
+    const lines = ['[]', '']
+    const out = syncManagedMcpRow(lines, { ...decision(indexedDir), dryRun: true })
+    expect(out.changed).toBe(false)
+    expect(out.lines).toEqual(lines)
+  })
+})

@@ -173,7 +173,7 @@ grep -o 'node packages/[a-z-]*/scripts/[a-z-]*\.mjs' .github/workflows/*.yml | s
 | `artifacts:check` | `scripts/check-artifacts.mjs`（**新**） | ✅ | — |
 | `publishable:check` | `check-publishable.mjs` | ✅ | ✅ |
 | `dsh-peers:check` | `check-dsh-peers.mjs` | ✅ | ✅ |
-| `dsh-home:check` | `check-dsh-home.mjs` | ✅ | — |
+| `dsh-home:check` | `check-dsh-home.mjs` | ✅ | ✅（2026-10-17 补，见下） |
 | `kit-pins:check` | `check-kit-pins.mjs` | ✅ | ✅ |
 | `doc-links:check` | `check-doc-links.mjs` | ✅ | — |
 | `issue-forms:check` | `check-issue-forms.mjs --self-test && …` | ✅ | — |
@@ -181,6 +181,20 @@ grep -o 'node packages/[a-z-]*/scripts/[a-z-]*\.mjs' .github/workflows/*.yml | s
 | `no-public-ip:check` | `check-no-public-ip.mjs --self-test && …` | ✅ | — |
 | `no-public-ip:message` | `check-no-public-ip.mjs --message-file …` | ✅（提交信息循环） | — |
 | `release:publish` | `release-publish-tag.mjs` | — | ✅ |
+
+> **2026-10-17 变更：`dsh-home:check` 从「仅 CI」补进 `release.yml`**（上表该行已改；同一批里的
+> `doc-links` / `i18n` / `no-public-ip` / `issue-forms` / `artifacts` 仍是仅 CI——判据见下）。
+>
+> **为什么这道闸归发布闸**：它今天有**两条判据**，而两条在**同一条命令**里，拆不开——
+> **判据 1**（`DSH_HOME` 推导全仓只允许在 kit 有一份，codegraph `CG35`）是**已发布包的运行时不变量**：
+> 违反时各插件按各自的副本写/读**不同**的配置目录，属于「发出去只能靠新版本补救」那一类，正是
+> [conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线) 那句「CI 与发布闸要成对」
+> 管的形状；**判据 2**（跑完整轮测试后空的哨兵 home 必须还是空的，codegraph `CG68`）才是测试卫生。
+> 整条按判据 1 归位。
+>
+> **代价（明写）**：发布车道多跑**一整轮 vitest**（本机 25–41s；那条车道本来就要在下面跑一次
+> `pnpm test`，所以合计两轮）。配对优先于这点重复，与上面 `test-collection:check` 同理——tag 可以
+> 打在**没过 CI** 的提交上，发布闸必须自己挡一次。
 
 **为什么 `aggregate:check` / `artifacts:check` 要做成脚本**：原来的两条命令带 shell 组语法
 （`cmd \|\| { echo …; exit 1; }`），在 Windows 的 cmd 下不成立，而闸门条目应当三平台都能当粘贴

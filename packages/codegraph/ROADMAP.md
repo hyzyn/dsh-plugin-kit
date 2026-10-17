@@ -422,7 +422,7 @@ npx tsc --noEmit -p packages/codegraph/tsconfig.json
 npx vitest run packages/codegraph
 npx vitest run                                   # 全仓，防跨包回归
 pnpm -r build && git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'   # 产物 = 源码闸（CG28）
-node scripts/check-dsh-home.mjs                  # 跨包 DSH_HOME 推导的防回归闸（CG35 已修，保持绿）
+node scripts/check-dsh-home.mjs                  # 两条判据：① DSH_HOME 推导只允许一份（CG35，秒级）；② 整轮测试跑在**空的哨兵 home** 上、跑完该目录必须还是空的（CG68 补记，会重跑一整轮 vitest，本机 25s）
 ```
 
 > ⚠️ **`lib/` 那半边必须带 `:(glob)`**——pathspec 的坑、实测命中数与「pre-commit 已正确、CI 未正确」

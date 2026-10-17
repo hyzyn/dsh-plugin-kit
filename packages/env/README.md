@@ -54,7 +54,7 @@ interface Config {
 
 - 托管区块以 `# --- dsh-env-manager managed ...` 标记，插件只改写该区块，其余内容原样保留。
 - **凭据存储迁移**：启动时自动把带明文值的密钥条目迁入官方凭据存储，幂等且非破坏——只有写入成功的条目才从 env 文件移除值。三类条目保留在 env 文件：`js:` 引用、空值（官方存储拒绝空串）、被启动环境遮蔽或 refs 已有同名键（**不覆盖**用户经官方界面存过的值）。
-- **启动期同步预注入**：`secret: true` 且没有内联 `value` 的条目，值在 `.credentials.yaml` 的 `refs` 里。插件启动时**同步**读该文档（`$DSH_HOME/.credentials.yaml`，可用 `DSH_ENV_CREDENTIALS_FILE` 覆盖）并把值补进 `process.env`，**`apply()` 返回时值已就位**——这是 MCP 认证头那类 `!!js process.env.X` 在冷启动时能取到值的唯一原因。只补空位：继承自启动环境的值优先（与凭据 seam 的 `inherited → stored → fallback` 一致），删除语义留给那条异步的 seam 对账；凭据文档缺失/损坏只是这一次不预注入，不影响插件启动。
+- **启动期同步预注入**：`secret: true` 且没有内联 `value` 的条目，值在 `.credentials.yaml` 的 `refs` 里。插件启动时**同步**读该文档（`$DSH_HOME/.credentials.yaml`，可用 `DSH_ENV_CREDENTIALS_FILE` 覆盖）并把值**写进** `process.env`，**`apply()` 返回时值已就位**——这是 MCP 认证头那类 `!!js process.env.X` 在冷启动时能取到值的唯一原因。**优先权跟随宿主 seam**：同名 key 既在存储又在启动环境时**写存储值**（`0.2.1-alpha.3` 起宿主的层级是 `$DSH_HOME/.credentials.yaml > inherited env > cwd/.env > $DSH_HOME/.env`，`0.2.1-alpha.2` 相反——翻转落在 alpha.3），这样 `ctx.credentials.resolve()` 与 `!!js process.env.X` 才会同答——不同答就是「卡片说已配置、MCP 却 401」。代价：显式导出的启动值（`KEY=… dsh`、CI secret）不再覆盖已存储的同名 key，想保留覆盖就别把那个 key 存进 DSH。旧档（alpha.2 及更早）上的落差**有界且自愈**：宿主读的是启动快照而非实时 `process.env`，随后的异步 seam 对账会把环境改回继承值。删除语义仍留给那条异步对账；凭据文档缺失/损坏只是这一次不预注入，不影响插件启动。
 - 宿主未提供凭据 seam 或配置 `secretsInCredentials: false` 时，插件整体退回 env 文件单存储模式（**此时也不做启动期预注入**：那种模式下凭据存储不是真源）。
 - 键名只允许 `[A-Za-z_][A-Za-z0-9_]*`，且不能重复。
 - `js:` 表达式在宿主内评估（与 loader 相同的信任模型），仅建议存放本机可解析的表达式。

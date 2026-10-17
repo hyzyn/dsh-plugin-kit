@@ -26,3 +26,4 @@ coverage/
 # 根 scripts/lib/ 是共享的隔离引导模块（真机脚本与 vitest 用例都 import 它），
 # 不是构建产物，必须入库
 !scripts/lib/
+.playwright-mcp/

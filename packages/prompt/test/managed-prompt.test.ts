@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readManagedStore, renderManagedBlock, writeManagedStore } from '../src/index.js'
+import yaml from 'js-yaml'
 
 const MARK_START = '# --- dsh-prompt-manager managed (auto-generated; do not edit) ---'
 const MARK_END = '# --- end dsh-prompt-manager managed ---'
@@ -93,6 +94,25 @@ describe('writeManagedStore + readManagedStore 往返', () => {
     writeManagedStore({ activePromptId: null, prompts: [] })
     expect(readManagedStore().store).toStrictEqual({ activePromptId: null, prompts: [] })
     expect(readFileSync(file, 'utf8').split(MARK_START)).toHaveLength(2)
+  })
+
+  // CG67 同源（codegraph）：`[]` 是**完整**的 YAML 文档（flow 序列根），往它后面追加
+  // 托管区块会让 prompts.yml 变成非法 YAML（宿主 / readManagedStore 都按 YAML 读）。
+  it('根位置是 `[]` 时替换该根，写出的仍是合法 YAML', () => {
+    writeFileSync(file, '[]\n')
+    writeManagedStore(STORE)
+    const text = readFileSync(file, 'utf8')
+    expect(text).not.toMatch(/^\[\]/m)
+    expect(yaml.load(text)).toBeTypeOf('object')
+    expect(readManagedStore().fileError).toBeUndefined()
+  })
+
+  it('宿主模板形态（注释 + `[]`）：注释保留、根被替换', () => {
+    writeFileSync(file, '# 说明\n[]\n')
+    writeManagedStore(STORE)
+    const text = readFileSync(file, 'utf8')
+    expect(text.startsWith('# 说明\n')).toBe(true)
+    expect(yaml.load(text)).toBeTypeOf('object')
   })
 })
 

@@ -96,9 +96,15 @@ jobs:
       - name: Check dsh peer compatibility declarations
         if: matrix.os == 'ubuntu-latest'
         run: pnpm dsh-peers:check
-      # 防回归：DSH_HOME 的推导（~ 展开 + resolve）只允许在 kit 里有一份；插件各写
-      # 各的 raw 副本会在 DSH_HOME=~/x 时写/读不同的配置目录（codegraph DEFECTS CG35）
-      - name: Check DSH_HOME derivation lives only in kit
+      # 防回归（**两条判据**，步骤名与注释一起说全——只说判据 1 就是半句谎话）：
+      #   ① DSH_HOME 的推导（~ 展开 + resolve）只允许在 kit 里有一份；插件各写各的 raw
+      #      副本会在 DSH_HOME=~/x 时写/读不同的配置目录（codegraph DEFECTS CG35）。
+      #   ② 整轮测试跑在**空的哨兵 DSH_HOME** 上、跑完那个目录必须**一个文件都没有**——
+      #      用例漏隔离时，没设该变量的开发者跑 `pnpm test` 写的正是他真实的 ~/.dsh/
+      #      （真机上留下一份被测试改写的配置，codegraph DEFECTS CG68）。
+      # ②的判据是**文件系统副作用**，所以它必须真的跑一遍套件（静态扫文本会一次造出 21 条
+      # 假阳性，见脚本头部），这步的成本因此是一整轮 vitest（本机 25–41s，只挂 ubuntu 腿）。
+      - name: Check DSH_HOME hygiene (derivation only in kit; tests must not write home)
         if: matrix.os == 'ubuntu-latest'
         run: pnpm dsh-home:check
       # 防回归：@hyzyn/dsh-kit 的钉子必须在全仓一致、精确、且等于 packages/kit 的版本。
@@ -247,7 +253,7 @@ jobs:
       # pin 住要挂进去的 DSH 版本：它与根 package.json 的 peer 范围同档，升 cohort 时一起改。
       # 装不上（或版本与 cohort 不匹配）时 `--bootstrap` 会**自证失败**并把原因打出来——不会假绿。
       - name: Install dsh CLI (pinned)
-        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.2
+        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.5
       # 用 **DSH 自己的判定器**逐包 × 逐 cohort 复核兼容性声明（2026-10-04 接进 CI）。
       #
       # 为什么必须有它：上面 build 那个 job 的 `dsh-peers:check` 只回答「我们的声明自洽吗」
