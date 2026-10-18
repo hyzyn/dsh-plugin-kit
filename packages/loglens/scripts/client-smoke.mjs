@@ -409,7 +409,13 @@ await test('设置卡片渲染：来源行四格齐、ES 行多一个索引表�
   assert.equal(treeText(tree).includes('允许公网地址'), false, '不该再有「允许公网地址」这一格')
 
   // ES 行多一个「索引表达式」输入框（真机反馈第 3 条：别让人猜「路径即索引」这条暗号）
-  const indexInputs = treeFind(tree, (node) => node.type === 'input' && typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('索引表达式'))
+  /*
+   * 按 `title`（`hint.index` 那句完整说明）定位，**不按占位符**：占位符是文案，
+   * 第四十一刀加了「索引」标签之后它从「索引表达式，如 app-logs-*」收短成了「如 app-logs-*」——
+   * 按文案定位的用例就是这样被一次文案改动打红的。title 才是这一格的语义标识。
+   */
+  const indexInputs = treeFind(tree, (node) => node.type === 'input'
+    && typeof node.props?.title === 'string' && node.props.title.includes('索引表达式'))
   assert.equal(indexInputs.length, 1, '只有 ES / OpenSearch 行该有索引表达式输入框，实得 ' + String(indexInputs.length))
   return tree
 })
@@ -533,6 +539,81 @@ await test('选中的来源被删掉之后：下拉回到占位、查询回一�
   }
 })
 
+/*
+ * 第四十一刀：保存按钮反映「这一行改过没有」。
+ *
+ * 原来它恒亮：多行时看不出哪行有未保存的改动（改了三个来源，不知道哪个没存）；
+ * 每行一颗高权重实心按钮，整块区域全是「动作」、扫不到内容；想「刷新一下」的人还会去点它
+ * （其实什么都不会发生）。
+ */
+await test('保存按钮：没改过的行是次要样式且禁用，改了才变成实心可点；改回去又变回去', async () => {
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  calls.length = 0
+
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  tree = await runtime.update()
+
+  /** 第 n 行的保存按钮（行内第一颗按钮）。 */
+  const saveBtn = (at) => {
+    const row = treeFind(runtime.tree, (node) => hasClass(node, 'll_row'))[at]
+    return row.props.children.filter((child) => child?.type === 'button')[0]
+  }
+  /** 第 n 行的名称输入框（placeholder 是「例如：本地 Loki」）。 */
+  const nameInput = (at) => {
+    const row = treeFind(runtime.tree, (node) => hasClass(node, 'll_row'))[at]
+    return treeFind(row, (node) => node.type === 'input' && String(node.props?.placeholder ?? '').includes('本地 Loki'))[0]
+  }
+
+  // ① 刚读完配置：没有一行是脏的
+  for (const at of [0, 1, 2]) {
+    assert.equal(hasClass(saveBtn(at), 'll_btnGhost'), true, '第 ' + String(at) + ' 行没改过，保存该是次要样式')
+    assert.equal(saveBtn(at).props.disabled, true, '没改过的行不该能按保存（按了什么都不会发生）')
+    assert.ok(String(saveBtn(at).props.title ?? '').includes('没有改动'), '悬停要说明为什么是灰的')
+  }
+
+  // ② 改一个字段 → 那一行变成脏
+  nameInput(1).props.onChange({ target: { value: '改过的名字' } })
+  runtime.tick()
+  await runtime.update()
+  assert.equal(hasClass(saveBtn(1), 'll_btn'), true, '改过之后该是实心主按钮，实得 ' + String(saveBtn(1).props.className))
+  assert.equal(saveBtn(1).props.disabled, false, '改过之后要能保存')
+  // 别的行不受影响（脏是按行算的，不是整块）
+  assert.equal(saveBtn(0).props.disabled, true, '别的行不该跟着变成脏')
+
+  // ③ 改回去 → 又不脏了（判据是「与落盘那份比」，不是「碰过没有」）
+  nameInput(1).props.onChange({ target: { value: '本地 Loki' } })
+  runtime.tick()
+  await runtime.update()
+  assert.equal(saveBtn(1).props.disabled, true, '改回原值之后不该再算脏：' + String(nameInput(1).props.value))
+})
+
+await test('索引表达式那格有**可见标签**（填上内容之后仍看得出它是什么）', async () => {
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  calls.length = 0
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  tree = await runtime.update()
+
+  /*
+   * 只有占位符是不够的：空了看得懂，填上 `app-logs-*` 之后就再也看不出这一格是什么
+   * （截图里它像个没头没尾的输入框悬在地址下面）。地址那格有列头「地址」管着，而列头盖不住第二行。
+   */
+  const labels = treeFind(tree, (node) => hasClass(node, 'll_indexLabel'))
+  assert.equal(labels.length, 1, '只有 ES / OpenSearch 行该有这个标签，实得 ' + String(labels.length))
+  assert.equal(treeText(labels[0]), '索引', '标签要说清这一格是什么：' + treeText(labels[0]))
+})
+
 await test('填了索引表达式再保存：POST 请求体里带 index（值给 ES 行，别的类型不带）', async () => {
   const runtime = createRuntime()
   const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
@@ -546,7 +627,8 @@ await test('填了索引表达式再保存：POST 请求体里带 index（值给
   runtime.tick()
   tree = await runtime.update()
 
-  const box = treeFind(tree, (node) => node.type === 'input' && typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('索引表达式'))[0]
+  const box = treeFind(tree, (node) => node.type === 'input'
+    && typeof node.props?.title === 'string' && node.props.title.includes('索引表达式'))[0]
   box.props.onChange({ target: { value: 'app-logs-*' } })
   runtime.tick()
   tree = await runtime.update()
@@ -1747,6 +1829,142 @@ await test('容器候选：能按名字收窄、方向键+回车选、Esc 收起
   await runtime.update()
   assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList')).length, 0, 'Esc 该收起')
   assert.equal(containerText(runtime.tree), before, 'Esc 不该改变已选的那个')
+})
+
+/*
+ * 第四十二刀：加载中**也能点开**，并且看得出来在动。
+ *
+ * 用户原话：「这个加载中应该改成可以展开但是有loading效果」。
+ * 原来 `openContainerPick` 在清单在途时直接 return、输入框又只读——那几秒里整个控件像坏了：
+ * 点不动，也没有任何在动的迹象。而它其实正在做事。
+ */
+await test('容器候选：清单在拉的那几秒**点得开**，浮层与框内都看得见在动', async () => {
+  /*
+   * 用一条**永不落地**的容器请求卡住「在途」那一帧（`runPanelQueryFull` 会 settle 到稳定，
+   * 正好吃掉我们要看的状态）。
+   */
+  serverRoutes = { '/api/dsh-docker/containers': () => new Promise(() => {}) }
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  calls.length = 0
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  await runtime.update()
+  sourceSelect(runtime.tree, 'target').props.onChange({ target: { value: 'target' } })
+  runtime.tick()
+  await runtime.update()
+
+  // 这一格此刻是「加载中…」（过渡态），且只读——但**必须点得开**
+  assert.equal(containerText(runtime.tree), '加载中…', '实得：' + String(containerText(runtime.tree)))
+  assert.equal(containerInput(runtime.tree).props.readOnly, true, '过渡态不该能编辑（那一刻没有可选的容器名）')
+
+  containerInput(runtime.tree).props.onClick()
+  await runtime.update()
+  const list = treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList'))
+  assert.equal(list.length, 1, '在途时也必须点得开：点不动会让这一格看起来像坏了')
+
+  // 浮层里那一句「加载中」旁边有个转圈（一句话说的是状态，转圈说的是还在动）
+  assert.equal(treeFind(list[0], (node) => hasClass(node, 'll_spinner')).length, 1, '在途时该有一个转圈')
+  assert.ok(treeText(list[0]).includes('加载中'), '还该有一句人话：' + treeText(list[0]))
+
+  // 框内也转一个圈：这一格是用户正在看的地方，不该只在点开之后才看得出在动
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickSpinner')).length, 1,
+    '输入框里也该有一个转圈（此刻 chevron 让位）')
+})
+
+/*
+ * 第四十三刀：**输入框必须能清空**（用户报的 bug）。
+ *
+ * 真机表现：在容器那一格里删字，最后一个字永远删不掉——删到只剩 1 个字，再按一次 Backspace，
+ * 框里又弹回 `app-svc-1`。
+ *
+ * 根因是受控输入的两态写法：`value = query !== '' ? query : containerLabel`。
+ * 把字删光的那一刻 `query` 变成空串，被判成「没在搜」，显示值立刻退回选中的容器名。
+ * 浏览器看到 value 不由用户决定，就表现为卡住。
+ *
+ * 修法：`query` 改三态——`null`（没在搜）/ `''`（在搜、词为空）/ 非空串。
+ */
+await test('容器那一格：能一直删到空（原来最后一个字删不掉，会弹回选中的名字）', async () => {
+  // 换目标时返回**不同**的清单：这样才能验证「换成新清单的第一条」而不是碰巧同名
+  serverRoutes = {
+    '/api/dsh-docker/containers': (body) => ({
+      ok: true,
+      containers: body.target === ''
+        ? [{ id: 'c3', name: 'app-svc-7' }]
+        : [{ id: 'a1', name: 'app-svc-1' }, { id: 'b2', name: 'app-svc-3' }],
+    }),
+  }
+  const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
+  await runtime.update()
+  await runtime.update()
+
+  const box = () => containerInput(runtime.tree)
+  assert.equal(box().props.value, 'app-svc-1', '一进来显示选中的那个')
+
+  // 打开候选，然后**一个字一个字删**——每一步都要如实反映
+  openContainers(runtime)
+  await runtime.update()
+
+  const steps = ['app-svc-', 'app-svc', 'app-sv', 'app-s', 'app-', 'app', 'ap', 'a', '']
+  for (const text of steps) {
+    box().props.onChange({ target: { value: text } })
+    await runtime.update()
+    assert.equal(box().props.value, text,
+      '删到 ' + JSON.stringify(text) + ' 时输入框该显示它，实得 ' + JSON.stringify(box().props.value))
+  }
+
+  // 空串是**合法状态**（在搜、词为空）：候选取全部，输入框就是空的
+  assert.equal(containerRows(runtime.tree).length, 2, '清空之后候选该是全部')
+  assert.equal(box().props.value, '', '清空之后就是一个空格子（不许弹回选中的名字）')
+
+  // 选中一个之后又该显示那个名字（`null` = 没在搜）
+  const row = containerRows(runtime.tree).find((node) => treeText(node).includes('app-svc-3'))
+  assert.ok(row !== undefined, '候选里该有 app-svc-3')
+  row.props.onClick()
+  await runtime.update()
+  assert.equal(box().props.value, 'app-svc-3', '选中之后显示选中的那个（不是空白）')
+
+  /*
+   * 清了搜索词之后**换一份新清单**（换目标 / 重拉）→ 那一格该显示新选中的容器名。
+   *
+   * 不清的话会留下尴尬态：`container` 已经是新清单的第一条（候选里带勾），而输入框因为
+   * 残留的 `''`（在搜、词为空）画成一个空盒子——看起来像「什么都没选」。
+   * 真机上就是这么发现的：切回 Docker 来源后框是空的、候选里却有勾。
+   */
+  /*
+   * 清了搜索词之后**重新拉一次清单**（页脚那颗「刷新」）→ 那一格该仍显示选中的容器名。
+   *
+   * 不清的话会留下尴尬态：`container` 还在（候选里带勾），而输入框因为残留的 `''`
+   * （在搜、词为空）画成一个空盒子——看起来像「什么都没选」。
+   */
+  box().props.onChange({ target: { value: 'app' } })
+  await runtime.update()
+  assert.equal(box().props.value, 'app', '正在搜时显示搜的那串')
+
+  /*
+   * 重拉一次清单（页脚那颗「刷新」）：重拉之后搜索词作废，那一格要回到**显示选中的容器名**。
+   *
+   * 不清的话会留下尴尬态：`container` 还在（候选里带勾），而输入框因为残留的 `''`
+   * （在搜、词为空）画成一个空盒子——看起来像「什么都没选」。
+   */
+  openContainers(runtime)
+  await runtime.update()
+  // **限定在容器那一格的子树里**找：字段候选的页脚也有一颗 .ll_pickRefresh，
+  // 全局找第一个会取错那颗（它的 onClick 是 loadFields，不是 loadContainers）
+  const pickRoot = treeFind(runtime.tree, (node) => hasClass(node, 'll_containerPick'))[0]
+  assert.ok(pickRoot !== undefined, '找不到容器那一格')
+  const refresh = treeFind(pickRoot, (node) => node.type === 'button' && hasClass(node, 'll_pickRefresh'))[0]
+  assert.ok(refresh !== undefined, '容器候选页脚该有刷新')
+  const before = containerCalls().length
+  await refresh.props.onClick()
+  // 重拉是异步的：多让几轮，让 loadContainers 里的 setContainerQuery(null) 落到渲染里
+  for (let i = 0; i < 6; i += 1) await runtime.update()
+  assert.equal(containerCalls().length, before + 1, '页脚那颗「刷新」要真的重拉一次（实得 ' + String(containerCalls().length - before) + '）')
+  assert.equal(box().props.value, 'app-svc-3', '重拉之后回到显示选中的那个，不是空盒子：' + JSON.stringify(box().props.value))
 })
 
 await test('Docker 日志：换了容器之后明说「这是上一次的」，重拉之后提示消失', async () => {

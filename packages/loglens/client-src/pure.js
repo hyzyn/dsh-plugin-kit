@@ -60,6 +60,34 @@ export function draftProblem(draft) {
 }
 
 /**
+ * 这一行**改过没有**：拿「当前草稿」与「它落盘时的那份」各算一次 `draftPayload`，逐键比。
+ *
+ * 为什么要有它（第四十一刀，用户截图里的观感问题）：保存按钮原来**恒亮**——没改过的行也摆着一颗
+ * 实心按钮，于是：
+ *   - 看不出哪一行有未保存的改动（多行时最要紧：改了三个来源，不知道哪个没存）；
+ *   - 每行都有一颗高权重按钮，整块区域全是「动作」，扫不到内容；
+ *   - 想「刷新一下」的人会去点它（它其实什么都不会发生）。
+ *
+ * 判据复用 `draftPayload` 而不是自己拼字段：那个函数**已经**做了两件对的事——trim 掉首尾空白，
+ * 以及「只带这个类型真正下发的字段」（docker 不发 url、非索引类型不发 index）。拿它比，
+ * 「改完又改回去」「只多了个空格」都不会被当成改动——那正是用户期待的行为。
+ *
+ * 新建行（`saved` 为 undefined / id 为空）**恒为脏**：它还没落盘，总得能保存。
+ */
+export function draftDirty(draft, saved) {
+  if (draft === undefined || draft === null) return false
+  if (saved === undefined || saved === null) return true
+  if (String(draft.id == null ? '' : draft.id) === '') return true
+  const now = draftPayload(draft)
+  const then = draftPayload(saved)
+  const keys = new Set([...Object.keys(now), ...Object.keys(then)])
+  for (const key of keys) {
+    if (String(now[key] == null ? '' : now[key]) !== String(then[key] == null ? '' : then[key])) return true
+  }
+  return false
+}
+
+/**
  * 提交载荷：新建时 id 由宿主生成、改判时 id 走请求的 id 字段。
  *
  * **docker 来源的「地址」那一格是 Docker 面板里的目标名**（dockerTarget）：那条日志视图走的是 Docker

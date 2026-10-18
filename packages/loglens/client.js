@@ -84,6 +84,34 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 这一行**改过没有**：拿「当前草稿」与「它落盘时的那份」各算一次 `draftPayload`，逐键比。
+     *
+     * 为什么要有它（第四十一刀，用户截图里的观感问题）：保存按钮原来**恒亮**——没改过的行也摆着一颗
+     * 实心按钮，于是：
+     *   - 看不出哪一行有未保存的改动（多行时最要紧：改了三个来源，不知道哪个没存）；
+     *   - 每行都有一颗高权重按钮，整块区域全是「动作」，扫不到内容；
+     *   - 想「刷新一下」的人会去点它（它其实什么都不会发生）。
+     *
+     * 判据复用 `draftPayload` 而不是自己拼字段：那个函数**已经**做了两件对的事——trim 掉首尾空白，
+     * 以及「只带这个类型真正下发的字段」（docker 不发 url、非索引类型不发 index）。拿它比，
+     * 「改完又改回去」「只多了个空格」都不会被当成改动——那正是用户期待的行为。
+     *
+     * 新建行（`saved` 为 undefined / id 为空）**恒为脏**：它还没落盘，总得能保存。
+     */
+    function draftDirty(draft, saved) {
+      if (draft === undefined || draft === null) return false
+      if (saved === undefined || saved === null) return true
+      if (String(draft.id == null ? '' : draft.id) === '') return true
+      const now = draftPayload(draft)
+      const then = draftPayload(saved)
+      const keys = new Set([...Object.keys(now), ...Object.keys(then)])
+      for (const key of keys) {
+        if (String(now[key] == null ? '' : now[key]) !== String(then[key] == null ? '' : then[key])) return true
+      }
+      return false
+    }
+
+    /**
      * 提交载荷：新建时 id 由宿主生成、改判时 id 走请求的 id 字段。
      *
      * **docker 来源的「地址」那一格是 Docker 面板里的目标名**（dockerTarget）：那条日志视图走的是 Docker
@@ -2199,7 +2227,18 @@ window.__ModuleLoader__.load({
        * 配对（守卫当场就拦了）。高度的差本身已经足够说明主次。
        */
       '.ll_stack{display:flex;flex-direction:column;gap:6px;min-width:0}',
-      '.ll_stack>.ll_input:not(:first-child){height:28px}',
+      /*
+       * 索引那一行（第二行）：一个**行内小标签** + 输入框。
+       *
+       * 标签是必需的，不是装饰：空了有占位符撑语义，填上 `app-logs-*` 之后就没有任何东西
+       * 说明这一格是什么了。地址那行有列头「地址」管着，而列头盖不住第二行。
+       *
+       * 输入框自己矮一档（H28）：地址是必填的主字段、索引是可留空的补充，
+       * 高度差就是主次差（字号不动——`.ll_input` 的 13px/1.5 是宿主输入档，改了会破坏配对）。
+       */
+      '.ll_indexRow{display:flex;align-items:center;gap:6px;min-width:0}',
+      '.ll_indexLabel{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      '.ll_indexRow>.ll_input{flex:1 1 auto;min-width:0;height:28px}',
       // text-overflow: 下拉/输入框都只有这么宽，装不下时**硬切**会切掉半个字（真机：占位项被原生
       // 箭头切了一半）——省略号至少说明「后面还有」。原生 `<select>` 也认这条（Chrome / Firefox）。
       '.ll_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5;text-overflow:ellipsis}',
@@ -2733,6 +2772,28 @@ window.__ModuleLoader__.load({
       '.ll_pickDone{margin-left:auto;padding-left:8px;color:var(--dsw-alias-state-business-primary);font-size:12px;line-height:18px}',
       // 浮层里的「不是候选」的几行：加载中 / 取不到 / 这个来源没有字段名 —— 都排成一条文字行
       '.ll_pickState{padding:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
+      /*
+       * 在途时的转圈（第四十二刀）。
+       *
+       * 为什么需要它：清单在拉的那几秒里，浮层原来只有一句静止的「加载中…」——看不出它是在动
+       * 还是已经卡住了。一句话说的是「状态」，转圈说的是「还在动」，两件事不一样。
+       *
+       * 尺寸取 12px：与这一行的字号同档，不比文字更抢眼——它是个**旁证**，不是主角。
+       * 颜色用当前的文字色（`currentColor`）：跟着 `ll_pickState` 走，不用再挑一个色。
+       *
+       * `prefers-reduced-motion` 那段是必须的：转圈是纯装饰，系统里关掉动效的人应当得到一个
+       * **静止但仍在**的标记（不是消失——那会让人以为没在拉）。
+       */
+      '@keyframes ll-spin{to{transform:rotate(360deg)}}',
+      '.ll_pickLoading{display:flex;align-items:center;gap:6px}',
+      // 按钮里那一份不要外部内边距（`.ll_pickState` 的 8px 是给独立一行的）
+      '.ll_pickRefresh .ll_pickLoading{gap:4px}',
+      // `border-radius:50%` 必须配 `corner-shape:round`（宿主给所有元素设了 superellipse，
+      // 不写这个就是苹果图标那种圆角方形，不是正圆——仓库守卫检查六会拦）
+      '.ll_spinner{flex:none;width:12px;height:12px;box-sizing:border-box;border:1.5px solid var(--dsw-alias-border-l3);border-top-color:currentColor;border-radius:50%;corner-shape:round;animation:ll-spin .8s linear infinite}',
+      '@media (prefers-reduced-motion: reduce){.ll_spinner{animation:none}}',
+      /* 输入框里那个小转圈：贴在右端（chevron 左边一点），不占正文的位子 */
+      '.ll_pickSpinner{position:absolute;right:26px;top:50%;margin-top:-6px;pointer-events:none}',
       // 页脚：宿主那句截断警告（照抄）+「刷新」；与候选之间用一条发丝线分开
       // `flex:none` 是钉住它的关键：滚动只发生在 `.ll_pickScroll`，页脚在它外面、永远看得见
       '.ll_pickFoot{flex:none;display:flex;align-items:center;gap:8px;margin-top:4px;padding:4px 8px 2px;border-top:.5px solid var(--dsw-alias-border-l2)}',
@@ -2941,10 +3002,12 @@ window.__ModuleLoader__.load({
       'field.kind': '类型',
       'field.label': '名称',
       'field.url': '地址',
+      'field.index': '索引',
       'field.groupBy': '分组字段',
       // 这一格只有约 300px 宽（真机量过），原来那句 40+ 字被硬切成「…再留空…」——
       // 截图里看到的就是这个。现在占位符只说「填什么」，完整规则留在 title（悬停能看全）。
-      'placeholder.index': '索引表达式，如 app-logs-*',
+      // 现在有「索引」标签了（第四十一刀），占位符只留示例，不再重复「索引表达式」四个字
+      'placeholder.index': '如 app-logs-*',
       'hint.index': 'ES / OpenSearch 的索引表达式：留空时用地址里的路径，地址里也没有就是 *,-.*（全部索引但排除点号系统索引）。',
       'option.loki': 'Loki',
       'option.elasticsearch': 'Elasticsearch',
@@ -3046,6 +3109,7 @@ window.__ModuleLoader__.load({
       'hint.levelPaged': '级别按「及以上」筛（下拉里的 warn+ 就是 warn 及以上），且是在「返回的这一页」上筛的（宿主口径）：计数与截断提示仍是未筛的整页。要按级别看全量只能靠后端真有级别字段——索引里没有时（ES 常从正文推断），分组榜也会是空的。',
       // 条件改了但结果没重查：屏幕上的行/计数属于**上一次**。必须说出来，尤其是 ES：
       // 「下一页」带的是旧 PIT 游标，配新条件翻页会静默少行。
+      'hint.noChanges': '这一行没有改动',
       'hint.staleResults': '查询条件已经改过——下面这份结果还是上一次查询的。先点「查询」按新条件刷新；在那之前「分组」与「下一页」都收着（翻页的游标属于上一次查询）。',
       // 行上的标签：点值即按它加一条筛选（「这行是谁写的」→「看它写的其它行」）
       'hint.rowLabelFilter': '按 {field} = {value} 加一条筛选（再点榜上那条或芯片上的 × 可去掉）',
@@ -3191,8 +3255,9 @@ window.__ModuleLoader__.load({
       'field.kind': 'Kind',
       'field.label': 'Name',
       'field.url': 'URL',
+      'field.index': 'Index',
       'field.groupBy': 'Group by field',
-      'placeholder.index': 'Index expression, e.g. app-logs-*',
+      'placeholder.index': 'e.g. app-logs-*',
       'hint.index': 'Index expression for ES / OpenSearch: empty means the path in the URL, and if that is empty too it becomes *,-.* (all indices except dot-prefixed system indices).',
       'option.loki': 'Loki',
       'option.elasticsearch': 'Elasticsearch',
@@ -3272,6 +3337,7 @@ window.__ModuleLoader__.load({
       // The first clause spells out the `+` in the dropdown (warn+ = warn and up): after shortening the
       // labels, this is the only place on screen that still carries the full semantics.
       'hint.levelPaged': 'Levels filter as “and up” (warn+ in the dropdown means warn and up), and only on the returned page (the host’s own semantics): the counts and truncation signals still describe the unfiltered page. Per-level totals need a real level field in the backend — when the index has none (ES often infers the level from the message), the group ranking is empty too.',
+      'hint.noChanges': 'No changes in this row',
       'hint.staleResults': 'The query conditions changed — the results below are still from the previous run. Run the query again first; until then “Group” and “Next page” stay off (the paging cursor belongs to the previous query).',
       'hint.rowLabelFilter': 'Add a filter {field} = {value} (remove it via the ranking row or the × on the chip)',
       'hint.rowMoreLabels': '+{count}',
@@ -3518,6 +3584,14 @@ window.__ModuleLoader__.load({
       const [sourcesOpen, setSourcesOpen] = React.useState(!pageView)
       const [enabled, setEnabled] = React.useState(true)
       const [drafts, setDrafts] = React.useState([])
+      /*
+       * 「上次落盘时每一行长什么样」（第四十一刀）：按 id 索引，用来判断某一行**改过没有**。
+       *
+       * 为什么不复用 `drafts` 自己比：编辑就地改的就是那一份，改完就没有「原来那份」了。
+       * 快照只在 `applyConfig` 里跟着服务端那份一起刷新——那也是唯一真正落盘的时刻
+       * （保存成功后会重新读一次配置），所以它天然与「已保存」对齐，不需要另写同步逻辑。
+       */
+      const [savedDrafts, setSavedDrafts] = React.useState({})
       const [error, setError] = React.useState('')
       const [ok, setOk] = React.useState('')
       const [loading, setLoading] = React.useState(false)
@@ -3719,10 +3793,22 @@ window.__ModuleLoader__.load({
        * `index` 是「方向键挪到哪了」（−1 之外的合法档位，见 pure.js 的 pickMove），
        * `query` 是「收窄用的字」——它**不等于**选中的容器（`container` 才是）：
        * 打完字没选就点别处，输入框要退回显示选中的那个，而不是留着一个没生效的搜索词。
+       *
+       * **`query` 是三态的：`null` / `''` / 非空串**（第四十三刀，用户报的「输入框无法清空」）。
+       *
+       *   - `null` = **没有在搜**，这一格显示选中的容器名；
+       *   - `''`   = **在搜、且搜索词是空的**（用户把字全删了）——这时显示的就是空；
+       *   - 其余   = 在搜，显示那一串。
+       *
+       * 为什么非要这个 `null`：原来只有「空串 / 非空」两态，显示值写成
+       * `query !== '' ? query : containerLabel`——于是**把字删光的那一刻会被判成「没在搜」**，
+       * 输入框立刻弹回选中的容器名。表现出来就是「最后一个字永远删不掉」：删到 1 个字时
+       * 显示的还是那 1 个字，再按一次 Backspace，`query` 变成空串、显示值又变回 `app-svc-1`。
+       * 受控输入回的 `value` 不由用户决定时，浏览器就会像卡住一样。
        */
       const [containerOpen, setContainerOpen] = React.useState(false)
       const [containerIndex, setContainerIndex] = React.useState(0)
-      const [containerQuery, setContainerQuery] = React.useState('')
+      const [containerQuery, setContainerQuery] = React.useState(null)
       const [dockerLogs, setDockerLogs] = React.useState('')
       const [dockerOpened, setDockerOpened] = React.useState(false)
       /*
@@ -3752,7 +3838,10 @@ window.__ModuleLoader__.load({
       const applyConfig = React.useCallback((payload) => {
         const next = payload && payload.config ? payload.config : { enabled: true, targets: [] }
         setEnabled(next.enabled !== false)
-        setDrafts((Array.isArray(next.targets) ? next.targets : []).map(draftFromTarget))
+        const list = (Array.isArray(next.targets) ? next.targets : []).map(draftFromTarget)
+        setDrafts(list)
+        // 快照与草稿**同源**：两者都来自这一份服务端配置，比较才有意义（各自算一份就会各漂各的）
+        setSavedDrafts(Object.fromEntries(list.filter((draft) => draft.id !== '').map((draft) => [draft.id, draft])))
         loadDockerTargets()
         // 只有响应真的带 plugins 才覆盖：保存走的 POST /config 也可能不带（缺字段 = 不知道，不是没装）
         setDocker((current) => dockerFlagOf(current, payload))
@@ -4509,6 +4598,16 @@ window.__ModuleLoader__.load({
             if (list.some((item) => item.id === current)) return current
             return list.length > 0 ? list[0].id : ''
           })
+          /*
+           * 换到了一份**新清单**（换目标 / 首次拉到 / 手动重拉）→ 搜索词作废，回到 `null`
+           * （= 没有在搜），于是这一格显示**选中的那个容器名**（第四十三刀）。
+           *
+           * 不清的话会留下尴尬态：`container` 已经是新清单的第一条（候选里带勾），
+           * 而输入框因为是 `''`（在搜、词为空）画成一个**空盒子**——看起来像「什么都没选」。
+           * 真机上就是这么发现的：切回 Docker 来源后框是空的、候选里却有勾。
+           */
+          // 用函数式更新：确保清的是**这一轮之后**的值，不被同批其它 setState 的旧值覆盖
+          setContainerQuery(() => null)
         } catch (err) {
           /*
            * 拉失败就**落在这一格**（用户正看着那儿），不动卡片顶部那条错误行：容器清单是自动拉的，
@@ -4657,9 +4756,18 @@ window.__ModuleLoader__.load({
       /*
        * 容器候选（第三十九刀）：收窄判据在 pure.js 的 containerChoices，这里只接动作。
        */
-      const containerRows = containerChoices(containers, containerQuery)
+      // `null`（没在搜）与 `''`（在搜、词已清空）对**收窄**是同一个意思：不收窄。
+      // 但对「显示什么」不是一回事——那件事由 value 那行分开处理（见 containerQuery 的注释）。
+      const containerRows = containerChoices(containers, containerQuery === null ? '' : containerQuery)
       /** 开候选：清单还没到时也开——里面那句「加载中…」就是此刻该说的话。 */
       const openContainerPick = () => {
+        /*
+         * `containersBusy` **不再是拦截条件**（第四十二刀）：
+         * 清单在拉的那几秒里，用户最想知道的正是「它到底在干什么」——拦住不让点，
+         * 那一格就像坏了。浮层里那一句「正在拉」带转圈，本来就该让人看得见。
+         *
+         * `dockerBusy`（看日志在跑）与「这条来源根本不是 Docker」仍然拦：那时按了没有意义。
+         */
         if (dockerBusy || !docker) return
         setContainerOpen(true)
         setContainerIndex(0)
@@ -4671,7 +4779,14 @@ window.__ModuleLoader__.load({
        */
       const pickContainer = (id) => {
         setContainer(id)
-        setContainerQuery('')
+        /*
+         * 回到 `null`（= 没有在搜），不是 `''`（= 在搜、词为空）。
+         *
+         * 这两个状态在「显示什么」上不同：`null` 显示选中的名字，`''` 显示空白。选中之后
+         * 该看到的是**那个容器的名字**——设成 `''` 会让输入框选中之后变空（第四十三刀把这两态
+         * 分开时踩过一下，冒烟当场抓到）。
+         */
+        setContainerQuery(null)
         setContainerOpen(false)
         setContainerIndex(0)
       }
@@ -5641,7 +5756,10 @@ window.__ModuleLoader__.load({
         })
       }
 
-      const rows = drafts.map((draft, index) => jsxs('div', {
+      const rows = drafts.map((draft, index) => {
+        // 这一行改过没有（判据在 pure.js 的 draftDirty：与落盘快照逐键比，复用 draftPayload）
+        const dirty = draftDirty(draft, savedDrafts[draft.id])
+        return jsxs('div', {
         className: 'll_row',
         key: 'loglens-row-' + String(index),
         children: [
@@ -5687,13 +5805,27 @@ window.__ModuleLoader__.load({
                 disabled: saving,
                 onChange: (event) => { updateDraft(index, { url: event.target.value }) },
               }),
-              jsx('input', {
-                className: 'll_input',
-                title: t('hint.index'),
-                placeholder: t('placeholder.index'),
-                value: draft.index,
-                disabled: saving,
-                onChange: (event) => { updateDraft(index, { index: event.target.value }) },
+              /*
+               * 索引表达式那格**带一个行内标签**（第四十一刀）。
+               *
+               * 原来它只有占位符：空着时看得懂（「索引表达式，如 app-logs-*」），
+               * **一旦填了 `app-logs-*` 就再也看不出这一格是什么**——截图里就是这样，
+               * 它悬在地址框下面，像个没头没尾的输入框。地址那格有列头「地址」管着，
+               * 而列头只盖得住第一行。
+               */
+              jsxs('div', {
+                className: 'll_indexRow',
+                children: [
+                  jsx('span', { className: 'll_indexLabel', children: t('field.index') }),
+                  jsx('input', {
+                    className: 'll_input',
+                    title: t('hint.index'),
+                    placeholder: t('placeholder.index'),
+                    value: draft.index,
+                    disabled: saving,
+                    onChange: (event) => { updateDraft(index, { index: event.target.value }) },
+                  }),
+                ],
               }),
             ],
           }) : jsx('input', {
@@ -5704,13 +5836,31 @@ window.__ModuleLoader__.load({
             disabled: saving,
             onChange: (event) => { updateDraft(index, { url: event.target.value }) },
           }),
+          /*
+           * 保存：**只有这一行真的改过时**才是实心按钮（第四十一刀）。
+           *
+           * 改之前它恒亮：多行时看不出哪行有未保存的改动；每行一颗高权重按钮，整块区域全是
+           * 「动作」、扫不到内容；想「刷新一下」的人还会去点它（其实什么都不会发生）。
+           *
+           * 判据是 `draftDirty`（pure.js）：拿当前草稿与落盘快照各算一次 `draftPayload` 逐键比，
+           * 所以「改完又改回去」「只多个空格」都不算改动。
+           *
+           * 没改动时**不只换样式，还要禁用**：一个按了不会有任何反应、也不该有反应的按钮，
+           * 留着能按就是在骗人（与「满员时禁用加列」同一条）。
+           */
           jsx('button', {
             type: 'button',
-            className: 'll_btn',
-            disabled: saving,
+            className: dirty ? 'll_btn' : 'll_btnGhost',
+            title: dirty ? undefined : t('hint.noChanges'),
+            disabled: saving || !dirty,
             onClick: () => { saveDraft(index) },
             children: saving ? t('btn.saving') : t('btn.save'),
           }),
+          /*
+           * 删除是**危险**动作，但它在每一行上都常驻：做成实心红会因为太扎眼而让人误点，
+           * 做成与「保存」同级又会和主操作抢注意力。保持官方的**描边危险**配方（红字红边、
+           * 透明底、hover 才有 8% 红底），并按仓库那条守卫的要求用 `.ll_btnDanger` 类名。
+           */
           jsx('button', {
             type: 'button',
             className: 'll_btnGhost ll_btnDanger',
@@ -5719,7 +5869,8 @@ window.__ModuleLoader__.load({
             children: t('btn.remove'),
           }),
         ],
-      }, 'loglens-row-' + String(index)))
+        }, 'loglens-row-' + String(index))
+      })
 
       return jsxs(pageView ? 'div' : 'li', {
         className: pageView ? 'll_pageHost' : (open ? 'll_pluginCard ll_pluginCardOpen' : 'll_pluginCard'),
@@ -6257,6 +6408,15 @@ window.__ModuleLoader__.load({
                          *
                          * 四态各有各的话（判据在 pure.js 的 containerSlotState）：加载中 / 失败 / 没有容器 /
                          * 有清单。清单没到时输入框**只读并显示那句状态**——它此刻不是一个可选的容器名。
+                         *
+                         * **第四十二刀：加载中也要能点开**（用户原话：「这个加载中应该改成可以展开但是有
+                         * loading 效果」）。原来 `openContainerPick` 在 `containersBusy` 时直接 return，
+                         * 那一格又只读——于是清单在拉的那几秒里，这个控件**整体像坏了一样**：
+                         * 点不动、也没有任何在动的迹象。而它其实正是在做事。
+                         *
+                         * 现在：点得开（浮层里就是「正在拉」那一条，带转圈），框内也显示在动的标记。
+                         * 「不可编辑」与「不可点击」是两件事——前者是必要的（那一刻没有可选的容器名），
+                         * 后者是没必要的（点开看状态是无害的，而且是用户此刻最想知道的）。
                          */
                         jsxs('div', {
                           className: 'll_pick ll_containerPick',
@@ -6278,7 +6438,7 @@ window.__ModuleLoader__.load({
                                * 不能混着来——打完字没选就点别处，它要退回选中的名字（见 pickContainer）。
                                */
                               value: containerSlot === 'default'
-                                ? (containerQuery !== '' ? containerQuery : containerLabel)
+                                ? (containerQuery === null ? containerLabel : containerQuery)
                                 : containerSlotText(),
                               // 清单还没到 / 这条来源是 Docker 才可用：那一刻它不是一个可选的容器名
                               readOnly: containerSlot !== 'default',
@@ -6306,13 +6466,25 @@ window.__ModuleLoader__.load({
                                   pickContainer(containerRows[pickMove(containerIndex, 0, containerRows.length)].id)
                                   return
                                 }
-                                // 输入框清空（Backspace 退到底）时把候选恢复成全部：收窄是「打字时」的事
+                                /*
+                                 * 输入框清空之后仍要列全部候选（收窄是「打字时」的事）。
+                                 * 第四十三刀之后空串是**合法状态**（在搜、词为空），所以这里只需
+                                 * 保证候选开着——`containerChoices(…, '')` 本来就会回全部。
+                                 */
                                 if (event.key === 'Backspace' && containerQuery === '') {
                                   setContainerOpen(true)
                                 }
                               },
                             }),
-                            jsx('svg', {
+                            /*
+                             * 在途时框内也转一个圈（第四十二刀）：这一格是用户正在看的地方，
+                             * 「在动」的迹象不该只藏在点开之后才看得见的浮层里。
+                             * 此刻 chevron 让位（它表示「点开」，而候选本来就开着）。
+                             */
+                            containerSlot === 'loading' ? jsx('span', {
+                              className: 'll_spinner ll_pickSpinner',
+                              'aria-hidden': 'true',
+                            }) : jsx('svg', {
                               width: '14',
                               height: '14',
                               viewBox: CHEVRON_VIEWBOX,
@@ -6329,7 +6501,18 @@ window.__ModuleLoader__.load({
                              */
                             !containerOpen ? null : (containerSlot === 'loading' ? jsx('div', {
                               className: 'll_pickList',
-                              children: jsx('div', { className: 'll_pickState', children: t('list.loading') }),
+                              /*
+                               * 「正在拉」那一格：**一句 + 一个转圈**（第四十二刀）。
+                               * 原来只有一句话，浮层里那几秒是静止的——看不出它在动还是卡住了。
+                               * 转圈用 CSS 动画（`prefers-reduced-motion` 时不动，见样式那段）。
+                               */
+                              children: jsx('div', {
+                                className: 'll_pickState ll_pickLoading',
+                                children: [
+                                  jsx('span', { className: 'll_spinner', 'aria-hidden': 'true' }),
+                                  jsx('span', { children: t('list.loading') }),
+                                ],
+                              }),
                             }) : containerSlot === 'error' ? jsx('div', {
                               className: 'll_pickList',
                               /*
@@ -6411,10 +6594,18 @@ window.__ModuleLoader__.load({
                                   children: [
                                     jsx('span', {
                                       className: 'll_pickState',
-                                      children: containerQuery === ''
+                                      // `null`（没搜）与 `''`（搜了但词为空）都算「没有收窄」，报总数
+                                      children: containerQuery === null || containerQuery === ''
                                         ? t('hint.containersCount', { count: containerRows.length })
                                         : t('hint.containersMatched', { count: containerRows.length, total: containers.length }),
                                     }),
+                                    /*
+                                     * 「刷新」在途时变成**转圈 + 加载中…**（第四十二刀）。
+                                     *
+                                     * 为什么要转圈：清单已经有一份时（`containerSlot` 仍是 default，
+                                     * 因为旧清单还在），浮层走的是「有候选」那一支——那里原来只有
+                                     * 一行静态的「加载中…」文字，看不出是在动还是卡住了。
+                                     */
                                     jsx('button', {
                                       type: 'button',
                                       className: 'll_pickRefresh',
@@ -6423,7 +6614,15 @@ window.__ModuleLoader__.load({
                                       // 保住输入框焦点：否则一点它候选就收起、这一下白点
                                       onMouseDown: (event) => { event.preventDefault() },
                                       onClick: () => { loadContainers(selectedDraft) },
-                                      children: containersBusy ? t('list.loading') : t('btn.refresh'),
+                                      children: containersBusy
+                                        ? jsxs('span', {
+                                          className: 'll_pickLoading',
+                                          children: [
+                                            jsx('span', { className: 'll_spinner', 'aria-hidden': 'true' }),
+                                            jsx('span', { children: t('list.loading') }),
+                                          ],
+                                        })
+                                        : t('btn.refresh'),
                                     }),
                                   ],
                                 }),

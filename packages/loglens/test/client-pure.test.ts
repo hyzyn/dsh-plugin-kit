@@ -37,6 +37,7 @@ import {
   resultColumnsTemplate,
   countsParts,
   draftFromTarget,
+  draftDirty,
   draftPayload,
   draftProblem,
   emptyDraft,
@@ -2405,5 +2406,50 @@ describe('容器候选（第三十九刀）', () => {
 
   it('脏数据跳过（没有 id 的项画不出来也用不上）', () => {
     expect(containerChoices([null, { name: 'no-id' }, { id: 'ok' }], '').map((row) => row.label)).toEqual(['ok'])
+  })
+})
+
+/*
+ * 第四十一刀：来源行「改过没有」。
+ *
+ * 判据复用 `draftPayload`（它已经做了对的两件事：trim 首尾空白、只带该类型真正下发的字段），
+ * 拿当前草稿与落盘快照各算一次逐键比——所以「改完又改回去」「只多个空格」都不算改动。
+ */
+describe('来源行是否改过（第四十一刀）', () => {
+  const saved = { id: 'es', kind: 'elasticsearch', label: '内网 ES', url: 'http://192.0.2.10:19200', index: 'app-*' }
+
+  it('一模一样 → 不脏', () => {
+    expect(draftDirty({ ...saved }, saved)).toBe(false)
+  })
+
+  it('任一字段变了 → 脏', () => {
+    expect(draftDirty({ ...saved, label: '改名' }, saved)).toBe(true)
+    expect(draftDirty({ ...saved, url: 'http://192.0.2.11:9200' }, saved)).toBe(true)
+    expect(draftDirty({ ...saved, index: 'other-*' }, saved)).toBe(true)
+  })
+
+  it('**只多首尾空白不算改**（判据里 trim 过，与下发口径一致）', () => {
+    expect(draftDirty({ ...saved, label: '  内网 ES  ' }, saved)).toBe(false)
+    expect(draftDirty({ ...saved, index: ' app-* ' }, saved)).toBe(false)
+  })
+
+  it('改完又改回去 → 不脏（判据是「与落盘比」，不是「碰过没有」）', () => {
+    const touched = { ...saved, label: '临时' }
+    expect(draftDirty(touched, saved)).toBe(true)
+    expect(draftDirty({ ...touched, label: '内网 ES' }, saved)).toBe(false)
+  })
+
+  it('换类型也算改（downstream 下发的字段集变了）', () => {
+    expect(draftDirty({ id: 'es', kind: 'loki', label: '内网 ES', url: 'http://192.0.2.10:19200' }, saved)).toBe(true)
+  })
+
+  it('新建行（还没 id / 没有落盘快照）恒脏：它总得能保存', () => {
+    expect(draftDirty({ id: '', kind: 'docker', label: 'n', dockerTarget: 't', url: '' }, undefined)).toBe(true)
+    expect(draftDirty(saved, undefined)).toBe(true)
+  })
+
+  it('畸形入参不炸', () => {
+    expect(draftDirty(undefined, saved)).toBe(false)
+    expect(draftDirty(null, null)).toBe(false)
   })
 })
