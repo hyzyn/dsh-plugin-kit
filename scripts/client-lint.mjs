@@ -48,6 +48,16 @@
  * state）会让**整个 bundle 解析失败**——卡片不是渲染错，是根本不加载。第一版把它归进噪音，结果
  * 这条真实存在的重名只被打印出来、没有拦住提交。
  *
+ * **入口与失败口径**（2026-10-18 补）：tsc 走 `typescript/lib/tsc.js` + `process.execPath`，
+ * 不再用 `node_modules/.bin/tsc`——后者是 pnpm 生成的 sh 包装脚本（无扩展名），Windows 上
+ * `spawn` 直接 `ENOENT`（**同形先例**见 `scripts/dsh-exec.mjs` 文件头：npm 全局 shim 也是
+ * 无扩展名的 POSIX 脚本，`live-host-smoke` 第一次在 Windows 上跑就死在那一步）；而当时的实现
+ * 只看 `stdout`，于是「tsc 根本没跑」与「一处诊断都没有」是同一个形状。时间线要分两段读：
+ * TS2451 反例（2026-10-11）进来**之前**，这道闸门在 Windows 上没有任何东西会因它而红；
+ * 进来**之后**，红的是那条**用例**（lint 自己照样打印「通过」）——2026-10-18 的 CI 就是这么红的。
+ * 现在入口与解析都在 `scripts/tsc-diagnostics.mjs`：「没跑成」是显式失败、非零退出
+ * （含「非零退出却一条诊断都没解析出来」那一档），反例用例见 `scripts/test/tsc-diagnostics.test.ts`。
+ *
  * 其余诊断（`--checkJs` 下没有类型声明就来的模块解析、DOM 事件类型收窄等）在本项目的打包
  * 方式下是**噪音**：不判失败，但照样打印出来，免得它们悄悄积累成一片看不见的红。
  *
@@ -64,10 +74,11 @@
  * `dsh-app://app` 场景**（范例：`packages/tty/client-src/ws-url.js` +
  * `packages/tty/test/ws-url.test.ts`）。规矩比测试重要：它决定下一个人会不会再踩。
  */
-import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
+
+import { describeTscFailure, runTscCheck } from './tsc-diagnostics.mjs'
 
 import { describeHostUrlUse, HOST_URL_RULE_HINT, listClientSourceFiles, scanHostUrlUses } from './client-host-url.mjs'
 import { CLICK_SCOPE_RULE_HINT, listClickScopeTargets, scanClickScopeUses } from './client-click-scope.mjs'
@@ -260,37 +271,20 @@ const styleSpecTotals = scanStyleSpecTotals(clientSources)
  * 检查二：名字解析（tsc --checkJs）
  * ------------------------------------------------------------------ */
 
-const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc')
-if (!existsSync(tsc)) {
-  console.error('[client-lint] 找不到 tsc（' + tsc + '）——先在仓库根 pnpm install')
+const check = runTscCheck({ repoRoot, cwd: root, target })
+if (!check.ok) {
+  /*
+   * 「检查器没能跑成」必须走失败出口（2026-10-18 的 Windows 现场）：
+   * `.bin/tsc` 在 Windows 上起不来，`stdout` 是空的，于是「一处诊断都没有」与
+   * 「tsc 根本没跑」在读 stdout 的那版实现里是**同一个形状**——这份文件喂进去一份必然报
+   * TS2451 的 client-src，lint 照样打印「通过」并 0 退出。锚点与入口的成因见
+   * `scripts/tsc-diagnostics.mjs` 文件头，反例用例见 `scripts/test/tsc-diagnostics.test.ts`。
+   */
+  console.error('[client-lint] ' + describeTscFailure(check) + '——名字解析没跑成，按失败处理（0 命中 ≠ 没跑）')
   process.exit(1)
 }
 
-const result = spawnSync(tsc, [
-  '--noEmit',
-  '--allowJs',
-  '--checkJs',
-  '--target', 'esnext',
-  '--module', 'esnext',
-  '--moduleResolution', 'bundler',
-  '--lib', 'esnext,dom,dom.iterable',
-  '--skipLibCheck',
-  target,
-], { cwd: root, encoding: 'utf8' })
-
-const output = (result.stdout ?? '') + (result.stderr ?? '')
-/*
- * 锚点（docker D74）：tsc 的 program 会经 import 拉进 client-src 的兄弟模块
- * （如 docker 包的 session-target.js / current-session.js），它们的诊断此前因锚点
- * 只认入口文件而被**静默丢弃**（合成诊断实测只命中 1/3）。源码模式下放宽到
- * program 内的全部 client-src/**；裸 client.js 的包没有兄弟源码，维持原锚点。
- */
-const anchor = target.startsWith('client-src/')
-  ? 'client-src/[^\\s()]+\\.js'
-  : target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const found = [...output.matchAll(new RegExp('(' + anchor + ')\\((\\d+),(\\d+)\\): error (TS\\d+): (.*)', 'g'))]
-  .map((match) => ({ file: match[1], line: Number(match[2]), col: Number(match[3]), code: match[4], text: match[5].trim() }))
-
+const found = check.diagnostics
 const fatal = found.filter((item) => FATAL_CODES.has(item.code))
 const noise = found.filter((item) => !FATAL_CODES.has(item.code))
 
