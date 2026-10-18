@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
-  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 终端面板 · 容器面板 · 插件脚手架</em>
+  <em>日志查询 · 环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 终端面板 · 容器面板 · 插件脚手架</em>
 </p>
 
 <p align="center">
@@ -31,6 +31,27 @@
 [是什么](#是什么) · [包索引](#包索引) · [快速开始](#快速开始) · [开发新插件](#开发新插件) · [文档地图](#文档地图) · [参与贡献](#参与贡献)
 
 </p>
+
+## 新上架 · 日志查询（`@hyzyn/dsh-loglens`）
+
+<p align="center">
+  <a href="packages/loglens/README.md"><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png" alt="日志查询卡片：查询串与按方言给的可点例子、筛选芯片、时间分布（带刻度与峰值）、结果行" width="900"></a>
+</p>
+
+在一张卡片里完成 **Elasticsearch / OpenSearch** 的日志检索：多来源统一清单、直连查询、时间分布与按字段分组下钻；
+agent 侧注册 `loglens_*` **只读**工具（`loglens_sources` / `loglens_search` / `loglens_fields` /
+`loglens_facets` / `loglens_context`）。Docker 容器日志不另起一套：作为**采集来源**复用现成的 `docker_logs`。
+
+- **统一查询面**：多个来源在同一张卡片里切换与检索；查询串按来源方言给出可点示例与占位提示
+- **从结果继续下钻**：时间分布上点柱即缩放到该时间窗（可撤销）；字段分组榜回答「哪个服务在报错」，点榜上的值即成为筛选条件
+- **两种消费者同源**：面板与 agent 工具走同一层归一化与参数夹取，`loglens_search` 的返回形状与面板所见一致
+- **只读，且受围栏约束**：四条路由都在回环加固档下（除「开关」这一动作外都要同源证明）；出站按解析后的 IP 判定（链路本地 / 云元数据地址拒绝）、不跟随重定向、有体积与超时上限
+
+```sh
+dsh plugin --profile web add @hyzyn/dsh-loglens
+```
+
+完整用法、配置形状与契约 → [packages/loglens/README.md](packages/loglens/README.md)。
 
 ## 是什么
 
@@ -60,7 +81,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | 全局搜索 | 仅会话标题 / 内容 | 侧边栏一处全文检索历史会话、Prompt、MCP 工具与设置面板 |
 | 终端面板 | 无 | xterm.js 多标签真实 PTY + SSH 直连（连接簿 / 指纹钉扎 / 断线重连）+ SFTP 双栏直传；注册 `tty_*` / `sftp_*` 工具 |
 | Docker 容器面板 | 无 | 容器 / 镜像 / Compose / 实时日志与统计 / 多目标总览；**默认只读**，变更与 exec 需显式开关；注册 `docker_*` 工具 |
-| 日志查询 | 无 | Loki / Elasticsearch / OpenSearch 归一化成一个查询面（Docker 走现成 `docker_logs`）；面板里直接查 + 时间分布 + 分组榜；注册 `loglens_*` 工具（全 read 档） |
+| 日志查询 | 无 | **新**：Elasticsearch / OpenSearch 归一化成一个查询面（Docker 走现成 `docker_logs`；Loki 适配器在仓库里但**本版不在界面开放**）；面板里直接查 + 时间分布 + 分组榜；注册 `loglens_*` 工具（全 read 档） |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 共享工具库 |
 
@@ -84,7 +105,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | `@hyzyn/dsh-codegraph` | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 终端面板：PTY / SSH / SFTP / 隧道 | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker 容器面板（本机 / SSH），默认只读 | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | 日志查询：Loki / Elasticsearch / OpenSearch / Docker 归一化查询前端 + `loglens_*` 工具（**只读**，无写操作） | [README](packages/loglens/README.md) · [DEFECTS](packages/loglens/DEFECTS.md) · [ROADMAP](packages/loglens/ROADMAP.md) |
+| `@hyzyn/dsh-loglens` | **新**：日志查询——Elasticsearch / OpenSearch / Docker 归一化查询前端 + `loglens_*` 工具（**只读**，无写操作） | [README](packages/loglens/README.md) · [DEFECTS](packages/loglens/DEFECTS.md) · [ROADMAP](packages/loglens/ROADMAP.md) |
 | `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 11 个插件 | [README](packages/all/README.md) |
 
 ## 快速开始
@@ -117,7 +138,7 @@ dsh plugin --profile web add @hyzyn/dsh-search       # ⌘/Ctrl+K 全局搜索
 dsh plugin --profile web add @hyzyn/dsh-codegraph    # 代码图谱卡片
 dsh plugin --profile web add @hyzyn/dsh-tty          # 终端面板（PTY / SSH / SFTP）
 dsh plugin --profile web add @hyzyn/dsh-docker       # Docker 容器面板
-dsh plugin --profile web add @hyzyn/dsh-loglens      # 日志查询（Loki / ES / OpenSearch）
+dsh plugin --profile web add @hyzyn/dsh-loglens      # 日志查询（ES / OpenSearch / Docker）
 ```
 
 包名、一句话说明与各自的文档见上方 [包索引](#包索引)。

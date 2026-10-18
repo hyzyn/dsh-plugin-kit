@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>A plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Container panel · Scaffolding</em>
+  <em>Log query · Environment · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Container panel · Scaffolding</em>
 </p>
 
 <p align="center">
@@ -31,6 +31,28 @@
 [What it is](#what-it-is) · [Packages](#packages) · [Quick start](#quick-start) · [Writing a new plugin](#writing-a-new-plugin) · [Documentation map](#documentation-map) · [Contributing](#contributing)
 
 </p>
+
+## Just landed · log query (`@hyzyn/dsh-loglens`)
+
+<p align="center">
+  <a href="packages/loglens/README.md"><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png" alt="The log query card: query string with dialect-specific clickable examples, filter chips, time distribution (axis labels and the peak), and result rows" width="900"></a>
+</p>
+
+Search **Elasticsearch / OpenSearch** logs without leaving the card: one shared source list, direct queries,
+volume over time and drill-down by field. On the agent side it registers the `loglens_*` **read-only** tools
+(`loglens_sources` / `loglens_search` / `loglens_fields` / `loglens_facets` / `loglens_context`).
+Docker container logs need no second stack: they are a **collection source** reusing the existing `docker_logs`.
+
+- **One query surface**: several sources are switched and searched inside the same card; the query string gets clickable examples and placeholders in each source's own dialect
+- **Drill down from the result**: click a bar in the volume chart to zoom to that window (reversible); the group-by board answers "which service is erroring", and clicking a value turns it into a filter
+- **Both consumers share one layer**: the panel and the agent tools go through the same normalization and clamping, so `loglens_search` returns the shape the panel shows
+- **Read-only, and fenced**: all four routes sit behind the hardened loopback gate (every action but the on/off switch also needs the same-origin proof); egress is decided on the resolved IP (link-local / cloud-metadata addresses refused), never follows redirects, and is capped in size and time
+
+```sh
+dsh plugin --profile web add @hyzyn/dsh-loglens
+```
+
+Full usage, configuration shape and contracts → [packages/loglens/README.md](packages/loglens/README.md).
 
 ## What it is
 
@@ -61,7 +83,7 @@ Grouped configuration → panels → development:
 | Global search | session titles / content only | one full-text search in the sidebar over past sessions, Prompts, MCP tools and settings panels |
 | Terminal panel | none | real xterm.js multi-tab PTY + native SSH (connection book / host-key pinning / auto reconnect) + SFTP dual-pane transfer; registers `tty_*` / `sftp_*` tools |
 | Docker container panel | none | containers / images / Compose / live logs and stats / multi-target overview; **read-only by default**, mutations and exec behind explicit switches; registers `docker_*` tools |
-| Log query | none | Loki / Elasticsearch / OpenSearch normalized into one query surface (Docker goes through the existing `docker_logs`); query straight from the card + time distribution + group-by board; registers `loglens_*` tools (all read tier) |
+| Log query | none | **New**: Elasticsearch / OpenSearch normalized into one query surface (Docker goes through the existing `docker_logs`; the Loki adapter is in the tree but **not offered by the UI in this version**); query straight from the card + time distribution + group-by board; registers `loglens_*` tools (all read tier) |
 | Codegraph integration | none | code graph card: index status / symbol search / call chain / impact / one-click sync-index |
 | Plugin development | boilerplate by hand | `pnpm create-plugin` scaffolding + the `@hyzyn/dsh-kit` shared library |
 
@@ -86,7 +108,7 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 | `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | Terminal panel: PTY / SSH / SFTP / tunnels | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | Log query front-end: normalized query over Loki / Elasticsearch / OpenSearch / Docker + `loglens_*` tools (**read-only**; no write operations) | [README](packages/loglens/README.md) · [DEFECTS](packages/loglens/DEFECTS.md) · [ROADMAP](packages/loglens/ROADMAP.md) |
+| `@hyzyn/dsh-loglens` | **New**: log query — normalized query front-end over Elasticsearch / OpenSearch / Docker + `loglens_*` tools (**read-only**; no write operations) | [README](packages/loglens/README.md) · [DEFECTS](packages/loglens/DEFECTS.md) · [ROADMAP](packages/loglens/ROADMAP.md) |
 | `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 11 plugins above | [README](packages/all/README.md) |
 
 ## Quick start
@@ -126,7 +148,7 @@ dsh plugin --profile web add @hyzyn/dsh-search       # ⌘/Ctrl+K global search
 dsh plugin --profile web add @hyzyn/dsh-codegraph    # code graph card
 dsh plugin --profile web add @hyzyn/dsh-tty          # terminal panel (PTY / SSH / SFTP)
 dsh plugin --profile web add @hyzyn/dsh-docker       # Docker container panel
-dsh plugin --profile web add @hyzyn/dsh-loglens      # log query (Loki / ES / OpenSearch)
+dsh plugin --profile web add @hyzyn/dsh-loglens      # log query (ES / OpenSearch / Docker)
 ```
 
 Package names, one-line descriptions and per-package docs are in the [Packages](#packages) table above.
