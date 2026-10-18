@@ -4250,3 +4250,25 @@ app-svc-1 → app-svc- → app-svc → app-sv → app-s → app- → app → ap 
 
 **教训**：做反例验证时必须**先确认补丁进了产物**（`grep` 一下 `client.js`），
 否则「用例没红」会被误读成「用例不严格」——这次差点因此把一条好好的用例改坏。
+
+## 补英文 README（2026-10-18）
+
+本包是**复杂档**（README > 250 行 + 权威 `DEFECTS.md` + 包内 `docs/`），按
+[docs/conventions.md § 文档分档](../../docs/conventions.md#文档分档) 纪律 2「中英同结构」，
+复杂档与中等档包都该有 `README.en.md`——这个包此前**只有中文版**，而它恰好是本仓对外
+面向最广的那几个包之一。补齐 [README.en.md](./README.en.md)：
+
+- **七个章节与中文版逐一对应**（现在能做什么 / HTTP 面 / 来源地址怎么写 / 解剖 / 开发 /
+  安装 / 已知限制），含「已知限制」里那三个子条目（时间分布 / 按值分组 / 点桶下钻）。
+  结构一致性是**可验的**：`grep '^## '` 两版各七条、顺序相同。
+- **不是摘要**：与 `docker` / `tty` / `codegraph` 的英文版同一口径——完整对应翻译，不删信息。
+  实测行数 341 → 489：中文单行信息密度高，英文忠实对应必然更长，**行数不是判据**。
+- 中文版补上了语言切换行 `中文 | [English](README.en.md)`（这一行此前缺失，其余有英文版的包都有）。
+- `files` 里加 `README.en.md`：`npm pack` 其实会自动收录 `README.*`，但写上它换来一条**可判定**的
+  事实——`check-package-contents` 的第 2 条判据是「`files` 里的字面路径必须存在于磁盘」，
+  于是「英文 README 被删掉/改名而没人发现」这件事从此会红。已实测：临时移走该文件 → 守卫
+  报 `files 里的 README.en.md 在磁盘上不存在`。
+
+**门槛**：`check-doc-links`（666 条相对链接全部解析，英文版新增的 20 条链接目标逐个存在）、
+`check-internal-identifiers`、`check-no-public-ip`、`docs-index`（现算报出
+`README.md 341 行 / README.en.md 489 行 → 复杂档`）全绿。

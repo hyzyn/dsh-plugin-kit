@@ -1,5 +1,7 @@
 # @hyzyn/dsh-loglens
 
+中文 | [English](README.en.md)
+
 把**异构日志后端归一化成一个查询面**：Loki / Elasticsearch / OpenSearch / Docker 各走一层薄适配器，
 对外只有一套「归一化行模型 + 诚实的计数与截断信号 + 交给 Agent 的工具」。
 
