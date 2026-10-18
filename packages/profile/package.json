@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-profile",
-  "version": "0.2.7",
+  "version": "0.2.9",
   "description": "DSH Web GUI 的 Profile 管理插件：可视化查看 / 创建 / 复制 / 删除 DSH profiles，管理 ~/.dsh/profiles 下的 profile 目录；表单内联在插件详情页「说明」下方（设置 → 插件配置 页里也有同一份）。",
   "type": "module",
   "engines": {
@@ -30,12 +30,12 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2",
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1",
     "react": "^18.2.0"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",
-    "@hyzyn/dsh-kit": "0.5.2"
+    "@hyzyn/dsh-kit": "0.5.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

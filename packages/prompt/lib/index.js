@@ -16,7 +16,7 @@
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { dshHome } from '@hyzyn/dsh-kit';
+import { dshHome, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 export const name = 'prompt-manager';
 export const inject = [];
@@ -106,7 +106,10 @@ export function writeManagedStore(store) {
     const file = promptFilePath();
     const existed = existsSync(file);
     const mode = existed ? (statSync(file).mode & 0o777) : 0o600;
-    const text = existed ? readFileSync(file, 'utf8') : '# dsh prompt manager file\n';
+    const raw = existed ? readFileSync(file, 'utf8') : '# dsh prompt manager file\n';
+    // CG67 同源（codegraph）：根位置上的 `[]` 是**完整**的 YAML 文档（flow 序列根），
+    // 往它后面追加托管区块会让整份文件非法。先摘掉这个根，文件就回到「无区块」的形状。
+    const text = stripEmptyFlowSequenceRoot(raw) ?? raw;
     const lines = text.split('\n');
     const start = lines.findIndex((line) => line.includes('dsh-prompt-manager managed'));
     const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.includes('end dsh-prompt-manager managed'));

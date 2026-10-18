@@ -10,6 +10,39 @@
 # 正确写法是 glob magic + `**`：`:(glob)packages/*/lib/**`。
 SPEC_CLIENT=':(glob)packages/*/client.js'
 SPEC_LIB=':(glob)packages/*/lib/**'
+SPEC_SRC=':(glob)packages/*/src/**'
+SPEC_CLIENT_SRC=':(glob)packages/*/client-src/**'
+
+# ── 产物只加「源码也在这一笔提交里」的那些包 ─────────────────────────────────────
+#
+# 为什么不能无条件 `git add` 全部产物（2026-10-17 实测踩到）：在**脏树上做部分提交**时
+# （只暂存了一部分文件，别的包的源码还没提交），重建出来的产物是按**未暂存**的源码构建的
+# ——把它们加进来，这一笔提交里就出现「产物变了、对应源码没变」的错配。那次的形状：
+# 一份只暂存 9 个文件的提交，钩子把 5 个包按未提交源码重建的 lib/ 一并加了进来。
+#
+# 判据两条（按包判，不是按整棵树判）：
+#   ① 只加「`src` / `client-src` 的改动已经躺在 index 里」的包的产物；
+#   ② 这些包的 `src` 在工作区**不能再有**未暂存改动——有的话，产物是按那份没进提交的源码
+#      构建的，加了就是错配。此时**报错中止**，由人来决定怎么下一步（下面给了两条出路）。
+# 这两条合起来同时挡住反方向：只暂存了产物、源码还在工作区（① 不成立 ⇒ 不加，且产物已经在
+# index 里时 ② 会报出来）。
+#
+# `cut -d/ -f2`：`packages/<pkg>/src/…` 的第二段就是包名（产物路径同形）。
+dirty_pkgs=$(git diff --name-only -- "$SPEC_SRC" "$SPEC_CLIENT_SRC" 2>/dev/null | cut -d/ -f2 | sort -u || true)
+staged_pkgs=$(git diff --cached --name-only -- "$SPEC_SRC" "$SPEC_CLIENT_SRC" 2>/dev/null | cut -d/ -f2 | sort -u || true)
+
+for pkg in $dirty_pkgs; do
+  # 这一笔没碰这个包（它的源码与产物都不在 index 里）→ 与它无关，不动它的产物
+  case " $staged_pkgs " in
+    *" $pkg "*) ;;
+    *) continue ;;
+  esac
+  echo "✘ [pre-commit] $pkg 的产物无法与这一笔提交的源码同步：它的 src 还有未暂存的改动"
+  echo "   产物必须是**提交里的源码**构建出来的。二选一："
+  echo "     · git add packages/$pkg                    # 把这个包一起提交"
+  echo "     · git stash push -- packages/$pkg/src      # 把未暂存的改动挪开再提交"
+  exit 1
+done
 
 if ! out=$(pnpm -r build 2>&1); then
   printf '%s\n' "$out"
@@ -17,16 +50,31 @@ if ! out=$(pnpm -r build 2>&1); then
   exit 1
 fi
 
-# 已跟踪产物的改动 + 新出现的未跟踪产物（新包首次构建时 lib/ 还没入库）
-changed=$(git diff --name-only -- "$SPEC_CLIENT" "$SPEC_LIB" 2>/dev/null || true)
-fresh=$(git ls-files --others --exclude-standard -- "$SPEC_CLIENT" "$SPEC_LIB" 2>/dev/null || true)
-if [ -n "$changed$fresh" ]; then
-  # 失败必须报出来并中止：静默失败会让提交里留下与源码不同步的产物
-  if ! git add -- "$SPEC_CLIENT" "$SPEC_LIB"; then
-    echo "✘ [pre-commit] 暂存构建产物失败，提交中止"
-    exit 1
-  fi
-  echo "↻ [pre-commit] 构建产物已刷新并入本次提交"
+# 每个「源码在这一笔里」的包，取它**真的变了**的产物：已跟踪产物的改动 + 新出现的未跟踪
+# 产物（新包首次构建时 lib/ 还没入库）。按文件逐个 `git add`——`git add` 一个匹配不到任何
+# 文件 pathspec 会直接 fatal，而这些包未必都有 client.js（只有带浏览器半体的包才有）。
+added=0
+for pkg in $staged_pkgs; do
+  files=$(
+    {
+      git diff --name-only -- "packages/$pkg/client.js" ":(glob)packages/$pkg/lib/**" 2>/dev/null || true
+      git ls-files --others --exclude-standard -- "packages/$pkg/client.js" ":(glob)packages/$pkg/lib/**" 2>/dev/null || true
+    } | grep -v '^$'
+  )
+  [ -z "$files" ] && continue
+  # 产物路径不含空白（`packages/<pkg>/lib/<file>` 与 `packages/<pkg>/client.js`），按行拆安全
+  for file in $files; do
+    # 失败必须报出来并中止：静默失败会让提交里留下与源码不同步的产物
+    if ! git add -- "$file"; then
+      echo "✘ [pre-commit] 暂存构建产物失败，提交中止（$file）"
+      exit 1
+    fi
+    added=$((added + 1))
+  done
+done
+
+if [ "$added" -gt 0 ]; then
+  echo "↻ [pre-commit] 构建产物已刷新并入本次提交（$added 个文件）"
 fi
 
 # 面板端 i18n 闸门（项目级 ROADMAP 第 3 项）：键集 / 占位符 / 用法三件事必须一致。

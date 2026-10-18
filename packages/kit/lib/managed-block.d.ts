@@ -11,6 +11,28 @@ export interface SpliceManagedBlockOptions extends ManagedBlockMarkers {
     body: string;
 }
 /**
+ * 把「只有注释 + `[]`」的那个空根从文本里摘掉（摘掉后注释与其它内容逐字节保留）。
+ *
+ * 返回 `undefined` 表示**不该动**：文本里没有空根，或有空根但还夹着别的结构。
+ * 调用方按「是否有返回值」决定要不要走替换路径——不要用返回空串来判断，
+ * 因为「摘掉空根后只剩注释」是合法且必须替换的情形。
+ *
+ * 已经写出坏文件（`[]` + 托管区块）也能靠它自愈：先摘空根，再就地替换区块，
+ * 于是下一次写入就把非法根修掉了，不需要用户手工删行。
+ */
+export declare function stripEmptyFlowSequenceRoot(text: string): string | undefined;
+/**
+ * 行数组版的 {@link stripEmptyFlowSequenceRoot}：返回摘掉空根后的新数组。
+ *
+ * 供「本来就在行数组上作业」的调用方（如 codegraph 的 syncManagedMcpRow）使用，
+ * 单独给一个函数是因为那里的 `changed` 标志与行数组是同一份数据，直接改文本再切行
+ * 会丢掉行尾 / 空行信息。
+ */
+export declare function stripEmptyFlowSequenceRootLines(lines: string[]): {
+    lines: string[];
+    changed: boolean;
+};
+/**
  * 纯函数：把托管区块（含首尾标记行）拼进文本，返回新文本。
  *
  * - 已有完整区块：整体替换为「标记 + body + 标记」，区块外内容不动；

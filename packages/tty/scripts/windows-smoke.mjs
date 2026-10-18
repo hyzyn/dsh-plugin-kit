@@ -15,6 +15,7 @@
  * 用法：pnpm --filter @hyzyn/dsh-tty windows-smoke
  * 退出码：0 = 全部 PASS 或跳过，1 = 任一 FAIL。
  */
+import { existsSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
 import WebServerRuntime from '@deepseek-ai/dsh-host-webserver'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
@@ -85,6 +86,8 @@ process.on('exit', (code) => {
 const RESULTS = []
 function pass(label) { RESULTS.push(['PASS', label]); console.log('  ✔ PASS  ' + label) }
 function fail(label, detail) { RESULTS.push(['FAIL', label, detail]); console.error('  ✘ FAIL  ' + label + (detail ? ' — ' + detail : '')) }
+/** SKIP 单列一档：**不许混进 PASS 计数**，否则「跳过」会伪装成 12/12（W8 在本机没有 PowerShell 时走这条）。 */
+function skip(label) { RESULTS.push(['SKIP', label]); console.log('  ⏭  SKIP  ' + label) }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** 简易 ws 会话客户端（与 integration.mjs 同形，只保留本脚本要用的部分）。 */
@@ -141,6 +144,22 @@ const ENTER = '\r\n'
  * 原先 stub 的 `register` 只吞掉返回值，等于这里没有 agent 工具入口。
  */
 const TOOLS = new Map()
+
+/** 本机可用的 PowerShell（优先 PowerShell 7，再 Windows PowerShell 5.1）；都没有则 null（W8 跳过）。 */
+function resolvePowerShell() {
+  const candidates = [
+    'C:/Program Files/PowerShell/7/pwsh.exe',
+    'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      /* 权限等异常一律当「没有」 */
+    }
+  }
+  return null
+}
 
 async function run() {
   const app = new Context()
@@ -341,6 +360,77 @@ async function run() {
     }
   }
   tracer.leave('W7 退出后的只读保留')
+
+  // W8：PowerShell 家族的 shell 集成（OSC 133/7）必须真的从 ConPTY 里穿出来
+  //
+  // 为什么在这一档而不只在单测里：单测只能断言「spawn 计划长什么样」，而这条链路真正
+  // 容易断的地方在 ConPTY —— 标记是 conhost **直通转发**的旁路（渲染路径之外），被吞掉
+  // 或晚到只有真机才看得出。另起一个 app 实例是为了改 shell 配置：W1–W7 必须保持真实的
+  // `%COMSPEC%` 链路（它们钉的正是「没有 POSIX 包装层、跑的就是 cmd.exe」）。
+  //
+  // **不再按 CI 跳过**（2026-10-13）：2026-10-12 那版「CI 上默认跳过 W8」是**绕开**当时未定性的
+  // `0xC0000374`，而根因已经定位并修好（同一个 PTY 被两个调用方各原生 kill 一次 → 见
+  // packages/tty/DEFECTS.md 的 D100 / ROADMAP 的 2026-10-13 一节）。装上闸门后真机（Win11 ARM64）
+  // 强制带 W8 连跑 6 轮全部 `12/12 PASS`。**动这里之前先读那条**：它记着当时的崩点分布与 A/B。
+  console.log('\n[W8] PowerShell + shell 集成（OSC 133/7）')
+  tracer.enter('W8 PowerShell 集成')
+  try {
+    const shellPath = resolvePowerShell()
+    if (shellPath === null) {
+      // 本机没有 PowerShell：这是**真跳过**（不是「按设计绕过」），如实进 SKIP 一档——
+      // 分母扣掉它、汇总行点名，不许装成 12/12。
+      skip('W8 PowerShell shell 集成（本机没找到 pwsh.exe / powershell.exe）')
+    } else {
+      const app2 = new Context()
+      const ws2Fiber = app2.plugin(WebServerRuntime, { host: '127.0.0.1', port: 0 })
+      const sub2Fiber = app2.plugin(LocalSubprocessRuntime)
+      const stub2Fiber = app2.plugin({
+        name: 'windows-smoke-stub-2',
+        apply: (ctx) => {
+          ctx.provide('settings', { describe: () => [], update: async () => {}, configure: () => () => {} })
+          ctx.provide('tools', { register: () => () => {} })
+        },
+      })
+      await stub2Fiber.await()
+      const plugin2Fiber = app2.plugin({ name, inject, apply }, { shell: shellPath, term: 'xterm-256color', colorTerm: 'truecolor' })
+      await ws2Fiber.await()
+      await sub2Fiber.await()
+      await plugin2Fiber.await()
+      await sleep(400)
+
+      const s3 = openSession(app2.webServer.port)
+      await s3.open()
+      s3.client.send(JSON.stringify({ t: 'spawn', cols: 100, rows: 30 }))
+      await s3.waitFor(() => s3.state.ready !== null, 25000, 'PowerShell ready')
+      // 桩装好 prompt 就发首个 A 标记：到了 = `-File` 桩真的被载入并生效
+      await s3.waitFor(() => /\]133;A/.test(s3.state.text), 20000, 'PowerShell 首个 A 标记')
+      pass('W8a PowerShell 桩生效（ConPTY 里收到 OSC 133;A）')
+
+      // `$env:OS` 由 PowerShell 展开（回显里只有字面量），与 W2/W3 同一条判据
+      s3.client.send(JSON.stringify({ t: 'input', d: `echo IT_PS_$env:OS${ENTER}` }))
+      await s3.waitFor(
+        () => /IT_PS_Windows_NT/.test(s3.state.text) && /\]133;D;0/.test(s3.state.text),
+        25000,
+        'PowerShell 的 B/D 与命令输出',
+      )
+      pass('W8b PowerShell 发全 B/D（退出码 0），且命令真的被执行')
+
+      s3.client.send(JSON.stringify({ t: 'kill' }))
+      try {
+        await s3.waitFor(() => s3.state.exited !== null, 15000, 'PowerShell exit')
+      } catch {
+        /* 没收到 exit 也不影响上面两条结论 */
+      }
+      try {
+        s3.client.close()
+      } catch {
+        /* 已关闭 */
+      }
+    }
+  } catch (error) {
+    fail('W8 PowerShell shell 集成', error.message)
+  }
+  tracer.leave('W8 PowerShell 集成')
 }
 
 await run()
@@ -348,9 +438,14 @@ await run()
 // **异常终止**用的，断言失败被说成「崩溃」只会误导。
 exitingNormally = true
 const failed = RESULTS.filter((row) => row[0] === 'FAIL')
-console.log('\n==== Windows 冒烟：' + String(RESULTS.length - failed.length) + '/' + String(RESULTS.length) + ' PASS ====')
+const skipped = RESULTS.filter((row) => row[0] === 'SKIP')
+/** 分母扣掉 SKIP：**跳过的档不许算进 PASS 数**（否则「跳过」看起来像全过，正是要防的假绿）。 */
+const counted = RESULTS.length - skipped.length
+const summary = String(counted - failed.length) + '/' + String(counted) + ' PASS' +
+  (skipped.length > 0 ? '（另 ' + String(skipped.length) + ' 项 SKIP：' + skipped.map((row) => row[1]).join('；') + '）' : '')
+console.log('\n==== Windows 冒烟：' + summary + ' ====')
 // 同步再打一份结论：万一下面的 flush 屏障之前进程就没了（原生崩溃），至少这一行一定在。
-traceSync(`Windows 冒烟结论：${String(RESULTS.length - failed.length)}/${String(RESULTS.length)} PASS`)
+traceSync(`Windows 冒烟结论：${summary}`)
 for (const row of failed) console.error('  ✘ ' + row[1] + (row[2] ? ' — ' + row[2] : ''))
 clearTimeout(watchdog)
 /**

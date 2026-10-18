@@ -51,9 +51,10 @@
  * reconnectGraceSec（默认 120s，0 = 旧行为立即结束），等待新连接 attach
  * 并回放 256KB 环形缓冲；到点由回收器清理。
  *
- * shell 集成（src/shell-integration.ts，0.4.0）：spawn 时经 -c 包装层注入
- * OSC 133/7 钩子（zsh ZDOTDIR 桩 / bash --rcfile 桩），输出流解析出命令
- * 边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
+ * shell 集成（src/shell-integration.ts，0.4.0）：spawn 时注入 OSC 133/7 钩子，
+ * 输出流解析出命令边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
+ * 注入形态按平台分：POSIX 走 `-c` 包装层 + rc 桩（zsh ZDOTDIR 桩 / bash --rcfile 桩），
+ * Windows 走 PowerShell 的 `-File` 稳定桩（cmd 没有命令边界钩子，不注入）。
  * 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
  * /api/dsh-tty/credential-refs（凭据存储里已知的引用名，SSH 对话框选择器候选，只要名字）、
  * /api/dsh-tty/env-vars（env 插件托管变量名；SSH 对话框已改从连接簿 + 凭据存储取候选，此路由保留兼容）、
@@ -223,10 +224,24 @@ interface PtyHandle {
     terminal?: {
         resize?(cols: number, rows: number): void;
         kill?(signal: string): void;
+        /**
+         * node-pty 的 conout 代理（`WindowsPtyAgent`，**只有 Windows 的
+         * `WindowsTerminal` 有这个字段**）——D100 的一次性原生 kill 闸门装在这里。
+         * 它是 `_ptyNative.kill(id)` 唯一的调用点，所以也是唯一能拦住「同一个 pty 被杀两次」
+         * 的位置（见 installWindowsKillGate）。
+         */
+        _agent?: {
+            kill?(): unknown;
+            /** 闸门已安装的标记（本包自己加的字段，node-pty 不认）。 */
+            __dshKillGated?: boolean;
+        };
     };
 }
-/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
-export declare function wrapLocalPty(handle: PtyHandle): TermHandle;
+/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。
+ *
+ *  `platform` 只为单测注入（D100 的闸门是 win32-only，macOS/Linux 上要能断言两条分支）。
+ */
+export declare function wrapLocalPty(handle: PtyHandle, platform?: NodeJS.Platform): TermHandle;
 /**
  * 本地 PTY 顶层 shell 的 best-effort 强杀（D48）。
  *
@@ -240,6 +255,45 @@ export declare function wrapLocalPty(handle: PtyHandle): TermHandle;
  * 导出仅供单测（test/host-frames.test.ts）：平台参数注入，两个分支都能在 macOS/Linux 断言。
  */
 export declare function killLocalShellTerminal(terminal: unknown, platform?: NodeJS.Platform): void;
+/**
+ * 一次性原生 kill 闸门（D100，2026-10-12 Windows 真机实测）。
+ *
+ * **为什么必须有**：node-pty 的 `WindowsTerminal.kill()` 落到 `WindowsPtyAgent.kill()`，
+ * 后者对同一个 `_pty` 调 `conpty.node` 的 `kill(id)`；而 `conpty.cc` 的 `PtyKill` **不幂等**——
+ * 它 `ClosePseudoConsole(handle->hpc)` 之后**不置空 `hpc`**，那条 baton 要等 shell 进程真的退出、
+ * 由 exit 线程从 `ptyHandles` 里 `erase_if` 摘掉才算消失。这段窗口里再调一次，同一个**已释放的
+ * HPCON** 会被第二次交给 `ClosePseudoConsole`。
+ *
+ * 而 Windows 上**两个调用方必然叠加**：
+ *   1. DSH 的 `LocalTerminalHandle.stopShellWindows()` 在 `rootIdentity === undefined` 时调
+ *      `terminal.kill()`；而 Windows 上 rootIdentity **恒为 undefined**——node-pty 的 `pid` 要等
+ *      conout 连接建立才有值，DSH 在 `new LocalTerminalHandle(...)` 那一刻就取 `terminal.pid`，
+ *      拿到的是 **0**（真机探针逐轮实测 `spawned pid=0`；真实 pid 直到 `connect` 才出现），
+ *      于是 `snapshot().tree(0)` 找不到自己、必然走那条兜底分支；
+ *   2. 本插件 D48 的预杀（`killSessionNow` 里的 `handle.forceKill?.()`）又调一次。
+ * 两次叠加 = 同一个 HPCON 被 ClosePseudoConsole 两次 = **STATUS_HEAP_CORRUPTION（0xC0000374）**，
+ * 被 Windows 打死的是**整个宿主进程**，不是某一个会话。
+ *
+ * **实测**（Win11 ARM64，同一 harness、同一 `kill+terminate` 顺序，各 150 轮，只差这一个变量）：
+ *   无闸门 → 累计 94 次双重原生 kill，第 75 轮宿主崩（退出码 -1073740940）；
+ *   装闸门 → 150/150 每 pty 恰好 1 次原生 kill、0 次双重，跑满 150 轮不崩；
+ *   单次 kill 的对照（只调 terminate）150 轮也不崩。
+ *
+ * **为什么装在 `_agent.kill`（执行点）而不是 `terminal.kill`（调用点）**：node-pty 在终端 ready
+ * 之前会把自己收到的 kill **排队**（`_deferNoArgs`），到第一次 data 才执行。装在调用点的话
+ * 「排队的那次」会先把闸门占掉、DSH 真到执行的那次被吞——万一排队的那次永远不执行（进程没产出
+ * 数据、deferred 从不跑），就变成**一个都没杀**（进程泄漏）。装在执行点则谁先真正动手谁生效、
+ * 后到的才被吞，两个方向的坏结果都不会出现。
+ *
+ * **边界**：只在 win32 装——POSIX 的 `stopShell` 本来就要 SIGTERM→SIGKILL **两次**，吞第二次是错的。
+ * `_agent` 是 node-pty 的私有字段（与 `terminal.resize` 同级的内部耦合）：取不到时返回 false，
+ * 调用方记一条警告后照旧调用——退化的后果是回到「双重 kill」（今天的现状），不是新增故障（D79 同款）。
+ *
+ * 导出仅供单测（test/host-frames.test.ts）：平台参数注入，两个分支都能在 macOS/Linux 断言。
+ *
+ * @returns 闸门是否已就位（非 win32 恒 true）
+ */
+export declare function installWindowsKillGate(handle: PtyHandle, platform?: NodeJS.Platform): boolean;
 /**
  * Windows 本地 PTY 的**输入归一化**（D74，2026-09-27 真机报告）：conhost 把 Enter 当
  * **CR**，裸 LF 只把光标下移一格、**不提交命令行**——于是 `tty_send` 按工具描述发
@@ -480,12 +534,20 @@ interface ShellIntegrationState {
     carry: string;
     /**
      * 这个会话**见过至少一个 OSC 133 标记**（0.23.0）。tty_list 的 `running` 能不能
-     * 下结论全看它：没有标记 = 命令边界不可信（非持久 SSH / fish·csh / Windows 本地 /
+     * 下结论全看它：没有标记 = 命令边界不可信（非持久 SSH / fish·csh / Windows 的 cmd /
      * 集成被关 / tmux <3.3 吞了 DCS 信封），此时**必须报「未知」而不是「没在跑」**。
      */
     sawMark: boolean;
     /** B..D 之间：命令输出捕获中。 */
     inCommand: boolean;
+    /**
+     * 当前这条命令**开始的时刻**（见到那个 `B` 的 Date.now()；0 = 还没见过 B）。
+     *
+     * 用途只有一个（D101）：区分「命令行回显」与「往在跑的程序里敲的字」。命令行的回显是**在 B
+     * 之前**提交的那次 `tty_send`（`session.lastInputAt < commandStartedAt`），而 TUI 里的按键
+     * 一定晚于 B —— 后者在屏上出现是真实输出，不许当回显剔掉（D75 的边界）。
+     */
+    commandStartedAt: number;
     cmdBuffer: string;
     /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
     pendingT: string | null;
@@ -767,7 +829,7 @@ export interface SessionSnapshot {
     /**
      * 有命令正在执行（0.23.0）：true = 在跑；false = 命令已结束（或进程已退出）；
      * **省略 = 无法判断**——这个会话没有 shell 集成标记（非持久 SSH / fish·csh /
-     * Windows 本地 / 集成被关 / tmux <3.3 吞了信封），或命令型会话尚未收到终局。
+     * Windows 的 cmd / 集成被关 / tmux <3.3 吞了信封），或命令型会话尚未收到终局。
      * 拿它当「现在可以往里发命令」的许可时要按三态处理：省略 ≠ 没在跑。
      */
     running?: boolean;

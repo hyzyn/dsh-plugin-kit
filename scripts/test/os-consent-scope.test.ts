@@ -451,6 +451,23 @@ function checkHostWorld(world: HostWorld): string[] {
       out.push('原生 picker 出现在了页面回答通道上（形态 B 的模板被破坏）')
     }
     if (!native.includes('zenity')) out.push('原生 picker 不再用 zenity（Linux 路径变了）')
+    /*
+     * 事实 3 的**「取消」口径**（2026-10-16 复核时新增）。
+     *
+     * alpha.5 起 macOS 路径是 `osascript -l JavaScript` 的 JXA + AppKit `NSOpenPanel`：
+     * 取消 = `return ''`，经 `outputPath()` 归一成 `null`。AppleScript 时代那套
+     * 「退出码 1 + stderr 匹配 `User canceled` / `-128`」在宿主里**已经没有了**。
+     *
+     * 为什么要钉这两条：**上一版判据完全覆盖不到它**（只钉 osascript / `.stdout` / zenity /
+     * 「不在页面回答通道上」），所以 2026-10-16 那次它是在绊线「只报基准版本一处」的情况下
+     * **静默漂过**的——§2.1 的升级复核记录依赖这个口径，它再变时必须有人被叫醒。
+     */
+    if (!native.includes('NSModalResponseOK')) {
+      out.push('macOS 原生框不再走 AppKit NSOpenPanel（取消口径可能又变了）——重读 §2.1 事实 3 与其升级复核')
+    }
+    if (/User canceled|-128/.test(native)) {
+      out.push('macOS 原生框又按「退出码 + stderr 文本」判取消了（`-128` / `User canceled`）——重读 §2.1 事实 3')
+    }
   }
   /*
    * A3：**absence 判据必须覆盖它声称的范围**。方案说「宿主仍没有可复用的原生确认框设施」，
@@ -811,6 +828,27 @@ describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧反例（
     packages.set('dsh-host-directory-picker-auto', mutate(current, 'facts.allowsRemoteAuthorities', 'false'))
     const violations = checkHostWorld({ ...HOST_WORLD, packages })
     expect(violations.join('\n'), '远端授权判据不见了必须报——它是 0.2.1-alpha.2 新加的一条「框够不着」').toMatch(/远端授权判据/)
+  })
+
+  /*
+   * 「取消」口径的两条反例（2026-10-16 新增）。
+   *
+   * 它们喂的是 `checkHostWorld` 读 `world.files` 的**同一条代码路径**（不是 `packages`：
+   * 事实 3 那一段用的是 `file(HOST_FILES.pickerNative)`），所以用 `hostWorldWith` 改 `files`。
+   */
+  it('macOS 原生框不再走 AppKit NSOpenPanel → 判据红（取消口径）', () => {
+    const world = hostWorldWith(HOST_FILES.pickerNative, 'NSModalResponseOK', 'NSModalResponseWhatever')
+    expect(checkHostWorld(world).join('\n'), 'macOS 原生框的实现换了、取消怎么表达就可能跟着变').toMatch(/取消口径/)
+  })
+
+  it('macOS 改回「退出码 + stderr 文本」判取消 → 判据红（取消口径）', () => {
+    // 退回 alpha.2 那套：取消靠 errorCode === 1 与 stderr 里的 `User canceled` / `-128`
+    const world = hostWorldWith(HOST_FILES.pickerNative, 'NSModalResponseOK', 'User canceled')
+    const violations = checkHostWorld(world)
+    expect(
+      violations.join('\n'),
+      '取消口径退回退出码 / stderr 必须报——它 2026-10-16 静默漂过一次',
+    ).toMatch(/stderr/)
   })
 })
 })

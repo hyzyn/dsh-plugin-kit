@@ -271,6 +271,19 @@ async function call(
   expect(route, `未注册路由 ${path}`).toBeDefined()
   const capture = fakeRes()
   await route?.handler(fakeReq(init), capture.res)
+  /*
+   * 500 一律把响应体打出来——**判据一字不变**，只是失败时多一行 stderr。
+   *
+   * 为什么放在这里而不是逐条用例：本文件在 Windows CI 上有一条**未定性**的间歇红
+   * （见 ROADMAP.md §「cli-route.test.ts 在 Windows 上的负载敏感」）——干净 stub 的正常路径
+   * 偶发拿到 500（约 148ms，**不是超时**），而 500 的成因只有两种可能，**两者的区别只写在
+   * 响应体里**：spawn 的 `error` 事件，或子进程非零退出（`settleCliRun` 会把 stderr 原文拼进
+   * error）。此前只有 unlock 那一条用例加了这行诊断，所以 2026-10-17  CG27 再红时日志里
+   * 什么都没留下、仍然定不了性。放进 `call()` 等于**每条走路由的断言都自带现场**。
+   *
+   * 预期内的 7 处 500 断言也会各多打一行（它们紧接着自己断言 body，冗余但无害）。
+   */
+  if (capture.status === 500) console.error(`${path} 500 响应体：` + JSON.stringify(capture.body))
   return capture
 }
 
@@ -1381,6 +1394,11 @@ describe('P1 索引生命周期：unlock 与过期信号', () => {
     const idle = stubCli('unlock-idle-cli', 'console.log("No stale lock files found — nothing to do")')
     const routes = mountRoutes(idle)
     const capture = await call(routes, '/api/dsh-codegraph/unlock', { method: 'POST', body: { path: project } })
+    // 只在失败时打响应体（ROADMAP「测试稳定性：cli-route.test.ts 在 Windows 上的负载敏感」那条）：
+    // 500 是 `run()` 失败的统称，原因（spawn 的 error 还是子进程非零退出）全在这一行体里，
+    // 不打印的话下次再红还是只有「expected 500 to be 200」——
+    // 这条用例的 stub 只 console.log、必然 exit 0，出现 500 就一定有话说。
+    if (capture.status !== 200) console.error('unlock-idle 非 200，响应体：' + JSON.stringify(capture.body))
     expect(capture.status).toBe(200)
     expect(String(capture.body?.output)).toContain('No stale lock files')
   })

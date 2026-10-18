@@ -27,6 +27,7 @@ import {
   readJsonBody,
   settingsEntryScope,
   spawnPortable,
+  stripEmptyFlowSequenceRootLines,
   suppressAutoSettingsPage,
   writeFileAtomic,
   writeJson,
@@ -1274,6 +1275,17 @@ type BlockReplacement =
 export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): McpSyncOutcome {
   const state = indexState(decision.targetCwd)
   const indexed = state === 'indexed'
+  const dryRun = decision.dryRun === true
+  /** 摘空根之前的样子：早退分支（解析失败 / 手工行）一律原样返回它，绝不顺手改盘。 */
+  const originalLines = lines
+  // CG67：`[]` 是**完整**的 YAML 文档（flow 序列根）。往它后面追加块序列会让整份
+  // cordis.patch.yml 非法——宿主启动时 `parsePatchList` 直接抛，插件整层起不来；
+  // 热路径则被 HMR 的 catch 吞成一条 warn，卡片上完全看不见。所以先把空根摘掉，
+  // 之后照常走「追加 / 替换」逻辑（摘完就是普通的「无区块」形状）。
+  // 这也让**已经写坏的**文件下一次写入就自愈：根被摘掉、区块被就地替换。
+  const rootStripped = stripEmptyFlowSequenceRootLines(lines)
+  lines = rootStripped.lines
+  const strippedRoot = rootStripped.changed
   const carriageReturn = usesCarriageReturn(lines)
   const ownRange = findBlock(lines, 'dsh-codegraph mcp managed', 'end dsh-codegraph mcp managed')
   const mcpRange = findBlock(lines, DSH_MCP_BLOCK_KEY, DSH_MCP_BLOCK_END_KEY)
@@ -1289,7 +1301,7 @@ export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): M
   const parseError = ownParsed.error ?? mcpParsed.error
   if (parseError !== undefined) {
     return {
-      lines,
+      lines: originalLines,
       changed: false,
       status: {
         mode: 'none',
@@ -1304,7 +1316,7 @@ export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): M
   const handWritten = detectExternalCodegraphRow(lines)
   if (handWritten !== null) {
     return {
-      lines,
+      lines: originalLines,
       changed: false,
       status: withCwdHealth({
         mode: 'external',
@@ -1319,7 +1331,6 @@ export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): M
   }
 
   const replacements: BlockReplacement[] = []
-  const dryRun = decision.dryRun === true
   /** dryRun 下本该落盘、但被压住的改动（只写进 note，不写盘）。 */
   let pendingNote: string | undefined
   let status: McpSyncStatus
@@ -1495,8 +1506,11 @@ export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): M
 
   // CG12：托管行现有 cwd 是否还落在盘上（项目被删 / uninit 后坏行长期留着——
   // 没有 fs.watch，至少让卡片每次刷新都看得见）。
-  const outcome: McpSyncOutcome = applyReplacements(lines, replacements, dryRun, status)
-  return { ...outcome, status: withCwdHealth(outcome.status) }
+  const outcome: McpSyncOutcome = applyReplacements(lines, replacements, dryRun, status, originalLines)
+  // CG67：只摘空根、没有别的改动时也要算「有变化」，否则坏根永远等不到写盘。
+  const repaired = !dryRun && strippedRoot && !outcome.changed
+  const repairedOutcome: McpSyncOutcome = repaired ? { ...outcome, changed: true } : outcome
+  return { ...repairedOutcome, status: withCwdHealth(repairedOutcome.status) }
 }
 
 /** 给 status 补上 cwdExists（cwd 缺省时不加字段；探测失败按 false 处理）。 */
@@ -1509,10 +1523,17 @@ function withCwdHealth(status: McpSyncStatus): McpSyncStatus {
   }
 }
 
-/** 把 replacements 摊到行数组上（dryRun / 无改动时原样返回）。行号从文件尾往前应用。 */
-function applyReplacements(lines: string[], replacements: BlockReplacement[], dryRun: boolean, status: McpSyncStatus): McpSyncOutcome {
+/**
+ * 把 replacements 摊到行数组上（dryRun / 无改动时原样返回）。行号从文件尾往前应用。
+ *
+ * `original` 是摘空根**之前**的行数组（CG67）：dryRun 是只读快照，必须返回调用方
+ * 传进来的原文，不能把「摘掉空根后的样子」当成盘上现状——否则卡片会对一份仍然非法
+ * 的文件报「已托管」。
+ */
+function applyReplacements(lines: string[], replacements: BlockReplacement[], dryRun: boolean, status: McpSyncStatus, original: string[] = lines): McpSyncOutcome {
   // dryRun 是只读快照：即使某条分支漏了判断，也绝不返回改动过的行
-  if (dryRun || replacements.length === 0) return { lines, changed: false, status }
+  if (dryRun) return { lines: original, changed: false, status }
+  if (replacements.length === 0) return { lines, changed: false, status }
 
   const next = [...lines]
   for (const replacement of [...replacements].sort((a, b) => b.range.start - a.range.start)) {

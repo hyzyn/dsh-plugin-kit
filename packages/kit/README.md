@@ -216,7 +216,16 @@ env.yml / cordis.patch.yml / prompts.yml 共用的「注释标记圈出自动生
 
 - `spliceManagedBlock(text, { beginMarker, endMarker, body })` —— 区块整体替换；
   无区块追加到文件末尾（前置空行）；`body: ''` 删除整个区块（含标记）；区块外
-  内容逐字节保留，重复写入逐字节稳定；
+  内容逐字节保留，重复写入逐字节稳定。**追加前**会先摘掉根位置上的空 flow 序列
+  `[]`（见下），否则写出的是一份宿主拒载的文件（codegraph CG67）；
+- `stripEmptyFlowSequenceRoot(text)` / `stripEmptyFlowSequenceRootLines(lines)` ——
+  认出「文件里**第一条**非空、非注释行是 `[]`」并摘掉它；没认出时返回 `undefined` /
+  `changed: false`，调用方据此**不动**文件。为什么必须认这个位置：DSH 给每个 profile
+  生成的 `cordis.patch.yml` 模板与 `~/.dsh/cordis.patch.yml` 的惯例内容都是「几行注释 +
+  `[]`」，而 `[]` 是一份**完整**的 YAML 文档（flow 序列根），其后再接块序列整份文件就非法。
+  文本版供 `spliceManagedBlock` 与 mcp / env / prompt 的写入器用，行数组版供本来就在
+  行数组上作业的调用方（codegraph 的 `syncManagedMcpRow`）用。**新插件写托管区块时，
+  追加走 `spliceManagedBlock` 就自带这一步，不要自己往文件尾部拼**；
 - `readManagedBlock(text, { beginMarker, endMarker })` —— 返回标记间正文；缺起始
   或结束标记返回 `undefined`（损坏，调用方应报错而不是用半截内容）；
 - `writeFileAtomic(file, data, mode = 0o600)` —— 同目录临时文件 + rename 原子写

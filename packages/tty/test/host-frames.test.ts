@@ -15,7 +15,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EXITED_RETAIN_MS, MAX_EXITED_SESSIONS, SessionManager, TtyServer, killLocalShellTerminal, newScreenHeartbeat, wrapLocalPty } from '../src/index.js'
+import { EXITED_RETAIN_MS, MAX_EXITED_SESSIONS, SessionManager, TtyServer, installWindowsKillGate, killLocalShellTerminal, newScreenHeartbeat, wrapLocalPty } from '../src/index.js'
 import type { TermHandle } from '../src/ssh.js'
 
 /* ----------------------------- 假件 ----------------------------- */
@@ -638,6 +638,99 @@ describe('killLocalShellTerminal（D48：Windows 不能带 signal）', () => {
 
   it('kill 自身抛错 → 被吞掉（会话可能已退出，不能把清理路径变成崩溃）', () => {
     expect(() => killLocalShellTerminal({ kill: () => { throw new Error('boom') } }, 'linux')).not.toThrow()
+  })
+})
+
+/* ------------- 原生 kill 一次性闸门（D100：Windows 双重 ClosePseudoConsole） ------------- */
+
+describe('Windows 原生 kill 闸门（D100）', () => {
+  /** DSH spawnTerminal 返回的 handle 最小形状（terminal 是内部耦合字段）。 */
+  function dshHandle(terminal: unknown): never {
+    return {
+      pid: 0,
+      output: new PassThrough(),
+      write: async () => {},
+      terminate: async () => {},
+      done: new Promise(() => {}),
+      ...(terminal === undefined ? {} : { terminal }),
+    } as never
+  }
+
+  /** 造「node-pty 的 WindowsTerminal」形状：terminal.kill → agent.kill →（模拟）原生 kill。 */
+  function winTerminal(): { terminal: { kill: () => unknown; _agent: { kill: () => unknown } }; nativeKills: number[]; agentKills: () => unknown } {
+    const nativeKills: number[] = []
+    const agent = {
+      kill: () => {
+        nativeKills.push(1)
+        return 'killed'
+      },
+    }
+    const terminal = { kill: (): unknown => agent.kill(), _agent: agent }
+    return { terminal, nativeKills, agentKills: agent.kill }
+  }
+
+  it('win32：插件的预杀 + DSH 的兜底 kill 叠加 → 原生 kill 只执行一次', () => {
+    const { terminal, nativeKills } = winTerminal()
+    const original = terminal.kill
+    wrapLocalPty(dshHandle(terminal), 'win32')
+    // 闸门必须落在**执行点**（agent.kill）而不是调用点（terminal.kill）：
+    // node-pty 在终端 ready 前会把 kill 排队，装在调用点会让「排队的那次」把闸门占掉、
+    // 而真到执行的那次被吞——排队那次若永不执行就是一个都没杀。
+    expect(terminal.kill).toBe(original)
+    killLocalShellTerminal(terminal, 'win32') // D48 的预杀（killSessionNow → handle.forceKill?.()）
+    terminal.kill() // DSH LocalTerminalHandle.stopShellWindows 的兜底分支
+    terminal.kill() // 再叠加一次也不该穿过去
+    expect(nativeKills).toHaveLength(1)
+  })
+
+  it('非 win32：不装闸门（POSIX 的 stopShell 本来就要 SIGTERM→SIGKILL 两次）', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      const { terminal, nativeKills } = winTerminal()
+      expect(installWindowsKillGate(dshHandle(terminal) as never, platform)).toBe(true)
+      terminal.kill()
+      terminal.kill()
+      expect(nativeKills).toHaveLength(2)
+    }
+  })
+
+  it('重复安装幂等：同一个 terminal 两次 installWindowsKillGate 仍只包装一层', () => {
+    const { terminal, nativeKills } = winTerminal()
+    const handle = dshHandle(terminal) as never
+    expect(installWindowsKillGate(handle, 'win32')).toBe(true)
+    expect(installWindowsKillGate(handle, 'win32')).toBe(true)
+    terminal.kill()
+    terminal.kill()
+    expect(nativeKills).toHaveLength(1)
+  })
+
+  it('node-pty 结构变化（terminal 有 kill 但没有 _agent）→ 返回 false（调用方据此记一次警告），且此时仍能照旧强杀', () => {
+    const calls: Array<string | undefined> = []
+    const handle = dshHandle({ kill: (signal?: string) => calls.push(signal) }) as never
+    expect(installWindowsKillGate(handle, 'win32')).toBe(false)
+    expect(() => wrapLocalPty(handle, 'win32')).not.toThrow()
+    killLocalShellTerminal((handle as { terminal: unknown }).terminal, 'win32')
+    expect(calls).toEqual([undefined])
+  })
+
+  it('terminal 不是真 node-pty（夹具 / 尚未 spawn 完）→ 视作就位，不误报「装不上」', () => {
+    expect(installWindowsKillGate(dshHandle(undefined) as never, 'win32')).toBe(true)
+    expect(installWindowsKillGate(dshHandle({}) as never, 'win32')).toBe(true)
+    expect(installWindowsKillGate(undefined as never, 'win32')).toBe(true)
+  })
+
+  it('第一次真杀抛错也不放开闸门（宁可少杀一次，也不冒第二次双重 kill 打死宿主的险）', () => {
+    const nativeKills: number[] = []
+    const agent = {
+      kill: () => {
+        nativeKills.push(1)
+        throw new Error('boom')
+      },
+    }
+    const terminal = { kill: (): unknown => agent.kill(), _agent: agent }
+    wrapLocalPty(dshHandle(terminal), 'win32')
+    expect(() => killLocalShellTerminal(terminal, 'win32')).not.toThrow()
+    expect(() => terminal.kill()).not.toThrow()
+    expect(nativeKills).toHaveLength(1)
   })
 })
 

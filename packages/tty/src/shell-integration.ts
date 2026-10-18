@@ -139,7 +139,7 @@ function writeIfChanged(file: string, content: string): void {
 const stubDirs = new Map<string, string>()
 
 /** 桩缓存 key：`<shell>:<DSH_HOME>:<profile 段>`。 */
-function stubKey(shell: 'zsh' | 'bash'): string {
+function stubKey(shell: 'zsh' | 'bash' | 'powershell'): string {
   return `${shell}:${dshHome()}:${dshProfileSegment()}`
 }
 
@@ -349,6 +349,116 @@ function ensureBashStubRc(): string | undefined {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * PowerShell 桩（Windows 宿主）
+ * ------------------------------------------------------------------ */
+
+/**
+ * PowerShell 钩子（纯 ASCII）。
+ *
+ * 为什么必须纯 ASCII：Windows PowerShell 5.1 把**无 BOM** 的 .ps1 按当前 ANSI 代码页读，
+ * 一个非 ASCII 字节就能让解析错位（本桩由 `-File` 载入，解析失败＝集成静默失效）。ESC/BEL
+ * 因此用 `[char]27` / `[char]7` 现构造 —— PS 5.1 没有 `` `e `` 转义（6+ 才有）。
+ *
+ * 钩子形态：包装 `prompt`（发 `D;<退出码>`、`A`、OSC 7，再调用用户原 prompt）与
+ * `PSConsoleHostReadLine`（命令被接受时发 `B`）。桩在 profile **之后**由 `-File` 载入，
+ * 所以 `$function:prompt` 拿到的就是用户主题定义过的那个，包装后原样生效。
+ *
+ * 退出码取值：B 时刻快照 `$LASTEXITCODE`，D 时刻若它**变了**就报它（原生命令），否则按
+ * `$?` 报 0/1（cmdlet）。刻意**不清空** `$LASTEXITCODE` —— 清了会让用户紧接着的
+ * `echo $LASTEXITCODE` 读到空值。代价：连续两次原生命令给出同一个非零码时，第二次降级
+ * 报 1（仍如实标失败，只是丢了具体码值）。
+ *
+ * **解析错误例外**（两版一致，2026-10-13 真机实测）：整行解析失败时命令一条都没跑，但
+ * `$?` 与 `$LASTEXITCODE` 都没变，于是 D 报 **0**（`echo (1` 在 7.6.6 与 5.1 上都是 0；
+ * 5.1 上 `echo A && echo B` 同样报 0）。没有可靠的钩子能区分「解析失败」与「命令成功但
+ * 无输出」，所以如实记着：**PowerShell 上不能只看退出码判成功**，报错文本就在输出里。
+ *
+ * 只在原 `PSConsoleHostReadLine` 存在时才装钩子：用户若关掉了 PSReadLine，那个函数不
+ * 存在，此时**一个标记都不发**（连 A/7 也不发）——只发 A/7 会让宿主 `sawMark=true` 而
+ * `inCommand` 恒 false，`running` 就从「未知」退化成「没在跑」，正是 D77 警告的静默事故
+ * （往正在跑的程序里塞命令）。
+ *
+ * 已知副作用（未修；VS Code 的 shell integration 是同一个取舍）：包装里先抓 `$?`、写完 OSC
+ * 才调用户原 `prompt`，于是**用户原 prompt 读到的 `$?` 是那几次 `[Console]::Write` 的成败**
+ * （恒真），而不是上一条命令的 —— `function prompt { if ($?) {…} }` 那种「失败变红」会因此
+ * 失效。要修得先把失败态还原回去（例如按捕获到的状态补发一条错误记录），而那必须两版
+ * PowerShell 都真机验过才能落。
+ *
+ * 已知限制（**未复现**，见 README 的 Windows 一节）：曾有记录说 PowerShell 7 上命令 stdout
+ * 在 ConPTY 里晚于 D 标记抵达（渲染管线批量重画 vs 直通序列即时转发，与 tmux 场景同根因），
+ * 于是宿主的 B..D 捕获窗口为空 —— cwd 跟随 / 退出码 / running 三态都正常，只有 `capture{last}`
+ * 的输出在 PS 7 上可能为空。2026-10-13 在 pwsh **7.6.6**（Win11 ARM64）上按三档输出量复测
+ * （20 次小输出、2000 行大输出、2s 内分 20 次的慢输出）：**0/20 空窗**，大输出保尾、慢输出
+ * 完整，窗口里也没混进命令行回显 —— 未复现。留作待复现项（遇到空窗用 `tty_capture` 读尾部，
+ * 并把当时的 pwsh 版本报回来）；tmux 那边用 OSC 133;T 快照绕过同类问题。
+ */
+function powershellHooks(): string[] {
+  return [
+  '',
+  '# >>> dsh-tty shell integration >>>',
+  '# Emits OSC 133 (A/B/D + exit code) and OSC 7 (cwd); the host parses the stream.',
+  '# ASCII only: Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI text, so a',
+  '# single non-ASCII byte (even inside a comment) breaks the whole script.',
+  'if (-not $global:DSH_TTY_HOOKS_LOADED) {',
+  '  $global:DSH_TTY_HOOKS_LOADED = $true',
+  '  $global:__DSH_TTY_ESC = [char]27',
+  '  $global:__DSH_TTY_BEL = [char]7',
+  '  $global:__DSH_TTY_ORIG_PROMPT = $function:prompt',
+  '  $global:__DSH_TTY_ORIG_RL = $function:PSConsoleHostReadLine',
+  '  $global:__DSH_TTY_IN_CMD = $false',
+  '  $global:__DSH_TTY_LEC_AT_B = $null',
+  '  # No PSReadLine (user disabled it) -> emit nothing at all: an unpaired A/7 would',
+  '  # make the host report "not running" for a busy session (see the TS comment).',
+  '  if ($null -ne $global:__DSH_TTY_ORIG_RL) {',
+  '    function global:PSConsoleHostReadLine {',
+  '      $__dsh_tty_line = & $global:__DSH_TTY_ORIG_RL',
+  '      if ($null -ne $__dsh_tty_line -and "$__dsh_tty_line".Trim().Length -gt 0) {',
+  '        $global:__DSH_TTY_IN_CMD = $true',
+  '        $global:__DSH_TTY_LEC_AT_B = "$global:LASTEXITCODE"',
+  '        [Console]::Write($global:__DSH_TTY_ESC + "]133;B" + $global:__DSH_TTY_BEL)',
+  '      }',
+  '      $__dsh_tty_line',
+  '    }',
+  '    function global:prompt {',
+  '      $__dsh_tty_ok = $?',
+  '      if ($global:__DSH_TTY_IN_CMD) {',
+  '        $__dsh_tty_ec = "0"',
+  '        if (-not $__dsh_tty_ok) { $__dsh_tty_ec = "1" }',
+  '        if ($null -ne $global:LASTEXITCODE -and "$global:LASTEXITCODE" -ne $global:__DSH_TTY_LEC_AT_B) {',
+  '          $__dsh_tty_ec = "$global:LASTEXITCODE"',
+  '        }',
+  '        [Console]::Write($global:__DSH_TTY_ESC + "]133;D;" + $__dsh_tty_ec + $global:__DSH_TTY_BEL)',
+  '        $global:__DSH_TTY_IN_CMD = $false',
+  '      }',
+  '      [Console]::Write($global:__DSH_TTY_ESC + "]133;A" + $global:__DSH_TTY_BEL)',
+  '      try {',
+  '        $__dsh_tty_uri = ([System.Uri]::new((Get-Location).Path)).AbsoluteUri',
+  '        [Console]::Write($global:__DSH_TTY_ESC + "]7;" + $__dsh_tty_uri + $global:__DSH_TTY_BEL)',
+  '      } catch { }',
+  '      & $global:__DSH_TTY_ORIG_PROMPT',
+  '    }',
+  '  }',
+  '}',
+  '# <<< dsh-tty shell integration <<<',
+  '',
+  ]
+}
+
+/** 写 PowerShell 桩（稳定路径 + write-if-changed）并返回桩文件路径；失败返回 undefined（集成静默降级）。 */
+function ensurePowerShellStub(): string | undefined {
+  const cached = stubDirs.get(stubKey('powershell'))
+  if (cached !== undefined) return cached
+  try {
+    const stub = join(pluginRuntimeDir(), 'shell', 'powershell', 'bootstrap.ps1')
+    writeIfChanged(stub, powershellHooks().join('\n'))
+    stubDirs.set(stubKey('powershell'), stub)
+    return stub
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * 组装 shell 启动计划：在原有 TERM/COLORTERM 包装层之上，按 shell basename
  * 注入集成（zsh → ZDOTDIR 桩；bash → --rcfile 桩）。integration=false 或不
@@ -427,7 +537,14 @@ export function commandShellHint(shell: string, platform: NodeJS.Platform = proc
     return `本地命令由 ${name} 执行：按 POSIX shell 语法（\`a; b\`、\`cd x && y\`、\`for …; do …; done\`、管道、单引号）`
   }
   if (isPowerShellShell(name)) {
-    return `本地命令由 ${name} 执行：按 **PowerShell** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式；POSIX 的 \`&&\`、\`$?\`、单引号不是 PowerShell 5.1 的语法）`
+    const kind = name.split(/[\\/]/).pop()?.toLowerCase() ?? ''
+    // PowerShell 7（pwsh）与 Windows PowerShell 5.1 的语法**不一样**，这句话每一轮都进
+    // systemPrompt，说错会直接把模型引到不存在的坑里（D101，2026-10-13 真机实测：
+    // 7.6.6 上 `echo A && echo B` 正常输出 A/B、5.1 上同一行是解析错误且一条都没跑）。
+    if (kind === 'pwsh' || kind === 'pwsh.exe') {
+      return `本地命令由 ${name} 执行：按 **PowerShell 7** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式、\`&&\`/\`||\` 链式、\`$?\` 判上一条是否成功、\`$LASTEXITCODE\` 取原生命令退出码；单引号是字面量、双引号才插值）`
+    }
+    return `本地命令由 ${name} 执行：按 **Windows PowerShell 5.1** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式；**5.1 没有 \`&&\`/\`||\`**——条件执行写 \`if ($?) { … }\`，退出码用 \`$LASTEXITCODE\`；单引号是字面量）`
   }
   const kind = name.split(/[\\/]/).pop()?.toLowerCase() ?? ''
   if (kind === 'bash.exe' || kind === 'bash' || kind === 'sh.exe' || kind === 'sh' || kind === 'zsh.exe' || kind === 'zsh') {
@@ -445,22 +562,67 @@ export function isPowerShellShell(shell: string): boolean {
 }
 
 /**
+ * 该平台 + 该 shell 下，OSC 133/7 集成**能不能注入**（宿主把开关存成什么值的判据）。
+ *
+ * POSIX 恒 true：注入只对 zsh / bash 有实现，其他 shell 在 buildShellSpawn 里自然退回最简
+ * 包装层 —— 这是历史行为，不动它（把 fish 之流一并拨 false 会改变既有快照语义）。
+ *
+ * Windows 只有 PowerShell 家族为 true（`-File` 桩 + prompt / PSConsoleHostReadLine 钩子）；
+ * cmd 没有命令开始/结束钩子，注入无从谈起。
+ */
+export function shellIntegrationSupported(shell: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'win32') return true
+  return isPowerShellShell(shell)
+}
+
+/**
  * Windows 宿主的启动计划：**直接跑 shell 本体，不做 `-c` 包装层**。
  *
  * 为什么不能沿用 POSIX 那层（`-c 'export TERM=…; exec "$shell"'`）：cmd.exe 不认 `-c`，
  * 会把整行忽略掉、开一场空跑然后立刻退出（标签开了就消失）；PowerShell 认 `-c` 但把
- * `export` 当不存在的 cmdlet 直接报错（两条都在 Windows 11 上实测过）。而且 TERM /
- * COLORTERM 对 ConPTY 没有意义，OSC 133/7 那套集成是 POSIX rc 注入、Windows 上不做
- * （宿主侧同时把 shellIntegration 拨成 false，见 index.ts）。
+ * `export` 当不存在的 cmdlet 直接报错（两条都在 Windows 11 上实测过）。TERM / COLORTERM
+ * 对 ConPTY 也没有意义。
+ *
+ * OSC 133/7 集成的注入形态与 POSIX 不同：Windows 走 PowerShell 的 `-File` 稳定桩（rc 注入
+ * 在这里不成立 —— 没有 rc 文件可挂）。cmd 维持「不注入」：没有命令开始/结束钩子就发不出
+ * A/B/D，`capture{last}`、running 三态与 cwd 跟随全都无从谈起（宿主侧因此对 Windows + cmd
+ * 把 shellIntegration 存 false，见 index.ts 与 shellIntegrationSupported）。
  *
  * PowerShell 补 `-NoLogo` 只是去掉启动横幅；**不补 `-NoProfile`** —— 用户的 profile 正是
- * 别名与函数的来源，终端面板不该替用户把它关掉。
+ * 别名与函数的来源，终端面板不该替用户把它关掉；桩也要靠「profile 之后」载入才能拿到用户
+ * 自定义的 prompt 去包装。
+ *
+ * `-NoExit` 必须给：`-File` 跑完脚本就退出，标签会开了即关。桩只装钩子、不做别的。
+ *
+ * `-ExecutionPolicy Bypass` 是**进程级**的：机器策略若为 Restricted / AllSigned，不加它连
+ * 这个未签名的桩都载不进去（表现是集成静默失效）。它不改机器策略，也不放宽本插件的信任级
+ * —— 终端面板本来就在以用户身份执行任意命令。取值停在 Bypass（不改用更窄的 RemoteSigned：
+ * 收益只是策略窄一点，代价是载入路径要在真机上重验一遍）。两条边界如实记下：
+ *   1. **组策略优先**：`-ExecutionPolicy` 能压过注册表里的策略，但压不过**组策略**设置的
+ *      策略。GPO 锁成 Restricted / AllSigned 的机器上，桩照样载不进去 —— 标签开着、集成
+ *      没有（与「用户关了 PSReadLine」同一种静默降级，见 README 的 Windows 一节）；
+ *   2. **会外溢给子进程**：这个参数把值写进 `$Env:PSExecutionPolicyPreference`，从该会话里
+ *      再起 powershell / pwsh 会继承它。
  */
-function buildWindowsShellSpawn(shell: string): ShellSpawnPlan {
-  return { argv: isPowerShellShell(shell) ? [shell, '-NoLogo'] : [shell], env: {} }
+function buildWindowsShellSpawn(shell: string, integration: boolean): ShellSpawnPlan {
+  if (!isPowerShellShell(shell)) return { argv: [shell], env: {} }
+  if (integration) {
+    const stub = ensurePowerShellStub()
+    if (stub !== undefined) {
+      return { argv: [shell, '-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', stub], env: {} }
+    }
+  }
+  return { argv: [shell, '-NoLogo'], env: {} }
 }
 
-/** Windows 宿主的「跑一条命令」计划：按 shell 家族选参数（0.19.0 前一律 /c，Git Bash / WSL 静默失败）。 */
+/**
+ * Windows 宿主的「跑一条命令」计划：按 shell 家族选参数（0.19.0 前一律 /c，Git Bash / WSL 静默失败）。
+ *
+ * PowerShell 的退出码口径（2026-10-13 真机实测，两版一致）：`-Command` 会把**末条命令非零**的
+ * 情况塌成进程退出码 **1**，拿不到具体码值 —— `cmd /c exit 5` 经 `-Command` 出来是 1，而
+ * `exit 5` 出来是 5。POSIX 侧 `sh -c` 不会这样（`exit 5` → 5、末条命令是它自己）。所以
+ * `tty_run` 在 PowerShell 上要拿到具体退出码，命令得自己 `exit`（README 的「跑一条命令」一节记着）。
+ */
 function buildWindowsCommandSpawn(shell: string, command: string): ShellSpawnPlan {
   if (isPowerShellShell(shell)) {
     return { argv: [shell, '-NoLogo', '-Command', command], env: {} }
@@ -478,7 +640,7 @@ function buildWindowsCommandSpawn(shell: string, command: string): ShellSpawnPla
 }
 
 export function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform: NodeJS.Platform = process.platform): ShellSpawnPlan {
-  if (platform === 'win32') return buildWindowsShellSpawn(shell)
+  if (platform === 'win32') return buildWindowsShellSpawn(shell, integration)
   const pre = `export TERM='${term}'; export COLORTERM='${colorTerm}';`
   const exec = `exec "${shell}"`
   if (integration) {

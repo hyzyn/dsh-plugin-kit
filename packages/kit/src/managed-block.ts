@@ -48,6 +48,62 @@ function findEnd(lines: string[], start: number, endMarker: string): number {
 }
 
 /**
+ * 找出「根位置」上的空 flow 序列（`[]`）：文件里**第一条**非空、非注释行。
+ *
+ * 为什么要认出这个位置：DSH 给每个 profile 生成的 `cordis.patch.yml` 模板
+ * （`PROFILE_PATCH_TEMPLATE`）与 `~/.dsh/cordis.patch.yml` 的惯例内容都是
+ * 「几行注释 + `[]`」。`[]` 是**完整**的 YAML 文档（flow 序列根），它之后不能再接
+ * 块序列——直接往后追加托管区块会让整份文件非法（`expected '<document start>',
+ * but found '<block sequence start>'`）。宿主用同一套 js-yaml 解析，于是启动直接
+ * 抛 `failed to parse patches`（热路径则被 HMR 的 catch 吞成一条 warn，卡片上
+ * 什么都看不到）。
+ *
+ * 判据是「**首条**非注释行就是 `[]`」而已，不要求后面什么都没有——旧版本正是往
+ * `[]` 后面追加出坏文件的，那种文件的 `[]` 同样落在首位，扫掉它才是唯一能解析的形状。
+ * 同理，`[]` 之后若还有别的顶层行，那份文件本来就非法，摘掉这个根也不会更糟。
+ *
+ * 返回 -1 表示根位置上不是空序列（正常 patches 文件、纯注释文件、空文件）。
+ */
+function findEmptyFlowSequenceRoot(lines: string[]): number {
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].replace(/\r$/, '').trim()
+    if (line === '' || line.startsWith('#')) continue
+    return /^\[\s*\]$/.test(line) ? index : -1
+  }
+  return -1
+}
+
+/**
+ * 把「只有注释 + `[]`」的那个空根从文本里摘掉（摘掉后注释与其它内容逐字节保留）。
+ *
+ * 返回 `undefined` 表示**不该动**：文本里没有空根，或有空根但还夹着别的结构。
+ * 调用方按「是否有返回值」决定要不要走替换路径——不要用返回空串来判断，
+ * 因为「摘掉空根后只剩注释」是合法且必须替换的情形。
+ *
+ * 已经写出坏文件（`[]` + 托管区块）也能靠它自愈：先摘空根，再就地替换区块，
+ * 于是下一次写入就把非法根修掉了，不需要用户手工删行。
+ */
+export function stripEmptyFlowSequenceRoot(text: string): string | undefined {
+  const lines = text.split('\n')
+  const root = findEmptyFlowSequenceRoot(lines)
+  if (root === -1) return undefined
+  return [...lines.slice(0, root), ...lines.slice(root + 1)].join('\n')
+}
+
+/**
+ * 行数组版的 {@link stripEmptyFlowSequenceRoot}：返回摘掉空根后的新数组。
+ *
+ * 供「本来就在行数组上作业」的调用方（如 codegraph 的 syncManagedMcpRow）使用，
+ * 单独给一个函数是因为那里的 `changed` 标志与行数组是同一份数据，直接改文本再切行
+ * 会丢掉行尾 / 空行信息。
+ */
+export function stripEmptyFlowSequenceRootLines(lines: string[]): { lines: string[]; changed: boolean } {
+  const root = findEmptyFlowSequenceRoot(lines)
+  if (root === -1) return { lines, changed: false }
+  return { lines: [...lines.slice(0, root), ...lines.slice(root + 1)], changed: true }
+}
+
+/**
  * 渲染含标记行的区块（行数组，不含尾部空串——就地替换时不引入额外空行，
  * 追加写入时由调用方在末尾补一个换行）。
  */
@@ -77,6 +133,13 @@ export function spliceManagedBlock(text: string, options: SpliceManagedBlockOpti
     if (body === '') return text
     const head = text.replace(/\s*$/, '')
     const block = renderBlockLines(options, body).join('\n') + '\n'
+    // 空 flow 序列根（`[]`）：它是**完整**的 YAML 文档，后面再接块序列会让整份文件
+    // 非法。所以不是追加，而是把那个根换成托管区块——注释等其它内容原样保留。
+    const stripped = stripEmptyFlowSequenceRoot(head)
+    if (stripped !== undefined) {
+      const kept = stripped.replace(/\s*$/, '')
+      return kept === '' ? block : kept + '\n\n' + block
+    }
     return head === '' ? block : head + '\n\n' + block
   }
 
@@ -89,9 +152,40 @@ export function spliceManagedBlock(text: string, options: SpliceManagedBlockOpti
 
   const blockLines = renderBlockLines(options, body)
   // 悬空起始标记：只重写标记行本身，其后内容原样保留（与 mcp 行为一致）。
-  return end === -1
-    ? [...lines.slice(0, start), ...blockLines, ...lines.slice(start + 1)].join('\n')
-    : [...lines.slice(0, start), ...blockLines, ...lines.slice(end + 1)].join('\n')
+  const spliced =
+    end === -1
+      ? [...lines.slice(0, start), ...blockLines, ...lines.slice(start + 1)]
+      : [...lines.slice(0, start), ...blockLines, ...lines.slice(end + 1)]
+  // 自愈：旧版本会在 `[]` 后面追加区块，写出「`[]` + 区块」这种**非法**文件。标记一旦
+  // 存在，后续写入就走这条「替换已有区块」分支、把坏根原样留着——于是它永久不修。
+  // 这里顺手把区块**外**那个裸 `[]` 摘掉：区块存在时，任何一个独立的 `[]` 都只能是
+  // 残留的根（合法的 patch 列表里它没有位置），摘掉才是唯一能解析的形状。
+  return stripStrayEmptyRootsOutsideBlock(spliced, options)
+}
+
+/** 行尾 CR 不参与比较；`[]` / `[ ]` 都认。 */
+function isEmptyRootLine(line: string | undefined): boolean {
+  return line !== undefined && /^\[\s*\]$/.test(line.replace(/\r$/, '').trim())
+}
+
+/**
+ * 摘掉托管区块**之前**的裸 `[]` 行（就地重写时用；区块内的 `- insert: []` 不是它）。
+ *
+ * 与 {@link stripEmptyFlowSequenceRoot} 的分工：那个识别「整份文件只有注释 + 空根」，
+ * 用在首次追加；这个识别「已经有区块，但区块前还留着坏根」，用在重复写入。两处都要，
+ * 因为「写坏的文件下一次写入能不能自愈」取决于后者。
+ *
+ * 只认区块**之前**的那一行：坏文件里根永远在块前（块是往根后追加出来的）。块后也扫
+ * 会误伤「同一文件里真有第二个文档」这类手写形状——那种情况下宁可不动，让调用方的
+ * 复读校验去报错。
+ */
+function stripStrayEmptyRootsOutsideBlock(lines: string[], markers: ManagedBlockMarkers): string {
+  const start = findBegin(lines, markers.beginMarker)
+  if (start === -1) return lines.join('\n')
+  const end = findEnd(lines, start, markers.endMarker)
+  // 结束标记缺失时不摘：此时区块边界不可知，保守起见不动任何东西。
+  if (end === -1) return lines.join('\n')
+  return lines.filter((line, index) => index >= start || !isEmptyRootLine(line)).join('\n')
 }
 
 /**

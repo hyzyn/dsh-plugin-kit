@@ -357,6 +357,65 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 **门槛**：重负载（6 份并发全量套件 + 2 忙循环，即让它红过的那个负载）**6/6 份全绿**；
 全量 109 文件 / 1698 用例绿。
 
+### 测试稳定性：`cli-route.test.ts` 在 Windows 上的**负载敏感**（2026-10-13，**产品源码零改动**）
+
+**现象（CI）**：`main` 的 run `38328345671`（windows-latest）红过一次——
+`P1 索引生命周期：unlock 与过期信号 > unlock：也接受不存在的锁（CLI 幂等，exit 0）` 报
+`AssertionError: expected 500 to be 200`（`test/cli-route.test.ts:1384`），同一次运行的其余腿与其余
+用例全绿，**rerun 即绿**（4/4 腿 success）。
+
+**这条用例为什么可能 500**：`unlock` 路由把 `run()` 的任何失败都映射成 500，而 `settleCliRun`
+只在 `timedOut` 或**子进程退出码非零**时判失败（spawn 的 `error` 事件同样落到 500）。用例自己的
+stub 只 `console.log` 一行、必然 exit 0，所以那个 500 只能是「`cmd.exe` → `node` 这条 shim 没跑成」。
+**它不是超时**：该用例在日志里只花了 **148ms**（紧邻两条 unlock 用例是 211ms / 138ms），
+而 `DEFAULT_CLI_TIMEOUT_MS` 是 60s、整个文件也只跑了 16.7s。
+
+**真机复现（Win11 ARM64，2026-10-13）**：同一份文件 **6 份并发**跑 5 轮 → 30 次子进程里
+**10 次失败**，但失败形状与 CI 那条**不同**：全部是 vitest 的 `Test timed out in 20000ms`
+（或「探测尚未落地」类断言），分布在约 8 条互不相关的用例上（`unlock` 三条、`CG54 /diagnose`、
+query 族的 argv 校验、`CG27`、`CG65` 各若干）。**共同点**：每条断言都建立在「一个真子进程
+（`cmd.exe` → `node`）能在某个**墙钟**预算内起来并跑完」之上（20s 用例超时 / 15s `waitFor` /
+3s 探测档），而这些启动在负载下会慢一个数量级——与 CG65 同型，只是预算落在**用例超时**那一层。
+（同一次复跑里 CG65 自己也在 3s 档上红了一次：说明「5 倍余量」在 4 核 ARM64 + 6 并发这个负载下
+仍不够，见上一条的门槛只覆盖了它当年红过的那个负载。）
+
+**已排除**：「刚写出来的 `.cmd` 立刻执行会失败」（全新 stub + 立刻 spawn，**400 次 / 4 并发 → 0 失败**），
+所以不是「新文件还没落稳 / 杀软还没扫完」这一类。
+
+**未定性**：CI 那一次 148ms 的 500 是 spawn 的 `error` 事件，还是子进程非零退出——两者在测试里
+**形状不可区分**（都只表现为 500）。**已加的最小诊断**（2026-10-13）：该用例断言前会打印
+`capture.body`（`failCli` 已经把原因写进响应体，只是此前没人打印），下次再红就直接读得到子进程
+说了什么；**判据未变**（仍然断言 200），只在失败时多一行 stderr。
+
+**边界**：这是**测试 / CI 稳定性**问题，不是产品缺陷——「CLI 调用失败 → 500」正是设计意图，
+所以它**不进 `CGxx` 产品缺陷台账**，留在本节。
+
+**可选修法**（**①②③ 与诊断均已于 2026-10-17 落地**，①仍不适用见下）：
+
+- ① 给本文件里 spawn 密集的用例放宽**用例超时**（`it(…, 60_000)` 或文件级 `testTimeout`）——
+  「真子进程要起来」不是被验的语义。**只对超时形状有效**：CI 上那两次红拿到的都是 500 形状
+  （约 148ms，**不是超时**），所以它收不了 CI 这条。
+- ② 让这个文件与全量套件分开跑 → **2026-10-17 也落地了**：CI 的 Windows 腿**先单独跑一遍**这个
+  文件（那一轮它独占机器），常规那轮再用 `env: DSH_SKIP_CLI_ROUTE=1` 把它排掉（`vitest.config.ts`
+  的 `laneExclude`）。两个实现细节都是被守卫逼出来的：**排掉它用的是 vitest 自己导出的
+  `configDefaults.exclude`**（`--exclude` 是**覆盖**不是追加，手抄一份默认列表会随版本静默腐烂、
+  漏一项就可能去收依赖树里的测试）；**开关只能走 `env:`、不能写成行内前缀**（判据 3 比的是
+  `run:` 的**整行**，`pnpm test` 必须与 release.yml 逐字一致）。手动指定 `test_filter` 的那条道
+  保持原样（那一步带 `inputs.test_filter == ''`）。
+- ③ 给 windows 腿更多预算 → **2026-10-17 落成「CI Windows 腿降并发」**：`vitest.config.ts` 的
+  `workerCap`（`maxWorkers: 2`，只在 `CI && win32` 生效，本机与另两条腿一字不变；两支由
+  `scripts/test/vitest-config.test.ts` 钉住）。**为什么落在 vitest 配置而不是 `ci.yml`**：两条
+  workflow 里同一个入口的命令必须**逐字一致**（`scripts/ci-script-truth.mjs` 判据 3 防的正是
+  「某一侧被偷偷加参数」），给 `pnpm test` 挂个 flag 会当场判成 `ci.crossWorkflow.mismatch`
+  （release.yml 那边是裸的）；worker 数本来也是运行器的事。**这是降低概率，不是治本。**
+- **同轮补的诊断（2026-10-17）**：`test/cli-route.test.ts` 的 `call()` 现在把**每一个 500 的
+  响应体**打出来——500 的两种成因（spawn 的 `error` 事件 / 子进程非零退出）**区别只写在响应体
+  里**（`settleCliRun` 会把 stderr 原文拼进 error），而此前只有 `unlock` 那一条用例带这行诊断，
+  所以 CG27 那次再红时日志里什么都没有、又一次定不了性。**判据一字未变**，只是失败时多一行
+  stderr。
+  **至此 ①②③ 都已落地**；若仍红，**先读那行响应体**（它把 spawn error 与子进程非零退出分开
+  了），再按证据定下一步——不再有「猜一个修法」的余地。
+
 ## 项目级 ROADMAP 第 4 项（`isConcurrencySafe`）与本包的关系：**不成立**
 
 2026-09-25 复核：`packages/codegraph/src/**` 里**一个 `tools.register` 都没有**——本包只做
@@ -385,7 +444,7 @@ npx tsc --noEmit -p packages/codegraph/tsconfig.json
 npx vitest run packages/codegraph
 npx vitest run                                   # 全仓，防跨包回归
 pnpm -r build && git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'   # 产物 = 源码闸（CG28）
-node scripts/check-dsh-home.mjs                  # 跨包 DSH_HOME 推导的防回归闸（CG35 已修，保持绿）
+node scripts/check-dsh-home.mjs                  # 两条判据：① DSH_HOME 推导只允许一份（CG35，秒级）；② 整轮测试跑在**空的哨兵 home** 上、跑完该目录必须还是空的（CG68 补记，会重跑一整轮 vitest，本机 25s）
 ```
 
 > ⚠️ **`lib/` 那半边必须带 `:(glob)`**——pathspec 的坑、实测命中数与「pre-commit 已正确、CI 未正确」

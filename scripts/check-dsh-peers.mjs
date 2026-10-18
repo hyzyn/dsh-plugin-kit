@@ -12,11 +12,22 @@
  *    （`^<cohort>` 用 `||` 连起来）：只写一段就会把另一个仍在服役的 cohort 判死——
  *    0.2.0-rc.1 那轮就是这么暴露的（`^0.1.7-rc.2` 展开是 `>=0.1.7-rc.2 <0.2.0-0`，
  *    `0.2.0-rc.1` 差在 `-0` 上，连 `includePrerelease` 也救不回来）。
- *  - **展示**：`dsh.engines.dsh`。rc.1 的宿主代码里**没有任何读取方**（app-boot
- *    README 原文：这些检查使用 peer 声明，而不是 engines.dsh），但插件市场 / 社区
- *    条目那类外部消费方仍按它展示「兼容 / 不兼容」。保留它只为市场口径，值必须与
- *    peer 下限一致——否则就是一条与事实不符的声明，比不声明更糟。市场解析器只认
+ *  - **展示**：`dsh.engines.dsh`（**嵌在 `dsh` 下的这一层**）。这一层至今没有任何宿主
+ *    读取方（rc.1 的 app-boot README 原文：这些检查使用 peer 声明，而不是 engines.dsh），
+ *    但插件市场 / 社区条目那类外部消费方仍按它展示「兼容 / 不兼容」。保留它只为市场口径，
+ *    值必须与 peer 下限一致——否则就是一条与事实不符的声明，比不声明更糟。市场解析器只认
  *    单段 `>=X.Y.Z[-预发布]`，所以它写的是**最低档**，不跟随多段 peer。
+ *
+ *    **2026-10-16 复核补记：顶层位与本层不是一回事。** `0.2.1-alpha.4` 起 app-boot 的兼容性
+ *    判定会读**顶层** `engines.dsh`，而且它一旦存在就**短路 `peerDependencies`**。实测（判定器
+ *    runtime `0.2.1-alpha.5`）：顶层 `engines.dsh: ">=999"` + peer 正常 → 判不兼容、且要求只报
+ *    `engines.dsh`；顶层正常 + peer 非法 → 放行；而嵌在 `dsh` 下的这一层写 999 仍被判「无要求」
+ *    （**真读它的是顶层**）。旁证：`dsh-plugin-manager` 从 registry manifest 同时取 `engines` 与
+ *    `peerDependencies`，`dsh-plugin-market` 更是**只**用顶层 `version.engines.dsh` 造合成
+ *    manifest（等于对不写顶层位的包一律判「兼容」）。下面那条「顶层 `engines.dsh` 残留」判据是
+ *    按「宿主不读它」的旧事实定的；要不要改成也写顶层位（并相应放宽该判据）是**政策决定**，
+ *    尚未定——在那之前本脚本维持原判据（本仓因此始终由多段 peer 范围决定判定结果，见
+ *    `docs/troubleshooting.md` 的兼容性一节）。
  *  - 被拒的插件启动时整行 `disabled`（bundle 整体跳过），安装时抛
  *    `incompatible-version`；豁免要写进 profile 自己的 `compatibility.json`。
  *
@@ -68,18 +79,49 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    两条，零删除零改名，本仓注册的槽（含给老宿主留的回退槽）一个没被拿掉；
  *    `dsh-host-webserver` 与 `dsh-web-app` 的改动都在**宿主配置面**（监听地址只收环回或具体
  *    网卡、新增 TLS 配置、`webRuntime` → `webStartup`），本仓对这些名字零引用。
- * `cordis` 4.0.4 与 `schemastery` 3.18.4 在前三档同版本；第四、五档的宿主带的是同一对
- * 4.0.5-alpha.1 与 3.18.5-alpha.1，但两份 tarball 除 `package.json` 外**逐字节相同**，且 app-boot 用
- * `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`），所以同一条范围同时声明
- * 多段是如实表述，而不是「先放宽再说」。
+ *  - 0.2.1-alpha.5 vs 0.2.1-alpha.2：**这一段不是"零差异"**（前三档那种「只改声明」的说法在这里不成立），
+ *    它是本仓第一档明确带着**宿主行为变化**进来的 cohort——四条都已落进本仓的适配或记录：
+ *      · 判定器字段名 `PluginCompatibility.peers` → `requirements`（**alpha.4** 起）：
+ *        本脚本的诊断行曾据此读 `issue.peers` 而打出 `undefined`，已改成 `requirements ?? peers`；
+ *      · 顶层 `engines.dsh` 开始参与判定、且**短路 `peerDependencies`**（alpha.4 起）：
+ *        本仓因此仍只写嵌套展示位、判定仍靠多段 peer（见文件头「两个字段各管一件事」）；
+ *      · 凭据 seam 层级翻面（**alpha.3** 起：`$DSH_HOME/.credentials.yaml > inherited env`）：
+ *        `packages/env` 的启动期同步预注入随之对齐（存储值覆盖继承值）；
+ *      · macOS 原生 picker 换成 JXA + `NSOpenPanel`、取消改由空 stdout 表达（alpha.5）：
+ *        `docs/os-consent-plan.md` §2.1 事实 3 已按新口径改写并补了守卫。
+ *    插件 API 面（逐文件比对 18 个内联包的 130 个 d.ts，115 个逐字节相同）：本仓 import 的
+ *    `dsh-mcp-client` / `dsh-base` / `dsh-settings` / `dsh-client-locale` / `dsh-session-query` /
+ *    `dsh-sandbox` / `dsh-launch-environment` / `dsh-headless` / `dsh-user-approval` /
+ *    `dsh-subprocess` 的 **lib/ 逐字节相同**；`dsh-tools` 里本仓用的 `defineTool` 未变
+ *    （`createRunCodeTool` 多一个必填的 `ctx` 但没从 `index.d.ts` 再导出，`renderToolsSdk`
+ *    多一个可选参而本仓零引用）；`dsh-app-boot` 删掉的 `HARNESS_SOURCE_SECTION` /
+ *    `addHarnessSourceSection`、`dsh-subprocess-local` 改签名的几个导出、
+ *    `dsh-host-webserver` 的 `get port(): number | undefined`（本仓按结构用，只调 `register` /
+ *    `registerUpgrade`）、`dsh-credentials-local` 新增的 `ignoredKeys`——**全部零引用或零影响**。
+ *  - 0.2.1-rc.1 vs 0.2.1-alpha.5：**纯显式声明，宿主对本仓零差异**——`0.2.1-rc.1` 本来就被
+ *    `^0.2.1-alpha.5` 覆盖（同一个 `0.2.1` 版本元组，预发布之间不比大小），官方判定器实测放行。
+ *    逐文件比对（两档各装一份临时依赖树，逐 `lib/` 比对）：本仓 import 的 14 个宿主包
+ *    （`dsh-tools` / `dsh-mcp-client` / `dsh-credentials` / `dsh-credentials-local` /
+ *    `dsh-client-locale` / `dsh-base` / `dsh-web-app` / `dsh-user-approval` / `dsh-settings` /
+ *    `dsh-session-query` / `dsh-sandbox` / `dsh-launch-environment` / `dsh-headless` / `dsh`）
+ *    **`lib/` 全部逐字节相同**，判定器 `dsh-app-boot` 的 `lib/` 同样逐字节相同；整套 304 个包里
+ *    只有 5 个客户端产物不同，且**差异只有版本字符串**（`settings-general` / `sidebar` /
+ *    `settings-account` 里的 `0.2.1-alpha.5` → `0.2.1-rc.1`、`dsh-client-modules` 里的 commit 哈希、
+ *    `dsh-web-frontend` 只有 `.map`）。所以这一档**不改任何插件运行代码**，也不需要新的行为适配。
+ * `cordis` 4.0.4 与 `schemastery` 3.18.4 在前三档同版本；第四、五档的宿主带的是
+ * 4.0.5-alpha.1 与 3.18.5-alpha.1；**第六档（alpha.5）带 ~4.0.5-alpha.2 / ~3.18.5-alpha.2，
+ * 实际解析到 4.0.5 / 3.18.5**——与第四、五档解析到的同名版本，两份 tarball 除 `package.json`
+ * 外**逐字节相同**，且 app-boot 用 `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`），
+ * 所以同一条范围同时声明多段是如实表述，而不是「先放宽再说」。**第七档（rc.1）仍是
+ * 4.0.5 / 3.18.5**（与第六档同一对，逐字节相同）。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
  * 唯一支持的 peer 写法：逐 cohort 的 `^<cohort>` 用 `||` 连起来（预发布参与匹配，见文件头）。
  * 单 cohort 时就是 `^0.1.7-rc.2` 这种老写法，多 cohort 时是
- * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2`。
+ * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1`。
  */
 const EXPECTED_RANGE = DSH_COHORTS.map((cohort) => `^${cohort}`).join(' || ')
 /**
@@ -303,7 +345,17 @@ if (appBootDir !== undefined) {
   if (incompatible.length > 0) {
     console.error(`✘ DSH 判定器核对未通过：${String(incompatible.length)} 处（包 × cohort）incompatible`)
     for (const { name, cohort, issue } of incompatible) {
-      console.error(`  ${name} @ ${cohort}: peers=${JSON.stringify(issue.peers)}`)
+      /*
+       * 字段名跨档不同，**别退回单一写法**（2026-10-17 复核发现）：判定器返回的「未满足项」
+       * 在 `0.1.7-rc.2` ~ `0.2.1-alpha.3` 叫 `peers`，`0.2.1-alpha.4` 起改叫 `requirements`
+       * （同轮 `dsh.engines.dsh` 也开始参与判定，见本文件头部的两字段说明）。
+       *
+       * 判定本身不看这个字段（走的是上面的 `issue !== undefined`），但这条诊断**只在出问题时打印**
+       * ——退回 `issue.peers` 就会在本仓最需要它的时候打出一句 `undefined`。而它此前一直没暴露，
+       * 是因为 CI 的 pin 停在 `0.2.1-alpha.2`（那一档返回 `peers`）；**pin 一抬到 alpha.4+ 就会静默降级**。
+       */
+      const unmet = issue.requirements ?? issue.peers
+      console.error(`  ${name} @ ${cohort}: requirements=${JSON.stringify(unmet)}`)
     }
     process.exit(1)
   }

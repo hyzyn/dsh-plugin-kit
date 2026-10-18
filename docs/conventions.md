@@ -44,6 +44,7 @@
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
+| **上游问题报告**（`dsh-plugin-market` 的兼容性判定没实现规则的后半句「engines.dsh, **else** peerDependencies」：只靠 `peerDependencies` 声明兼容范围的包，在市场上被无条件判「兼容」。**2026-10-17 已发**：<https://github.com/deepseek-ai/deepseek-harness/discussions/9907>） | L0 [`docs/discussion-body-dsh-market-compat.md`](./discussion-body-dsh-market-compat.md)（**提给 DSH 上游 GitHub Discussions 的帖子正文副本**：代码归属 `deepseek-ai/deepseek-harness`，但该仓 **issues 已关闭**、`CONTRIBUTING.md` 指定 bug 走 Discussions；正文英文、示例已脱敏，宿主路径一律行内代码、不做相对链接）。本仓为何仍坚持强制只靠多段 peer、不写顶层 `engines.dsh`，见 [`scripts/check-dsh-peers.mjs`](../scripts/check-dsh-peers.mjs) 头部的两字段说明 |
 | **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
 | **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体六条硬规矩) ④ |
@@ -115,8 +116,8 @@
 | 包 | 前缀 | 当前范围 |
 |---|---|---|
 | `docker` | `D` | `D01`–`D167` |
-| `tty` | `D` | `D01`–`D99` |
-| `codegraph` | `CG` | `CG01`–`CG66` |
+| `tty` | `D` | `D01`–`D101` |
+| `codegraph` | `CG` | `CG01`–`CG68` |
 | `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D14` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
 | `loglens` | `D` | `D01`–`D04`（2026-10-11 建包当天开始记；`D02`/`D03` 是 2026-10-12 P2 真机验收抓到的 Loki 分页缺陷，`D04` 是 2026-10-13 真机第一眼看到的「来源」下拉显示与状态不一致，见其 `DEFECTS.md`） |
 | 其它包 | 需要时自定，从 `01` 起 | — |
@@ -126,6 +127,14 @@
 > [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) **现算**核对：
 > **改了台账就要同步改这里，否则 CI 红**。反向禁止：守卫报红时**只改文档侧**，
 > 绝不为让它变绿去增删 / 重排 / 改号任何台账行——「编号不回收、不重号、不丢失」比「数字对得上」硬得多。
+
+同一道守卫还会**现算核对引用本身**（判据 8，2026-10-17 补）：全仓 `<包名> <前缀><号>` 形式的
+跨包引用，引的号必须在**该包台账里真实存在**（前缀一致、落在 `01`–最大号内、不是空号）。
+凭空写一个号，读者会去找一条并不存在的缺陷，下一个要编号的人还可能把它当成「已经用过的号」
+——而这类引用原先**没有任何东西会红**：它不是链接（`check-doc-links.mjs` 只管链接与锚点），
+也不是台账行（上面那几类复述只看台账自己写了什么）。
+**连带代价**：正文里不能**整串**引用一个不存在的号（哪怕是为了说明它不存在），那串字本身就会
+被抓成悬空引用——改述或拆开写；夹具里的假号请按「现算最大号 + 1」算，不要写死字面量。
 
 **硬规矩**：
 
@@ -197,7 +206,15 @@
   接线与公网 IP 那道**逐一对应**：`pre-commit` 扫 index（`--staged`）、`commit-msg` 扫提交信息、
   `ci.yml` 两个 step 兜底（全仓 + 按推送区间扫消息）。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
-  `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 依次扫公网 IP 与内部标识。
+  `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 依次扫 i18n、公网 IP、
+  内部标识与 README 常量一致性（`readme-facts`）。
+  产物**只跟着「这一笔提交的源码」走**（2026-10-17 修）：只有 `src` / `client-src` 的改动
+  已经躺在 index 里的包，它的产物才会被加进来；若某个包已暂存的源码在工作区**还有**未暂存
+  改动（产物没法与「提交里的源码」同步），钩子**直接中止**并给出两条出路。为什么要有这条：
+  在脏树上做部分提交时，无条件 `git add` 会把**按未提交源码重建**的产物卷进这一笔
+  （实测形状：一份只暂存 9 个文件的提交里混进了 5 个包的 `lib/`）。判据与反例见
+  [`scripts/test/git-hooks.test.ts`](../scripts/test/git-hooks.test.ts)——**行为式**的：
+  真起临时仓库、挂真钩子、真跑 `git commit`，看它到底往这一笔里装了什么。
 - **改了 `client-src/` 或 `src/` 的对外行为，同一提交里要改 `README.md` / `README.en.md`**。
   判据不是「有没有动 README 文件」，而是**对外陈述是否还成立**：新增开关、改了上限、换了交互，
   README 里描述它的那句就得跟着改；纯内重构、修一个不影响对外行为的缺陷不算。
@@ -218,6 +235,14 @@
   写法的推荐形态是「最多 4 列（`RESULT_COLUMN_MAX`）」，中文量级词（`2 万字符`）也认。
   散文、语气、章节顺序**不**绑机器判据——把散文绑死只会制造误报。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
+- **推含 `.github/workflows/` 改动的提交需要 `workflow` scope**（2026-10-17 实测）。`gh` 的
+  OAuth token 默认只有 `repo` / `gist` / `read:org` / `admin:public_key`，推 workflow 文件时
+  GitHub 直接拒：`refusing to allow an OAuth App to create or update workflow … without workflow scope`。
+  **不含 workflow 的提交照常能推**，所以这个限制往往很晚才暴露（第一次改 CI 时）。两条出路：
+  `gh auth refresh -h github.com -s workflow`，或把远端配成 SSH。
+  用 SSH 时注意：若本机有 `url.https://github.com/.insteadof git@github.com:` 这类全局改写，
+  必须写 **`ssh://git@github.com/<owner>/<repo>.git`** 这种形式——`git@github.com:` 短写会被
+  改回 HTTPS，于是又撞上同一个 scope 限制（这条踩过一次）。
 
 ## Issue（提 issue 的格式约束）
 

@@ -52,6 +52,28 @@
  * 没有这一列的包（docker / codegraph / kit）用 `codeRefs: false` **显式声明**，
  * 而且一旦有人在那种表里冒出 `✓` 列，也会被报出来（`ledger.codeRefs.undeclared`）。
  *
+ * ## 另一半之二：跨包引用不许指向**不存在的号**（判据 8）
+ *
+ * 实测（2026-10-17 现算）：全仓几百条 `<包名> <前缀><号>` 形式的跨包引用里，混着指向**不存在的
+ * 号**的引用——最典型的一条就写在闸门自己的文案里：它引的号比该包台账的上限还大 1
+ * （codegraph 的上限是 `CG68`，而那道闸本身是 CG68 的补记、**刻意没有新开号**）。
+ * 后果有两个：读者会去找一条并不存在的缺陷；下一个要编号的人可能顺手把它当成「已经用过的号」。
+ *
+ * 判据：扫全仓**会写编号的文本**（`md` / `ts` / `mjs` / `js` / `json` / `yml` …，跳过
+ * `node_modules` / `lib` / 构建产物与点目录，`.github` 例外——workflow 的注释里也在写编号），
+ * 每条 `<包名> <前缀><号>` 都必须在这四份台账里**真实存在**（前缀一致、落在 `01–最大号` 内、
+ * 且不是空号）。刻意造出的假号只允许出现在守卫自己的夹具里，逐条列进 `DANGLING_REF_ALLOW`
+ * 并写明理由；**豁免没用上也会报**（`ledger.ref.allowStale`）——否则它会一直「豁免」一个
+ * 早已不在文件里的字符串，而那正是豁免表腐烂的方式。
+ *
+ * 命中 0 条引用时另报 `ledger.refs.none`：判据恒绿比没有判据更坏（本仓真实发生过一次
+ * 命中 0 个文件的产物闸门）。
+ *
+ * **连带代价（实测踩过三次）**：正文里不能**整串**引用一个不存在的号——哪怕是为了说明
+ * 「这个号不存在」，那串字本身也会被这条判据抓成一条悬空引用。要提就改述（「比上限还大 1 的
+ * 号」）或拆开写。判据扫的是**全仓**，包括写它的这份文件与它的夹具；夹具里的假号一律按
+ * 「现算最大号 + 1」算出来，而不是写死一个字面量。
+ *
  * ## 反向禁止（比这个守卫更硬的规矩）
  *
  * 守卫报红时**只改文档侧**。绝不允许为了让守卫变绿去增删、重排任何台账行或编号——
@@ -68,7 +90,7 @@
  *   node scripts/defects-table.mjs --quiet    # 只打印差异
  */
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -179,6 +201,117 @@ function label(prefix, value) {
   return `${prefix}${String(value).padStart(2, '0')}`
 }
 
+/* ------------------- 判据 8：跨包引用的号必须真实存在 ------------------- */
+
+/**
+ * 扫引用时看的扩展名：`md`（文档与台账）· `ts`/`mts`/`cts`/`mjs`/`cjs`/`js`（代码注释）·
+ * `json`/`yml`/`yaml`（配置与 workflow 注释）。
+ *
+ * 刻意**不按 `SOURCE_EXT`**（核 `✓` 列那套只管 `.ts`/`.js`/`.mjs`，因为台账的原话是
+ * 「代码/测试里引用了该编号」）：判据 8 管的是**引用**，而引用主要写在 markdown 与
+ * workflow 注释里——当初那条悬空引用就是写在 `.mjs` 与 `.yml` 里的。
+ */
+const REFERENCE_EXT = /\.(md|markdown|ts|mts|cts|mjs|cjs|js|jsx|tsx|json|yml|yaml)$/
+/** 扫引用时整目录跳过的名字（依赖 / 构建产物 / 覆盖率报告）。 */
+const REFERENCE_SKIP_DIRS = new Set(['node_modules', 'lib', 'dist', 'build', 'out', 'coverage'])
+/** `<包名> <前缀><号>`：跨包引用（`docker D119` / `codegraph CG68` / `kit D11` / `tty D61`）。 */
+const CROSS_REF_SOURCE = String.raw`\b(docker|tty|codegraph|kit)\s+([A-Z]{1,4})(\d{1,4})\b`
+
+/**
+ * 刻意写出的「不存在的号」的**豁免表**：只允许出现在守卫自己的夹具里（造 A 类反例用）。
+ *
+ * 用 `{ file, pkg, number }` 而不是写一整条 `'<包名> <前缀><号>'` 字符串：**豁免表自己也在这份
+ * 文件里**，写成整串会让它立刻被判据 8 抓成一条悬空引用（守卫扫的是全仓，包括写它的这一份）。
+ *
+ * 每条必须写清理由，且必须**真的用上**——`ledger.ref.allowStale` 会在文件里找不到它时报红。
+ * 豁免是给人看的例外，不是「让守卫闭嘴」的开关：真实文本里出现悬空引用时，正确做法是改文本
+ * 或补台账行，**不是**往这里加一条。
+ */
+const DANGLING_REF_ALLOW = [
+  {
+    file: 'scripts/test/defects-table.test.ts',
+    pkg: 'docker',
+    number: 999,
+    why: 'A 类反例：把 conventions 命名表举例换成不存在的号，断言 conventions.example 报红。这是夹具里被替换出来的文本，不是一处引用',
+  },
+]
+
+/**
+ * 把路径归一成 POSIX 分隔符（`\` → `/`）。
+ *
+ * **为什么必须归一**（2026-10-17 CI 实测）：`relative()` 在 Windows 上给的是
+ * `scripts\test\x.ts`，而引用路径既出现在**报错文案**里、又是 `DANGLING_REF_ALLOW` 的键——
+ * 不归一的话同一份豁免表在 Windows 上匹配不上，判据 8 会在那边凭空报出一条悬空引用
+ * （windows-latest 红、ubuntu / macos 绿，本机 macOS 复现不出来）。
+ *
+ * `separator` 可传是为了让这条归一**在任意平台上都能被用例验证**：本机是 `/`，不给参数
+ * 就只能证「原样返回」，证不到 Windows 那支。
+ */
+export function toPosixPath(path, separator = sep) {
+  return separator === '/' ? path : path.split(separator).join('/')
+}
+
+/**
+ * 递归收集「会写编号的文本」（**只读**）。跳过 `node_modules` / `lib` / 构建产物与点目录，
+ * 但保留 `.github`（workflow 注释里在写编号）。
+ *
+ * @returns `{ path, text }[]`；`path` 相对**起始目录**（仓库根传进来时就是仓库相对路径，
+ *   报错里要能直接定位），且**一律 POSIX 分隔符**。
+ */
+export function collectReferenceFiles(dir, root = dir, out = []) {
+  let entries = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return out
+  }
+  for (const name of entries) {
+    if (REFERENCE_SKIP_DIRS.has(name)) continue
+    if (name.startsWith('.') && name !== '.github') continue
+    const full = join(dir, name)
+    let stat
+    try {
+      stat = lstatSync(full)
+    } catch {
+      continue
+    }
+    if (stat.isSymbolicLink()) continue
+    if (stat.isDirectory()) {
+      collectReferenceFiles(full, root, out)
+      continue
+    }
+    if (!REFERENCE_EXT.test(name)) continue
+    out.push({ path: toPosixPath(relative(root, full)), text: readFileSync(full, 'utf8') })
+  }
+  return out
+}
+
+/**
+ * 抽出所有跨包引用（带文件与行号）。
+ *
+ * @param references - `collectReferenceFiles()` 的产物。
+ * @returns `{ file, line, pkg, prefix, number, raw }[]`。
+ */
+export function collectCrossRefs(references) {
+  const pattern = new RegExp(CROSS_REF_SOURCE, 'g')
+  const found = []
+  for (const file of references) {
+    for (const [index, line] of file.text.split('\n').entries()) {
+      for (const match of line.matchAll(pattern)) {
+        found.push({
+          file: file.path,
+          line: index + 1,
+          pkg: match[1],
+          prefix: match[2],
+          number: Number(match[3]),
+          raw: `${match[1]} ${match[2]}${match[3]}`,
+        })
+      }
+    }
+  }
+  return found
+}
+
 /** 取某个 `^## ` 小节的行（`heading` 命中处起、到下一个 `^## ` 止）。 */
 function section(text, heading) {
   const lines = text.split('\n')
@@ -273,9 +406,11 @@ export function parseLedger(text, spec) {
  * @param input.conventions - `docs/conventions.md` 全文。
  * @param input.sources - `{ <包名>: [{ path, text }] }`：包内可含编号引用的文件（L2 侧）。
  *   只对声明了 `codeRefs: true` 的包是必需项；缺了会**报缺失**，不是静默跳过。
+ * @param input.references - `[{ path, text }]`：全仓会写编号的文本（判据 8 用）。
+ *   缺了会**报缺失**（`ledger.refs.references.missing`），不是静默跳过。
  * @returns 差异数组（空 = 通过）；每条是 `{ kind, where, expected, actual, message }`。
  */
-export function checkDefectsTable({ ledgers, conventions, sources = {} }) {
+export function checkDefectsTable({ ledgers, conventions, sources = {}, references }) {
   const diffs = []
   const add = (kind, where, expected, actual, message) => {
     diffs.push({ kind, where, expected, actual, message })
@@ -505,6 +640,48 @@ export function checkDefectsTable({ ledgers, conventions, sources = {} }) {
     }
   }
 
+  // ---- 判据 8：跨包引用的号必须在对方台账里真实存在（悬空引用） ----
+  if (!Array.isArray(references)) {
+    add('ledger.refs.references.missing', '仓库文本', '会写编号的文本清单', '缺失',
+      '核跨包引用需要仓库里那些会写编号的文本（md / ts / mjs / yml …），没拿到——不静默跳过')
+  } else {
+    const refs = collectCrossRefs(references)
+    if (refs.length === 0) {
+      // 恒绿警戒：判据「一条都没扫到」时永远是绿的，那种闸门比没有更坏
+      add('ledger.refs.none', '仓库文本', '至少一条 `<包名> <前缀><号>` 引用', '0 条',
+        `扫了 ${String(references.length)} 份文本，一条跨包引用都没抓到——这条判据会恒绿。先看扩展名清单与跳过目录（node_modules / lib / 点目录）是不是把该扫的都跳掉了`)
+    }
+    const reported = new Set()
+    for (const ref of refs) {
+      const fact = facts.get(ref.pkg)
+      // 台账缺文本上面已经报过 `ledger.missing`：这里不再重复报
+      if (fact === undefined) continue
+      if (DANGLING_REF_ALLOW.some((entry) => entry.file === ref.file && entry.pkg === ref.pkg && entry.number === ref.number)) continue
+      const exists = ref.prefix === fact.prefix
+        && ref.number >= 1
+        && ref.number <= fact.max
+        && !fact.gaps.includes(ref.number)
+      if (exists) continue
+      // 同一份文件里的同一处引用只报一次（第一次出现的行号），不然一句反复出现的错会刷屏
+      const key = `${ref.file}\u0000${ref.raw}`
+      if (reported.has(key)) continue
+      reported.add(key)
+      const where = `${ref.file}:${String(ref.line)}`
+      const range = `${fact.prefix}01–${label(fact.prefix, fact.max)}`
+      add('ledger.ref.dangling', where, `存在（${ref.pkg} 是 ${range}）`, ref.raw,
+        `${where}：引用了 \`${ref.raw}\`，但 ${ref.pkg} 的台账里没有这个号（现算 ${ref.pkg} 是 ${range}）——`
+        + '凭空写一个号，读者会去找一条并不存在的缺陷，下一个人还可能把它当成「已经用过的号」。'
+        + '改法：换成真实存在的号，或去该包台账补上那条（编号不回收、不重号、不凭空造）')
+    }
+    // 豁免必须真的用上：没用上的豁免会一直「豁免」一个早已不在文件里的字符串
+    for (const entry of DANGLING_REF_ALLOW) {
+      if (refs.some((ref) => ref.file === entry.file && ref.pkg === entry.pkg && ref.number === entry.number)) continue
+      const prefix = facts.get(entry.pkg)?.prefix ?? ''
+      add('ledger.ref.allowStale', entry.file, `${entry.pkg} ${prefix}${String(entry.number)}`, '这份文件里找不到',
+        `${entry.file}：悬空引用豁免表里的 \`${entry.pkg} ${prefix}${String(entry.number)}\` 已经不在了（豁免该删——留着只会让下一个人以为那个号真存在）`)
+    }
+  }
+
   return diffs
 }
 
@@ -546,7 +723,8 @@ export function readPackageSources(spec, repoRoot = REPO_ROOT) {
   return files
 }
 
-/** 读入受检的全部文本（**只读**，不改任何东西）：每个登记包的台账 + conventions + 需要核 `✓` 的包内代码。 */
+/** 读入受检的全部文本（**只读**，不改任何东西）：四份台账 + conventions + 需要核 `✓` 的包内代码
+ * + 全仓会写编号的文本（判据 8）。 */
 export function readDefectsInputs(repoRoot = REPO_ROOT) {
   const ledgers = {}
   const sources = {}
@@ -554,7 +732,12 @@ export function readDefectsInputs(repoRoot = REPO_ROOT) {
     ledgers[spec.name] = readFileSync(join(repoRoot, spec.path), 'utf8')
     if (spec.codeRefs) sources[spec.name] = readPackageSources(spec, repoRoot)
   }
-  return { ledgers, conventions: readFileSync(join(repoRoot, CONVENTIONS_PATH), 'utf8'), sources }
+  return {
+    ledgers,
+    conventions: readFileSync(join(repoRoot, CONVENTIONS_PATH), 'utf8'),
+    sources,
+    references: collectReferenceFiles(repoRoot, repoRoot),
+  }
 }
 
 /** 对真实仓库跑一遍（CI 与人工都用这条）。 */

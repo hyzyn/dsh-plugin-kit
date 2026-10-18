@@ -119,15 +119,29 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   **不补 `-NoProfile`** —— 用户的 profile 正是别名与函数的来源。TERM / COLORTERM 对 ConPTY
   没有意义，也不再注入；
 - **「跑一条命令」的标签**（docker exec、agent 起的命令标签）走 `cmd /c` 或
-  `PowerShell -Command`；
+  `PowerShell -Command`；**PowerShell 的 `-Command` 会把「末条命令非零」塌成进程退出码 1**
+  （`cmd /c exit 5` → 1，两版一致），要拿到具体码值就让命令自己 `exit 5`（POSIX 侧 `sh -c` 不会这样）；
 - **输入行尾归一化（D74，2026-09-27 真机报告）**：conhost 的 Enter 是 **CR**，裸 LF 只把光标
   下移一格、**不提交命令行**——`tty_send` 按工具描述发 `echo X\n` 时命令停在输入行上（没有输出、
   没有新提示符，看起来像「发出去了但没执行」）。**win32 的本地会话**上插件现在把裸 LF 补成 CRLF
   （已经是 CRLF 的不重复补；非 Windows 与 SSH 会话原样透传），所以照描述写 `\n` 这条主路径直接可用；
-- **不支持的三项（宿主侧自动关掉，设置卡片里写明原因）**：
-  - **shell 集成（OSC 133/7）**：注入靠 POSIX rc 桩 + `-c` 包装层，cmd / PowerShell 上都不成立，
-    因此恒关 —— **本地标签**的 `tty_list.cwd` 跟随 `cd`、`tty_capture{last}` 与 `tty_expect`
-    的命令粒度不可用（远程 Linux / macOS 主机照旧支持）；
+- **shell 集成（OSC 133/7）按家族分**：**PowerShell 家族支持**（`powershell.exe` / `pwsh.exe`）——
+  注入走 `-File` 稳定桩（挂 `prompt` + `PSConsoleHostReadLine` 钩子），拿到 `tty_list.cwd` 跟随
+  `cd`、退出码、`running` 三态与命令粒度的 `tty_expect`；**cmd 不支持**（没有命令开始/结束钩子），
+  设置卡片把开关置灰并指向「把 Shell 路径换成 PowerShell」。**两版语法不同，提示文案按版本分支给**：
+  `&&` / `||` 只有 **PowerShell 7** 认，5.1 上写 `&&` 是解析错误（一条命令都不会跑）。
+  **已知限制（未复现）**：曾有记录说 PowerShell 7 上命令输出在 ConPTY 里晚于 D 标记抵达、
+  `tty_capture{last}` 可能取到空；2026-10-13 在 pwsh **7.6.6**（Win11 ARM64）上按三档输出量复测
+  （20 次小输出 / 2000 行大输出 / 2s 内分 20 次的慢输出）**0/20 空窗**，未复现 —— 真遇到就用
+  `tty_capture` 读尾部，并把当时的 pwsh 版本报回来。另有一条**退出码口径**：PowerShell 家族里
+  **解析错误**（5.1 上的 `&&`、两版上的 `echo (1`）命令一条都没跑，而 D 标记报 **0** —— 不能只看
+  退出码判成功，报错文本在输出里。
+  桩靠 `-ExecutionPolicy Bypass`（进程级）才载得进来，两条边界如实记着：**组策略**把执行策略锁成
+  Restricted / AllSigned 时该参数压不过 GPO，桩载不进去、标签照开而集成静默失效（与「用户关了
+  PSReadLine」同一种降级）；这个参数还会把值写进 `$Env:PSExecutionPolicyPreference`，从该会话里
+  再起的 PowerShell 会继承它。另有一条已知副作用：包装 `prompt` 会让**用户原 prompt 读到的 `$?`**
+  变成我们那几次写入的成败（恒真），依赖 `$?` 的失败提示会失效；
+- **不支持的两项（宿主侧自动关掉，设置卡片里写明原因）**：
   - **tmux 持久化**：Windows 上没有 tmux，本地标签照常打开但不受托管（SSH 到 Linux 主机仍可用）；
   - **服务器状态条**：本地只拿得到 CPU / 内存 / 在线时长（`node:os`），磁盘 / TCP / 网速 / 温度
     显示「无」（**远端** Windows 主机走 PowerShell 那一跳，见「服务器状态条」一节）；
@@ -138,7 +152,11 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 - **端到端覆盖（0.19.0）**：`scripts/windows-smoke.mjs` 在 CI 的 windows-latest 上跑真实 `cmd.exe`
   的 spawn → 输入回显 → kill → 重开，外加两条只在真机上成立的链路（W6：`tty_send` 的裸 LF 经归一化
   后 conhost 真的执行了命令，D74；W7：`command` 型会话跑完退出后转只读保留、`tty_capture` 仍读得到
-  退出前的输出，D77）。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
+  退出前的输出，D77）。**W8（PowerShell 的 OSC 133/7 档）在 CI 上照常跑**（2026-10-13 起）：
+  它此前只在真机车道守，是因为「杀一个 ConPTY 会话」会踩 `0xC0000374`——根因（同一个 PTY 被原生
+  `kill()` 两次）已定位并修好，见 [DEFECTS.md](./DEFECTS.md) 的 **D100** 与
+  [ROADMAP.md](./ROADMAP.md) 的 2026-10-13 一节；本机找不到 PowerShell 时它会如实进 `SKIP` 一档
+  （分母扣掉、汇总行点名，不许装成 `12/12`）。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
   出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到
   socket 回调里抛出，调用方的 try/catch 拦不住。
 
@@ -148,7 +166,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 | 工具 | 作用 |
 | --- | --- |
-| `tty_list` | 列出终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记；agent 自己开的带 `owner: 'agent'`）。**含进程已退出但仍在只读保留期内的会话**（`exited:true` + 退出码/信号，见下节）；**`running` 说明这个会话有没有命令在跑**（true = 在跑，现在别往里发命令；false = 命令已结束；**省略 = 无法判断**——非持久 SSH / fish·csh / Windows 本地没有 shell 集成标记，**不是**「没在跑」），同源的 `lastExitCode` / `lastExitAt` 是「上一条已完成命令」的退出码与结束时刻（0.23.0）。文本里三态写作 `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知——…]`；**「未知」还包含一种情形**：宿主**本次启动之后没见过该会话的标记**（典型是 tmux 持久会话在宿主重启前就停在提示符上）——对它发一个回车或跑一条命令，标记补上就变 `[空闲]`；而非持久 SSH / fish·csh / Windows 本地永远不会有标记，`[命令状态未知]` 是它们的常态 |
+| `tty_list` | 列出终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记；agent 自己开的带 `owner: 'agent'`）。**含进程已退出但仍在只读保留期内的会话**（`exited:true` + 退出码/信号，见下节）；**`running` 说明这个会话有没有命令在跑**（true = 在跑，现在别往里发命令；false = 命令已结束；**省略 = 无法判断**——非持久 SSH / fish·csh / Windows 的 cmd 没有 shell 集成标记，**不是**「没在跑」），同源的 `lastExitCode` / `lastExitAt` 是「上一条已完成命令」的退出码与结束时刻（0.23.0）。文本里三态写作 `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知——…]`；**「未知」还包含一种情形**：宿主**本次启动之后没见过该会话的标记**（典型是 tmux 持久会话在宿主重启前就停在提示符上）——对它发一个回车或跑一条命令，标记补上就变 `[空闲]`；而非持久 SSH / fish·csh / Windows 的 cmd 永远不会有标记，`[命令状态未知]` 是它们的常态 |
 | `tty_open` | **自己开一个终端会话**（0.20.0）：本地 shell，或 `command` 直接跑一条命令（dev server / watch；**按宿主 shell 的语法整段执行**——POSIX shell 上 `cd x && cmd`、`a; b`、多行脚本都可以；**Windows 的 cmd / PowerShell 则按它们自己的语法**，当前 shell 与语法每轮都写在 systemPrompt 的终端一行里；不受下面「命令标签单行 ≤2000」那条客户端约束，D78），`persistName` 可要 tmux 持久化。**开出来的会话出现在用户的终端面板里**（普通标签、用户可见可接管），不做隐形会话 |
 | `tty_close` | 关掉一个由 `tty_open` 开的会话（0.20.0）。**只允许关 agent 自己开的**：用户在面板里开的标签会被拒绝——agent 不越权结束用户正在用的终端。对**已退出但仍只读保留着**的会话同样可用——那是它的释放入口（默认**保留到显式关闭**，不按时间释放） |
 | `tty_run` | **一次性命令**（0.23.0）：开一个会话跑 `command`，等它结束，直接返回尾部输出 + 退出码——把「`tty_open` → 等 → `tty_capture{last}` → `tty_close`」四步压成一次调用。默认**跑完即关**（结果已在本次调用返回），`keep:true` 则留在只读保留态；到 `timeoutSec`（1~600，默认 120）还没结束就返回 `running:true` 且**不杀会话**（继续等或关掉由调用方决定）。何时用它而不是 bash 工具：需要用户**看得见**这条命令、或要跑在终端会话里时用它，纯非交互命令用 bash 更直接 |
@@ -228,7 +246,8 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ### shell 集成（OSC 133/7，0.4.0）
 
-spawn 时经既有的 `-c` 包装层按 shell 类型注入钩子（对用户透明，不改 rc）：
+POSIX 上经既有的 `-c` 包装层按 shell 类型注入钩子，Windows 上走 PowerShell 的 `-File` 稳定桩
+（都对用户透明，不改 rc）：
 
 - **zsh**：`ZDOTDIR` 指向临时桩目录（VS Code 同款方案），桩文件先 source
   用户原 rc 再追加 `precmd`/`preexec` 钩子；
@@ -240,17 +259,26 @@ spawn 时经既有的 `-c` 包装层按 shell 类型注入钩子（对用户透�
   副作用：循环体等复合命令的内部命令会多发 B 标记，仅影响
   `tty_capture{last}` 对这类命令的截取起点，D/退出码与 `tty_expect` 不受影响；
   PROMPT_COMMAND 挂钩兼容字符串与数组（bash 5.1+）两种形态；
+- **PowerShell（Windows）**：`-File` 稳定桩（`<DSH_HOME|~/.dsh>/tty[/<profile>]/shell/powershell/bootstrap.ps1`，
+  纯 ASCII —— Windows PowerShell 5.1 按当前 ANSI 代码页读无 BOM 的 .ps1，一个非 ASCII 字节就炸解析），
+  包装 `prompt` 与 `PSConsoleHostReadLine`；用户 profile 照常生效（桩在 profile **之后**载入，拿到的就是
+  用户自己那个 prompt，包装后原样调用）。退出码口径：B 时刻快照 `$LASTEXITCODE`、D 时刻**变了**才报它
+  （原生命令），否则按 `$?` 报 0/1（cmdlet）——刻意**不清空** `$LASTEXITCODE`，免得用户紧接着的
+  `echo $LASTEXITCODE` 读到空值；代价是连续两次同码的非零原生命令，第二次降级报 1。
+  拿不到原 `PSConsoleHostReadLine`（用户关了 PSReadLine）时**一个标记都不发**：只发 A/7 会让宿主
+  报「没在跑」，比「无法判断」更危险（D77）；
 - 标记语义：`133;A` prompt 开始 / `133;B` 命令开始 / `133;D;<exit>` 命令
   结束带退出码 / `OSC 7 file://…` cwd 上报（`tty_list.cwd` 跟随 `cd`，
   SSH 会话则上报远程路径）；
-- 其他 shell 静默关闭；配置 `shellIntegration: false` 可整体关掉（逃生门）。
+- 其他 shell（含 Windows 的 cmd）静默关闭；配置 `shellIntegration: false` 可整体关掉（逃生门）。
 
 **回溯匹配与已读水位线（D72）**：`tty_expect` 会先回看**还没被读过**的输出（命令瞬间跑完时
 要等的标记早就在缓冲区里了），回看的起点抬到「未读区内最后一个 `B` 标记之后」——回显落在 `A`
 与 `B` 之间，所以回显里的字样不会被当成命中（这里刻意不做文本比对：折行 / ANSI / 多行粘贴
 都会把它打碎）。
 
-- **没有 `B` 标记的环境**（未开集成 / Windows 本地标签 / 远端未装集成）没有边界可切，D75 起
+- **没有 `B` 标记的环境**（未开集成 / Windows 的 cmd 标签 / 远端未装集成 / 用户关了 PSReadLine）
+  没有边界可切，D75 起
   改用另一条判据剔除回显：把**最近 `tty_send` 提交过的命令行**从候选文本里削掉再试一次，
   只有「削掉后不再命中」才算纯回显——这样「命令没执行、等待却自称 matched」这条假阳性没了，
   而回显之后真的跑出来的同一段文本照旧命中。等满超时且 pattern 只命中过回显时，结果带

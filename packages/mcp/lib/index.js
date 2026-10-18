@@ -10,7 +10,7 @@
  * 浏览器半体（./client）通过 /api/dsh-mcp/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, spawnPortable, terminateChild } from '@hyzyn/dsh-kit';
+import { createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, spawnPortable, stripEmptyFlowSequenceRoot, terminateChild } from '@hyzyn/dsh-kit';
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -158,12 +158,17 @@ function renderManagedBlock(rows) {
 }
 /** 纯函数：把托管区块（含首尾标记行）拼进 home 补丁文本，保留区块外的所有内容。 */
 export function spliceManagedBlock(text, rows) {
-    const lines = text.split('\n');
+    // CG67 同源（codegraph）：`[]` 是完整的 YAML 文档（flow 序列根），往它后面追加块
+    // 序列会让整份 cordis.patch.yml 非法——宿主启动时 `parsePatchList` 直接抛，热路径
+    // 则被 HMR 吞成一条 warn。先摘掉根位置上的空序列，把文件变回「无区块」的形状。
+    // 对已经写坏的旧文件同样生效：摘掉 `[]`、再就地替换区块，下一次写入即自愈。
+    const normalized = stripEmptyFlowSequenceRoot(text) ?? text;
+    const lines = normalized.split('\n');
     const start = lines.findIndex((line) => line.includes('dsh-mcp-config managed'));
     const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.includes('end dsh-mcp-config managed'));
     const block = MARK_START + '\n' + renderManagedBlock(rows) + MARK_END + '\n';
     if (start === -1) {
-        return text.replace(/\s*$/, '') + (text.trim() === '' ? '' : '\n') + '\n' + block;
+        return normalized.replace(/\s*$/, '') + (normalized.trim() === '' ? '' : '\n') + '\n' + block;
     }
     if (end === -1) {
         // 悬空起始标记（收尾标记丢失）：只重写标记行本身。区块体本来就是顶层

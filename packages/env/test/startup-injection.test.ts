@@ -25,8 +25,8 @@
  * 调用去掉，下面这组用例立刻红。
  *
  * 其余用例是边界与反例：内联 value 按原语义生效、`secret: true` + 内联空串仍按 ref
- * 托管、凭据文件缺失/损坏时既不抛也不删已有 env、继承的启动环境值不被覆盖、
- * 两个开关关掉时不注入。
+ * 托管、凭据文件缺失/损坏时既不抛也不删已有 env、**同名键以凭据存储为准**（跟随宿主
+ * seam 的优先权，2026-10-17 定；旧档上由异步对账自愈，见对应用例）、两个开关关掉时不注入。
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -164,13 +164,40 @@ describe('启动期同步预注入（ref 托管密钥）', () => {
     expect(process.env.CHAT2DB_AUTH).toBe('chat2db-token')
   })
 
-  it('只补空位：继承自启动环境的值不被凭据文档覆盖', () => {
+  it('对齐宿主 seam：同名键在启动环境里也以**凭据存储**为准（存储值覆盖继承值）', () => {
     writeBlock(['- key: INHERITED', '  secret: true'])
     writeCreds({ INHERITED: 'from-store' })
     process.env.INHERITED = 'from-launch-env'
 
+    // `0.2.1-alpha.4` 起宿主的层级是「存储值 > inherited env」，所以两个通道必须同答：
+    // resolve() 给 from-store 时，!!js process.env.INHERITED 也必须看到 from-store。
     apply(fakeCtx(null) as never, { announceToAgent: false })
-    expect(process.env.INHERITED).toBe('from-launch-env')
+    expect(process.env.INHERITED).toBe('from-store')
+  })
+
+  it('旧档（seam 以继承值优先）上落差自愈：异步对账把 process.env 改回 seam 的答案', async () => {
+    writeBlock(['- key: INHERITED', '  secret: true'])
+    writeCreds({ INHERITED: 'from-store' })
+    process.env.INHERITED = 'from-launch-env'
+    /*
+     * 模拟 `0.2.1-alpha.2` / `alpha.3` 的 seam：继承值优先，且它读的是**启动快照**
+     * （上游 `inherited(ref)` 走 `launchEnvironmentOf(ctx)`，不是实时 process.env）。
+     * 所以这里先把快照值记下来——它不会因为我们随后改 process.env 而变化。
+     */
+    const launchSnapshot = 'from-launch-env'
+    const oldSeam = {
+      describe: async () => ({ configured: true, writable: true }),
+      resolve: async () => ({ value: launchSnapshot, source: 'process' }),
+      set: async () => {},
+      unset: async () => {},
+    }
+
+    apply(fakeCtx(oldSeam) as never, { announceToAgent: false })
+    expect(process.env.INHERITED, '同步那一刻按新口径先写存储值').toBe('from-store')
+
+    // 异步对账问 seam（旧档答继承值）→ 改回继承值 ⇒ 稳态与 seam 一致，落差有界。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(process.env.INHERITED, '旧档上必须在同一启动周期内收敛回 seam 的答案').toBe('from-launch-env')
   })
 
   it('反例：凭据文件缺失时既不抛，也不删/不改一个已经存在的 env 值', () => {

@@ -54,11 +54,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r typecheck
+      # Windows 腿：spawn 密集的那个文件**先单独跑一遍**（这一轮它独占机器），其余留给下面那步。
+      # 为什么：`packages/codegraph/test/cli-route.test.ts` 在 Windows 上有负载敏感的间歇红
+      # （codegraph ROADMAP.md §「cli-route.test.ts 在 Windows 上的负载敏感」），共同点是
+      # 「真子进程（cmd.exe → node）在负载下起不来」——单独跑就没有别的文件的进程创建跟它抢。
+      # `inputs.test_filter == ''` 时才跑：手动指名单个文件的那条道保持原样，不额外多跑一遍。
+      - name: Test (Windows - spawn-heavy file gets the machine to itself)
+        if: matrix.os == 'windows-latest' && inputs.test_filter == ''
+        shell: bash
+        run: |
+          npx vitest run packages/codegraph/test/cli-route.test.ts
       # shell 显式指定 bash：三个 runner 上都有，免得 Windows 默认走 pwsh 而分叉行为
       - name: Test
         shell: bash
         env:
           TEST_FILTER: ${{ inputs.test_filter }}
+          # 上面那步已经单独跑过它了，这一轮把它排掉（开关走 env，`run:` 那行必须与
+          # release.yml 逐字一致——ci-script-truth 判据 3 比的是整行，加前缀就会判不一致）。
+          DSH_SKIP_CLI_ROUTE: ${{ matrix.os == 'windows-latest' && '1' || '' }}
         run: |
           if [ -n "$TEST_FILTER" ]; then
             npx vitest run "$TEST_FILTER"
@@ -96,9 +109,15 @@ jobs:
       - name: Check dsh peer compatibility declarations
         if: matrix.os == 'ubuntu-latest'
         run: pnpm dsh-peers:check
-      # 防回归：DSH_HOME 的推导（~ 展开 + resolve）只允许在 kit 里有一份；插件各写
-      # 各的 raw 副本会在 DSH_HOME=~/x 时写/读不同的配置目录（codegraph DEFECTS CG35）
-      - name: Check DSH_HOME derivation lives only in kit
+      # 防回归（**两条判据**，步骤名与注释一起说全——只说判据 1 就是半句谎话）：
+      #   ① DSH_HOME 的推导（~ 展开 + resolve）只允许在 kit 里有一份；插件各写各的 raw
+      #      副本会在 DSH_HOME=~/x 时写/读不同的配置目录（codegraph DEFECTS CG35）。
+      #   ② 整轮测试跑在**空的哨兵 DSH_HOME** 上、跑完那个目录必须**一个文件都没有**——
+      #      用例漏隔离时，没设该变量的开发者跑 `pnpm test` 写的正是他真实的 ~/.dsh/
+      #      （真机上留下一份被测试改写的配置，codegraph DEFECTS CG68）。
+      # ②的判据是**文件系统副作用**，所以它必须真的跑一遍套件（静态扫文本会一次造出 21 条
+      # 假阳性，见脚本头部），这步的成本因此是一整轮 vitest（本机 25–41s，只挂 ubuntu 腿）。
+      - name: Check DSH_HOME hygiene (derivation only in kit; tests must not write home)
         if: matrix.os == 'ubuntu-latest'
         run: pnpm dsh-home:check
       # 防回归：@hyzyn/dsh-kit 的钉子必须在全仓一致、精确、且等于 packages/kit 的版本。
@@ -287,7 +306,7 @@ jobs:
       # pin 住要挂进去的 DSH 版本：它与根 package.json 的 peer 范围同档，升 cohort 时一起改。
       # 装不上（或版本与 cohort 不匹配）时 `--bootstrap` 会**自证失败**并把原因打出来——不会假绿。
       - name: Install dsh CLI (pinned)
-        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.2
+        run: npm install -g @deepseek-ai/dsh@0.2.1-rc.1
       # 用 **DSH 自己的判定器**逐包 × 逐 cohort 复核兼容性声明（2026-10-04 接进 CI）。
       #
       # 为什么必须有它：上面 build 那个 job 的 `dsh-peers:check` 只回答「我们的声明自洽吗」

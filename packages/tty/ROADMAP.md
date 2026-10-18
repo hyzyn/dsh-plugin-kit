@@ -26,8 +26,18 @@
 > 见 § 已完成 的 0.26.0 一节；该条待办只剩「复制 profile 时错开端口」（那半要动 profile 包）。
 >
 > **2026-10-04 追加的那条不属于上面 7 项**：它是**已观测到的缺陷**（`windows-smoke` 原生崩溃），
-> 但因为**只观测到 1 次、未定性**，按本仓「先记账、复现够了再动手」的纪律暂不进
-> [DEFECTS.md](./DEFECTS.md) 的索引表（那张表要求 `待修 == 0`，进表就意味着已修）。
+> 按本仓「先记账、复现够了再动手」的纪律暂不进 [DEFECTS.md](./DEFECTS.md) 的索引表（那张表要求
+> `待修 == 0`，进表就意味着已修）。**2026-10-12 样本补足**：触发率实测 **17%–50%**（VM）
+> 且**含 W8 的树在 CI 上 10/10 崩**（不再是「只观测到 1 次」）；「与 W8 是否相关」**VM 与 CI
+> 结论相反**——实测数据、崩点分布、复现配方与「CI 上暂时跳过 W8」的处置见该条目内
+> 的 2026-10-12 一节。
+>
+> **2026-10-13 已定性并修复 → 编号 [D100](./DEFECTS.md)**：崩因**不是** flake、也**不是** W8——
+> 是**同一个 PTY 被两个调用方各原生 kill 一次**（`conpty.cc` 的 `PtyKill` 不幂等，第二次把已释放的
+> HPCON 再交给 `ClosePseudoConsole` → `STATUS_HEAP_CORRUPTION`）。`installWindowsKillGate`
+> 已在 `wrapLocalPty` 里装上一次性闸门；真机 A/B 各 150 轮：无闸门第 75 轮崩、装闸门 150/150
+> 不崩。**CI 上那条「跳过 W8」的临时处置已撤并验过**（windows 腿 W8a/W8b PASS、`12/12 PASS`，
+> 见该条目内的 2026-10-13 一节）。
 
 - **机器级资源的 profile 维度（D60）** —— 复制 profile 会把固定端口（webserver / 隧道
   `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。**2026-10-06 部分落地**：
@@ -78,7 +88,7 @@
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
 里那个开关点不动 + 附一行说明，「试连」与拨号按**原因**分两条文案（未授权 vs 未启用）。
 
-### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测，**未定性**）
+### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测；**2026-10-13 定位并修复 → [D100](./DEFECTS.md)**）
 
 **症状**：CI 的 Windows 腿上 `pnpm --filter @hyzyn/dsh-tty run windows-smoke` 以
 **`Exit status 3221226356`（= `0xC0000374`，Windows 堆损坏 / `STATUS_HEAP_CORRUPTION`）**
@@ -155,9 +165,113 @@ flush 屏障），而**原生崩溃没有「末尾」**，屏障来不及跑，�
 **仍然未做的**（真要做才动）：崩点两侧的会话状态与原生句柄数——那要改被测路径本身，
 属于「先定性再动手」，本轮不做。
 
+**2026-10-12 复现重估：样本已足够，但「与 W8 无关」这条被 CI 数据反驳——关系未定性（仍未动手，先在 CI 上绕开）**
+
+- **触发率要重估**：2026-10-04 那条「1 次 / 约 10 轮、重跑即绿」是运气，不是真实频率。同日实测：
+  CI 上 **13 次尝试崩 7 次**（PR #9 的树 6/6、诊断树 1/3、`main` 对照 0/3）；Win11 ARM64
+  虚拟机里 **32 次本地运行崩 12 次**（见下表）。合起来约 **17%–50%**，且 CI 与本地同量级
+  ——**这不是偶发一次的原生崩溃，而是高频可复现的**。
+- **与 PR #9（Windows PowerShell 的 shell 集成）的关系：VM 说不相关、CI 反过来，两者不一致，
+  不许当结论用。**
+  - VM 里同一时段**交替**跑三组，差异全在噪声内（Fisher 确切检验 p≈1.0）：
+
+    | 树 | 跑 | 绿 | 崩 `0xC0000374` | 崩点 |
+    | --- | --- | --- | --- | --- |
+    | `main` 树（main 的 lib + main 的脚本） | 12 | 10 | 2（17%） | W5 / W5 |
+    | PR #9 的 lib + PR 的脚本（含 W8） | 12 | 9（全部 `12/12 PASS`） | 3（25%） | W3 / W5 / W5 |
+    | PR #9 的 lib + **main 的脚本**（去掉 W8） | 8 | 4 | 4（50%） | W5 / W5 / W6 / W6 |
+
+  - **CI 侧是反的**：runner 镜像与历史全绿的那几天**完全一致**（`windows-2025-vs2026`
+    `20260925.250.1`），但 2026-10-12 全部 attempt 里**含 W8 的树 10/10 崩**（PR 头 6+2 次、
+    合并后 `main` 的两次推送各 1 次——崩点分别在 W5 与 W8b 之后），**不含 W8 的树只崩 1/3**
+    （诊断树 = PR 代码 + main 的 `windows-smoke.mjs`，run `38265771609`），Fisher p≈0.01。
+    对照：`main` 在合并 PR #9 之前（脚本里没有 W8）是 **8/10 绿**。
+  - 所以**不能**照 VM 那组写「与本 PR 无关」：要么是 `windows-2025 **x64**` runner 的平台差异
+    （VM 是 Win11 **ARM64**），要么是小样本。**结论待补样本**，别在别处引用成定论。
+- **CI 上的临时处置（2026-10-12，随本次一起落）**：`windows-smoke.mjs` 在 CI 环境
+  （`process.env.CI`）**默认跳过 W8**，结果里单列一档 `SKIP`——**分母扣掉它、汇总行点名**
+  （不许把「跳过」装成 `12/12`），`DSH_TTY_SMOKE_W8=1` 可强制打开。这一档改由**真机车道**守：
+  Win11 ARM64 + Windows PowerShell 5.1 上 9 次 `12/12 PASS`，CI 侧（PowerShell 7）也验过
+  W8a/W8b 能过。**这是绕开、不是修好**——「runner 上杀 PowerShell ConPTY 必崩」这件事本身
+  还没解释。
+  *（**2026-10-13 补**：那条闸门已撤、`DSH_TTY_SMOKE_W8=1` 现在没有作用——根因接着就解释清楚了，
+  见下面 2026-10-13 一节。这一行留在原地只作当时的记录，别再照它操作。）*
+- **崩点分布（12 次本地 + 7 次 CI）全部落在「会话 kill / 会话退出」的边界上**：W3、W4、W5、W6、
+  W7、以及 W8 的 teardown 各出现过，**没有一次**落在断言本身或 W1/W2 这类纯启动阶段。这与
+  2026-10-04 记的「崩在 ConPTY / node-pty 那一层，不是被测逻辑」一致，且样本量已足以支撑它。
+- **复现配方**（宿主机驱动 Parallels）：把两棵树并排放进 Win11 VM（`pnpm install
+  --frozen-lockfile` + `pnpm rebuild esbuild node-pty ssh2 cpu-features koffi`），宿主机用
+  `prlctl exec "Windows 11" cmd /c <一只把 cd + node scripts\windows-smoke.mjs +
+  echo EXITCODE=%ERRORLEVEL% 包起来的 .cmd>` 循环调用；按 `EXITCODE=-1073740940`（=`0xC0000374`）
+  判崩、按有没有 `==== Windows 冒烟：N/N PASS ====` 汇总行判是否跑到收尾。**A/B 必须交替跑**，
+  否则会把当轮的机器负载误读成树之间的差异。
+- **对仓库的直接影响（这条本身也是「该动手」的理由）**：windows 腿现在约每 2–6 次就红一次，
+  任何 PR 的 Windows 证据都可能被它吃掉——PR #9 的 W8 断言就因此有 3 次没轮到跑。
+- **仍未动手的理由只剩「崩在原生层，改 JS 侧大概率打不中」**（样本理由已不成立）。下一步按
+  2026-10-04 列的清单取证（崩点两侧会话状态 / 存活原生句柄数 / 原生栈，如 gflags + PageHeap 对
+  `node.exe`），或先做最小复现（反复 spawn+kill，不跑 smoke 其余部分）把范围缩到具体操作。
+  **第一条怀疑线**：`node-pty@1.2.0-beta.15`（随 `@deepseek-ai/dsh-subprocess-local` 进来）是
+  **beta** 版本，而全部崩点都落在它的 teardown 上。
+
+**2026-10-13 定位与修复：同一个 PTY 被原生 kill 两次（→ [D100](./DEFECTS.md)；上面「第一条怀疑线」命中，但不是 beta 的锅，是 `PtyKill` 不幂等）**
+
+- **怎么缩到那一层的**：先做两级最小复现，把「smoke 的哪一档」这个词换掉——
+  1. **裸层**（只 `spawnTerminal` + 终止，不过插件）：`terminate` / node-pty `kill()` / 两者都来 /
+     只 spawn 四种各若干轮，**240 次 0 崩**；
+  2. **插件层**（经插件 + WS 的 spawn → 输入 → kill → 关连接，**不带** W6/W7/W8）：**168 个会话崩 2 次**
+     ≈1.2%/会话 ⇒ **与 W8 无关**（最小复现里根本没有 W8），也与 Bash 工具那侧无关。
+- **预载探针**（`node -r ./scripts/pty-kill-probe.cjs`：patch `Module._load`，给 `conpty.node` 的
+  `startProcess`/`connect`/`kill`、`WindowsPtyAgent.kill`、`WindowsTerminal.kill`、
+  `ConoutConnection.dispose` 记账，`writeSync` 直写文件——原生崩溃会连异步写队列一起丢掉）在
+  **3/3** 个会话上抓到同一件事：**同一个 pty 被原生 kill 两次**，间隔约 40 ms。
+  三个脚本都已收进本包 `scripts/`（`pty-kill-probe.cjs` / `pty-kill-repro.mjs` /
+  `pty-kill-repro-plugin.mjs`），复现不必再手搭 harness。
+- **两个调用方为什么必然叠加**（探针同一份日志里的第二条线索）：每轮都是 `spawned pid=0`——
+  node-pty 的 `pid` 要等 conout 连接建立才有值，而 `dsh-subprocess-local` 在
+  `new LocalTerminalHandle(...)` 那一刻就取 `terminal.pid`，拿到 0，于是
+  `rootIdentity = snapshot().tree(0).find(…)` **恒为 undefined**、`stopShellWindows()` 每次必走
+  `this.terminal.kill()` 兜底分支；本包 D48 的预杀（`killSessionNow` → `handle.forceKill?.()`）
+  再调一次。两次都落到 `conpty.cc` 的 `PtyKill(id)`，而它 `ClosePseudoConsole(hpc)` 之后**不置空
+  `hpc`**、记录要等 shell 真退出才被 exit 线程 `erase_if` 摘掉 —— 这段窗口里第二次调用就是把
+  **已释放的 HPCON** 再交给 `ClosePseudoConsole` → `0xC0000374`，死的是**整个宿主进程**。
+- **真机 A/B（同一 harness、同一 `kill+terminate` 顺序，各 150 轮，只差一个变量）**：
+
+  | 变体 | 轮数 | 原生 kill 总数 | 双重 kill | 退出码 |
+  | --- | --- | --- | --- | --- |
+  | 插件顺序（先 node-pty kill、后 terminate），无闸门 | 150 | 188 | **94** | **-1073740940（`0xC0000374`）** |
+  | 同一顺序 + 一次性闸门 | 150 | 150 | **0** | 0 |
+  | 只调 `terminate`（单次 kill 对照） | 150 | 150 | 0 | 0 |
+
+  无闸门那轮死在第 75 轮、第 94 次双重 kill 之后；`terminate` 对照 150 轮不崩 ⇒「单次 kill 无害、
+  双重 kill 致命」被单独隔离出来。
+- **修法**：`installWindowsKillGate`（win32-only，装在 `wrapLocalPty` 里）把闸门放在
+  **`terminal._agent.kill`（原生调用的执行时点）**而不是 `terminal.kill`（调用时点）——node-pty 在
+  终端 ready 之前会把收到的 kill 排队（`_deferNoArgs`），装在调用点会让「排队那次」先占掉闸门、
+  DSH 真到执行那次被吞，万一排队那次永不执行就变成**一个都没杀**（进程泄漏）。POSIX 不装
+  （那边的 `stopShell` 本来就要 SIGTERM→SIGKILL 两次）。取不到 `_agent`（node-pty 结构变化）时
+  返回 false 并记一条警告，退化为现状而不是新增故障（D79 同款）。回归：
+  `test/host-frames.test.ts` 的「Windows 原生 kill 闸门（D100）」6 条。
+- **装上闸门后的真机复验（同一台 Win11 ARM64）**：插件层 **150 个会话一轮跑满、0 崩**
+  （探针：150 次 `NATIVE-KILL`、**0 次双重 kill**＝每 pty 恰好一次）；`windows-smoke` **强制带 W8**
+  连跑 **6 轮全部 `12/12 PASS`、6/6 退出码 0、0 SKIP**。修前：CI 上含 W8 的树 10/10 崩、VM 里
+  17%–50%。
+- **上游两处报道（2026-10-13）**：node-pty 已有人开着同一条（
+  [microsoft/node-pty#983](https://github.com/microsoft/node-pty/issues/983)，2026-09-30），我们在那条下
+  附了本轮的独立复现与 A/B（尤其补上「`useConptyDll: false` 那条路**同样**会崩，不是只有 bundled
+  conpty.dll 才会」）——<https://github.com/microsoft/node-pty/issues/983#issuecomment-6135026590>；
+  DSH 侧「`pid=0` ⇒ `rootIdentity` 恒 undefined ⇒ `stopShellWindows` 必走 `terminal.kill()` 兜底、
+  且 `stopDescendants` 在 Windows 本地终端上是空转」按该仓库现有渠道（issues 关闭，只有 Discussions）
+  发在 <https://github.com/deepseek-ai/deepseek-harness/discussions/9558>。
+- **已撤掉 CI 上「默认跳过 W8」的临时处置（2026-10-13）**：它是当初绕开未定性的根因用的，根因修好后
+  先在临时分支 `ci/win-smoke-w8-restore` 上让 CI 判（run `38327852724`）——windows 腿
+  **W8a/W8b 均 PASS、`12/12 PASS`、无 SKIP、整腿 success**，同一台 runner 在 2026-10-12 是
+  **含 W8 的树 10/10 崩**。撤掉后 windows 腿重新覆盖 PR #9 的 PowerShell 断言（本机没有 PowerShell 时
+  仍如实进 `SKIP` 一档）。
+
 **若将来确认是 flake 而非真 bug**：按项目级 ROADMAP 9.4 的口径处理（那条讲的是「争用强度
 不随机器漂」）；若确认是真 bug，另开 `Dxx` 编号进 [DEFECTS.md](./DEFECTS.md) 索引表
 （**注意**：索引表要求 `待修 == 0`，所以只有修好之后才进表，见 `scripts/defects-table.mjs`）。
+*（2026-10-13：**已确认是真 bug 而非 flake**，编号定为 `D100` 并已进表——见上面那节。）*
 
 - **「面板标签整体消失、又自己回来」仍未定性（2026-10-10，观测到 3 轮；只记账，未动手）** —— 现场：
   面板上 4 个标签（3 个 tmux 持久 + 1 个 SSH）在用户**没刷新、没手动关**的情况下整体消失，随后又
@@ -203,6 +317,36 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 > 它们与「会话生命周期留痕」一起作为 **`0.30.0`** 发出去，所以三节标题与 README 里的「从 X 起」
 > 标记都统一到 `0.30.0`（`0.28` / `0.29` 在 npm 上不存在，留着会指向没发生过的版本）。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
+
+### 2026-10-13：pwsh 真机验收（5.1 ↔ 7 对照），并修掉它挖出的「回显当命中」（→ [D101](./DEFECTS.md)，0.32.1）
+
+**为什么做**：README 里 PowerShell 的话是零散写下的，而 `windows-smoke` 的 W8 在**装了 pwsh 的机器上只跑 pwsh**、CI 的 windows-latest 又恰好预装 pwsh 7 —— 「5.1 与 7 的行为差异」这一整类事实此前从没被并排对照过。D100 定位完之后用户问「tty 对 pwsh 的支持度如何」，于是给 VM（Win11 ARM64）装上自包含 zip 版 **PowerShell 7.6.6**（解到 `C:\Program Files\PowerShell\7`，正好是 `resolvePowerShell()` 的首选路径），新建工作树 `C:\dsh-pwsh` 做真机对照。
+
+**探针（`scripts/pwsh-probe.mjs`，新增入库）**：P0 版本自述 / P1 桩载入 + OSC 133 生效 / P2 cwd 跟随（含含空格路径的 `%20` 解码）/ P3 `running` 三态 / P4 命令级与会话级退出码 / P5 `tty_expect` 早停与**回显剔除** / P6 `capture{last}` 窗口（20 次小输出 + 2000 行大输出 + 2s 内分 20 次慢输出）/ P7 `tty_run` / P8/P8b `&&` 与解析错误的退出码。两条设计上的自觉：pattern **不字面出现在命令行里**的用例用拼接造，耗时**有下界**（命令里带 2s 睡眠，早于 1.5s 命中就是命中回显）。
+
+**真机结果（每个 shell 都跑同一套）**：
+
+| 项 | pwsh 7.6.6 | Windows PowerShell 5.1 |
+| --- | --- | --- |
+| 桩载入 / cwd 跟随 / `running` 三态（含空格路径） | ✔ | ✔ |
+| 退出码：`cmd /c exit 7` → 7、`exit 3` → 3 | ✔ | ✔ |
+| `tty_expect` 命中**真实输出**即返回 | ✔ 2531ms | ✔ 2473ms |
+| `capture{last}`：20 次小输出 / 2000 行 / 慢输出 | ✔ 0/20 空窗 | ✔ 0/20 空窗 |
+| `tty_run`：成功路径 + `exit 5` → 5 | ✔ | ✔ |
+| **`tty_expect` 命中**命令行回显**（命令还在睡）** | ✘ **432ms** | ✘ **446ms** |
+| `&&` | ✔（7 支持） | ✘ 解析错误（符合预期） |
+
+`windows-smoke` 连跑 **3 轮 12/12 PASS**（W8 此时自动走 pwsh）。macOS/zsh 上另跑了一份同类对照（scratch，未入库）：回显假命中 **1ms** —— 所以 D101 不是 Windows 专有，是 live 路径的边界缺口。
+
+**同轮核掉的三处「文档与事实不符」**（都在这一版改掉）：
+
+1. 「PowerShell 7 上输出晚于 D 标记 → `tty_capture{last}` 可能取到空」：pwsh 7.6.6 上按三档输出量复测 **0/20 空窗**、大输出保尾、窗口里也没混进回显（0/20）——**未复现**，README 中英与 `shell-integration.ts` 的注释改成「未复现（附条件与复测方法）」，不当既成事实。
+2. **解析错误报 exitCode=0**（`echo (1` 在 7.6.6 与 5.1 上都是 0；5.1 上的 `echo A && echo B` 同样 0）：命令一条都没跑，退出码却像成功。`$?`/`$LASTEXITCODE` 都没变，没有可靠钩子能区分，如实写进 README 与桩注释：**PowerShell 上不能只看退出码判成功**。
+3. `commandShellHint()` 对 `pwsh.exe` 说「POSIX 的 `&&`、`$?`、单引号不是 PowerShell 5.1 的语法」——7 上 `&&` 是合法的（实测输出 A/B）。文案按版本分支（7 说 7 的、5.1 明说**没有** `&&`/`||` 并给 `if ($?)` 写法），`test/shell-spawn.test.ts` 加正反断言。顺带记下 `-Command` 的退出码塌陷（`cmd /c exit 5` → 1，要具体码值得让命令自己 `exit`），README 的「跑一条命令」一节写上。
+
+**D101 的修法与反向验证**：新增零启发式的 `liveOutputRegion()`（窗口里有 `B` 就从最后一个 `B` 起切；没有 `B` 但 `inCommand` 整段算输出——TUI / 长任务不许误杀；都没有才裁未闭合的 `A` 段），`unreadRegion` 补同一刀；`echoStrippable()` 在命令在跑时改判「最近一次提交是否早于本条命令开始」（新增 `commandStartedAt`），TUI 里敲的键照旧算真实输出；`stripEchoLines()` 把行尾控制字节当噪音、`echoOnlyMatch()` 只看清洗后的文本（zsh 在回显后面紧跟 `\e[?2004l`，否则那一行永远削不掉）。D75 的文本剔除保留为「没有标记那种壳」的兜底。回归 `test/expect-backlog.test.ts` 的 D101 组 6 条——**四条反例拿掉修法即红**（真机反例：回显与 `B` 同 chunk；B 早于注册、回显晚于注册到达；回显行尾跟转义序列；提示符 + 回显同 chunk），三条「不许误杀」（输出与下一个提示符同 chunk / `B` 早于注册的长任务 / 回溯区的提示符段）两侧都绿。
+
+**修后真机复验（同一台 VM，同一套探针）**：`pwsh-probe` **29 PASS / 0 FAIL / 10 INFO**——P5b 从「432ms / 446ms 命中回显」变成 **2475ms / 2343ms 命中真实输出**；`windows-smoke` 连跑 **3 轮 12/12 PASS**（W8 走 pwsh）。macOS/zsh 上同类对照从 **1ms** 变成 **2012ms**（拿到 2s 之后那条真实输出）。
 
 ### 2026-10-11（续）：「保存到连接簿」名称行常显 + 填名字自动勾上（纯客户端半体）
 

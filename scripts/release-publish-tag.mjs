@@ -1,76 +1,68 @@
 // CI tag 发布流（.github/workflows/release.yml 调用）：无需 OTP，token 由 workflow 写入 ~/.npmrc。
 // 与手动流（release-publish-all.mjs）的差异：
 //   1. registry 上已存在的「包名@版本」自动跳过——monorepo 每次只 bump 受影响的包，
-//      未 bump 的包不会因 cannot-publish-over 中断发布链；
+//      未 bump 的包不会因 cannot-publish-over 中断发布链。**但跳过不是白跳**：跳过前必须先
+//      证明「registry 上那个版本的内容 == 本仓此刻要发的代码」（`preflightTargets`）。不比对
+//      内容的版本级跳过就是 2026-10-17 那次事故的入口（kit 内容改了没 bump，消费者带着新
+//      import 发出去、用户装到就整条 entry 不激活，见 scripts/lib/published-content.mjs 头注释）；
 //   2. 版本号带 '-'（如 0.16.0-rc.1）的包以 --tag next 发布，不抢占 latest；
 //   3. 发布后逐包回查 registry——「全部完成 ✔」不代表发上去了。回查只会在**有证据**
 //      时才判红（判定规则见「核实 registry」一段）。
 // 任一包发布失败立即停止；整体重跑安全（已成功的包自动跳过）。
+// `--preflight`：只跑预检不发布（`pnpm release:preflight`，tag 前本地自查用）。
 import { execSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { targets } from './publish-targets.mjs'
+import { REGISTRY, fetchManifest, fetchPackument } from './lib/registry.mjs'
+import {
+  describeDrift,
+  pkgVersion,
+  preflightTargets,
+  verifyPublishedContent,
+} from './lib/published-content.mjs'
 import { judgeAfterWindow } from './release-verify.mjs'
 
-const REGISTRY = 'https://registry.npmjs.org'
-let reqSeq = 0
-
-// ⚠️ 轮询一律走「单版本小端点」，不要拉整份 packument：整份 packument 实测 144 KB
-// （@hyzyn/dsh-docker，2026-09-25），按 6 秒间隔轮询 20 次等于把同一份文档反复拉 20
-// 遍，极易被 CDN 缓存 / 限流；而 curl -sf 遇非 2xx 直接抛错、又被 catch 吞掉，于是
-// 表现为「publish 其实成功、回查却说没读到」的假失败——v0.1.39 / v0.1.41 / v0.1.44
-// 三次发布都因此误红，每次都要人工删 tag 重打一遍才收场。
-// Cache-Control: no-cache 提示中间层回源；随机 ?cb= 让它无法命中缓存（registry 一侧
-// 忽略未知查询参数，实测 /<pkg>/latest?cb=… 照常 200）。
-function cacheBust() {
-  reqSeq += 1
-  return `cb=${Date.now()}-${reqSeq}`
-}
-function curlJson(path) {
-  const out = execSync(
-    `curl -sf --retry 3 -H 'Cache-Control: no-cache' '${REGISTRY}/${path}?${cacheBust()}'`,
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  )
-  return JSON.parse(out)
-}
-// /<pkg>/<ref>：ref 可以是版本号，也可以是 dist-tag——registry 自动解析（实测
-// @deepseek-ai/dsh/next → 0.1.7-rc.2 而 /latest → 0.1.5-rc.3，确实按 tag 取值），
-// 只返回那一个 version 的 manifest，实测 3.1 KB，比整份 packument 小 46 倍。
-function fetchManifest(name, ref) {
-  return curlJson(`${encodeURIComponent(name)}/${encodeURIComponent(ref)}`)
-}
-// 整份 packument（144 KB）：只用在两处非轮询场景——探测包是否存在、窗口耗尽后的权威复核。
-function fetchPackument(name) {
-  return curlJson(encodeURIComponent(name))
-}
 function lastErrorLine(error) {
   const raw = String(error.stderr ?? error.message ?? error)
   return raw.split('\n').filter((line) => line.trim() !== '').pop()?.trim() ?? 'unknown'
 }
 
-// registry 上是否已有「包名@版本」：/<pkg>/<version> 返回 200 即为有、404 即为无
-// （实测 0.0.0-nope → 404）。读不到时按「无」处理，让 pnpm publish 自己报
-// cannot-publish-over —— 比静默跳过安全。
-function registryHasVersion(name, version) {
-  try {
-    fetchManifest(name, version)
-    return true
-  } catch {
-    return false
-  }
+// ⚠️ 预检放在任何 publish 之前、整体跑完再决定：kit 排 targets 第一位，本仓的依赖方向保证
+// 「kit 漂了 → 这里先红」，不会出现「消费者发出去一半才发现 kit 是旧内容」。
+console.log('===== 预检：registry 上已存在的同版本内容必须与本仓一致 =====')
+let preflight
+try {
+  preflight = preflightTargets({
+    targets,
+    pkgVersion,
+    fetchManifest,
+    verify: verifyPublishedContent,
+  })
+} catch (error) {
+  // 预检自己读不到 / 解不开既有版本的 tarball 时**不许放行**：证明不了「跳过是安全的」，
+  // 就按失败处理。这条分支正是「匹配不到就算过」的反面。
+  console.error(`✘ 预检无法完成：${error instanceof Error ? error.message : String(error)}`)
+  console.error('   （既读不到 registry 上那个版本的内容，就无法证明跳过安全；按失败处理，不进入发布）')
+  process.exit(1)
 }
-
-function pkgVersion(dir) {
-  return JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).version
+const { toPublish, skipped, drift } = preflight
+for (const item of skipped) {
+  console.log(`↷ ${item.name}@${item.version} 已在 registry 且内容与本仓一致，跳过`)
+}
+if (drift.length > 0) {
+  console.error('\n✘ 以下「包名@版本」在 registry 上的内容与本仓此刻要发布的代码不一致：')
+  for (const line of describeDrift(drift)) console.error(line)
+  console.error('\n版本号是内容身份：内容变了就必须 bump，不能靠同一个版本号重发（npm 不可覆盖）。')
+  console.error('修法：bump 受影响的包（kit 还要跟齐全仓消费者钉子）后重跑；')
+  console.error('     历史与判据见 RELEASING.md「发布门槛」第 6 条与 scripts/lib/published-content.mjs 头注释。')
+  process.exit(1)
+}
+if (process.argv.includes('--preflight')) {
+  console.log(`\n预检通过：${skipped.length} 个已发布版本内容一致、${toPublish.length} 个待发布（未真正发布）`)
+  process.exit(0)
 }
 
 const published = []
-for (const [dir, name] of targets) {
-  const version = pkgVersion(dir)
-  if (registryHasVersion(name, version)) {
-    console.log(`↷ ${name}@${version} 已在 registry，跳过`)
-    continue
-  }
+for (const { dir, name, version } of toPublish) {
   const prerelease = version.includes('-')
   // 首发的包（registry 上包名本身都还不存在）传播最慢：npm 要先建包文档再上 CDN，
   // 实测 v0.1.20 的 @hyzyn/dsh-docker 超过 2 分钟才可读——回查窗口按此放宽（见下）

@@ -9,6 +9,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
+import yaml from 'js-yaml'
 import {
   definePlugin,
   dshHome,
@@ -149,6 +150,48 @@ describe('managed-block', () => {
   it('正文里的标记子串不算边界（整行匹配）', () => {
     const text = 'x # --- test managed --- y\n# --- test managed ---\nbody\n# --- end test managed ---\n'
     expect(readManagedBlock(text, markers)?.body).toBe('body')
+  })
+
+  // CG67 同源：`[]` 是**完整**的 YAML 文档（flow 序列根），往它后面追加块序列会让
+  // 整份文件非法，宿主 `parsePatchList` 直接抛、插件整层起不来。旧实现只在
+  // `text.trim() === ''` 时特殊处理，`[]` 落进了普通追加分支。
+  describe('空 flow 序列根（`[]`）不得被当成可追加的前缀', () => {
+    /** 用真正会跑宿主那套解析的库断言，而不是比对字符串——否则换个写法又能骗过用例。 */
+    const parse = (text: string): unknown => yaml.load(text)
+
+    it('只有 `[]`：替换根而不是往后接，结果是合法的单一列表', () => {
+      const next = spliceManagedBlock('[]', { ...markers, body: '- key: FOO' })
+      expect(parse(next)).toEqual([{ key: 'FOO' }])
+      expect(next).not.toMatch(/^\[\]/m)
+    })
+
+    it('`[]` 带结尾换行：同上', () => {
+      expect(parse(spliceManagedBlock('[]\n', { ...markers, body: '- key: FOO' }))).toEqual([{ key: 'FOO' }])
+    })
+
+    it('宿主模板（注释 + `[]`）：注释保留、根被替换，整份文件仍可解析', () => {
+      const text = '# Your patch layer\n# a top-level YAML array\n[]\n'
+      const next = spliceManagedBlock(text, { ...markers, body: '- key: FOO' })
+      expect(next.startsWith('# Your patch layer\n# a top-level YAML array\n')).toBe(true)
+      expect(parse(next)).toEqual([{ key: 'FOO' }])
+    })
+
+    it('`[ ]`（带空格）与 CRLF 同样识别', () => {
+      expect(parse(spliceManagedBlock('[ ]\n', { ...markers, body: '- key: FOO' }))).toEqual([{ key: 'FOO' }])
+      expect(parse(spliceManagedBlock('[]\r\n', { ...markers, body: '- key: FOO' }))).toEqual([{ key: 'FOO' }])
+    })
+
+    it('已经有区块、但块前残留坏根（旧版本写出的文件）：下一次写入自愈', () => {
+      const text = '[]\n\n# --- test managed ---\n- key: OLD\n# --- end test managed ---\n'
+      const next = spliceManagedBlock(text, { ...markers, body: '- key: NEW' })
+      expect(parse(next)).toEqual([{ key: 'NEW' }])
+    })
+
+    it('正常块序列文件不受影响（不会误摘用户内容）', () => {
+      expect(spliceManagedBlock('- id: keep\n', { ...markers, body: '- key: FOO' })).toBe(
+        '- id: keep\n\n# --- test managed ---\n- key: FOO\n# --- end test managed ---\n',
+      )
+    })
   })
 
   it('readManagedBlock 返回标记间正文；缺标记或缺结束标记返回 undefined', () => {

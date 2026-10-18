@@ -34,7 +34,11 @@ const record = (name, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '\n      ' + detail : ''}`)
 }
 
-console.log('# Windows 真机端到端验证（codegraph D1/D2/D3 + mcp 连接测试）')
+// 「D1 / D2 / D3」是本脚本**自己的场景标签**（见下面各条 record()），不是缺陷编号——
+// 紧挨着写成 codegraph + `D1/D2/D3` 会被判据 8（scripts/defects-table.mjs）读成一次跨包引用，
+// 而 codegraph 的前缀是 CG、根本没有 D 号。加一个「的」把两者断开：既不误导读者，
+// 也不让守卫去追一条并不存在的缺陷（2026-10-17）。
+console.log('# Windows 真机端到端验证（codegraph 的 D1/D2/D3 场景 + mcp 连接测试）')
 console.log(`# node ${process.version} / ${process.platform} / repo ${repo}\n`)
 
 if (process.platform !== 'win32') {

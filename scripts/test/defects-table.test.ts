@@ -14,7 +14,11 @@
  * ## 这份用例守两件事
  *
  * 1. **真实仓库必须通过**（A/B/C 三类句式 + 台账自洽 + kit 那行的两段范围
- *    + **`✓` 列（L2 侧）**：标了「代码/测试里引用了该编号」的，包内就得真有这个编号）；
+ *    + **`✓` 列（L2 侧）**：标了「代码/测试里引用了该编号」的，包内就得真有这个编号
+ *    + **判据 8（2026-10-17 新增）**：全仓 `<包名> <前缀><号>` 形式的跨包引用必须指向
+ *    **真实存在**的号——这条是补「闸门文案里引了一个台账上限之外的号」那次：当时既没有
+ *    链接可查（`check-doc-links.mjs` 只管链接与锚点）、也没有台账行可比，于是它一路绿着；
+ *    详见 `scripts/defects-table.mjs` 头部「判据 8」);
  * 2. **守卫必须会红**——本仓刚发生过一道「命中 0 个文件、恒绿、拦不住任何东西」的闸门
  *    （lib 产物闸门那条写错的 pathspec：命中 0 个文件），所以任何新守卫都要自证会红。
  *    反例**全部用 fixture 造**（在真实文本上做一次字符串替换，并断言替换真的生效），
@@ -30,8 +34,10 @@ import {
   LEDGER_SPECS,
   checkDefectsTable,
   checkRepo,
+  collectCrossRefs,
   computeFacts,
   readDefectsInputs,
+  toPosixPath,
 } from '../defects-table.mjs'
 
 /** 真实仓库里受检的全部文本（只读；反例都在它的副本上改）。 */
@@ -48,12 +54,30 @@ function mutate(text: string, from: string, to: string): string {
 
 /** 在某个包的台账 fixture 上跑守卫。 */
 function checkWithLedger(name: string, text: string, sources = real.sources) {
-  return checkDefectsTable({ ledgers: { ...real.ledgers, [name]: text }, conventions: real.conventions, sources })
+  return checkDefectsTable({ ledgers: { ...real.ledgers, [name]: text }, conventions: real.conventions, sources, references: real.references })
 }
 
 /** 在 conventions fixture 上跑守卫。 */
 function checkWithConventions(text: string) {
-  return checkDefectsTable({ ledgers: real.ledgers, conventions: text, sources: real.sources })
+  return checkDefectsTable({ ledgers: real.ledgers, conventions: text, sources: real.sources, references: real.references })
+}
+
+/**
+ * 在**引用文本 fixture** 上跑守卫（判据 8）。
+ *
+ * 注意引用清单是**从磁盘现读的真实文本**，与 `ledgers` / `conventions` fixture 是两条路：
+ * 所以在 conventions fixture 里替换出一个假号**不会**触发判据 8（那是判据 2 的地盘），
+ * 判据 8 的反例必须像这里一样显式喂 `references`。
+ */
+function checkWithReferences(references: { path: string; text: string }[]) {
+  return checkDefectsTable({ ledgers: real.ledgers, conventions: real.conventions, sources: real.sources, references })
+}
+
+/** 造一条**指向台账之外**的引用：号码取现算最大号 + 1，这样 fixture 里不会出现假的字面号。 */
+function danglingRef(pkg: string) {
+  const fact = facts.get(pkg)
+  if (fact === undefined) throw new Error(`没有 ${pkg} 的现算事实`)
+  return `${pkg} ${fact.prefix}${fact.max + 1}`
 }
 
 const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
@@ -127,10 +151,10 @@ describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
     expect(diff?.message).toContain('D138')
   })
 
-  it('把 tty 那行的上界从 D99 改回 D61 → conventions.row 差异（历史值）', () => {
-    const fixture = mutate(real.conventions, '| `tty` | `D` | `D01`–`D99` |', '| `tty` | `D` | `D01`–`D61` |')
+  it('把 tty 那行的上界从 D101 改回 D61 → conventions.row 差异（历史值）', () => {
+    const fixture = mutate(real.conventions, '| `tty` | `D` | `D01`–`D101` |', '| `tty` | `D` | `D01`–`D61` |')
     const diff = checkWithConventions(fixture).find((item) => item.kind === 'conventions.row')
-    expect(diff?.expected).toBe('99')
+    expect(diff?.expected).toBe('101')
     expect(diff?.actual).toBe('61')
   })
 
@@ -172,12 +196,12 @@ describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
 })
 
 describe('反例 2：「接在 Dxx 之后」写成旧号 → 必须报出来', () => {
-  it('tty 文件头从 D99 改回 D63（照它做会造一批重号）→ ledger.nextAnchor 差异', () => {
-    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D99` 之后', '新缺陷接在 `D63` 之后')
+  it('tty 文件头从 D101 改回 D63（照它做会造一批重号）→ ledger.nextAnchor 差异', () => {
+    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D101` 之后', '新缺陷接在 `D63` 之后')
     const diffs = checkWithLedger('tty', fixture)
     expect(kinds(diffs)).toContain('ledger.nextAnchor')
     const diff = diffs.find((item) => item.kind === 'ledger.nextAnchor')
-    expect(diff?.expected).toBe('99')
+    expect(diff?.expected).toBe('101')
     expect(diff?.actual).toBe('63')
     expect(diff?.message).toContain('造重号')
   })
@@ -188,7 +212,7 @@ describe('反例 2：「接在 Dxx 之后」写成旧号 → 必须报出来', (
   })
 
   it('把「接在 … 之后」整句删掉 → **报缺失**，不是静默跳过', () => {
-    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D99` 之后，', '')
+    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D101` 之后，', '')
     expect(kinds(checkWithLedger('tty', fixture))).toContain('ledger.nextAnchor.absent')
   })
 })
@@ -197,13 +221,13 @@ describe('反例 3：跨包互称的范围写错（C 类，最容易飘）→ �
   it('docker 文件头把 tty 写成 D01–D66 → ledger.crossRef 差异', () => {
     const fixture = mutate(
       real.ledgers.docker,
-      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D99` **不共享**',
+      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D101` **不共享**',
       '与 `packages/tty/DEFECTS.md` 的\n> `D01–D66` **不共享**',
     )
     const diffs = checkWithLedger('docker', fixture)
     expect(kinds(diffs)).toContain('ledger.crossRef')
     const diff = diffs.find((item) => item.kind === 'ledger.crossRef')
-    expect(diff?.expected).toBe('99')
+    expect(diff?.expected).toBe('101')
     expect(diff?.message).toContain('tty')
   })
 
@@ -221,7 +245,7 @@ describe('反例 3：跨包互称的范围写错（C 类，最容易飘）→ �
   it('把跨包那句整句删掉 → **报缺失**（C 类不许静默消失）', () => {
     const fixture = mutate(
       real.ledgers.docker,
-      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D99` **不共享**；',
+      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D101` **不共享**；',
       '',
     )
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.crossRef.absent')
@@ -230,12 +254,12 @@ describe('反例 3：跨包互称的范围写错（C 类，最容易飘）→ �
 
 describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状行）→ 必须报出来', () => {
   it('文件头自称的范围写成旧号 → ledger.selfRange 差异', () => {
-    const fixture = mutate(real.ledgers.tty, '`D01–D99` 是 `packages/tty` 内部序列', '`D01–D63` 是 `packages/tty` 内部序列')
+    const fixture = mutate(real.ledgers.tty, '`D01–D101` 是 `packages/tty` 内部序列', '`D01–D63` 是 `packages/tty` 内部序列')
     expect(kinds(checkWithLedger('tty', fixture))).toContain('ledger.selfRange')
   })
 
   it('现状行的「已修」比表内少 1 → ledger.status.fixed 差异（tty 有两处现状行，都核）', () => {
-    const fixture = mutate(real.ledgers.tty, '**已修 99 / 待修 0**，编号至 `D99`。', '**已修 66 / 待修 0**，编号至 `D76`。')
+    const fixture = mutate(real.ledgers.tty, '**已修 101 / 待修 0**，编号至 `D101`。', '**已修 66 / 待修 0**，编号至 `D76`。')
     expect(kinds(checkWithLedger('tty', fixture))).toContain('ledger.status.fixed')
   })
 
@@ -244,8 +268,8 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
-  it('codegraph 的「已修」被写错（64 + 3 ≠ 66）→ ledger.status.fixed 差异', () => {
-    const fixture = mutate(real.ledgers.codegraph, '**已修 63 / 已关闭 3 / 待修 0**', '**已修 64 / 已关闭 3 / 待修 0**')
+  it('codegraph 的「已修」被写错（66 + 3 ≠ 68）→ ledger.status.fixed 差异', () => {
+    const fixture = mutate(real.ledgers.codegraph, '**已修 65 / 已关闭 3 / 待修 0**', '**已修 66 / 已关闭 3 / 待修 0**')
     expect(kinds(checkWithLedger('codegraph', fixture))).toContain('ledger.status.fixed')
   })
 
@@ -341,5 +365,84 @@ describe('守卫的边界：拿不到文本 / 表被整段删掉时也要报，�
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.table.absent')
     expect(kinds(diffs).filter((kind) => kind === 'conventions.row.absent')).toHaveLength(LEDGER_SPECS.length)
+  })
+})
+
+/**
+ * 判据 8：跨包引用的号必须真实存在。
+ *
+ * 夹具里**不写真号**：假号一律由 `danglingRef()` 按「现算最大号 + 1」算出来——写死一个假的
+ * 字面量（像 `docker D999` 那样）会让**这份测试文件自己**成为一条悬空引用，于是要么给豁免表
+ * 再加一条，要么让判据 8 在真实仓库里长期红着。这一点本身就是判据 8 的性子：它扫的是**全仓**，
+ * 包括写它的这份文件。
+ */
+describe('判据 8：跨包引用的号必须真实存在（悬空引用）', () => {
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  it('引用路径一律 POSIX 分隔符——Windows 上 `relative()` 给反斜杠，豁免表的键就对不上了', () => {
+    // 2026-10-17 CI 实测：windows-latest 上判据 8 凭空报出「夹具里那条假号是悬空引用」
+    // （豁免表的键是 `scripts/test/…`，而报出来的是 `scripts\test\…`），ubuntu / macos 全绿。
+    // 本机是 macOS，`sep === '/'`，所以归一的那一支**必须靠传 separator 才验得到**。
+    expect(toPosixPath('scripts\\test\\defects-table.test.ts', '\\')).toBe('scripts/test/defects-table.test.ts')
+    expect(toPosixPath('scripts/test/defects-table.test.ts')).toBe('scripts/test/defects-table.test.ts')
+    // 真实仓库的不变量：收上来的引用路径里不许有反斜杠（Windows 腿跑这条时才是真的在验）
+    expect(real.references.filter((file) => file.path.includes('\\')).map((file) => file.path), '引用路径必须已归一').toEqual([])
+  })
+
+  it('真实仓库：抓得到引用（命中不是 0），且每一条都指向真实存在的号', () => {
+    const refs = collectCrossRefs(real.references)
+    expect(refs.length, '一条跨包引用都没扫到 → 这条判据会恒绿').toBeGreaterThan(100)
+    // 正例：现算抓得到一条已知存在的引用（刚补完的那道闸的文案里就写着它）
+    expect(refs.some((ref) => ref.raw === 'codegraph CG68'), '应抓到 `codegraph CG68`').toBe(true)
+    expect(checkRepo()).toEqual([])
+  })
+
+  it('一条台账里没有的号 → ledger.ref.dangling，点名文件、行号与该包真实范围', () => {
+    const fact = facts.get('codegraph')
+    const bogus = danglingRef('codegraph')
+    const diffs = checkWithReferences([...real.references, { path: 'docs/fixture.md', text: `见 ${bogus}。\n` }])
+    const diff = diffs.find((item) => item.kind === 'ledger.ref.dangling')
+    expect(diff, `${bogus} 应被报出来`).toBeDefined()
+    expect(diff?.where, '要能直接定位到文件与行号').toBe('docs/fixture.md:1')
+    expect(diff?.actual).toBe(bogus)
+    // 消息里要写明该包**真实**的范围，否则读到红的人不知道该改成哪个号
+    expect(diff?.message).toContain(`${fact?.prefix}01–${fact?.prefix}${pad(fact?.max ?? 0)}`)
+  })
+
+  it('前缀写错（把 CG 写成 D）也算悬空——同号在别的包里存在不算数', () => {
+    const prefix = facts.get('docker')?.prefix ?? 'D'
+    const diffs = checkWithReferences([{ path: 'docs/fixture.md', text: `见 codegraph ${prefix}${pad(5)}。\n` }])
+    expect(kinds(diffs)).toContain('ledger.ref.dangling')
+  })
+
+  it('扫的扩展名覆盖 workflow 与代码注释——当初那条悬空引用正是写在这两类文件里', () => {
+    const bogus = danglingRef('tty')
+    const diffs = checkWithReferences([
+      { path: '.github/workflows/fixture.yml', text: `# 与 ${bogus} 同批\n` },
+      { path: 'scripts/fixture.mjs', text: `// 见 ${bogus}\n` },
+    ])
+    const where = diffs.filter((item) => item.kind === 'ledger.ref.dangling').map((item) => item.where)
+    expect(where).toEqual(['.github/workflows/fixture.yml:1', 'scripts/fixture.mjs:1'])
+  })
+
+  it('不该报的形状：范围写法与「同号不同义」都不算悬空（否则判据会逼人改写正文）', () => {
+    const diffs = checkWithReferences([
+      { path: 'docs/fixture.md', text: '范围 `docker D01`–`D167`、`tty D01`–`D101`；同号不同义：docker D11 与 tty D11。\n' },
+    ])
+    expect(kinds(diffs)).not.toContain('ledger.ref.dangling')
+  })
+
+  it('拿不到引用清单 → **报缺失**，不静默跳过', () => {
+    const diffs = checkDefectsTable({ ledgers: real.ledgers, conventions: real.conventions, sources: real.sources })
+    expect(kinds(diffs)).toContain('ledger.refs.references.missing')
+  })
+
+  it('引用清单是空的 → ledger.refs.none（命中 0 的闸门比没有更坏）', () => {
+    expect(kinds(checkWithReferences([]))).toContain('ledger.refs.none')
+  })
+
+  it('豁免表里的假号已经不在文件里 → ledger.ref.allowStale（豁免必须真的用上，否则它会腐烂）', () => {
+    const withoutFixture = real.references.filter((file) => file.path !== 'scripts/test/defects-table.test.ts')
+    expect(kinds(checkWithReferences(withoutFixture))).toContain('ledger.ref.allowStale')
   })
 })

@@ -9,8 +9,8 @@
 > 没有 docker 那样的独立「修复记录摘要」节可拆；且原表没有「涉及文件」列（补一列就得靠猜，
 > 会发明事实）。所以 **§1 的「修复 / 设计意图」列就是意图字典**。理由与时点见 §4。
 >
-> **编号是硬契约**：`CG01–CG66` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
-> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG66` 之后，
+> **编号是硬契约**：`CG01–CG68` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
+> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG68` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem 的完整原文、独立验收复跑记录、原批次计划。
@@ -43,18 +43,20 @@
 
 ## 现状
 
-**已修 63 / 已关闭 3 / 待修 0**，编号至 `CG66`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
+**已修 65 / 已关闭 3 / 待修 0**，编号至 `CG68`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
 
-**已修 63 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
+**已修 65 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
 CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）修于上一轮；CG64（客户端字面星号）修于上一轮；
 CG65（探测超时被判死 + 启动争抢打穿单次超时，外部 issue）修于上一轮；CG66（采纳率监听器把工具名读在事件**顶层**，
-真机零计数）修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
+真机零计数）修于本轮；CG67（`[]` 空根被当成可追加前缀，写出非法 cordis.patch.yml）修于本轮；
+CG68（测试未隔离 `DSH_HOME`，`pnpm test` 改写用户真实补丁）修于本轮；
+CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
 
 > **数字口径（原文照录）**：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
-> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 66 − 3 = **63**。
+> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 68 − 3 = **65**。
 > 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格里多一行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
 
@@ -144,6 +146,8 @@ CG65（探测超时被判死 + 启动争抢打穿单次超时，外部 issue）�
 | CG64 | 客户端文案里有 2 处字面 `**`（`panel.perAgentTitle` 的 zh / en）——浏览器半体没有 markdown 渲染器，用户看到的是两个星号 | 改成引号包裹（「有索引」/ “has an index”）；目录头注释里写明这条规矩 |
 | CG65 | probe 的超时硬编码 `CLI_PROBE_TIMEOUT_MS=5000`，且**超时被当作「不可用」判死**：宿主启动争抢（外部 issue 实测 60–80 个并发 spawn）能把空闲 ~200ms 的命令拖过任何单次超时（同机 whoami 链 21.5s），于是公告与使用指引整个会话不注入、只能手动「重新探测」；且「命令不存在」与「超时」共用同一条警告文案，排障被引向 command 路径而非机器负载 | 失败**分类**：按运行器的 `timedOut` 显式标记（CG22）把超时标成 `inconclusive`——available 落回 undefined（未落地态，复用既有契约）并按重试梯子 `PROBE_RETRY_DELAYS_MS=[10s,30s]` 自动补探，成功即注入；确定性失败（ENOENT/非零退出）立即判死不重试；梯子穷尽才判死并换「连续超时」专属警告文案；显式重探作废待触发重试并归零梯子；卸载 effect 清理重试计时器。单次超时与梯子**刻意不进 Config**（不是用户档位，见常量注释），测试经 `apply` 第三参 `ProbeTuning` 注入；客户端对含「timeout after」的原因给专属指引 |
 | CG66 | **采纳率仪表在真机上永远是 0**：`session/event` 的第二个参数是 `SessionEvent` **信封** `{ type, seq, time, data }`，而监听器直读顶层 `event.name`——那是不存在的字段，于是每一次真实 `tool/call` 都命中「畸形事件，宁可少记」的守卫被丢弃。`type` 恰好在顶层，所以既不报错、也没有可疑数字：卡片长期显示「本次宿主运行期间该项目还没有工具调用记录」（本机宿主已跑 3.8 小时、会话一直在调工具，而 `/metrics` 的 `summaries` 为空、连 `other` 都是 0）。真机复刻：真 `dsh-session` + 真 `SessionStore` + 真 agent scoped ctx 派发真 `tool/call` → 表为空；换成扁平 `{ type, name }` 即计数——差别只在这一个字段路径。此前本文件的接线用例全用假 ctx 手工派发**扁平事件**，契约核对也只核到「有两个参数」，于是这个错误一路绿灯 | 工具名改读 `event.data?.name`（顶层 `event.name` 留作兜底：宿主把载荷摊平时也要计上，别让同一个故障换个版本再静默一次）；测试新增 `toolCallEvent()` 按**真实信封**造事件、所有派发点改用它，并补畸形信封（`data: {}` / `data.name: ''` / `data.name: 42`）与回归用例「真实信封：工具名在 `event.data` 下，必须计数」；变异验证：还原成 `event.name` 即红 3 条（新用例 + 两条信封用例） |
+| CG67 | **往空 flow 序列根 `[]` 后面追加托管块，会让 `~/.dsh/cordis.patch.yml` 变成非法 YAML，MCP 整行静默不挂**（外部 issue #11）：DSH 给每个 profile 生成的 `cordis.patch.yml` 模板与 home 补丁的惯例内容都是「几行注释 + `[]`」，而 `[]` 是**完整**的 YAML 文档（flow 序列根），其后不能再接块序列。`syncManagedMcpRow` 的「无标记则追加」分支只判断 `text.trim() === ''`，`[]` 落进普通追加路径，写出 `[]\n\n# --- dsh-codegraph mcp managed ...`。宿主用同一套 js-yaml 解析（`parsePatchList` → `yaml.load`），于是**下次启动直接 fatal**（`failed to parse patches ... expected '<document start>', but found '<block sequence start>'`，退出码 1）；而活着的时候热路径被 HMR 的 `watchConfig` catch 成一条 `logger.warn`，GUI 完全看不到。三处可观测面同时给出「一切正常」：`POST /default-path` 返回 `ok:true` + `已自动托管`、索引门禁照常注入使用指引（但 `mcp__codegraph__*` 从未注册）、`/agents` 的 `mounted:0/live:0` 在 managed 模式下本来就是 0。**且不自愈**：标记一旦存在，后续写入走「替换已有区块」分支把坏根原样留着。同一段 append 写法在 `mcp` / `kit` / `env` / `prompt` 四个包的托管块写入器里**逐字重复**，五处同时中招 | 抽出共用纯函数 `stripEmptyFlowSequenceRoot` / `stripEmptyFlowSequenceRootLines`（`packages/kit/src/managed-block.ts`）：识别「根位置（首条非注释行）是 `[]`」，追加前**摘掉这个根**而不是往后接，注释与其它内容逐字节保留；`codegraph` 的 `syncManagedMcpRow` 在入口处行数组版摘根、早退分支返回原数组（解析失败 / 区块外手工行绝不顺手改盘）、`dryRun` 返回原文（只读快照不谎报已修），并把「只摘了根、没有别的改动」也算成 `changed` 否则坏根永远等不到写盘；`mcp` / `env` / `prompt` 三个写入器同样先摘根再走原有分支。**自愈**：旧版本已经写出的 `[]` + 区块文件，下一次写入即修好（摘根 + 就地替换区块），不需要用户手工删行。回归用例：kit 6 条、mcp 4 条、env 2 条、prompt 2 条、codegraph 6 条，全部用**真 js-yaml 解析**断言（不是比对字符串）；另有「正常块序列文件不受影响」「dryRun 不改写」两条反例。变异验证：回退五个写入器的源码后新用例**红 12 条**，对照组（正常文件 / 空文件 / 纯注释）仍绿 |
+| CG68 | **`pnpm test` 会改写用户真实的 `~/.dsh/cordis.patch.yml`**：`adoption.test.ts` **真的调用 `apply()`**，而 `apply()` 的兜底 effect 会按 `dshHome()` 读写 `$DSH_HOME/cordis.patch.yml`；该文件从未隔离 `DSH_HOME`（`grep -c DSH_HOME` = 0），于是没设该变量时就落到用户真实 home。用例里两处 `apply()` 分别把 `defaultPath` 指向 `cg-adopt-repo-*` / `cg-adopt-diag-*` 临时项目，插件随即把托管行的 `cwd` 写成那个路径，**跑完临时目录即被删**——真机上留下一条 `cwd` 指向不存在目录的 codegraph 行（本机实测：收尾对账时真实补丁 sha256 变了，`cwd` 成了 `/var/folders/.../cg-adopt-diag-*`）。发现路径也是间接的：先做 CG67 的真机验收，收尾「真实配置逐字节未变」自证报红才顺藤摸到。**危害分档**：宿主是 per-agent 模式时该全局行不生效（本机就是），所以多半不炸；切到 managed 模式后这条坏行会被 loader 载入、MCP 子进程以不存在的 cwd 启动。与 CG67 是同一类病（写用户真实配置）但不同根因：CG67 是写错内容，本条是**在不该写的路径上写** | 给 `adoption.test.ts`**以及同病的 `projects.test.ts` / `auto-reindex.test.ts`**（全面测试时用指纹比对扫出来的：跑完全仓套件真实补丁又多出 `cg-auto-off-*` / `cg-proj-follow-*` 的 cwd）加文件级隔离，写法与 `cli-route.test.ts` / `cli-surface.test.ts` 同一套：`beforeAll` 里 `process.env.DSH_HOME = mkdtempSync(...)`，`afterAll` 还原原值并删临时目录（`dshHome()` 每次调用现读 `process.env`，所以 hook 早于任何 `apply()` 即可生效）。**变异验证**（这次做对了）：把 `beforeAll` 的赋值去掉、外部 `DSH_HOME` 指到空目录 `/tmp/.../pB` 再跑，该目录被写出带 `cwd: …/cg-adopt-diag-*` 的托管行（复现污染）；恢复赋值后同样跑，外部目录**保持为空**（隔离生效）。单文件 19 条用例两态都绿——所以这条必须靠**文件系统副作用**验证，不能靠断言。**但「记得做收尾对账」不是闸门**：2026-10-17 在同一条上复犯一次——维护者机器上跑 `pnpm test` 把真实补丁的 codegraph 区块**整段**改写成测试垃圾行（`command` 与 `cwd` 各自指向已删除的临时目录），事后按 `~/.dsh/cordis.patch.yml.bak-*` 逐字节对账才修回；期间本机在跑的 `dsh web` 已在 10:37:17 自己把那条坏行摘掉、只剩空壳区块，也就是**危害会自愈，证据也跟着消失**。于是给 `scripts/check-dsh-home.mjs` 补**第二条判据**（CG35 那条继续管「推导只有一份」，新增这条管「测试不许写 home」）：把整轮 `vitest run` 跑在一个**空的哨兵 `DSH_HOME`** 上，跑完断言该目录里**一个文件都不许出现**，出现就点名文件并指回上面的写法。判据刻意是**行为式**而不是文本式：实测 36 个「从包 `src` import 了 `apply`」的测试文件里 21 个不含 `DSH_HOME` 字样，但逐个放进哨兵目录跑**全部写出 0 文件**（它们压根不碰 home）——「调 `apply()` 就必须出现 `DSH_HOME`」会一次造出 21 条必然腐烂的豁免；行为式反过来还白捡覆盖面：`writeManagedEntries`、kit 授权存储等**任何**入口写 home 都抓得到，落点不限于 `cordis.patch.yml`（`env.yml` / `prompts.yml` / `.credentials.yaml` / `tty/` / `rss-digest` 都在 home 下）。夹具反例 `scripts/test/check-dsh-home.test.ts`（9 条）钉住两个形状：**套件失败 + 哨兵目录为空 → 不许放行**（否则就是一道恒绿闸门）、**写出为空即通过，与文件里有没有 `DSH_HOME` 字样无关**。变异验证：临时用例往哨兵写出 `cordis.patch.yml` → 闸门红并点名，删掉即绿；整轮成本 25s（本机），挂在 CI 已有的 `dsh-home:check` 步骤上，不新增脚本名 |
 
 ## 2. 台账纪律与长期结论
 

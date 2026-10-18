@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -47,6 +47,29 @@ function toolCallEvent(name: unknown): Record<string, unknown> {
     data: { turn: 1, step: 1, callId: 'call-1', name, arguments: '{}' },
   }
 }
+
+/*
+ * 隔离（CG68）：本文件**真的调用 `apply()`**，而 `apply()` 的兜底 effect 会按
+ * `dshHome()` 读写 `$DSH_HOME/cordis.patch.yml`。`DSH_HOME` 没设时那就是用户**真实的**
+ * `~/.dsh/cordis.patch.yml`——于是每次 `pnpm test` 都会把插件托管行的 `cwd` 改成本文件
+ * 造的临时项目路径（跑完就删），真机上留下一条指向不存在目录的坏行。
+ *
+ * 这与 `cli-route.test.ts` / `cli-surface.test.ts` 是同一套隔离写法：整个文件把
+ * `DSH_HOME` 指到临时目录。**必须在 `apply()` 之前设好**——`dshHome()` 每次调用现读
+ * `process.env`，所以 `beforeAll` 早于任何用例里的 `apply()` 即可。
+ */
+const originalDshHome = process.env.DSH_HOME
+const isolatedHome = mkdtempSync(join(tmpdir(), 'dsh-cg-adoption-home-'))
+
+beforeAll(() => {
+  process.env.DSH_HOME = isolatedHome
+})
+
+afterAll(() => {
+  if (originalDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = originalDshHome
+  rmSync(isolatedHome, { recursive: true, force: true })
+})
 
 describe('P1 采纳率：工具归类', () => {
   it('codegraph 工具：MCP 命名空间命中', () => {

@@ -30,7 +30,7 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { dshHome } from '@hyzyn/dsh-kit'
+import { dshHome, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit'
 import type { Context } from '@deepseek-ai/cordis'
 import yaml from 'js-yaml'
 
@@ -203,7 +203,11 @@ export function renderManagedBlock(entries: EnvEntry[]): string {
 export function writeManagedEntries(entries: EnvEntry[]): void {
   const file = envFilePath()
   const existed = existsSync(file)
-  const text = existed ? readFileSync(file, 'utf8') : '# dsh env managed file\n'
+  const raw = existed ? readFileSync(file, 'utf8') : '# dsh env managed file\n'
+  // CG67 同源（codegraph）：根位置上的 `[]` 是**完整**的 YAML 文档（flow 序列根），
+  // 往它后面追加托管区块会让整份文件非法（env.yml 也有别的消费者按 YAML 读）。先摘掉
+  // 这个根，文件就回到「无区块」的形状，下面的追加分支才是安全的。
+  const text = stripEmptyFlowSequenceRoot(raw) ?? raw
   const lines = text.split('\n')
   // 同 readManagedEntries：标记整行精确匹配（仅容忍尾部空白），值内的标记
   // 文本（缩进 literal block 渲染）不得被当作区块边界，否则托管区块被截断。
@@ -330,9 +334,29 @@ function applyToProcessEnv(entries: EnvEntry[]): void {
  * 字符串拼接（`'Basic ' + …`）照常产出合法字符串、条目正常挂载，只是服务端 401
  * （卡片「未连接」、工具数 0）。同一个根因、两种现场。
  *
- * 只 set、不 delete，且只补空位：删除语义留给异步的 applyStoreEntriesToProcessEnv
- * 去对账，免得启动期误删「继承自启动环境」的值——seam 的 resolve 优先级是
- * inherited → stored → fallback，继承值本来就该赢。
+ * **优先权跟随宿主的 seam（2026-10-17 定）**：写的是**存储值**，同名键在启动环境里也照写不误。
+ * 依据是 `dsh-credentials-local` 的层级——`0.2.1-alpha.3` 起是
+ * `$DSH_HOME/.credentials.yaml > inherited env > cwd/.env > $DSH_HOME/.env`，而
+ * `0.2.1-alpha.2` 是反过来的 `inherited env > .credentials.yaml`（逐档读过两版的类型头注释：
+ * 翻转落在 **alpha.3**，不是 alpha.4——alpha.4 那次改的是 `engines.dsh` 与判定器字段名）。
+ * 两个通道必须同答：
+ * `resolve()` 给存储值时，`!!js process.env.X` 也必须看到存储值，否则就是「卡片说已配置、
+ * MCP 却 401」——正是上面那类故障。代价是显式导出的启动值（`KEY=… dsh`、CI secret）不再能
+ * 覆盖已存储的同名键；宿主从 alpha.3 起已经这么定了，想保留覆盖就不要把那个 key 存进 DSH。
+ *
+ * 旧档（**alpha.2 及更早**，seam 仍以继承值优先）上这个落差**有界且自愈**，这也是选「跟宿主走」
+ * 而不是「按版本分支」的理由：
+ *   - 同步这一步会先写入存储值（那几档上 `!!js` 会看到它，与 seam 当时的答案不一致）；
+ *   - 但 `inherited()` 读的是 `launchEnvironmentOf(ctx)` 的**启动快照**、而不是实时的
+ *     `process.env`（实测 `dsh-credentials-local` 的 `inherited(ref)` 实现），所以我们改
+ *     process.env **污染不到宿主的判断**；
+ *   - 于是随后的异步对账 `applyStoreEntriesToProcessEnv()` 问 seam 拿到继承值、把 process.env
+ *     改回去——同一个启动周期内收敛，稳态与 seam 一致。
+ * 而「按版本分支」做不到：同步路径读不到宿主版本（插件从 profile 的 node_modules 解析不到
+ * 全局装的 `@deepseek-ai/dsh`），猜一个版本阈值比跟着宿主走更糟。
+ *
+ * 只 set、不 delete：删除语义留给异步的 applyStoreEntriesToProcessEnv 去对账，
+ * 免得启动期误删「继承自启动环境」的值（那一步问的是 seam，天然权威）。
  */
 function applyStoreRefsToProcessEnv(entries: EnvEntry[]): void {
   const refs = readStoreRefs()
@@ -340,8 +364,7 @@ function applyStoreRefsToProcessEnv(entries: EnvEntry[]): void {
     if (entry.secret !== true || entry.value !== undefined) continue
     const stored = refs[entry.key]
     if (stored === undefined) continue
-    const current = process.env[entry.key]
-    if (current === undefined || current === '') process.env[entry.key] = stored
+    process.env[entry.key] = stored
   }
 }
 

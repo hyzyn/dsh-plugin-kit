@@ -85,6 +85,16 @@ export declare function defaultShellPath(platform?: NodeJS.Platform, env?: NodeJ
  */
 export declare function commandShellHint(shell: string, platform?: NodeJS.Platform): string;
 export declare function isPowerShellShell(shell: string): boolean;
+/**
+ * 该平台 + 该 shell 下，OSC 133/7 集成**能不能注入**（宿主把开关存成什么值的判据）。
+ *
+ * POSIX 恒 true：注入只对 zsh / bash 有实现，其他 shell 在 buildShellSpawn 里自然退回最简
+ * 包装层 —— 这是历史行为，不动它（把 fish 之流一并拨 false 会改变既有快照语义）。
+ *
+ * Windows 只有 PowerShell 家族为 true（`-File` 桩 + prompt / PSConsoleHostReadLine 钩子）；
+ * cmd 没有命令开始/结束钩子，注入无从谈起。
+ */
+export declare function shellIntegrationSupported(shell: string, platform?: NodeJS.Platform): boolean;
 export declare function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform?: NodeJS.Platform): ShellSpawnPlan;
 /** POSIX 单引号安全包裹（路径/值进 inner.sh 与 -c 包装层用）。 */
 export declare function shSingleQuote(value: string): string;

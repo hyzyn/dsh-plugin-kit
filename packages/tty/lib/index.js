@@ -17,7 +17,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
 import { sharedGrantStore, auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
 import { probeSsh } from './probe.js';
-import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath, tmuxSocketName } from './shell-integration.js';
+import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath, shellIntegrationSupported, tmuxSocketName } from './shell-integration.js';
 import { KEY_VOCABULARY, resolveKeys } from './keys.js';
 import { parseSshConfigDetailed } from './ssh-config.js';
 import { parseKnownHostsDetailed } from './known-hosts.js';
@@ -312,9 +312,18 @@ const TTY_GUIDANCE = '**先判断要不要用终端**：只有「需要跨调用
     + '标签栏「+」还能开 SSH 标签（ssh2 原生连接；连接簿、agent forwarding、主机指纹 TOFU、单跳跳板机都在设置卡片维护）；面板内另有 SFTP 文件浏览（上传/下载/建目录/重命名/删除），以及由连接簿条目配置的端口转发隧道；设置卡片开「会话持久化（tmux）」后新标签由 tmux 托管，能跨宿主重启恢复，长任务建议开着它跑。'
     + '用户提到「开个终端 / 在终端里跑 / SSH 到某台机器 / 传文件 / 转发端口」时，引导他打开这个面板。'
     + '典型流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
-/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
-export function wrapLocalPty(handle) {
+/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。
+ *
+ *  `platform` 只为单测注入（D100 的闸门是 win32-only，macOS/Linux 上要能断言两条分支）。
+ */
+export function wrapLocalPty(handle, platform = process.platform) {
     let resizeWarned = false;
+    // D100：在 DSH 拿到这个 terminal 之前装好一次性原生 kill 闸门（D48 的预杀与 DSH 的
+    // stopShellWindows 兜底会调同一个 terminal.kill()，而这个原生调用不幂等）。
+    if (!installWindowsKillGate(handle, platform) && !killGateUnavailableLogged) {
+        killGateUnavailableLogged = true;
+        console.warn('[dsh-tty] 未能在 node-pty 的 conout 代理（terminal._agent）上安装一次性 kill 闸门（D100）：node-pty 内部结构可能已变化。Windows 上「插件的预杀 + DSH 的兜底 kill」叠加时会把同一个 HPCON 交给 ClosePseudoConsole 两次，实测可打死宿主进程（0xC0000374）');
+    }
     // D79：README 承诺「DSH 升级若改内部结构会警告一次并退化为固定尺寸」，但老写法是
     // `handle.terminal?.resize?.(…)` —— `?.` 只在**抛错**时才进 catch，DSH 若把
     // `handle.terminal` 改名 / 移除（而不是让 resize 抛错），这里既不 resize 也不警告，
@@ -375,6 +384,79 @@ export function killLocalShellTerminal(terminal, platform = process.platform) {
     catch {
         /* 已退出 */
     }
+}
+/** 「闸门没装上」只在这一处记一次（每个会话 spawn 都记就是刷屏；见 D100）。 */
+let killGateUnavailableLogged = false;
+/** 「闸门吞掉了一次重复终止」只记一次（正常路径上每次 Windows kill 都会命中，逐次记就是刷屏）。 */
+let killGateSwallowedLogged = false;
+/**
+ * 一次性原生 kill 闸门（D100，2026-10-12 Windows 真机实测）。
+ *
+ * **为什么必须有**：node-pty 的 `WindowsTerminal.kill()` 落到 `WindowsPtyAgent.kill()`，
+ * 后者对同一个 `_pty` 调 `conpty.node` 的 `kill(id)`；而 `conpty.cc` 的 `PtyKill` **不幂等**——
+ * 它 `ClosePseudoConsole(handle->hpc)` 之后**不置空 `hpc`**，那条 baton 要等 shell 进程真的退出、
+ * 由 exit 线程从 `ptyHandles` 里 `erase_if` 摘掉才算消失。这段窗口里再调一次，同一个**已释放的
+ * HPCON** 会被第二次交给 `ClosePseudoConsole`。
+ *
+ * 而 Windows 上**两个调用方必然叠加**：
+ *   1. DSH 的 `LocalTerminalHandle.stopShellWindows()` 在 `rootIdentity === undefined` 时调
+ *      `terminal.kill()`；而 Windows 上 rootIdentity **恒为 undefined**——node-pty 的 `pid` 要等
+ *      conout 连接建立才有值，DSH 在 `new LocalTerminalHandle(...)` 那一刻就取 `terminal.pid`，
+ *      拿到的是 **0**（真机探针逐轮实测 `spawned pid=0`；真实 pid 直到 `connect` 才出现），
+ *      于是 `snapshot().tree(0)` 找不到自己、必然走那条兜底分支；
+ *   2. 本插件 D48 的预杀（`killSessionNow` 里的 `handle.forceKill?.()`）又调一次。
+ * 两次叠加 = 同一个 HPCON 被 ClosePseudoConsole 两次 = **STATUS_HEAP_CORRUPTION（0xC0000374）**，
+ * 被 Windows 打死的是**整个宿主进程**，不是某一个会话。
+ *
+ * **实测**（Win11 ARM64，同一 harness、同一 `kill+terminate` 顺序，各 150 轮，只差这一个变量）：
+ *   无闸门 → 累计 94 次双重原生 kill，第 75 轮宿主崩（退出码 -1073740940）；
+ *   装闸门 → 150/150 每 pty 恰好 1 次原生 kill、0 次双重，跑满 150 轮不崩；
+ *   单次 kill 的对照（只调 terminate）150 轮也不崩。
+ *
+ * **为什么装在 `_agent.kill`（执行点）而不是 `terminal.kill`（调用点）**：node-pty 在终端 ready
+ * 之前会把自己收到的 kill **排队**（`_deferNoArgs`），到第一次 data 才执行。装在调用点的话
+ * 「排队的那次」会先把闸门占掉、DSH 真到执行的那次被吞——万一排队的那次永远不执行（进程没产出
+ * 数据、deferred 从不跑），就变成**一个都没杀**（进程泄漏）。装在执行点则谁先真正动手谁生效、
+ * 后到的才被吞，两个方向的坏结果都不会出现。
+ *
+ * **边界**：只在 win32 装——POSIX 的 `stopShell` 本来就要 SIGTERM→SIGKILL **两次**，吞第二次是错的。
+ * `_agent` 是 node-pty 的私有字段（与 `terminal.resize` 同级的内部耦合）：取不到时返回 false，
+ * 调用方记一条警告后照旧调用——退化的后果是回到「双重 kill」（今天的现状），不是新增故障（D79 同款）。
+ *
+ * 导出仅供单测（test/host-frames.test.ts）：平台参数注入，两个分支都能在 macOS/Linux 断言。
+ *
+ * @returns 闸门是否已就位（非 win32 恒 true）
+ */
+export function installWindowsKillGate(handle, platform = process.platform) {
+    if (platform !== 'win32')
+        return true;
+    const terminal = handle?.terminal;
+    // 不是真 node-pty 终端（测试夹具 / 未来结构变化）不算「闸门装不上」：先看有没有 kill
+    if (terminal === undefined || typeof terminal.kill !== 'function')
+        return true;
+    const agent = terminal._agent;
+    if (agent === undefined || typeof agent.kill !== 'function')
+        return false;
+    if (agent.__dshKillGated === true)
+        return true;
+    agent.__dshKillGated = true;
+    const real = agent.kill;
+    let killed = false;
+    agent.kill = function () {
+        if (killed) {
+            // 这一行就是「闸门真的拦到了一次双重终止」的证据：排查 Windows 上的宿主崩溃时有它可查
+            if (!killGateSwallowedLogged) {
+                killGateSwallowedLogged = true;
+                console.warn('[dsh-tty] 原生 kill 闸门已生效：同一个 PTY 的重复终止被吞掉（node-pty 的产线 kill 不幂等，重复调用会把已释放的 HPCON 再交给 ClosePseudoConsole，实测会打死宿主进程；见 D100）');
+            }
+            return undefined;
+        }
+        // 先落标记再真调（失败也不放开）：放开的代价是可能再来一次双重 kill → 宿主崩溃；
+        // 不放开的代价只是「这一次没杀掉」，而调用方还有 terminate 兜底。
+        killed = true;
+        return real.call(this);
+    };
+    return true;
 }
 /**
  * Windows 本地 PTY 的**输入归一化**（D74，2026-09-27 真机报告）：conhost 把 Enter 当
@@ -686,7 +768,7 @@ const FLUSH_INTERVAL_MS = 12;
 /** 待发输出超过该字符数时跳过窗口立即冲刷（防超长输出无限延迟）。 */
 const FLUSH_SIZE_CHARS = 64 * 1024;
 function createShellState() {
-    return { carry: '', sawMark: false, inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null, cmdSeq: 0 };
+    return { carry: '', sawMark: false, inCommand: false, commandStartedAt: 0, cmdBuffer: '', pendingT: null, lastCommand: null, cmdSeq: 0 };
 }
 /** OSC 133;T 的 base64 payload → utf8 文本（无效输入返回 null）。 */
 function decodeBase64Utf8(payload) {
@@ -701,7 +783,18 @@ function osc7Path(body) {
         const url = new URL(body);
         if (url.protocol !== 'file:')
             return undefined;
-        const decoded = decodeURIComponent(url.pathname);
+        let decoded = decodeURIComponent(url.pathname);
+        /*
+         * Windows 盘符：PowerShell 桩用 `[Uri]::AbsoluteUri` 上报，`D:\DSH\x` 于是变成
+         * `file:///D:/DSH/x`、`URL.pathname` 是 `/D:/DSH/x` —— 去掉盘符前那根多余的斜杠才是
+         * 可用的 Windows 路径（`/D:/x` 形态拿去 spawn 会被当成相对盘根的路径）。
+         *
+         * UNC（`\\server\share` → `file://server/share`）的服务器段住在 host 里，而本函数按
+         * 既有语义（POSIX shell 上报的 host 是本机名）忽略 host，所以 UNC cwd 只显示成
+         * `/share/…`：纯展示降级，不参与任何 spawn 决策。
+         */
+        if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(decoded))
+            decoded = decoded.slice(1);
         return decoded !== '' ? decoded : undefined;
     }
     catch {
@@ -749,6 +842,7 @@ export function feedShellIntegration(session, text) {
         const kind = match[1];
         if (kind === 'B') {
             state.inCommand = true;
+            state.commandStartedAt = Date.now();
             state.cmdBuffer = '';
             state.pendingT = null;
         }
@@ -1081,6 +1175,66 @@ function lastCommandStart(text) {
     OSC133_RE.lastIndex = 0; // 归位：这个正则是共用的（feedShellIntegration 也用它）
     return end;
 }
+/**
+ * 从原始流里取出**命令输出**的部分（D101）：丢掉每个 `A`（prompt 开始）到其后第一个 `B`
+ * （命令开始）之间的文本，以及末尾那段还没等到 `B` 的 `A` 段。
+ *
+ * 为什么需要它：`A..B` 之间只有提示符与**命令行回显**——真实输出一定在 `B` 之后。这是
+ * shell 集成的硬边界（不是文本启发式）。回溯路径一直在用它（`lastCommandStart` 从最后一个
+ * `B` 起切），而 live 路径此前拿**整段原始流**去匹配，于是「字面出现在命令行里」的 pattern
+ * 会命中自己的回显、秒回 matched —— 命令其实还在跑（D75 的文本剔除在窗口里出现过任意 `B`
+ * 标记时也不启用，见 `echoStrippable`）。
+ *
+ * 真机实测（2026-10-13，Windows 11 ARM64 + pwsh 7.6.6 / Win PowerShell 5.1.26100）：命令
+ * `Start-Sleep -Seconds 2; echo PROBE_ECHO_QQQ` + 等 `PROBE_ECHO_QQQ`，两版分别在 **432ms /
+ * 446ms** 就返回 matched；macOS/zsh 上同类用例 **1ms**。修法即本函数：命中前先按边界裁掉
+ * 提示符/回显段。
+ *
+ * 没有标记的会话（cmd、集成被关、TUI 全屏重画）原样返回——降级语义不变。
+ *
+ * 用在两处：`unreadRegion`（回溯窗口，从最后一个 `B` 起切之后再做一次）与
+ * `liveOutputRegion` 的「窗口里没有 `B`」那一支。
+ */
+function commandOutputRegion(text) {
+    let result = '';
+    let cursor = 0;
+    let inPrompt = false;
+    OSC133_RE.lastIndex = 0;
+    for (const match of text.matchAll(OSC133_RE)) {
+        const index = match.index ?? 0;
+        if (!inPrompt)
+            result += text.slice(cursor, index);
+        if (match[1] === 'A')
+            inPrompt = true;
+        else if (match[1] === 'B')
+            inPrompt = false;
+        cursor = index + match[0].length;
+    }
+    if (!inPrompt)
+        result += text.slice(cursor);
+    OSC133_RE.lastIndex = 0; // 归位：这个正则是共用的（feedShellIntegration 也用它）
+    return result;
+}
+/**
+ * `tty_expect` 的 live 窗口：从「本次等待期间到达的原始流」里取出**命令输出**（D101）。
+ *
+ * 三种现场分别处理，判据都是 shell 集成的边界，不做文本启发式：
+ *   1. 窗口里有 `B`（命令在本次等待期间开始了）→ 只取最后一个 `B` 之后。**命令行回显在 `B` 之前**
+ *      （真机上回显与 `B` 常在同一 chunk 里、回显在前），所以这一步就把回显丢掉了；
+ *   2. 窗口里没有 `B` 但 `inCommand`（`B` 早于注册）→ 整段都是那个命令的输出（TUI 全屏重画、
+ *      长任务刷屏），原样返回；
+ *   3. 都没有 → 没有集成（cmd / 集成被关）或正停在提示符上：此时可能只有提示符与回显，也可能
+ *      是没人发命令时自己冒出来的后台输出 —— 只能交给 `commandOutputRegion` 裁掉「未闭合的
+ *      `A` 段」（提示符 + 正在回显的命令行），其余照旧返回（后台输出不能被误杀）。
+ */
+function liveOutputRegion(text, state) {
+    const fromB = lastCommandStart(text);
+    if (fromB !== -1)
+        return text.slice(fromB);
+    if (state.inCommand)
+        return text;
+    return commandOutputRegion(text);
+}
 /** 首次被 agent 工具触达时把水位线落在当下——否则第一次回扫会把用户此前的历史输出当成「还没读过」。 */
 function ensureReadMark(session) {
     if (session.readSeq >= 0)
@@ -1097,7 +1251,8 @@ function advanceReadMark(session) {
  * 水位线之后的**未读**原始输出。下界再抬到「最后一个 B 标记之后」：回显落在
  * A（prompt 开始）与 B（命令开始）之间，所以这样能零启发式地排除回显——按
  * 文本比对「跳过与发送内容相同的行」会被折行 / ANSI / 多行粘贴打碎。
- * 没有 B 标记（未开 shell 集成 / Windows PowerShell / 远端未装集成）时无法按边界切片：
+ * 没有 B 标记（未开 shell 集成 / Windows 的 cmd / 远端未装集成 / 用户关了 PSReadLine）时
+ * 无法按边界切片：
  * D75 起改用「最近提交过的输入」这份回显候选把回显行从匹配窗口里剔掉（见 echoOnlyMatch），
  * 不再直接拿回显当命中。
  */
@@ -1106,7 +1261,9 @@ function unreadRegion(session) {
     const bufferStart = session.outputSeq - session.buffer.length;
     const text = session.buffer.slice(Math.max(0, session.readSeq - bufferStart));
     const start = lastCommandStart(text);
-    return start === -1 ? text : text.slice(start);
+    // D101：从最后一个 B 起切只解决了「回显在 B 之前」那一半；这段里还可能有一段**还没等到 B**
+    // 的 A 段（提示符 + 正在回显的命令行），同样要在匹配前裁掉。
+    return commandOutputRegion(start === -1 ? text : text.slice(start));
 }
 /**
  * pattern 匹配的统一入口（D72）：先对含 ANSI 的原始流试（live 路径原语义），
@@ -1133,6 +1290,13 @@ function testPattern(re, text) {
  *   - 真实输出里也出现的标记照旧命中（不误杀）；
  *   - 只在回显行**末尾**匹配才削（cmd 的回显与提示符同行，所以按行尾切）；
  *   - 有 B 标记 / 命令正在跑（TUI 全屏重画里出现输入文本是正常输出）时不启用。
+ *
+ * **D101 补**：上面第三条让这条剔除在真实会话里几乎从不启用——窗口里出现**前一条命令**的
+ * `B` 标记就是常态，「命令正在跑」更是常态。真机实测（2026-10-13）：`Start-Sleep -Seconds 2;
+ * echo MARK` + 等 `MARK`，Windows PowerShell 5.1 / 7 分别 446ms / 432ms 就 matched，macOS/zsh
+ * 上 1ms。所以回显的**主防线**改成零启发式的 `commandOutputRegion`（按 `A..B` 边界裁，
+ * `tty_expect` 的 live 路径与 `unreadRegion` 都走它）；本函数退成没有标记那种壳（cmd /
+ * 集成被关——那里没有边界可用，只能按提交过的输入做文本剔除）的兜底。
  * ------------------------------------------------------------------ */
 /** 回显候选的行数上限（最近几条提交的输入）与单行长度上限。 */
 const ECHO_INPUT_CAP = 8;
@@ -1163,13 +1327,21 @@ function noteSubmittedInput(session, data) {
 function echoStrippable(session, text) {
     if (session.recentInputs.length === 0)
         return false;
+    /*
+     * 命令正在跑时（D101 修正）：启用与否**不能**只看 inCommand —— 真机现场是「命令已经被接受
+     * （B 早于注册）、回显稍后才回到缓冲区」，那时精确命中命令行文本的就是回显（Windows
+     * PowerShell 上 432ms 就 matched，而命令还在 Start-Sleep）。
+     *
+     * 判据换成「最近一次提交**早于本条命令的开始**」：那是命令行本身（回显就该剔掉）；提交晚于
+     * 命令开始的，是往在跑的程序里敲的键 —— 它在屏上出现属于**真实输出**，不许剔（D75 的边界）。
+     */
     if (session.shellState.inCommand)
-        return false;
+        return session.lastInputAt < session.shellState.commandStartedAt;
     return lastCommandStart(text) === -1;
 }
 /**
  * 把回显候选行从文本里削掉（保行结构）。按**行尾**匹配：cmd 的回显与提示符同行
- * （`C:\>echo X`），所以只削后缀、保留提示符前缀。行尾空白（含 `\r`）先归一。
+ * （`C:\>echo X`），所以只削后缀、保留提示符前缀。行尾空白与控制字节先归一。
  */
 function stripEchoLines(text, echoes) {
     if (echoes.length === 0)
@@ -1178,7 +1350,12 @@ function stripEchoLines(text, echoes) {
     return text
         .split('\n')
         .map((line) => {
-        const trimmed = line.replace(/[ \t\r]+$/, '');
+        /*
+         * 行尾的空白与**控制字节**都算噪音（D101 真机实测）：zsh 在命令行后面紧跟着写
+         * bracketed-paste 开关 `\e[?2004l`，不把它剥掉，「按行尾削」就永远削不掉那一行——
+         * 于是回显被当成真输出（macOS/zsh 上实测 1ms 命中）。
+         */
+        const trimmed = line.replace(/[\s\x00-\x1f\x7f]+$/, '');
         for (const echo of sorted) {
             if (trimmed.endsWith(echo))
                 return trimmed.slice(0, trimmed.length - echo.length);
@@ -1189,14 +1366,16 @@ function stripEchoLines(text, echoes) {
 }
 /**
  * 命中是否**只**落在回显上（纯回显 → 不算命中）。
- * 原始流与清洗后文本各削一次：回显行里可能夹着 ANSI（zsh 的 zle / 彩色提示符）。
+ *
+ * D101 起只看**清洗后**的文本：原来原始流与清洗文本各削一次、要求「两边都不再命中」才算回显，
+ * 于是原始流里跟在命令行后面的转义序列（`\e[?2004l`、zle 的光标移动……）让 raw 变体削不干净、
+ * 照样命中 → 整条判据失效。清洗后的文本才是「agent 真正看得到的那一份」（`tty_capture` 与
+ * `tty_expect` 返回的也是它），按它判定既够用又不自相矛盾。
  */
 function echoOnlyMatch(re, text, session) {
     if (!echoStrippable(session, text))
         return false;
-    const stripped = stripEchoLines(text, session.recentInputs);
-    const strippedClean = stripEchoLines(cleanAnsiTail(text), session.recentInputs);
-    return !testPattern(re, stripped) && !testPattern(re, strippedClean);
+    return !testPattern(re, stripEchoLines(cleanAnsiTail(text), session.recentInputs));
 }
 /** 宽松清洗一份 tunnels 输入；输入不是数组时返回 undefined（表示「未提供，保持原值」）。 */
 function sanitizeTunnels(input) {
@@ -3727,20 +3906,21 @@ const plugin = definePlugin({
         const config = plainConfig((rawConfig ?? {}));
         if (config?.enabled === false)
             return;
+        // 默认 shell 按平台取（Windows 没有 $SHELL，回落 /bin/zsh 会让本地终端一条都开不起来；
+        // 见 defaultShellPath）。用户显式填了「Shell 路径」就照用。
+        const configuredShell = config?.shell?.trim() || defaultShellPath();
         const live = new LiveConfig({
-            // 默认 shell 按平台取（Windows 没有 $SHELL，回落 /bin/zsh 会让本地终端一条都开不起来；
-            // 见 defaultShellPath）。用户显式填了「Shell 路径」就照用。
-            shell: config?.shell?.trim() || defaultShellPath(),
+            shell: configuredShell,
             term: config?.term?.trim() || 'xterm-256color',
             colorTerm: config?.colorTerm?.trim() || 'truecolor',
             cwd: config?.cwd?.trim() || process.cwd(),
             reconnectGraceSec: typeof config?.reconnectGraceSec === 'number' && Number.isInteger(config.reconnectGraceSec) && config.reconnectGraceSec >= 0 ? config.reconnectGraceSec : DEFAULT_RECONNECT_GRACE_SEC,
             sshHosts: Array.isArray(config?.sshHosts) ? config.sshHosts : [],
             hostKeys: Array.isArray(config?.hostKeys) ? config.hostKeys : [],
-            // shell 集成（OSC 133/7）靠 POSIX rc 注入 + `-c` 包装层：Windows 上的 cmd / PowerShell
-            // 两者都不成立（实测 cmd 忽略 -c 空跑、PowerShell 报 export 不存在），所以恒关。
-            // 配置项照旧留着（快照里会显示 false），界面上也说明原因。
-            shellIntegration: process.platform !== 'win32' && config?.shellIntegration !== false,
+            // shell 集成（OSC 133/7）：POSIX 走 rc 注入 + `-c` 包装层，Windows 走 PowerShell 的
+            // `-File` 桩（见 buildWindowsShellSpawn）。Windows + cmd 仍是 false —— 没有命令开始/
+            // 结束钩子，硬开只会让界面摆一个不生效的开关。
+            shellIntegration: config?.shellIntegration !== false && shellIntegrationSupported(configuredShell),
             tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
             persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
             endOnPageClose: config?.endOnPageClose === true,
@@ -3839,6 +4019,7 @@ const plugin = definePlugin({
             hostKeys: live.hostKeys,
             tunnels: live.tunnels,
             shellIntegration: live.shellIntegration,
+            shellIntegrationSupported: shellIntegrationSupported(live.shell),
             sftpStyle: stateRef.sftpStyle,
             persistence: live.persistence,
             endOnPageClose: live.endOnPageClose,
@@ -4978,7 +5159,7 @@ const plugin = definePlugin({
                         name: 'tty_list',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**——该会话没有 shell 集成标记，例如非持久 SSH / fish·csh / Windows 本地 / 集成被关，**不是**「没在跑」）；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
+                        description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**——该会话没有 shell 集成标记，例如非持久 SSH / fish·csh / Windows 的 cmd / 集成被关，**不是**「没在跑」）；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
                         parameters: {},
                         output: {
                             schema: {
@@ -5518,7 +5699,10 @@ const plugin = definePlugin({
                                 // 的收窄，闭包里就得再判一次 undefined。
                                 const onData = (chunk) => {
                                     acc = (acc + decoder.write(chunk)).slice(-64 * 1024);
-                                    const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc;
+                                    // D101：先按 shell 集成的命令边界裁掉提示符/回显段（见 liveOutputRegion），
+                                    // 再取 16KB 尾部窗口。反过来（先切 16KB 再裁）会切掉段首那个 B，回显又漏回窗口里。
+                                    const region = liveOutputRegion(acc, state);
+                                    const hay = region.length > 16 * 1024 ? region.slice(-16 * 1024) : region;
                                     if (testPattern(re, hay)) {
                                         // D75：命中的若**只是刚送进去那行命令的回显**，不算命中——继续等真输出
                                         if (echoOnlyMatch(re, hay, session))

@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { spliceManagedBlock } from '../src/index.js'
+import yaml from 'js-yaml'
 
 const MARK_START = '# --- dsh-mcp-config managed (auto-generated; do not edit) ---'
 const MARK_END = '# --- end dsh-mcp-config managed ---'
@@ -78,6 +79,34 @@ describe('spliceManagedBlock', () => {
     expect(next.startsWith('head: 1\n' + MARK_START)).toBe(true)
     expect(next).toContain('        command: npx')
     expect(next).toContain('- insert: []') // 旧区块体未被吞掉
+  })
+
+  // CG67 同源（codegraph）：`[]` 是**完整**的 YAML 文档（flow 序列根），往它后面追加
+  // 块序列会让整份 cordis.patch.yml 非法——宿主 `parsePatchList` 直接抛，插件整层起不来。
+  describe('空 flow 序列根（`[]`）不得被当成可追加的前缀', () => {
+    const parseHost = (text: string): unknown => yaml.load(text)
+
+    it('只有 `[]`：结果是合法的单一列表，不是 `[]` + 块', () => {
+      const next = spliceManagedBlock('[]', [row])
+      expect(parseHost(next)).toHaveLength(1)
+      expect(next).not.toMatch(/^\[\]/m)
+    })
+
+    it('宿主模板（注释 + `[]`）：注释保留、根被替换', () => {
+      const next = spliceManagedBlock('# Your patch layer\n# an array\n[]\n', [row])
+      expect(next.startsWith('# Your patch layer\n# an array\n')).toBe(true)
+      expect(parseHost(next)).toHaveLength(1)
+    })
+
+    it('已经写出坏文件的旧版本现场（`[]` + 区块）：下一次写入自愈', () => {
+      const broken = '[]\n\n' + MARK_START + '\n- insert: []\n' + MARK_END + '\n'
+      const next = spliceManagedBlock(broken, [row])
+      expect(parseHost(next)).toHaveLength(1)
+    })
+
+    it('正常 patch 列表不受影响（不误摘用户行）', () => {
+      expect(spliceManagedBlock('- id: keep\n', [row])).toBe('- id: keep\n\n' + EXPECTED_BLOCK)
+    })
   })
 
   it('多行 rows 逐条渲染', () => {

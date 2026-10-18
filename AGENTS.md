@@ -69,3 +69,5 @@ git config core.hooksPath .githooks                 # 克隆后做一次
 一个改动算完，要满足：相关包的 `typecheck` 与单测通过、**全仓闸门绿**
 （`docs/` 与包清单的一致性、i18n 目录、客户端地址来源、kit 钉子一致、链接与锚点，
 各自都有守卫），且新增规则配了守卫或反例用例——**没有守卫的规矩会在下一次改动里漂掉**。
+**动了 `packages/kit` 的 `src` / `lib` 还要 bump kit 版本**：已发布版本的内容必须与本仓一致，
+`pnpm release:preflight` 在发布前会拦（判据见 [RELEASING.md](RELEASING.md) 发布门槛第 6 条）。

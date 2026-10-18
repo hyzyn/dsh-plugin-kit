@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { apply, readManagedEntries, renderManagedBlock, validateEntries, writeManagedEntries } from '../src/index.js'
+import yaml from 'js-yaml'
 
 const MARK_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---'
 const MARK_END = '# --- end dsh-env-manager managed ---'
@@ -90,6 +91,25 @@ describe('writeManagedEntries + readManagedEntries 往返', () => {
     // 仍只有一份，语义不受影响。
     writeManagedEntries([{ key: 'B', value: '2', secret: false }])
     expect(readManagedEntries().entries).toStrictEqual([{ key: 'B', value: '2', secret: false }])
+  })
+
+  // CG67 同源（codegraph）：`[]` 是**完整**的 YAML 文档（flow 序列根）。env.yml 也有
+  // 别的消费者按 YAML 读，把托管区块接在它后面会让整份文件非法。
+  it('根位置是 `[]` 时替换该根，写出的仍是合法 YAML', () => {
+    writeFileSync(file, '[]\n')
+    writeManagedEntries([{ key: 'A', value: '1', secret: false }])
+    const text = readFileSync(file, 'utf8')
+    expect(text).not.toMatch(/^\[\]/m)
+    expect(yaml.load(text)).toStrictEqual([{ key: 'A', value: '1', secret: false }])
+    expect(readManagedEntries().fileError).toBeUndefined()
+  })
+
+  it('宿主模板形态（注释 + `[]`）：注释保留、根被替换', () => {
+    writeFileSync(file, '# 说明\n# 第二行\n[]\n')
+    writeManagedEntries([{ key: 'A', value: '1', secret: false }])
+    const text = readFileSync(file, 'utf8')
+    expect(text.startsWith('# 说明\n# 第二行\n')).toBe(true)
+    expect(yaml.load(text)).toStrictEqual([{ key: 'A', value: '1', secret: false }])
   })
 
   it('文件中已有托管区块时整体替换，不产生重复区块', () => {

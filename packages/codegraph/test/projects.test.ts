@@ -1,10 +1,33 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { rmStubDir, writeStubCli } from './stub-cli.js'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.js'
+
+
+/*
+ * 隔离（CG68 同类）：本文件真的调用 `apply()`，它的兜底 effect 会按 `dshHome()`
+ * 读写 `$DSH_HOME/cordis.patch.yml`。不隔离时那就是用户**真实**的
+ * `~/.dsh/cordis.patch.yml`——用例把 `defaultPath` 指向本文件造的临时项目（跑完即删），
+ * 插件随即把托管行的 `cwd` 写成那个路径，于是 `pnpm test` 每跑一次就把真机配置弄脏。
+ *
+ * 写法与 `cli-route.test.ts` / `adoption.test.ts` 同一套。**必须在 `apply()` 之前设好**
+ * （`dshHome()` 每次调用现读 `process.env`，所以 `beforeAll` 早于任何用例即可）。
+ */
+const originalDshHome = process.env.DSH_HOME
+const isolatedHome = mkdtempSync(join(tmpdir(), 'dsh-cg-projects-home-'))
+
+beforeAll(() => {
+  process.env.DSH_HOME = isolatedHome
+})
+
+afterAll(() => {
+  if (originalDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = originalDshHome
+  rmSync(isolatedHome, { recursive: true, force: true })
+})
 
 /*
  * P2「已索引项目列表 + 一键切换」。
