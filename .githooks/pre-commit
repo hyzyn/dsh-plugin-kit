@@ -53,4 +53,16 @@ if ! node scripts/check-internal-identifiers.mjs --staged; then
   echo "✘ [pre-commit] 提交内容含真实内部标识，已中止（详见上方指引）"
   exit 1
 fi
+
+# README ↔ 源码常量一致性（2026-10-18 新增）：README 里写了常量名，数字就必须与源码对得上。
+#
+# 为什么必须在 pre-commit 而不是只放 CI：这道闸守的是「改常量时忘了改 README」那一类——
+# 一旦提交出去，CI 才红就已经晚了（本地看不见，等到推送才发现）。而它的**判据是纯静态的**
+# （读文件 + 算数 + 正则），裸 Node 不到 0.1 秒，放进钩子没有可感知的代价。
+# 实测：加这道闸后的首次全仓扫描就抓到一处真实偏移（tty 英文版 16 写成 8）。
+# 放在内部标识之后：上面两道是「内容不许出现什么」，这道是「内容之间要自洽」。
+if ! node scripts/check-readme-facts.mjs --staged; then
+  echo "✘ [pre-commit] README 里的数字与源码常量已经漂了，已中止（详见上方指引）"
+  exit 1
+fi
 exit 0

@@ -198,6 +198,25 @@
   `ci.yml` 两个 step 兜底（全仓 + 按推送区间扫消息）。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
   `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 依次扫公网 IP 与内部标识。
+- **改了 `client-src/` 或 `src/` 的对外行为，同一提交里要改 `README.md` / `README.en.md`**。
+  判据不是「有没有动 README 文件」，而是**对外陈述是否还成立**：新增开关、改了上限、换了交互，
+  README 里描述它的那句就得跟着改；纯内重构、修一个不影响对外行为的缺陷不算。
+  为什么写进提交规矩而不是只靠自觉：`loglens` 在 2026-10-13 ~ 10-18 连做三十余刀，README
+  **几乎没回头改过**，`c58a42ced` 一次清出 **20 处过期陈述**（L0 三处还写着「查询未实现」）。
+  复查那批提交，`d0f786f3c` 把三处交互都改了、**只往 ROADMAP 记了一笔，README 一字未动**——
+  ROADMAP 是台账，补一段几乎零成本；README 是对外门面，找对应那句要费力，于是它成了漏项。
+  **`ROADMAP.md` 不能充当 `README.md` 的替代品**：前者记「这一刀改了什么」，后者答「现在是什么行为」，
+  读者与口径都不同。
+  **可判定的事实由守卫兜底**：README 里**一旦写了常量名**（`` `RESULT_COLUMN_MAX` ``），
+  它旁边的那个数就必须与源码常量对得上——判据由 [`scripts/check-readme-facts.mjs`](../scripts/check-readme-facts.mjs)
+  统一执行，**全仓所有包**共用一道闸，不需要按包登记：
+  它自动扫 `packages/*/src` 与 `client-src` 里能静态算值的 `export const`，再与两份 README 里
+  「`名字`（数）」「`名字` = 数」「数（`名字`）」三种写法比对。接线三处：
+  `pre-commit --staged`（提交那一刻就红）、CI（`pnpm readme-facts:check`）、`pnpm test`（单元用例）。
+  **它只守「写了就必须对」，不守「必须写」**：绝大多数常量不必出现在 README 里，
+  把「必须写」也做成判据会制造大量噪音。要引一个数，就把权威常量名一起写上——
+  写法的推荐形态是「最多 4 列（`RESULT_COLUMN_MAX`）」，中文量级词（`2 万字符`）也认。
+  散文、语气、章节顺序**不**绑机器判据——把散文绑死只会制造误报。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
 
 ## Issue（提 issue 的格式约束）

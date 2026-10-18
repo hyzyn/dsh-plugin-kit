@@ -47,6 +47,7 @@
     "no-public-ip:message": "node scripts/check-no-public-ip.mjs",
     "internal-ids:check": "node scripts/check-internal-identifiers.mjs --self-test && node scripts/check-internal-identifiers.mjs",
     "internal-ids:message": "node scripts/check-internal-identifiers.mjs",
+    "readme-facts:check": "node scripts/check-readme-facts.mjs --self-test && node scripts/check-readme-facts.mjs",
     "release:publish": "node scripts/release-publish-tag.mjs"
   },
   "devDependencies": {

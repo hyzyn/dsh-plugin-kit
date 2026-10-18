@@ -240,7 +240,7 @@ While retained:
   sessions only** (retained ones do not consume a slot) — and the client’s “+” pre-check counts the same
   way (D85: the `sessions` frame’s list includes retained sessions, so taking `list.length` as the live
   count made the client block the user’s own “+” with “session limit reached” even though there was no
-  tab left to close). At most `MAX_EXITED_SESSIONS` (8) retained
+  tab left to close). At most `MAX_EXITED_SESSIONS` (16) retained
   sessions are kept — the oldest is evicted beyond that (each eviction logs the sid it drops). So the
   rule is “the last 16 exited sessions stay readable”, which is the only bound on memory and handles
   (16 of them is on the order of ~20MB).

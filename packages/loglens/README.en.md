@@ -39,7 +39,7 @@ Queryable backends: **Loki**, **Elasticsearch**, **OpenSearch**. Docker is not g
 - **Read-only by default, egress limited to configured sources**: all five `loglens_*` tools are in the
   **read** tier; the fence in [src/net.ts](./src/net.ts) judges the **resolved IP** (link-local and cloud
   metadata addresses refused), does not follow redirects, and caps a single request at 8 MiB with a 20s
-  default timeout. The full boundary is in "Known limitations".
+  default timeout (`NET_MAX_RESPONSE_BYTES` / `NET_DEFAULT_TIMEOUT_MS`). The full boundary is in "Known limitations".
 
 ![The query card on an ES source: query string with dialect-specific clickable examples, filter chips, time distribution (with axis labels and the peak), and result rows colored by level with identity tags](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
@@ -74,7 +74,7 @@ The **source configuration** collapses by default into one summary line on the p
 - **Enter runs the query**: pressing Enter in the query string or row count box is the same as clicking
   "query" (and Enter cannot fire while the button is greyed — the same condition as the button).
 - **The query string supports field-name completion**: while typing, a candidate popup lists this source's
-  fields (prefix matches first, at most 20); clicking one completes it in place to `field:` with the caret
+  fields (prefix matches first, at most 20, `FIELD_COMPLETION_MAX`); clicking one completes it in place to `field:` with the caret
   after the colon. Completion never fires a query; the field list is **fetched on first need** (cached per
   source, so one source is fetched once per session). The candidates are a **popup drawn by the card itself**,
   not the browser's native `datalist`.
@@ -117,7 +117,7 @@ The **source configuration** collapses by default into one summary line on the p
   filters immediately (clicking the background / × / Esc / any scroll collapses it). Values are never
   truncated (what is delivered is always the original value).
 - Clicking the **whole row** (or the leading chevron) expands details: the full message + all tags + the raw
-  original; a raw original over 20,000 characters is truncated **and its original length reported**.
+  original; a raw original over 20,000 characters (`RAW_PREVIEW_MAX`) is truncated **and its original length reported**.
 - **Levels are colored by severity**: error/fatal red, warn orange, info normal, debug/trace grey, with a
   hairline separator between rows — a sweep of the eye tells you which row to look at. The default is "full"
   mode (bodies fully expanded); the "compact" toggle keeps each entry to 3 lines, for scanning for anomalies.
@@ -170,7 +170,7 @@ The **source configuration** collapses by default into one summary line on the p
 
 ### The field panel
 
-- The "fields" button on the meta line opens a **340px popup** (height follows the result area, the field
+- The "fields" button on the meta line opens a **340px popup** (`FIELD_PANEL_WIDTH`; height follows the result area, the field
   list scrolls on its own), so the result table stays at full row width — the body does not narrow because
   of it. Clicking anywhere outside the panel, or clicking "fields" again, collapses it. **Collapsed, it does
   not call `/fields`**; expanding is what fetches it, once (cached per source).
@@ -182,7 +182,7 @@ The **source configuration** collapses by default into one summary line on the p
 - **Fields are grouped by parent path**: each group has a collapsible header (parent path plus count) and the
   row shows only the last segment, with the full name in the row's `title`. Long last segments break after
   `_` / `-` / `.` rather than down the middle of a word.
-- **Each field is a checkbox**: the whole row is clickable, up to 4 columns, and once full the unselected rows
+- **Each field is a checkbox**: the whole row is clickable, up to 4 columns (`RESULT_COLUMN_MAX`), and once full the unselected rows
   turn grey and are disabled (selected ones can still be deselected). With extra columns the result table
   lays out by column width: the body has a 198px lower bound, and if the window is too narrow it **scrolls
   horizontally**.
@@ -202,7 +202,7 @@ The **source configuration** collapses by default into one summary line on the p
   filter  [container.name ▾] = [prometheus ▾] [apply]
   ```
 
-- After the left cell picks a field, the right cell auto-opens and fetches that field's top 8 values (each row a
+- After the left cell picks a field, the right cell auto-opens and fetches that field's top 8 values (`FIELD_VALUES_SIZE`; each row a
   bar of **relative** length, the exact count in the hover — it is measured at a different instant from the
   page's hit count, so putting them side by side would necessarily be read as arithmetic error).
 - **Changing the field clears the right cell** (a value belongs to a field, not to this cell: otherwise
@@ -343,7 +343,7 @@ Read these three before changing code (each is the single home for its subject; 
   (such as `169.254.169.254`) are **always refused with no exemption**. **Redirects are not followed**: a 3xx
   from a source raises an error and echoes the `Location`, so you change the address and retry (a single 302
   can carry a request outside the allowlist).
-- The per-request size cap is 8 MiB and the default timeout 20s; the caps on time window and row count are
+- The per-request size cap is 8 MiB and the default timeout 20s (`NET_MAX_RESPONSE_BYTES` / `NET_DEFAULT_TIMEOUT_MS`); the caps on time window and row count are
   clamped by the host and honestly reported in the panel.
 - **The fence judges the IP after DNS resolution**, and resolution and connection are two steps: between them
   a flipping DNS (rebinding) still leaves a window. Source addresses are filled in by the operator, and this

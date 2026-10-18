@@ -186,6 +186,15 @@ jobs:
       - name: Check no real internal identifiers
         if: matrix.os == 'ubuntu-latest'
         run: pnpm internal-ids:check
+      # 防回归：**README 里的数字必须与源码常量对得上**。
+      # 为什么要有：loglens 在 2026-10-13 ~ 10-18 连做三十余刀，README 几乎没回头改过，
+      # `c58a42ced` 一次清出 20 处过期陈述。近 80 条提交里改包代码的 59 条、其中 19 条（32%）
+      # 没改对应 README——不是单包问题。`docs-index.mjs` 只管包清单与落地记录位置，不读 README 正文。
+      # 本闸门只守「写了常量名就必须对得上」这一条可判定的事实；散文刻意不管。
+      # 上线当天它就抓到一处真实的跨包偏移（tty 英文版把 16 写成 8）。
+      - name: Check README numbers match source constants
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm readme-facts:check
       - name: Check commit messages carry no internal identifiers
         if: matrix.os == 'ubuntu-latest'
         run: |
