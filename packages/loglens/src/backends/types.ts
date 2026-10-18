@@ -58,6 +58,18 @@ export interface LogLine {
    */
   levelInferred?: boolean
   message: string
+  /**
+   * `message` 里**命中了查询串**的那几段（字符区间 `[start, end)`，按 start 升序、互不重叠）。
+   *
+   * 为什么由后端给而不是界面自己拿查询串去匹配：查询串是 Lucene，`stream:stderr` 里没有半个
+   * 字出现在正文、`-failed` 是**排除**（命中的是「没有」）、`error*` / `~` / 短语的匹配规则
+   * 也各不相同。前端照字面去标，标出来的位置有一半是错的——而**标错比不标更坏**：
+   * 用户会以为那是引擎认出来的命中。
+   *
+   * 只有**后端明确报出**高亮时才带这个字段（ES 的 `highlight`）。拿不到就不带——
+   * 界面据此不画高亮，而不是退回去自己猜。
+   */
+  highlights?: Array<[number, number]>
   source: string
   labels: Record<string, string>
   raw: string
@@ -79,6 +91,7 @@ export interface LogCounts {
 /** 截断理由。`cursor_expired` 与 `hit_limit` 刻意分开：过期≠还有更多，处置也不同。 */
 export type TruncationReason =
   | 'hit_limit'
+  | 'hit_limit_maybe'
   | 'max_result_window'
   | 'partial_shards'
   | 'timed_out'
@@ -96,6 +109,17 @@ export interface LogQueryResult {
   counts: LogCounts
   truncation: Truncation
   nextCursor?: string
+  /**
+   * 适配器自己要说的话（**宿主原文优先**，别在这里编文案）。
+   *
+   * 为什么要有这条通道（2026-10-18 真机抓到）：ES 对**分片级**错误回 `HTTP 200`，把原因放在
+   * `_shards.failures[].reason` 里。上一版只读了 `_shards.failed` 的数量、把它记成
+   * `partial_shards`，于是 `level:(ERROR`（少一个右括号）在界面上变成
+   * 「已截断：部分分片失败」+ 0 条——用户会去怀疑索引和集群，而真正的原因是他自己写错了查询串。
+   *
+   * 判据与值下拉那条一致：**取不到就把宿主原话摆出来**，别让一句笼统的分类词替它说话。
+   */
+  warnings?: string[]
 }
 
 export interface FieldInfo {

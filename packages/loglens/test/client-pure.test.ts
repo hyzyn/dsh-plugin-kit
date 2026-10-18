@@ -6,6 +6,11 @@ import {
   allRowLabels,
   appendLines,
   columnPickState,
+  fieldCompletion,
+  fieldCompletionApply,
+  messageSegments,
+  fieldCompletionChoices,
+  FIELD_COMPLETION_MAX,
   columnToggle,
   columnValue,
   fieldSections,
@@ -60,6 +65,7 @@ import {
   queryPayload,
   queryProblem,
   querySignature,
+  querySamples,
   queryStale,
   supportsAggregation,
   windowChoices,
@@ -69,11 +75,14 @@ import {
   zoomToBar,
   dockerFlagOf,
   dockerLogLines,
+  dockerRunKey,
+  dockerStale,
   dockerProblem,
   dockerLogTextOf,
   dockerSince,
   dockerTargetChoices,
   containersKey,
+  containerChoices,
   containerSlotState,
   levelChoices,
   levelFiltered,
@@ -1882,6 +1891,62 @@ describe('字段 top 值：请求体、缓存键、画出来的行（第二十�
 })
 
 /*
+ * 第三十三刀：查询串的**可点例子**。
+ *
+ * 用户的原话是「Lucene 查询串我不会写，你教我」。教一次不够——下次换个人还是不会，
+ * 所以例子要摆在框边上。这里钉的是「给哪些」这一层判据。
+ */
+describe('查询串示例（第三十三刀）', () => {
+  it('每条都有 id 与 sample（id 只做 key，sample 是代码、不进 i18n）', () => {
+    for (const item of querySamples('elasticsearch')) {
+      expect(typeof item.id).toBe('string')
+      expect(item.id.length).toBeGreaterThan(0)
+      expect(typeof item.sample).toBe('string')
+      expect(item.sample.trim().length).toBeGreaterThan(0)
+    }
+  })
+
+  it('ES 与 OpenSearch 是同一支方言：给同一批例子', () => {
+    expect(querySamples('opensearch')).toEqual(querySamples('elasticsearch'))
+  })
+
+  it('**只给这一支方言真认的写法**：「且」用大写 `AND`，不用小写、也不用粘连的 `+`', () => {
+    const samples = querySamples('elasticsearch').map((item) => item.sample)
+    /*
+     * 第三十四刀把这条钉了回来（第三十三刀钉反了）。
+     *
+     * 第三十三刀这里写的是「`+` 表示且、不给 `and`」，依据是一次**读错了的**实测：
+     * `error AND timeout` 回 0 条，就被当成「大写 AND 不是运算符」。真相是那两个词在那一
+     * 小时里根本不共现，0 是正确答案。
+     *
+     * 判据只能是**算术自洽**，不能是单个数字：|A∩B| = |A| + |B| - |A∪B|。2026-10-18 真机
+     * （同一固定窗口）：1016 + 1284 - 1789 = 511，而 `error AND failed` 正好回 511（= 交集）、
+     * `error+failed` 回 1789（= 并集，与空格同义）。所以「且」那一条给大写 AND。
+     */
+    expect(samples).toContain('error AND failed')
+    // 小写 `and` 会被当成普通词（实测 4505 条），给出去就是教错
+    expect(samples.some((sample) => sample.includes(' and '))).toBe(false)
+    // 粘连的 `+` 是分隔符不是「且」（实测回的是并集），别再写回来
+    expect(samples.some((sample) => /[^ +]\+[^ +]/.test(sample))).toBe(false)
+    expect(samples).toContain('error')
+    expect(samples).toContain('"Failed to"')
+    expect(samples).toContain('stream:stderr')
+  })
+
+  it('LogQL 是另一支方言：给流选择器，不给 Lucene 的写法', () => {
+    const samples = querySamples('loki').map((item) => item.sample)
+    expect(samples.some((sample) => sample.startsWith('{'))).toBe(true)
+    expect(samples.some((sample) => sample.includes('+timeout'))).toBe(false)
+  })
+
+  it('不认识的方言回空数组（不给一个点了会报错的例子）', () => {
+    expect(querySamples('docker')).toEqual([])
+    expect(querySamples('')).toEqual([])
+    expect(querySamples(undefined)).toEqual([])
+  })
+})
+
+/*
  * 第三十一刀：值下拉**摘掉本字段自己的筛选**。
  *
  * 不摘的话聚合只在「字段 = 当前值」里算，答案永远只有它自己——换值换不动，而且画面看起来
@@ -2054,5 +2119,291 @@ describe('勾选态：已选永远可点，满员只挡未选（第二十六刀�
     expect(columnPickState([], '')).toBe('bad')
     expect(columnPickState(['a'], undefined)).toBe('bad')
     expect(columnPickState(undefined, 'a')).toBe('ok')
+  })
+})
+
+/*
+ * 第三十四刀：查询串的**字段名补全**。
+ *
+ * 为什么要有它：这家来源 1274 个字段、名字平均 48 字符，而**打错一个下划线就是静默 0 条**
+ * （用户截图里正在打的 `container_name:prometheus` 回 0，真名 `container.name:prometheus` 回 240）。
+ * 这一层钉的是「光标前哪个词是字段名」，界面拿它去查候选、原位替换。
+ */
+describe('查询串的字段名补全（第三十四刀）', () => {
+  it('光标前那个词就是字段名（句子中间的也算，且只认光标之前的部分）', () => {
+    expect(fieldCompletion('cont', 4)).toEqual({ field: 'cont', start: 0, end: 4 })
+    // 句尾那段才是要补的：前面的 `error AND` 不动
+    expect(fieldCompletion('error AND cont', 14)).toEqual({ field: 'cont', start: 10, end: 14 })
+    // 光标在句子中间：只看光标之前——`foo` 是字段名，`bar` 是光标之后的、与这次补全无关
+    expect(fieldCompletion('foo bar', 3)).toEqual({ field: 'foo', start: 0, end: 3 })
+  })
+
+  it('拿不到光标位置就按**末尾**算（打字时的常态，不是「没有候选」）', () => {
+    expect(fieldCompletion('cont', undefined)).toEqual({ field: 'cont', start: 0, end: 4 })
+    expect(fieldCompletion('cont', 999)).toEqual({ field: 'cont', start: 0, end: 4 })
+  })
+
+  it('句首 / 刚打完运算符：给空前缀（该把所有字段列出来），不是 null', () => {
+    expect(fieldCompletion('', 0)).toEqual({ field: '', start: 0, end: 0 })
+    expect(fieldCompletion('error AND ', 10)).toEqual({ field: '', start: 10, end: 10 })
+    expect(fieldCompletion('(', 1)).toEqual({ field: '', start: 1, end: 1 })
+  })
+
+  it('**光标过了冒号就是值那一侧**，不归这一层（值候选要按字段拉聚合，是另一件事）', () => {
+    expect(fieldCompletion('cont:', 5)).toBe(null)
+    expect(fieldCompletion('cont:ab', 7)).toBe(null)
+    // 前面那个 `stream:stderr` 的冒号不影响后面这个新词（判据是光标前**那个词**里有没有冒号）
+    expect(fieldCompletion('stream:stderr AND cont', 22)).toEqual({ field: 'cont', start: 18, end: 22 })
+  })
+
+  it('值的写法（通配 / 模糊 / 正则 / 引号）不当字段名', () => {
+    expect(fieldCompletion('stream:std*', 10)).toBe(null)
+    expect(fieldCompletion('err~', 4)).toBe(null)
+    expect(fieldCompletion('/err/', 5)).toBe(null)
+    expect(fieldCompletion('"Failed to"', 11)).toBe(null)
+  })
+
+  it('**大写**运算符本身不是字段名；小写是真在找的词，不能被吞掉', () => {
+    expect(fieldCompletion('error AND', 9)).toBe(null)
+    expect(fieldCompletion('error OR', 8)).toBe(null)
+    expect(fieldCompletion('error NOT', 9)).toBe(null)
+    // 小写 `and` 在 Lucene 里是普通词（实测 `error and failed` 回 4505 条），要能补全
+    expect(fieldCompletion('error and', 9)).toEqual({ field: 'and', start: 6, end: 9 })
+  })
+
+  it('排除前缀 `-` 不吞进候选：替换的是它**后面**那段', () => {
+    expect(fieldCompletion('-cont', 5)).toEqual({ field: 'cont', start: 1, end: 5 })
+  })
+
+  it('原位替换：只换光标前那段，后面的内容不动；补成 `字段:` 且光标落在冒号后', () => {
+    const pick = fieldCompletion('error AND cont', 14)
+    expect(fieldCompletionApply('error AND cont', pick, 'container.name'))
+      .toEqual({ q: 'error AND container.name:', caret: 25 })
+    // 句子中间补全不许把后面的东西顶掉
+    expect(fieldCompletionApply('cont more', fieldCompletion('cont more', 4), 'container.name'))
+      .toEqual({ q: 'container.name: more', caret: 15 })
+  })
+
+  it('畸形入参不抛：没选中 / 空名字就原样返回（界面据此只收起浮层）', () => {
+    expect(fieldCompletionApply('abc', null, 'x')).toEqual({ q: 'abc', caret: 3 })
+    expect(fieldCompletionApply('abc', fieldCompletion('abc', 3), '')).toEqual({ q: 'abc', caret: 3 })
+    expect(fieldCompletionApply(undefined, undefined, undefined)).toEqual({ q: '', caret: 0 })
+  })
+})
+
+/*
+ * 补全候选：**前缀优先、子串次之**（第三十四刀）。
+ *
+ * 这一条是真机上量出来的差别，不是口味：光标前打 `cont` 时，子串匹配会让 92 个字段里
+ * 有 **62 条**候选，`host.containerized` 排在 `container.name` 旁边。补全要的是「我正要打的
+ * 那个名字」，那由前缀表达；子串命中保留（`name` → `host.name` 是真想要的），但排后面。
+ */
+describe('补全候选：前缀优先（第三十四刀）', () => {
+  const fields = ['host.containerized', 'container.name', 'container.image.name', 'host.name', 'stream']
+    .map((name) => ({ name }))
+
+  it('前缀命中的排在子串命中的前面（组内保持宿主给的顺序，不重排）', () => {
+    expect(fieldCompletionChoices(fields, 'cont').map((row) => row.name))
+      .toEqual(['container.name', 'container.image.name', 'host.containerized'])
+  })
+
+  it('子串命中不丢：打 `name` 仍能找到 `host.name` 这类', () => {
+    const names = fieldCompletionChoices(fields, 'name').map((row) => row.name)
+    expect(names).toContain('container.name')
+    expect(names).toContain('host.name')
+  })
+
+  it('大小写不敏感（字段名本身有意义，但人不该被它绊住）', () => {
+    expect(fieldCompletionChoices(fields, 'CONT').map((row) => row.name))
+      .toEqual(fieldCompletionChoices(fields, 'cont').map((row) => row.name))
+  })
+
+  it('空输入给全部（但受上限约束）', () => {
+    expect(fieldCompletionChoices(fields, '').length).toBe(fields.length)
+    const many = Array.from({ length: 50 }, (_, at) => ({ name: 'f' + String(at) }))
+    expect(fieldCompletionChoices(many, '').length).toBe(FIELD_COMPLETION_MAX)
+  })
+
+  it('上限之外**直接不画**（不假装全给了）；显式 limit 照办', () => {
+    const many = Array.from({ length: 50 }, (_, at) => ({ name: 'field' + String(at) }))
+    expect(fieldCompletionChoices(many, 'field').length).toBe(FIELD_COMPLETION_MAX)
+    expect(fieldCompletionChoices(many, 'field', 3).length).toBe(3)
+  })
+
+  it('没有命中就是空数组（界面据此不画那个浮层）', () => {
+    expect(fieldCompletionChoices(fields, 'zzz')).toEqual([])
+    expect(fieldCompletionChoices([], 'cont')).toEqual([])
+    expect(fieldCompletionChoices(undefined, 'cont')).toEqual([])
+  })
+})
+
+/*
+ * 补完之后**光标必须落在冒号后**——浮层要不要再开，判据就是这一格的光标位置。
+ *
+ * 真机踩到过一次（第三十四刀）：`focus()` 在 `setSelectionRange` 之前调用，`onFocus` 那一刻
+ * React 还没用新值重渲染，它按补全**之前**的 `cont` 判「该开」，于是补完的框里写着
+ * `container.name:`、浮层却还列着 20 条字段候选。修法是先摆光标再 focus。
+ *
+ * 这里钉的是那条判据的**前提**：补完的结果本身必须让光标越过冒号，且 `fieldCompletion`
+ * 对它回 null（= 该收起）。界面层的顺序问题冒烟抓不到（桩没有 DOM 节点，`ref.current` 恒空），
+ * 所以把这条前提钉在纯逻辑里，改坏 `fieldCompletionApply` 会立刻红。
+ */
+describe('补全后的光标位置（浮层收起的判据前提）', () => {
+  it('补完 = 光标在冒号之后，且这一位置不再算「字段名那一侧」', () => {
+    const pick = fieldCompletion('cont', 4)
+    const next = fieldCompletionApply('cont', pick, 'container.name')
+    expect(next.q).toBe('container.name:')
+    expect(next.caret).toBe(next.q.length)
+    // 冒号之后 → 值那一侧，该收起
+    expect(fieldCompletion(next.q, next.caret)).toBe(null)
+    // 反过来验一次：光标退回冒号**前**（`container.name` 末尾）时判据确实还给字段名那一侧，
+    // 否则上面那个 null 说明不了任何事情
+    expect(fieldCompletion(next.q, next.caret - 1)).toEqual({ field: 'container.name', start: 0, end: 14 })
+  })
+
+  it('句子中间补完也一样：光标越过新插入的冒号', () => {
+    const filled = fieldCompletionApply('cont AND error', fieldCompletion('cont AND error', 4), 'container.name')
+    expect(filled.q).toBe('container.name: AND error')
+    expect(filled.caret).toBe('container.name:'.length)
+    expect(fieldCompletion(filled.q, filled.caret)).toBe(null)
+  })
+})
+
+/*
+ * 第三十五刀：正文按**后端给的区间**切成「普通段 / 命中段」。
+ *
+ * 这一层不做匹配——区间是后端（ES 的 highlight）换算出来的。界面自己拿查询串去正文里找会错：
+ * `stream:stderr` 正文里根本没有这几个字、`-failed` 是排除、`error*` / `~` 各有各的规则。
+ * 所以这里只钉防御性的整理：拼回去必须与原文一字不差（高亮不许吞字）。
+ */
+describe('正文高亮切片（第三十五刀）', () => {
+  it('按区间切成 普通 / 命中 / 普通，拼回去等于原文', () => {
+    expect(messageSegments('to ERROR', [[3, 8]])).toEqual([
+      { text: 'to ', hit: false },
+      { text: 'ERROR', hit: true },
+    ])
+    expect(messageSegments('a err b err', [[2, 5], [8, 11]])).toEqual([
+      { text: 'a ', hit: false },
+      { text: 'err', hit: true },
+      { text: ' b ', hit: false },
+      { text: 'err', hit: true },
+    ])
+  })
+
+  it('没有区间 → 一段纯文本（与加高亮之前的渲染完全一致）', () => {
+    expect(messageSegments('abc', [])).toEqual([{ text: 'abc', hit: false }])
+    expect(messageSegments('abc', undefined)).toEqual([{ text: 'abc', hit: false }])
+  })
+
+  it('整段命中', () => {
+    expect(messageSegments('abc', [[0, 3]])).toEqual([{ text: 'abc', hit: true }])
+  })
+
+  it('畸形区间**整体放弃**（回纯文本）：越界 / 倒序 / 反序 / 空段', () => {
+    for (const bad of [[[2, 5]], [[2, 1]], [[2, 3], [0, 1]], [[1, 1]], [[-1, 2]], [['a', 'b']]]) {
+      expect(messageSegments('abc', bad), JSON.stringify(bad)).toEqual([{ text: 'abc', hit: false }])
+    }
+  })
+
+  it('重叠/相邻的合并成一段（同一底色不必画两层）', () => {
+    expect(messageSegments('abc', [[0, 1], [1, 2]])).toEqual([
+      { text: 'ab', hit: true },
+      { text: 'c', hit: false },
+    ])
+    expect(messageSegments('abc', [[0, 2], [0, 1]])).toEqual([
+      { text: 'ab', hit: true },
+      { text: 'c', hit: false },
+    ])
+  })
+
+  it('空正文 / 空值不炸', () => {
+    expect(messageSegments('', [[0, 1]])).toEqual([{ text: '', hit: false }])
+    expect(messageSegments(undefined, [[0, 1]])).toEqual([{ text: '', hit: false }])
+    expect(messageSegments('', [])).toEqual([{ text: '', hit: false }])
+  })
+})
+
+/*
+ * 第三十八刀：Docker 日志的「这份是上一次的」判据。
+ *
+ * 真机抓到的静默错误：Docker 的日志是**一次按下来就固定的快照**（不像 ES 那样条件一变就重查），
+ * 于是换个容器之后屏幕上还是上一个容器的日志，而界面一个字都不提——用户会拿 A 的日志查 B。
+ */
+describe('Docker 日志的条件键与 stale 判据（第三十八刀）', () => {
+  it('条件键由三项拼成：任一变了就不是同一份', () => {
+    const key = dockerRunKey('upms', '1h', 200)
+    expect(key).not.toBe(dockerRunKey('gateway', '1h', 200))
+    expect(key).not.toBe(dockerRunKey('upms', '15m', 200))
+    expect(key).not.toBe(dockerRunKey('upms', '1h', 500))
+    expect(key).toBe(dockerRunKey('upms', '1h', 200))
+  })
+
+  it('没拉过（键为空）永远不算 stale——没有「上一次」可言', () => {
+    expect(dockerStale('', 'upms', '1h', 200)).toBe(false)
+    expect(dockerStale(undefined, 'upms', '1h', 200)).toBe(false)
+  })
+
+  it('条件与拉取时一致 → 不是 stale；任一项改了 → stale', () => {
+    const ran = dockerRunKey('upms', '1h', 200)
+    expect(dockerStale(ran, 'upms', '1h', 200)).toBe(false)
+    expect(dockerStale(ran, 'gateway', '1h', 200)).toBe(true)
+    expect(dockerStale(ran, 'upms', '24h', 200)).toBe(true)
+    expect(dockerStale(ran, 'upms', '1h', 50)).toBe(true)
+  })
+
+  it('数字与字符串写法不敏感（下拉给的是字符串，状态里存的是 number）', () => {
+    expect(dockerStale(dockerRunKey('upms', '1h', 200), 'upms', '1h', '200')).toBe(false)
+  })
+})
+
+/*
+ * 第三十九刀：容器候选的收窄。
+ *
+ * 用户截图：原生 `<select>` 的弹层铺满整个面板、不能搜、样式改不动；真机十几个容器，
+ * 找 `osce-exam` 只能滚。换成自绘候选之后，收窄规则与字段补全**同一条**（前缀优先、子串次之）。
+ */
+describe('容器候选（第三十九刀）', () => {
+  const list = [
+    { id: 'a1', name: 'ems-service' },
+    { id: 'b2', name: 'cdc-service' },
+    { id: 'c3', name: 'upms' },
+    { id: 'd4', name: 'osce-exam' },
+    { id: 'e5' },
+  ]
+
+  it('不打字就是全部，且保持清单原顺序（不重排：顺序是后端/宿主的结论）', () => {
+    expect(containerChoices(list, '').map((row) => row.label))
+      .toEqual(['ems-service', 'cdc-service', 'upms', 'osce-exam', 'e5'])
+  })
+
+  it('前缀命中排前面，子串次之', () => {
+    expect(containerChoices(list, 'ems').map((row) => row.label)).toEqual(['ems-service'])
+    // `service` 不是任何名字的前缀，但都是子串 → 按原顺序
+    expect(containerChoices(list, 'service').map((row) => row.label))
+      .toEqual(['ems-service', 'cdc-service'])
+    // `e` 前缀命中 ems-service / e5，子串命中 cdc-service / osce-exam
+    const rows = containerChoices(list, 'e').map((row) => row.label)
+    expect(rows.slice(0, 2)).toEqual(['ems-service', 'e5'])
+    expect(rows).toContain('cdc-service')
+  })
+
+  it('id 也能搜（用户可能只记得短 id）', () => {
+    expect(containerChoices(list, 'c3').map((row) => row.label)).toEqual(['upms'])
+    expect(containerChoices(list, 'd4').map((row) => row.label)).toEqual(['osce-exam'])
+  })
+
+  it('没有 name 就用 id 当显示名（绝不显示空行）', () => {
+    expect(containerChoices([{ id: 'solo' }], '').map((row) => row.label)).toEqual(['solo'])
+  })
+
+  it('大小写不敏感；命中 0 个回空数组（界面据此不画浮层）', () => {
+    expect(containerChoices(list, 'OSCE').map((row) => row.label)).toEqual(['osce-exam'])
+    expect(containerChoices(list, 'zzz')).toEqual([])
+    expect(containerChoices(undefined, 'x')).toEqual([])
+    expect(containerChoices([], '')).toEqual([])
+  })
+
+  it('脏数据跳过（没有 id 的项画不出来也用不上）', () => {
+    expect(containerChoices([null, { name: 'no-id' }, { id: 'ok' }], '').map((row) => row.label)).toEqual(['ok'])
   })
 })

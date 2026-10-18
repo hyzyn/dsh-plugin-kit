@@ -14,9 +14,13 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   ES_DEFAULT_INDEX,
+  HIGHLIGHT_POST,
+  HIGHLIGHT_PRE,
   createElasticBackend,
+  highlightRanges,
   lineFromHit,
   looksLikeExpiredCursor,
+  shardFailureReasons,
   targetAccess,
   targetIndex,
 } from '../src/backends/elastic.js'
@@ -25,6 +29,51 @@ import type { LoglensTarget } from '../src/config.js'
 import { decodeSearchAfterCursor } from '../src/cursor.js'
 import { normalizeQuery } from '../src/query.js'
 import type { QueryInput } from '../src/query.js'
+
+/*
+ * `_shards.failures[].reason` 怎么读（2026-10-18）。
+ *
+ * 判据来自真机：`level:(ERROR`（少一个右括号）时 ES 回 **HTTP 200** + `_shards.failed > 0`，
+ * 原文在 `failures[].reason.reason` 里。上一版只数 `failed`、翻成「部分分片失败」，
+ * 于是「查询串写错了」与「分片真坏了」在界面上长得一模一样——而这两件事的处理者不是同一个人。
+ */
+describe('分片失败原因（把宿主的原话读出来）', () => {
+  it('ES 的 `reason` 是对象：取给人看的那句 `reason`，不取机器类名', () => {
+    expect(shardFailureReasons({
+      failed: 2,
+      failures: [{
+        index: 'logs-000001',
+        reason: { type: 'query_shard_exception', reason: 'Failed to parse query [level:(ERROR]' },
+      }],
+    })).toEqual(['Failed to parse query [level:(ERROR]'])
+  })
+
+  it('同一条错误在每个分片上各报一次：去重（否则刷屏）', () => {
+    const one = { reason: { type: 'x', reason: 'same failure' } }
+    expect(shardFailureReasons({ failed: 3, failures: [one, one, one] })).toEqual(['same failure'])
+  })
+
+  it('最多报几条（默认 3），且保持 ES 给的顺序', () => {
+    const failures = [1, 2, 3, 4, 5].map((n) => ({ reason: { reason: 'boom ' + String(n) } }))
+    expect(shardFailureReasons({ failures })).toEqual(['boom 1', 'boom 2', 'boom 3'])
+    expect(shardFailureReasons({ failures }, 2)).toEqual(['boom 1', 'boom 2'])
+  })
+
+  it('形状认不出就原样给一小段（看到原话比看到分类词有用）', () => {
+    expect(shardFailureReasons({ failures: [{ reason: 'plain string reason' }] })).toEqual(['plain string reason'])
+    expect(shardFailureReasons({ failures: [{ reason: { type: 'only_type' } }] })).toEqual(['only_type'])
+    const odd = shardFailureReasons({ failures: [{ something: 'else' }] })
+    expect(odd.length).toBe(1)
+    expect(odd[0].includes('something')).toBe(true)
+  })
+
+  it('没有 failures / 形状不对 → 空数组（不造一句假原因）', () => {
+    expect(shardFailureReasons(undefined)).toEqual([])
+    expect(shardFailureReasons({ failed: 0 })).toEqual([])
+    expect(shardFailureReasons({ failures: 'nope' })).toEqual([])
+    expect(shardFailureReasons({ failures: [null, 3, { reason: '' }] })).toEqual([])
+  })
+})
 
 const NOW = 1_760_000_000_000
 const FROM = NOW - 60_000
@@ -401,6 +450,65 @@ describe('映射与计数', () => {
     const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
     expect(result.truncation).toEqual({ truncated: true, reasons: ['partial_shards', 'timed_out'] })
   })
+
+  /*
+   * **反例（本格的核心）**：分片失败时那句 ES 原话必须跟着结果走。
+   *
+   * 真机现场：`level:(ERROR`（少一个右括号）回 HTTP 200 + 0 条 + `_shards.failed > 0`，
+   * 界面上只显示「已截断：部分分片失败」——用户去查索引和集群，而真正的原因是他自己写错了。
+   * 这条用例钉的是「原话有没有被带出来」，不是「文案好不好看」。
+   */
+  it('分片失败时把 ES 的原话带成 warnings（否则「写错了」与「坏了」长得一样）', async () => {
+    const body = {
+      timed_out: false,
+      _shards: {
+        failed: 2,
+        failures: [{
+          index: 'logs-000001',
+          reason: { type: 'query_shard_exception', reason: 'Failed to parse query [level:(ERROR]' },
+        }],
+      },
+      hits: { total: { value: 0, relation: 'eq' }, hits: [] },
+    }
+    const backend = createElasticBackend({ flavor: 'es', fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes('/_pit')) return new Response(JSON.stringify({ id: 'pit-1' }), { status: 200 })
+      if (init?.method === 'DELETE') return new Response(JSON.stringify({ succeeded: true }), { status: 200 })
+      return new Response(JSON.stringify(body), { status: 200 })
+    } })
+    const fake = await startFakeEs({ docs: [] })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+    expect(result.warnings).toEqual(['[分片] Failed to parse query [level:(ERROR]'])
+    // 截断理由照旧：原话是**补充**，不是替代
+    expect(result.truncation).toEqual({ truncated: true, reasons: ['partial_shards'] })
+  })
+
+  it('分片全好时不带 warnings（没有失败就没有话说）', async () => {
+    const body = { timed_out: false, _shards: { failed: 0 }, hits: { total: { value: 0, relation: 'eq' }, hits: [] } }
+    const backend = createElasticBackend({ flavor: 'es', fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes('/_pit')) return new Response(JSON.stringify({ id: 'pit-1' }), { status: 200 })
+      if (init?.method === 'DELETE') return new Response(JSON.stringify({ succeeded: true }), { status: 200 })
+      return new Response(JSON.stringify(body), { status: 200 })
+    } })
+    const fake = await startFakeEs({ docs: [] })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+    expect(result.warnings).toBeUndefined()
+  })
+
+  it('分片失败但 ES 没给原因：不造一句假话（宁可不带）', async () => {
+    const body = { timed_out: false, _shards: { failed: 1 }, hits: { total: { value: 0, relation: 'eq' }, hits: [] } }
+    const backend = createElasticBackend({ flavor: 'es', fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes('/_pit')) return new Response(JSON.stringify({ id: 'pit-1' }), { status: 200 })
+      if (init?.method === 'DELETE') return new Response(JSON.stringify({ succeeded: true }), { status: 200 })
+      return new Response(JSON.stringify(body), { status: 200 })
+    } })
+    const fake = await startFakeEs({ docs: [] })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+    expect(result.warnings).toBeUndefined()
+    expect(result.truncation.reasons).toContain('partial_shards')
+  })
 })
 
 describe('游标：PIT + search_after', () => {
@@ -429,6 +537,73 @@ describe('游标：PIT + search_after', () => {
     const body = searches[1].body as Record<string, unknown>
     expect(body.search_after).toEqual(state.cursor.searchAfter)
     expect((body.pit as { id: string }).id).toBe('pit-1')
+  })
+
+  /*
+   * 第三十六刀的边界（真机实测过，不是想出来的）：**命中数恰好等于条数上限**。
+   *
+   * 3 条文档、limit=3：旧判据 `lines.length >= limit` 成立 → 报「已截断」并给游标，
+   * 可实际上一条都没漏，翻过去是 **0 行**（真机上点「下一页」就是这么空的）。
+   * 现在靠精确总数区分：3 === 3 → 只是「可能还有」，既不说截断，也不给游标。
+   */
+  it('命中数**恰好等于**上限：报「可能还有」而不是截断，且**不给**游标（翻了必然空页）', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW, limit: 3 }), fake.target)
+    expect(result.lines).toHaveLength(3)
+    expect(result.counts).toEqual({ returned: 3, matched: 3, totalKnown: true })
+    expect(result.truncation).toEqual({ truncated: true, reasons: ['hit_limit_maybe'] })
+    expect(result.nextCursor).toBeUndefined()
+    // 没有下一页 → PIT 该关掉（别让它挂到过期）
+    expect(fake.pits.closed).toBe(1)
+  })
+
+  it('命中数**多于**上限：确定截断，照常给游标', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW, limit: 2 }), fake.target)
+    expect(result.counts).toEqual({ returned: 2, matched: 3, totalKnown: true })
+    expect(result.truncation).toEqual({ truncated: true, reasons: ['hit_limit'] })
+    expect(result.nextCursor).toBeDefined()
+  })
+
+  it('命中数**少于**上限：不报任何截断，也不给游标', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW, limit: 10 }), fake.target)
+    expect(result.truncation).toEqual({ truncated: false, reasons: [] })
+    expect(result.nextCursor).toBeUndefined()
+  })
+
+  it('总数只是下界（relation=gte）时退回「可能」：不硬断言还有更多', async () => {
+    /*
+     * 命中 2 行、上限 2、但 ES 说 total 是 `gte`（不知道真实总数）。
+     * 行必须真的返回 2 条——没有行就不会触到「到了 limit」这条判据。
+     */
+    const body = {
+      timed_out: false,
+      _shards: { failed: 0 },
+      hits: {
+        total: { value: 2, relation: 'gte' },
+        hits: docsOf(THREE_DOCS).slice(0, 2).map((doc, offset) => ({
+          _id: doc.id,
+          _index: 'logs-2026.10.11',
+          _source: doc.source,
+          sort: [Date.parse(String(doc.source['@timestamp'])), doc.id],
+        })),
+      },
+    }
+    const backend = createElasticBackend({ flavor: 'es', fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes('/_pit')) return new Response(JSON.stringify({ id: 'pit-gte' }), { status: 200 })
+      if (init?.method === 'DELETE') return new Response(JSON.stringify({ succeeded: true }), { status: 200 })
+      return new Response(JSON.stringify(body), { status: 200 })
+    } })
+    const fake = await startFakeEs({ docs: [] })
+    const result = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW, limit: 2 }), fake.target)
+    expect(result.counts.totalKnown).toBe(false)
+    expect(result.truncation.reasons).toEqual(['hit_limit_maybe'])
+    expect(result.nextCursor).toBeUndefined()
   })
 
   it('最后一页不产游标，并把 PIT 关掉（不带游标那次的收尾也一样）', async () => {
@@ -648,5 +823,68 @@ describe('错误', () => {
     expect(targetAccess({ id: 'x', kind: 'elasticsearch', label: 'x', url: 'http://u:p@h:9200/i' }).url).toBe('http://h:9200')
     expect(looksLikeExpiredCursor({ status: 404, text: 'no such pit', body: {} })).toBe(true)
     expect(looksLikeExpiredCursor({ status: 500, text: 'boom', body: {} })).toBe(false)
+  })
+})
+
+/*
+ * 第三十五刀：正文的**命中高亮**（ES 原生 `highlight` → 字符区间）。
+ *
+ * 这一层的判据全部来自真机实测（ES 7.10.2），不是照着文档想当然——两处都和直觉不一样：
+ *
+ *   ① 片段与原文字符相等但**不是同一个串**：ES 会裁掉末尾空白（`"... to ERROR\n"` →
+ *      `"... to \u0001ERROR"`）。所以「去掉标记后 === 原文」这种判据在真机上一条都过不了，
+ *      第一版就是这么写的，结果是所有行都没有高亮，看起来像功能没生效。
+ *   ② 命中落在正文末尾时**没有后标记**（`post_tags` 不回来）——而那恰好是最常见的一种命中
+ *      （一行日志以 ERROR 收尾）。未闭合必须当成「到片段结尾」。
+ */
+describe('正文命中高亮：ES highlight → 字符区间（第三十五刀）', () => {
+  const wrap = (inner: string): string => HIGHLIGHT_PRE + inner + HIGHLIGHT_POST
+
+  it('把标记位置换算成原文下标（区间是左闭右开）', () => {
+    expect(highlightRanges('to ' + wrap('ERROR'), 'to ERROR')).toEqual([[3, 8]])
+  })
+
+  it('片段比原文短（ES 裁掉末尾空白）**也要认**——这是真机最常见的形状', () => {
+    // 真机：message 以 "\n" 收尾，fragment 没有那个换行
+    expect(highlightRanges('to ' + wrap('ERROR'), 'to ERROR\n')).toEqual([[3, 8]])
+  })
+
+  it('命中在正文末尾、**没有后标记**：算到片段结尾，不能丢', () => {
+    expect(highlightRanges('to ' + HIGHLIGHT_PRE + 'ERROR', 'to ERROR\n')).toEqual([[3, 8]])
+  })
+
+  it('多处命中按 start 升序返回', () => {
+    expect(highlightRanges('a ' + wrap('err') + ' b ' + wrap('x'), 'a err b x\n')).toEqual([[2, 5], [8, 9]])
+  })
+
+  it('相邻/重叠的合并（同一个底色不必画两层）', () => {
+    expect(highlightRanges(wrap('er') + wrap('ror'), 'error')).toEqual([[0, 5]])
+  })
+
+  it('**对不上就不标**：位置错比不标更坏（用户会以为那是引擎认出来的）', () => {
+    expect(highlightRanges('mismatch ' + wrap('zzz'), 'mismatch abc')).toEqual([])
+  })
+
+  it('没有标记 / 空片段 / 非字符串 → 空区间（界面据此整段纯文本）', () => {
+    expect(highlightRanges('plain text', 'plain text')).toEqual([])
+    expect(highlightRanges('', 'abc')).toEqual([])
+    expect(highlightRanges(undefined, 'abc')).toEqual([])
+    expect(highlightRanges(['not', 'a', 'string'], 'abc')).toEqual([])
+  })
+
+  it('越界的标记一律丢掉（数组下标越界是渲染里最难查的一类错）', () => {
+    expect(highlightRanges(HIGHLIGHT_PRE + 'abcdef' + HIGHLIGHT_POST, 'abc')).toEqual([])
+  })
+
+  it('lineFromHit 把 highlight 带成 highlights；没有就不带这个键', () => {
+    const base = { '@timestamp': '2026-10-18T10:00:00.000Z', message: 'to ERROR\n' }
+    const withMark = lineFromHit({
+      _id: 'a',
+      _source: base,
+      highlight: { message: ['to ' + wrap('ERROR')] },
+    })
+    expect(withMark?.highlights).toEqual([[3, 8]])
+    const plain = lineFromHit({ _id: 'b', _source: base })
+    expect(plain === undefined ? 'missing' : Object.prototype.hasOwnProperty.call(plain, 'highlights')).toBe(false)
   })
 })

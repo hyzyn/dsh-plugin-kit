@@ -12,6 +12,7 @@ import {
   TRUNCATION_ORDER,
   countsOf,
   normalizeQuery,
+  pageLimitFlags,
   truncationOf,
 } from '../src/query.js'
 
@@ -224,6 +225,7 @@ describe('truncationOf：理由集合与顺序', () => {
     expect(result.reasons).toEqual(['hit_limit', 'partial_shards', 'timed_out', 'byte_cap'])
     expect(TRUNCATION_ORDER).toEqual([
       'hit_limit',
+      'hit_limit_maybe',
       'max_result_window',
       'partial_shards',
       'timed_out',
@@ -231,5 +233,66 @@ describe('truncationOf：理由集合与顺序', () => {
       'byte_cap',
       'cursor_expired',
     ])
+  })
+})
+
+/*
+ * 第三十六刀：「确定还有」与「可能还有」分开。
+ *
+ * 这一组判据来自真机实测的边界（ES 7.10.2，命中数 53）：
+ *
+ *     limit=53 → returned 53, total 53 → 旧判据说「已截断」  ← 其实一条都没漏
+ *     limit=54 → returned 53, total 53 → 旧判据说「没截断」  ← 正确
+ *
+ * 旧判据（`lines.length >= limit`）的代价不止文案：它同时决定**给不给「下一页」**，
+ * 而那一页之后真的没有了，翻过去是 0 行（真机验过）——用户会以为系统坏了。
+ *
+ * 参考 Kibana 7.10 的做法：它比较的是「本页实际有的」与「ES 声称的总数」，
+ * 所以「命中恰好等于上限」时两边相等、不会误报；文案也是 `Limited to N results` 而不是
+ * 「已截断」，因为它的总数封顶 10000，说「还有多少」等于撒谎。
+ * 我们显式 `track_total_hits: true`，总数是真的，所以能判断得比它更准。
+ */
+describe('pageLimitFlags：确定还有 / 可能还有（第三十六刀）', () => {
+  it('命中**多于**上限：确定还有更多', () => {
+    expect(pageLimitFlags({ returned: 100, limit: 100, matched: 15200, totalKnown: true }))
+      .toEqual({ limited: true, maybeLimited: false })
+  })
+
+  it('命中**恰好等于**上限：只是「可能」，不报截断（原来误报的就是这一格）', () => {
+    expect(pageLimitFlags({ returned: 53, limit: 53, matched: 53, totalKnown: true }))
+      .toEqual({ limited: false, maybeLimited: true })
+  })
+
+  it('命中**少于**上限：确定没有了（返回行也该跟着少于上限）', () => {
+    expect(pageLimitFlags({ returned: 53, limit: 100, matched: 53, totalKnown: true }))
+      .toEqual({ limited: false, maybeLimited: false })
+  })
+
+  it('没有精确总数（Loki / ES 回 gte）：只能说「可能」，不硬猜', () => {
+    expect(pageLimitFlags({ returned: 100, limit: 100, matched: 10000 }))
+      .toEqual({ limited: false, maybeLimited: true })
+    // 明确告知是下界时，哪怕 matched 远大于 limit 也不算「确定」
+    expect(pageLimitFlags({ returned: 100, limit: 100, matched: 10000, totalKnown: false }))
+      .toEqual({ limited: false, maybeLimited: true })
+  })
+
+  it('没到上限时，有没有总数都不影响（没到就是没到）', () => {
+    expect(pageLimitFlags({ returned: 10, limit: 100, matched: 99999, totalKnown: true }))
+      .toEqual({ limited: false, maybeLimited: false })
+    expect(pageLimitFlags({ returned: 10, limit: 100 }))
+      .toEqual({ limited: false, maybeLimited: false })
+  })
+
+  it('limit=0（不限制）不算截断', () => {
+    expect(pageLimitFlags({ returned: 500, limit: 0, matched: 500, totalKnown: true }))
+      .toEqual({ limited: false, maybeLimited: false })
+  })
+
+  it('两档在 truncationOf 里是不同的理由（界面据此说两种句子）', () => {
+    expect(truncationOf({ limited: true }).reasons).toEqual(['hit_limit'])
+    expect(truncationOf({ maybeLimited: true }).reasons).toEqual(['hit_limit_maybe'])
+    // 同时出现时两句都要说（顺序固定：确定在前）
+    expect(truncationOf({ limited: true, maybeLimited: true }).reasons)
+      .toEqual(['hit_limit', 'hit_limit_maybe'])
   })
 })

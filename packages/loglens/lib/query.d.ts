@@ -84,8 +84,25 @@ export declare function countsOf(input: CountsInput): LogCounts;
 /** 截断理由的**固定顺序**（同一个输入必须得到同一个数组，用例才好逐字断言）。 */
 export declare const TRUNCATION_ORDER: readonly TruncationReason[];
 export interface TruncationInput {
-    /** 达到 limit（可能还有）——照 docker 的五计数口径，`limited` 就是「可能还有」。 */
+    /**
+     * **确定还有更多**（`matched > limit`，或者 matched 只是下界但已达 limit）。
+     *
+     * 这个字段的语义在第三十六刀收紧过：它原来叫「可能还有」（照 docker 的五计数口径），
+     * 而界面把「可能」渲染成了「已截断」——语气从推测变成了断言。现在两种情形分开：
+     * 确定的走这里（`hit_limit`），只剩边界那种走下面的 `maybeLimited`。
+     */
     limited?: boolean;
+    /**
+     * **可能还有**：返回行数刚好等于 limit，而总数恰好也是 limit（所以无从判断还有没有）。
+     *
+     * 为什么单列（真机实测的边界）：命中 53 条、条数上限也设 53 时，`lines.length >= limit`
+     * 成立，旧判据就报「已截断：达到条数上限」——可实际一条没漏。更糟的是它会给出「下一页」，
+     * 而翻过去必然是 **0 行**（真机验过），用户会以为系统坏了。
+     *
+     * 判据只能靠**精确总数**：`matched === limit` 时两边相等，分不出来。`totalKnown` 为假的来源
+     * （Loki 没有总数）只能退回「可能」这一档——那正是它本来就该说的话。
+     */
+    maybeLimited?: boolean;
     maxResultWindow?: boolean;
     partialShards?: boolean;
     timedOut?: boolean;
@@ -93,5 +110,37 @@ export interface TruncationInput {
     byteCap?: boolean;
     cursorExpired?: boolean;
 }
+/**
+ * 「还有没有更多」的判据：把「确定还有」与「可能还有」分开（第三十六刀）。
+ *
+ * ## 为什么必须分开（真机实测的边界）
+ *
+ * 旧判据是 `lines.length >= limit` 一句话，于是**命中数恰好等于上限**时也报「已截断」：
+ *
+ *     limit=53, 命中 53 → returned 53, total 53 → 旧判据 limited=true  ← 一条都没漏
+ *     limit=54, 命中 53 → returned 53, total 53 → limited=false          ← 正确
+ *
+ * 代价不止文案：那个判据同时决定**给不给「下一页」**（见 elastic.ts），而这一页之后真的没有了，
+ * 翻过去是 **0 行**——用户会以为坏了。
+ *
+ * ## 判据
+ *
+ *   - 有**精确总数**（`totalKnown`，ES 显式 `track_total_hits: true` 才有）时：
+ *     `matched > limit` → 确定还有；`matched === limit` → 可能还有；
+ *     `matched < limit` → 确定没有了（这时 `returned` 也必然 < limit，除非后端自己吞了行）。
+ *   - 没有精确总数（Loki、或 ES 回 `relation: gte`）时：只能说「到了 limit，可能还有」——
+ *     这正是那一档存在的理由，别硬猜。
+ *
+ * 返回给 `truncationOf` 用的两个开关，界面据此说两种不同的句子。
+ */
+export declare function pageLimitFlags(input: {
+    returned: number;
+    limit: number;
+    matched?: number;
+    totalKnown?: boolean;
+}): {
+    limited: boolean;
+    maybeLimited: boolean;
+};
 /** 归并截断信号：`truncated` 恒等于「至少有一条理由」，不给「有理由但 truncated=false」的态。 */
 export declare function truncationOf(input: TruncationInput): Truncation;

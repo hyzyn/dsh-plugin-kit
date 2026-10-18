@@ -31,6 +31,14 @@ export declare const ES_PROBE_WINDOW_MS: number;
 export declare const ES_PIT_KEEP_ALIVE = "2m";
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
 export declare const ES_TIME_FIELD = "@timestamp";
+/**
+ * 高亮的两个标记：正文里**不可能出现**的控制字符（U+0001 / U+0002）。
+ *
+ * 为什么不用 `<em>` / `<mark>`：日志正文里本来就可能有这些字（HTML、堆栈里的标签），
+ * 撞上就分不清哪个是引擎标的。控制字符在 JSON 里被转义、在正文里不会自然出现。
+ */
+export declare const HIGHLIGHT_PRE = "\u0001";
+export declare const HIGHLIGHT_POST = "\u0002";
 /** 宽类型族；认不出来的一律 `unknown`。 */
 export declare function esTypeFamily(esType: string): string;
 /**
@@ -62,6 +70,7 @@ interface EsHit {
     _index?: unknown;
     _source?: unknown;
     sort?: unknown;
+    highlight?: unknown;
 }
 /**
  * 默认索引表达式：`*,-.*`（**排除点号索引**）。
@@ -105,6 +114,31 @@ export declare function looksLikeExpiredCursor(failure: {
 }): boolean;
 /** ISO 时间（ES 的 range 查询用 ISO 字符串最稳，纳秒精度不是这一层的事）。 */
 export declare function isoOf(ms: number): string;
+/**
+ * 把 ES 的 highlight 片段转成 `message` 里的字符区间。
+ *
+ * ES 回的是**带标记的整段文本**（`number_of_fragments: 0` 时是全文）。这里只做一件事：
+ * 把标记的位置换算回原文下标，然后**丢掉标记本身**——界面拿到的是区间，不是一段要
+ * `dangerouslySetInnerHTML` 的 HTML（那会把日志正文当 HTML 执行）。
+ *
+ * ## 真机上量出来的两条 ES 行为（决定了这里的判据，别想当然）
+ *
+ * 第一条：**片段与原文字符相等，但不是同一个串**。实测 ES 7.10.2：
+ *
+ *     message   "... to ERROR\n"     ← 正文末尾有换行
+ *     fragment  "... to \u0001ERROR"  ← 无换行，且**只有前标记**
+ *
+ * 所以「去掉标记后必须 === message」这种判据在真机上**一条都通过不了**（第一版就是这么写的，
+ * 结果是所有行都没有高亮，看起来像功能没生效）。真正的判据是：**逐字符比对，标记只是插入**——
+ * 片段去掉标记之后的**字符序列**必须是原文的**前缀**（ES 会裁掉末尾空白）。
+ *
+ * 第二条：**命中落在正文末尾时没有后标记**。上面那个 `\u0001ERROR` 就是，`post_tags` 不会来。
+ * 不能当成「这段不算」丢掉——那恰好是最常见的一种命中（一行日志以错误级别词收尾）。
+ * 未闭合的标记一律算「到片段结尾为止」，并且用上面那条前缀判据校验它落在原文的什么位置。
+ *
+ * 对不上就回空数组：**宁可不标，也不标错位置**——标错比不标更坏，用户会以为那是引擎认出来的。
+ */
+export declare function highlightRanges(fragment: unknown, message: string): Array<[number, number]>;
 /** 一行文档 → LogLine。**时间解析不出来的行直接跳过**（它没法被 loglens_context 重查回来）。 */
 export declare function lineFromHit(hit: EsHit): LogLine | undefined;
 /** 这是不是「这台 ES 不认识 _shard_doc」。 */
@@ -113,6 +147,18 @@ export declare function looksLikeMissingShardDoc(failure: {
     text: string;
     body: unknown;
 }): boolean;
+/**
+ * 把 `_shards.failures[].reason` 读成人话（**照抄 ES 的说法**，不自己编）。
+ *
+ * 为什么需要它（2026-10-18 真机抓到）：ES 对**分片级**错误回 `HTTP 200`，原因放在
+ * `_shards.failures[].reason` 里。上一版只数了 `_shards.failed`、把它翻成 `partial_shards`，
+ * 于是 `level:(ERROR`（少一个右括号）在界面上显示成「已截断：部分分片失败」+ 0 条——
+ * 用户会去查索引和集群，而真正的原因是他自己写错了查询串。
+ *
+ * 返回去重后的前几条（同一条错误会在每个分片上各报一次，全列出来只会刷屏）。
+ * 认不出的形状就原样 `JSON.stringify` 一小段——**看到机器的原话，比看到一句编好的分类词有用**。
+ */
+export declare function shardFailureReasons(shards: unknown, limit?: number): string[];
 /**
  * 一个字段该怎么打。**这就是 agent 猜 `.keyword` 那件事的归宿**（真机反馈第 2 条）：
  * 由适配器查一次 _field_caps 决定，而不是让调用方去记约定。

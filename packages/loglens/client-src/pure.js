@@ -999,9 +999,136 @@ export function formatTickTime(ts, spanMs) {
 /** 横条上限（纯兜底）：面板不传 size，桶数由后端默认值与宿主硬上限（100）管；畸形输入才可能触到。 */
 const GROUP_MAX_BARS = 50
 
+/* ============================ 查询串的示例（第三十三刀） ============================ */
+
+/**
+ * 查询框旁边给哪些**可点的例子**。
+ *
+ * 为什么要有它（2026-10-18 用户原话）：「Lucene 查询串我不会写，你教我」。教一次不够——
+ * 下次换个人还是不会。而查询串这块的真实门槛不是「语法难」，是**这支方言到底认什么**：
+ * Kibana 的 Discover 默认是 KQL（`error and timeout`），我们这里是 Lucene
+ * （`error AND timeout`）——同一件事两套写法，写错了不报错、只是数字不对。
+ *
+ * 所以这里只给**这一支方言真的认的**那几条，每条一个最小例子：
+ *   - Lucene（ES / OpenSearch 的 `query_string`）：**大写** `AND` / `OR` / `NOT` 才是运算符
+ *     （小写会被当成普通词）、空格分隔的词默认是「或」、`-词` 是排除、引号是短语、
+ *     `字段:值` 是限定字段、`字段:*` 是「有值」。
+ *   - LogQL（Loki）：`{标签="值"}` 选流、`|= "字"` 行内过滤。
+ *   - 不认识的方言回空数组（别给一个点了会报错的例子）。
+ *
+ * **这一条曾经写错过，别再犯**（第三十四刀）：原来的「且」那条给的是 `error+timeout`，
+ * 依据是一次**读错了的**实测——`error AND timeout` 回 0 条，就被当成「AND 不是运算符」。
+ * 真相是那两个词在那一小时里根本**不共现**，0 是正确答案。`+` 粘在两个词中间其实只是个
+ * 分隔符（与空格同义，也就是「或」），所以那条例子点下去得到的是**并集**，标签却写着「且」。
+ *
+ * 判据要靠**算术自洽**，不能靠单个数字：取 |A|、|B|、|A∪B| 反推交集 |A∩B| = |A|+|B|-|A∪B|，
+ * 再看 `A AND B` 是不是等于它。2026-10-18 真机实测（同一窗口）：
+ * 1016 + 1284 − 1789 = 511，而 `error AND failed` 回 511、`error+failed` 回 1789（= 并集）。
+ *
+ * 每条是 `{ id, sample }`：`id` 只用来做 React key 与 title 的 i18n 键（不翻示例本身——
+ * **示例是代码不是文案**，翻成中文就没法点进去跑了）。
+ */
+export function querySamples(kind) {
+  if (kind === 'elasticsearch' || kind === 'opensearch') {
+    return [
+      { id: 'term', sample: 'error' },
+      { id: 'phrase', sample: '"Failed to"' },
+      // 大写 AND；粘连的 `+` 不是「且」（见上面那段实测），别写回来
+      { id: 'and', sample: 'error AND failed' },
+      { id: 'field', sample: 'stream:stderr' },
+    ]
+  }
+  if (kind === 'loki') {
+    return [
+      { id: 'stream', sample: '{job="app"}' },
+      { id: 'filter', sample: '{job="app"} |= "error"' },
+      { id: 'not', sample: '{job="app"} != "debug"' },
+    ]
+  }
+  return []
+}
+
 /** 分组字段能不能提交：空串表示可以，否则是 i18n 键名后缀（needGroupBy）。 */
 export function groupProblem(field) {
   return String(field == null ? '' : field).trim() === '' ? 'needGroupBy' : ''
+}
+
+/* ============================ 查询串里的字段名补全（第三十四刀） ============================ */
+
+/**
+ * 查询串的哪一段**是字段名**（光标处正在打的那个词），以及它前面那句别的内容。
+ *
+ * 为什么要有它：面板里这个来源列出 **92 个字段**（真机 `/fields` 实测；`_field_caps` 打整个
+ * 集群是 1657 条，去掉 `.keyword` 重复行与 object 行剩 1274——**但面板只列这个来源自己的索引**，
+ * 所以候选是 92 条。这个数字别照抄全集群那份）。最长那个 108 字符：
+ * `payload.elasticsearch.node_stats.indexing_pressure.memory.current.combined_coordinating_and_primary_in_bytes`。
+ * 更要紧的是**打错一个下划线就是静默 0 条**——ES 对不存在的字段不报错，真机实测：
+ *
+ *     container_name:prometheus  → 0 条     ← Kibana 截图里那种写法
+ *     container.name:prometheus  → 240 条   ← 这台集群的真实名字
+ *
+ * 所以补全不是「锦上添花」，它防的是一种**看得见结果、看不出错**的故障。
+ *
+ * 判据（Lucene 的 `字段:值` 形状，只认这一种，不做完整词法分析）：
+ *
+ *   - 从查询串**开头**一路扫到光标，取**最后一个还没合上的词**（空白 / `(` / `)` 分隔）；
+ *     `AND` / `OR` / `NOT` 这些运算符也是词，但它们后面必然跟一个新词，所以它们自己
+ *     不会被当成字段名（见下面 `FIELD_COMPLETION_MAX_PREFIX`）。
+ *   - 那个词里**已经出现过 `:`** → 光标在**值**那一侧，不在本函数职责内，回 `null`
+ *     （值候选要按字段拉聚合，是另一件事；这一刀只补字段名）。
+ *   - 词尾是 `*` / `~` / `/`（通配、模糊、正则）或词里有引号 → 这是**值**的写法，回 `null`。
+ *   - 剩下的是**字段名候选词**：`field` = 已有的那段前缀（用来查候选），`start` 是它在
+ *     整个查询串里的起始下标——**界面据此替换这一段**，而不是把候选接到末尾
+ *     （否则在句子中间补全会把后面的东西顶掉）。
+ *
+ * `start` / `end` 都按**光标前**算（`end` 恒等于光标位置）。光标之后的内容不动。
+ * 拿不到光标位置（老浏览器 / 桩环境）时按「查询串末尾」算——那是**打字时**的常态。
+ *
+ * 回 `null` 表示「此刻不该给字段候选」（光标不在一个字段名上）。回空串 `field` 是
+ * **合法的**：句首、或者刚打完 `AND ` 之后，这时候该把所有字段列出来。
+ */
+export function fieldCompletion(query, caret) {
+  const text = String(query == null ? '' : query)
+  const at = Number.isInteger(caret) && caret >= 0 && caret <= text.length ? caret : text.length
+  const before = text.slice(0, at)
+  // 光标前最后一个还没合上的词的起点：从光标往回找到空白或括号
+  let start = before.length
+  while (start > 0) {
+    const ch = before.slice(start - 1, start)
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '(' || ch === ')') break
+    start -= 1
+  }
+  const word = before.slice(start)
+  // 已经是「字段:值」的形状：光标在值那一侧
+  if (word.includes(':')) return null
+  // 值的写法（通配 / 模糊 / 正则 / 引号）：这些不是字段名
+  if (word.includes('"') || word.endsWith('*') || word.endsWith('~') || word.includes('/')) return null
+  /*
+   * 运算符本身不是字段名。判据是**大写**（小写 `and` 在 Lucene 里是普通词，是用户真在找的字，
+   * 不能吞掉——真机实测 `error and failed` 回 4505 条，那是把 `and` 当词在搜）。
+   */
+  if (word === 'AND' || word === 'OR' || word === 'NOT') return null
+  // 排除前缀 `-field`：`-` 是运算符，候选要替换的是它**后面**那段
+  const lead = word.startsWith('-') ? 1 : 0
+  return { field: word.slice(lead), start: start + lead, end: at }
+}
+
+/**
+ * 把光标处那段字段名换成选中的字段（`replacement`），并给出**补完之后的光标位置**
+ * （紧跟在那个 `:` 之后——选完字段的下一件事必然是打值，光标停在冒号前就等于让人再挪一次）。
+ *
+ * 原位替换：只换 `start..end` 这一段，前面的运算符、后面的值都不动。
+ */
+export function fieldCompletionApply(query, pick, replacement) {
+  const text = String(query == null ? '' : query)
+  const name = String(replacement == null ? '' : replacement)
+  if (pick === null || pick === undefined || name === '') return { q: text, caret: text.length }
+  const start = Number.isInteger(pick.start) ? pick.start : text.length
+  const end = Number.isInteger(pick.end) ? pick.end : text.length
+  const head = text.slice(0, start)
+  const tail = text.slice(end)
+  const inserted = name + ':'
+  return { q: head + inserted + tail, caret: (head + inserted).length }
 }
 
 /**
@@ -1036,6 +1163,40 @@ export function fieldChoices(fields, typed) {
     rows.push({ name })
   }
   return rows
+}
+
+/**
+ * 补全的候选：**前缀优先、子串次之**，条目数有上限。
+ *
+ * 为什么不直接用 `fieldChoices`（真机上这就是差别）：它是**子串**匹配，那对「点一下看有哪些
+ * 字段」是对的，但对补全是错的——光标前正打着 `cont`，`host.containerized` 也是一条子串命中，
+ * 于是 92 个字段里有 **62 条**候选，第一条才是 `container.name`。补全这时候要的是「我正要打的
+ * 那个名字」，前缀才说明这件事；子串命中留着（`name` → `host.name` 是真想要的），但排在后面。
+ *
+ * 三条判据：
+ *   - **前缀命中的排在子串命中的前面**（两组内部都保持宿主给的顺序，不重排——顺序是结论）；
+ *   - **大小写不敏感**（字段名本身大小写有意义，但人打字不该被它绊住）；
+ *   - **有上限**（`limit`，默认 `FIELD_COMPLETION_MAX`）：浮层是打字时闪出来的东西，几十条候选
+ *     既看不完也挡视线。上限之外直接不画，与「命中 0 个不画」同一条判据——不假装全给了。
+ */
+export const FIELD_COMPLETION_MAX = 20
+
+export function fieldCompletionChoices(fields, typed, limit) {
+  const needle = String(typed == null ? '' : typed).trim().toLowerCase()
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FIELD_COMPLETION_MAX
+  const prefix = []
+  const middle = []
+  for (const item of Array.isArray(fields) ? fields : []) {
+    if (item == null) continue
+    const name = String(item.name == null ? '' : item.name)
+    if (name === '') continue
+    const lower = name.toLowerCase()
+    if (needle === '') prefix.push({ name })
+    else if (lower.startsWith(needle)) prefix.push({ name })
+    else if (lower.includes(needle)) middle.push({ name })
+    if (prefix.length >= cap) break
+  }
+  return [...prefix, ...middle].slice(0, cap)
 }
 
 /**
@@ -1167,6 +1328,60 @@ export function containerSlotState(options) {
 export function dockerSince(preset) {
   const keys = WINDOW_PRESETS.map((item) => item.key)
   return keys.indexOf(preset) === -1 ? '1h' : preset
+}
+
+/**
+ * 容器候选：按输入收窄（**前缀优先、子串次之**），保持清单原顺序。
+ *
+ * 为什么要有它（第三十九刀，用户截图）：容器下拉原来是原生 `<select>`，真机上有十几个容器
+ * （`app-svc-1` / `app-svc-3` / `upms` / `app-svc-8` / `batch-job-a` / …）。
+ * 原生弹层**高度不受控**（铺满整个面板）、**不能搜**、**不能改样式**——找 `batch-job-a`
+ * 只能靠滚。
+ *
+ * 收窄规则与字段补全（`fieldCompletionChoices`）**同一条**：前缀命中的排前面，子串次之，
+ * 大小写不敏感，保持入参顺序不重排。两处共用同一种「打字找人」的手感，用户不用学两套。
+ *
+ * 每一项回 `{ id, label }`：`label` 已经是**要显示的名字**（有 name 用 name，没有退回 id），
+ * 判定留在这里而不是界面上——界面只负责画。
+ */
+export function containerChoices(containers, typed) {
+  const needle = String(typed == null ? '' : typed).trim().toLowerCase()
+  const prefix = []
+  const middle = []
+  for (const item of Array.isArray(containers) ? containers : []) {
+    if (item == null) continue
+    const id = String(item.id == null ? '' : item.id)
+    if (id === '') continue
+    const label = item.name === undefined || item.name === null || item.name === '' ? id : String(item.name)
+    // 名字与 id 两边都能搜：真机上用户既可能记得 `app-svc-3`，也可能只记得短 id
+    const haystack = (label + ' ' + id).toLowerCase()
+    const row = { id, label }
+    if (needle === '') prefix.push(row)
+    else if (label.toLowerCase().startsWith(needle) || id.toLowerCase().startsWith(needle)) prefix.push(row)
+    else if (haystack.includes(needle)) middle.push(row)
+  }
+  return [...prefix, ...middle]
+}
+
+/**
+ * 一批 Docker 日志是「按什么条件」拉的：`容器|时间窗|行数`。
+ *
+ * 用在两处：拉的时候记下来，渲染时与当前条件比——不一致就说明屏幕上这份是**上一次**的。
+ * 为什么要把三个条件拼成一个串而不是分别比：三者任何一个变了，那份日志就不再是当前条件的答案；
+ * 而「是不是同一份」这件事只在一个地方用（判 stale），没必要拆成三个状态去同步。
+ */
+export function dockerRunKey(container, preset, tail) {
+  const name = String(container == null ? '' : container)
+  const window = String(preset == null ? '' : preset)
+  const lines = String(tail == null ? '' : tail)
+  return name + '|' + window + '|' + lines
+}
+
+/** 屏上那份 Docker 日志是不是**当前条件**的（条件改了它就是上一次的）。 */
+export function dockerStale(runKey, container, preset, tail) {
+  const ran = String(runKey == null ? '' : runKey)
+  if (ran === '') return false
+  return ran !== dockerRunKey(container, preset, tail)
 }
 
 /** 看容器日志前必须选一个容器（这条路径没有「全量」的说法）。 */
@@ -1807,4 +2022,56 @@ export function columnPickState(columns, field) {
   if (list.indexOf(name) !== -1) return 'picked'
   if (list.length >= RESULT_COLUMN_MAX) return 'limit'
   return 'ok'
+}
+
+/* ============================ 正文里的命中高亮（第三十五刀） ============================ */
+
+/**
+ * 把「正文 + 命中区间」切成可以直接渲染的几段：`[{ text, hit }]`。
+ *
+ * 区间由**后端**给（ES 的 `highlight`，见 src/backends/elastic.ts 的 `highlightRanges`）——
+ * 界面**不自己拿查询串去正文里找**。理由：查询串是 Lucene，`stream:stderr` 里没有半个字
+ * 出现在正文、`-failed` 是排除、`error*` / `~` / 短语各有各的规则。照字面标会错一半，
+ * 而**标错比不标更坏**（用户会以为那是引擎认出来的命中）。
+ *
+ * 这一层只做三件防御性的整理（后端已经保证升序、不重叠、不越界，但界面不该依赖那个）：
+ *   - 越界 / 空区间丢掉；不升序就**整体放弃**（顺序错了画出来是乱的，宁可不标）；
+ *   - 相邻/重叠的合并（`error` 与 `er` 命中同一段时不该画两层）；
+ *   - 返回的段拼起来必须**正好等于原文**（否则回一段纯文本：不许因为高亮丢字）。
+ *
+ * 没有区间、区间畸形、空正文 → 返回 `[{ text: message, hit: false }]`（一个纯文本段）。
+ */
+export function messageSegments(message, ranges) {
+  const text = String(message == null ? '' : message)
+  const whole = [{ text, hit: false }]
+  if (text === '') return whole
+  const clean = []
+  let previous = -1
+  for (const item of Array.isArray(ranges) ? ranges : []) {
+    if (!Array.isArray(item) || item.length < 2) return whole
+    const start = Number(item[0])
+    const end = Number(item[1])
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return whole
+    if (start < 0 || end > text.length || end <= start) return whole
+    // 必须严格升序（后一段的起点要大于等于前一段的终点）
+    if (start < previous) return whole
+    const last = clean[clean.length - 1]
+    if (last !== undefined && start <= last[1]) {
+      last[1] = Math.max(last[1], end)
+    } else {
+      clean.push([start, end])
+    }
+    previous = start
+  }
+  if (clean.length === 0) return whole
+  const segments = []
+  let at = 0
+  for (const [start, end] of clean) {
+    if (start > at) segments.push({ text: text.slice(at, start), hit: false })
+    segments.push({ text: text.slice(start, end), hit: true })
+    at = end
+  }
+  if (at < text.length) segments.push({ text: text.slice(at), hit: false })
+  // 拼回去必须与原文一字不差（高亮不许吞字）
+  return segments.map((segment) => segment.text).join('') === text ? segments : whole
 }

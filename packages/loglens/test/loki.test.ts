@@ -271,7 +271,12 @@ describe('查询结果：计数与截断', () => {
     const result = await backend.query(normalized(backend, { targetId: 'loki', from: FROM, to: NOW, limit: 2 }), fake.target)
     // 末组被 limit 切开 → 补齐整组交付（3 行），所以页可以略超 limit；这是 D03 的刻意取舍
     expect(result.lines).toHaveLength(3)
-    expect(result.truncation).toEqual({ truncated: true, reasons: ['hit_limit'] })
+    /*
+     * 「可能还有」而不是「确定截断」（第三十六刀）：Loki 的 `/query_range` **不报总数**，
+     * 所以「到了 limit」只能说明「可能还有」，不能断言「已截断」。
+     * 游标照给——Loki 的游标是按时间戳与内容序算的，下一页真能拿到东西（这一页确实被切开了）。
+     */
+    expect(result.truncation).toEqual({ truncated: true, reasons: ['hit_limit_maybe'] })
     expect(result.nextCursor).toBeDefined()
   })
 })

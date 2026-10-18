@@ -1,7 +1,7 @@
 import { decodeSearchAfterCursor, encodeSearchAfterCursor } from '../cursor.js';
 import { flattenLabels, withLevel } from '../line.js';
 import { requestJson as fetchJson } from '../net.js';
-import { countsOf, truncationOf } from '../query.js';
+import { countsOf, pageLimitFlags, truncationOf } from '../query.js';
 /** 单页上限的默认声明（深分页靠 search_after，所以这只是「一页多少行」）。 */
 export const ES_DEFAULT_MAX_PAGE_SIZE = 500;
 /** 时间窗上限的默认声明（24 小时）：再宽就该分段查，否则只会得到一句「大概就这些」。 */
@@ -17,6 +17,14 @@ export const ES_PROBE_WINDOW_MS = 15 * 60 * 1000;
 export const ES_PIT_KEEP_ALIVE = '2m';
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
 export const ES_TIME_FIELD = '@timestamp';
+/**
+ * 高亮的两个标记：正文里**不可能出现**的控制字符（U+0001 / U+0002）。
+ *
+ * 为什么不用 `<em>` / `<mark>`：日志正文里本来就可能有这些字（HTML、堆栈里的标签），
+ * 撞上就分不清哪个是引擎标的。控制字符在 JSON 里被转义、在正文里不会自然出现。
+ */
+export const HIGHLIGHT_PRE = '\u0001';
+export const HIGHLIGHT_POST = '\u0002';
 /** labels 的条数上限：日志文档的字段可能几十个，全塞进每行会把工具返回值撑爆。 */
 const LABEL_LIMIT = 20;
 /*
@@ -211,6 +219,82 @@ function numberField(source, key) {
         return Number(value);
     return undefined;
 }
+/**
+ * 把 ES 的 highlight 片段转成 `message` 里的字符区间。
+ *
+ * ES 回的是**带标记的整段文本**（`number_of_fragments: 0` 时是全文）。这里只做一件事：
+ * 把标记的位置换算回原文下标，然后**丢掉标记本身**——界面拿到的是区间，不是一段要
+ * `dangerouslySetInnerHTML` 的 HTML（那会把日志正文当 HTML 执行）。
+ *
+ * ## 真机上量出来的两条 ES 行为（决定了这里的判据，别想当然）
+ *
+ * 第一条：**片段与原文字符相等，但不是同一个串**。实测 ES 7.10.2：
+ *
+ *     message   "... to ERROR\n"     ← 正文末尾有换行
+ *     fragment  "... to \u0001ERROR"  ← 无换行，且**只有前标记**
+ *
+ * 所以「去掉标记后必须 === message」这种判据在真机上**一条都通过不了**（第一版就是这么写的，
+ * 结果是所有行都没有高亮，看起来像功能没生效）。真正的判据是：**逐字符比对，标记只是插入**——
+ * 片段去掉标记之后的**字符序列**必须是原文的**前缀**（ES 会裁掉末尾空白）。
+ *
+ * 第二条：**命中落在正文末尾时没有后标记**。上面那个 `\u0001ERROR` 就是，`post_tags` 不会来。
+ * 不能当成「这段不算」丢掉——那恰好是最常见的一种命中（一行日志以错误级别词收尾）。
+ * 未闭合的标记一律算「到片段结尾为止」，并且用上面那条前缀判据校验它落在原文的什么位置。
+ *
+ * 对不上就回空数组：**宁可不标，也不标错位置**——标错比不标更坏，用户会以为那是引擎认出来的。
+ */
+export function highlightRanges(fragment, message) {
+    if (typeof fragment !== 'string' || fragment === '')
+        return [];
+    const ranges = [];
+    /*
+     * 一边扫片段、一边在原文上取下标：`plain` 只用来累计「已经确认对上的前缀长度」，
+     * 每吃一个普通字符就与原文同一位置的字符比一次——不一致立刻放弃（回空）。
+     */
+    let plain = 0;
+    let at = 0;
+    const mismatch = () => {
+        ranges.length = 0;
+        return ranges;
+    };
+    while (at < fragment.length) {
+        const ch = fragment[at];
+        if (ch === HIGHLIGHT_PRE) {
+            const close = fragment.indexOf(HIGHLIGHT_POST, at + 1);
+            // 未闭合 = 命中延伸到片段末尾（见上面第二条 ES 行为）
+            const body = close === -1 ? fragment.slice(at + 1) : fragment.slice(at + 1, close);
+            const start = plain;
+            for (const inner of body) {
+                if (message[plain] !== inner)
+                    return mismatch();
+                plain += 1;
+            }
+            if (plain > start)
+                ranges.push([start, plain]);
+            at = close === -1 ? fragment.length : close + 1;
+            continue;
+        }
+        if (message[plain] !== ch)
+            return mismatch();
+        plain += 1;
+        at += 1;
+    }
+    // 片段必须是原文的前缀（ES 会裁掉末尾空白，所以只比前缀，不比长度）
+    if (plain > message.length)
+        return [];
+    const merged = [];
+    for (const [start, end] of ranges) {
+        if (start < 0 || end > message.length || end <= start)
+            continue;
+        const last = merged[merged.length - 1];
+        if (last !== undefined && start <= last[1]) {
+            last[1] = Math.max(last[1], end);
+            continue;
+        }
+        merged.push([start, end]);
+    }
+    return merged;
+}
 /** 一行文档 → LogLine。**时间解析不出来的行直接跳过**（它没法被 loglens_context 重查回来）。 */
 export function lineFromHit(hit) {
     const source = typeof hit._source === 'object' && hit._source !== null ? hit._source : {};
@@ -224,9 +308,20 @@ export function lineFromHit(hit) {
      * 早先那版只收标量，于是行上唯一的标签是 stream——看不出是哪台机器、哪个容器（真机反馈第 1 条）。
      * 级别同理：文档里有 log.level / level 就用它，没有才从正文推断，并标出是推断来的（第 7 条）。
      */
+    /*
+     * 高亮只取 `message` 那一条：行里画的是 message，标在别处没有落点。
+     * `highlight` 缺席（没发请求 / 这个字段没命中）就不带 `highlights` —— 界面据此不画，
+     * 而不是退回去自己按字面猜。
+     */
+    const highlightField = typeof hit.highlight === 'object' && hit.highlight !== null
+        ? hit.highlight.message
+        : undefined;
+    const fragment = Array.isArray(highlightField) ? highlightField[0] : highlightField;
+    const highlights = highlightRanges(fragment, message);
     const line = {
         ts,
         message,
+        ...(highlights.length === 0 ? {} : { highlights }),
         source: typeof hit._index === 'string' ? hit._index : '',
         labels: flattenLabels(source, { limit: LABEL_LIMIT }),
         raw: JSON.stringify(source),
@@ -238,6 +333,53 @@ export function lineFromHit(hit) {
 export function looksLikeMissingShardDoc(failure) {
     const haystack = (failure.text + ' ' + JSON.stringify(failure.body === undefined ? {} : failure.body)).toLowerCase();
     return haystack.includes('_shard_doc') && haystack.includes('no mapping found');
+}
+/**
+ * 把 `_shards.failures[].reason` 读成人话（**照抄 ES 的说法**，不自己编）。
+ *
+ * 为什么需要它（2026-10-18 真机抓到）：ES 对**分片级**错误回 `HTTP 200`，原因放在
+ * `_shards.failures[].reason` 里。上一版只数了 `_shards.failed`、把它翻成 `partial_shards`，
+ * 于是 `level:(ERROR`（少一个右括号）在界面上显示成「已截断：部分分片失败」+ 0 条——
+ * 用户会去查索引和集群，而真正的原因是他自己写错了查询串。
+ *
+ * 返回去重后的前几条（同一条错误会在每个分片上各报一次，全列出来只会刷屏）。
+ * 认不出的形状就原样 `JSON.stringify` 一小段——**看到机器的原话，比看到一句编好的分类词有用**。
+ */
+export function shardFailureReasons(shards, limit = 3) {
+    if (typeof shards !== 'object' || shards === null)
+        return [];
+    const failures = shards.failures;
+    if (!Array.isArray(failures))
+        return [];
+    const out = [];
+    for (const failure of failures) {
+        if (out.length >= limit)
+            break;
+        if (typeof failure !== 'object' || failure === null)
+            continue;
+        const reason = failure.reason;
+        let text = '';
+        if (typeof reason === 'string')
+            text = reason;
+        else if (typeof reason === 'object' && reason !== null) {
+            const type = reason.type;
+            const detail = reason.reason;
+            // ES 的 `reason` 是个对象：`type` 是机器可读的类，`reason` 是给人看的那句
+            if (typeof detail === 'string' && detail !== '')
+                text = detail;
+            else if (typeof type === 'string' && type !== '')
+                text = type;
+            else
+                text = JSON.stringify(reason).slice(0, 200);
+        }
+        else {
+            text = JSON.stringify(failure).slice(0, 200);
+        }
+        text = text.trim();
+        if (text !== '' && out.indexOf(text) === -1)
+            out.push(text);
+    }
+    return out;
 }
 /**
  * 按「这个字段该怎么打」解析：
@@ -604,6 +746,21 @@ export function createElasticBackend(options) {
                 sort: [{ [ES_TIME_FIELD]: { order, unmapped_type: 'date' } }, { [tiebreaker]: order }],
                 pit: { id: pitId, keep_alive: keepAlive },
             };
+            /*
+             * 正文里的**命中位置**由 ES 自己标（2026-10-18 维护者看图后要的「类似于这样的高亮」）。
+             *
+             * 为什么不让前端拿查询串去匹配：查询串是 Lucene，`stream:stderr` 里没有半个字出现在正文、
+             * `-failed` 是**排除**、`error*` / `~` / 短语各有各的匹配规则。前端照字面标，位置会错一半，
+             * 而**标错比不标更坏**——用户会以为那是引擎认出来的命中。
+             *
+             * `number_of_fragments: 0` 要的是**整段正文**（默认只回一句片段，我们行里画的是全文）；
+             * 标签用两个正文里不可能出现的控制字符，避免和日志自己的 `<em>` 之类撞上。
+             */
+            if (query.q !== '') {
+                body.highlight = {
+                    fields: { message: { number_of_fragments: 0, pre_tags: [HIGHLIGHT_PRE], post_tags: [HIGHLIGHT_POST] } },
+                };
+            }
             if (cursor !== undefined)
                 body.search_after = cursor.searchAfter;
             const runSearch = async () => callJson(target, joinUrl(access.url, '/_search'), {
@@ -667,7 +824,20 @@ export function createElasticBackend(options) {
                     : undefined;
             const relation = typeof total === 'object' && total !== null && total.relation === 'gte' ? 'gte' : 'eq';
             const failedShards = typeof root._shards?.failed === 'number' ? root._shards.failed : 0;
-            const limited = query.limit > 0 && lines.length >= query.limit;
+            /*
+             * 「还有没有更多」走**共用判据**（src/query.ts 的 pageLimitFlags），不再是一句
+             * `lines.length >= limit`：那个在「命中恰好等于上限」时会误报截断、还给出一个翻过去必然
+             * 空页的「下一页」（真机实测，第三十六刀）。
+             *
+             * `totalKnown` 由 relation 决定：只有 `track_total_hits: true` 且 ES 回 `eq` 时 matched 才是
+             * 精确的——`gte` 时它只是个下界，那时只能说「可能还有」。
+             */
+            const limitFlags = pageLimitFlags({
+                returned: lines.length,
+                limit: query.limit,
+                ...(matched === undefined ? {} : { matched }),
+                totalKnown: matched !== undefined && relation !== 'gte',
+            });
             const lastHit = rawHits[rawHits.length - 1];
             const lastSort = lastHit === undefined ? undefined : lastHit.sort;
             const result = {
@@ -678,12 +848,30 @@ export function createElasticBackend(options) {
                     totalRelation: relation,
                 }),
                 truncation: truncationOf({
-                    limited,
+                    limited: limitFlags.limited,
+                    maybeLimited: limitFlags.maybeLimited,
                     timedOut: root.timed_out === true,
                     partialShards: failedShards > 0,
                 }),
+                /*
+                 * 分片失败时**把 ES 的原话带上**（2026-10-18 真机抓到的那条）：
+                 * 光说「部分分片失败」，`level:(ERROR` 这种少一个括号的查询串与真的分片故障长得一样，
+                 * 而后者用户该找运维、前者该改自己那行字。原话是唯一能分开这两件事的东西。
+                 */
+                ...(failedShards > 0 ? (() => {
+                    const reasons = shardFailureReasons(root._shards);
+                    return reasons.length === 0
+                        ? {}
+                        : { warnings: reasons.map((reason) => '[分片] ' + reason) };
+                })() : {}),
             };
-            if (limited && Array.isArray(lastSort)) {
+            /*
+             * 游标只在**确定还有**时才给（`limited`，不是 `maybeLimited`）。
+             *
+             * 「可能还有」那一档意味着「命中数恰好等于上限」，即这一页已经覆盖了全部命中——
+             * 再给游标，用户点「下一页」得到的是空页（真机验过）。宁可不给，也不给一个必然为空的入口。
+             */
+            if (limitFlags.limited && Array.isArray(lastSort)) {
                 result.nextCursor = encodeSearchAfterCursor({ v: 1, kind: 'es', pitId, searchAfter: lastSort });
             }
             else {

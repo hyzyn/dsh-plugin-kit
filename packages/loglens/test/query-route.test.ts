@@ -153,6 +153,38 @@ describe('围栏：/query 与 /fields 要同源证明', () => {
     expect(fake.requests[0].params.get('limit')).toBe('5')
   })
 
+  /*
+   * 适配器自己说的话（`warnings`）必须到得了面板与 agent 工具（2026-10-18）。
+   *
+   * 真机那条路：ES 对分片级错误回 HTTP 200，原文（`Failed to parse query [...]`）只有适配器读得到。
+   * 这一层要是把 `result.warnings` 吞了，界面上就只剩「已截断：部分分片失败」——
+   * 「查询串写错了」与「分片真坏了」长得一模一样，而这两件事该找的人不同。
+   */
+  it('适配器的 warnings 会出现在 /query 的响应里（而且排在参数类 warning 前面）', async () => {
+    const fake = await startFakeLoki()
+    const config = configWith(fake.url)
+    // 假后端：只说一句「分片原话」，其余照常
+    const shardBackend: LogBackend = {
+      id: 'loki',
+      capabilities: () => ({ queryLanguage: 'logql', pagination: 'cursor', follow: false, aggregations: false } as BackendCaps),
+      async query() {
+        return {
+          lines: [],
+          counts: { returned: 0, totalKnown: false },
+          truncation: { truncated: true, reasons: ['partial_shards'] as const },
+          warnings: ['[分片] Failed to parse query [level:(ERROR]'],
+        }
+      },
+    }
+    const harnessed = harness(config, () => shardBackend)
+    const response = await harnessed.request({ ...PROOF, body: { target: 'loki', q: '{}', from: 1_700_000_000_000, to: 1_700_000_060_000, limit: 5 } })
+    expect(response.status).toBe(200)
+    const warnings = response.body?.warnings as string[]
+    expect(warnings).toContain('[分片] Failed to parse query [level:(ERROR]')
+    // 截断理由照旧（原话是补充，不是替代）
+    expect(response.body?.truncation).toEqual({ truncated: true, reasons: ['partial_shards'] })
+  })
+
   it('GET /query 405；未知子路由 404；非法 JSON 400', async () => {
     const fake = await startFakeLoki()
     const harnessed = harness(configWith(fake.url))

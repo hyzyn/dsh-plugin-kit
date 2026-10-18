@@ -158,7 +158,13 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
   const wanted = readLevel(input.level)
   if (!wanted.ok) throw new Error(wanted.error)
   const result = await backend.query(normalized.query, picked.target)
-  const warnings = normalized.warnings.slice()
+  /*
+   * 适配器自己要说的话排在最前面（**宿主原话**）：它们解释的是「为什么这一页是这样」，
+   * 比上面那些「你给的参数被夹过」更该先被看到。真机那条：ES 的分片级错误回 200，
+   * 原文（`Failed to parse query [...]`）只有适配器读得到——不接上这一条，
+   * `level:(ERROR` 与真的分片故障在界面上长得一模一样。
+   */
+  const warnings = [...(result.warnings ?? []), ...normalized.warnings]
   /*
    * level 过滤在**这一页**上做（真机反馈第 7 条）。
    *

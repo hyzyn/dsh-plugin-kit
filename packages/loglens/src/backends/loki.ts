@@ -425,7 +425,14 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
       const result: LogQueryResult = {
         lines,
         counts,
-        truncation: truncationOf({ limited: slice.limited || groupCapped }),
+        /*
+         * Loki 这一路**没有精确总数**（`/query_range` 不报 total），所以 `slice.limited` 的含义
+         * 本来就只是「到了 limit，可能还有」——归到 `maybeLimited` 那一档（第三十六刀）。
+         *
+         * `groupCapped` 是另一回事：末组大到补不齐，这一页**确定不完整**。它不是「可能还有更多」，
+         * 而是「这一页自己有缺口」，所以留 `limited`（确定的那一档）——措辞上也不能混。
+         */
+        truncation: truncationOf({ limited: groupCapped, maybeLimited: slice.limited }),
       }
       // groupCapped：末组大到补不齐 → 不产出游标（宁可报「可能不完整」，也不给会丢行的游标）。
       if (pagination === 'cursor' && slice.next !== undefined && !groupCapped) {
