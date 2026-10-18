@@ -1736,7 +1736,27 @@ export function fieldValuesPayload(draft, outcome, field, size) {
   const envelope = facetsEnvelope(draft, outcome)
   if (envelope === null) return null
   const wanted = Number.isFinite(size) && size > 0 ? Math.floor(size) : FIELD_VALUES_SIZE
-  return { ...envelope, by: name, size: wanted }
+  /*
+   * **这个字段自己的那条筛选要摘掉**（第三十一刀，真机抓到的洞）：
+   *
+   * 别的筛选照旧下发（值必须是「这一屏」的子集），但本字段的那一条不能带——带了的话聚合
+   * 只在「字段 = 当前值」里算，答案永远只有它自己：
+   *
+   *     by=container.name, filters={container.name:"a"}  →  buckets=[{a}]
+   *
+   * 后果不是「少列几个值」，而是**换不了值**：想从 a 换成 b，下拉里根本没有 b，
+   * 只能先去点芯片上的 × 删掉再重新选一遍。而那个只有一条的下拉还会被读成
+   * 「这个字段只有一个值」。Kibana 的做法也是把本字段的 filter 从自己的候选请求里摘出去。
+   *
+   * 摘掉之后计数说的是「不受本字段约束的子集」，与页面上的命中数不再是同一个意思——
+   * 这件事由界面上那一句注明（`hint.fieldValuesOwnFilter`），不能默默换口径。
+   */
+  const filters = envelope.filters === undefined ? undefined : Object.fromEntries(
+    Object.entries(envelope.filters).filter(([key]) => key !== name),
+  )
+  const rest = filters === undefined || Object.keys(filters).length === 0 ? undefined : filters
+  const { filters: _dropped, ...envelopeRest } = envelope
+  return { ...envelopeRest, ...(rest === undefined ? {} : { filters: rest }), by: name, size: wanted }
 }
 
 /**

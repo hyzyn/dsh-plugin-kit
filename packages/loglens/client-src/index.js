@@ -713,13 +713,24 @@ window.__ModuleLoader__.load({
       '.ll_fxItemOn{background:var(--dsw-alias-interactive-bg-hover)}',
       '.ll_fxItem:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
       '.ll_fxItemText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.ll_fxItemCount{flex:none;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}',
+      /*
+       * 值行右缘的那条**相对长短**（第三十一刀，替换掉原来那位数字）：
+       *
+       * 数字的问题是口径——它与页面上那个「命中 N」是两个瞬间量的，真机上抓到过
+       * 「值行 15242 / 同屏命中 15199」。一个值不可能多于总数，所以那个画面必然被读成算错了。
+       * 条没有这个问题：它只表达「比旁边的长/短」，而这件事在两个瞬间之间不会翻转。
+       * 具体条数仍在行的 title 里（要核对的人有出处）。
+       */
+      '.ll_fxItemBar{flex:none;width:44px;height:6px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-border-l1);overflow:hidden}',
+      '.ll_fxItemFill{display:block;height:100%;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-label-tertiary)}',
       // 「本页」那一小截标记：说明这个字段在这一页的行里真有值（与分组头那套说法同一条）
       '.ll_fxItemTag{flex:none;padding:0 3px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:10px;line-height:14px}',
       // 已经在筛的那一条：勾一下（再点是取消）
       '.ll_fxItemOn2{flex:none;color:var(--dsw-alias-state-business-primary);font-size:11px;line-height:16px}',
       // 下拉里「不是候选」的那几行：加载中 / 取不到 / 没有值 —— 都排成一条文字行
       '.ll_fxState{padding:8px;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:12px;line-height:18px}',
+      // 口径提示（「这些数不受本字段约束」）：与「不是候选」那几行分开——它是说明，不是状态
+      '.ll_fxNote{padding:4px 8px 6px;border-bottom:.5px solid var(--dsw-alias-border-l1);font-size:11px;line-height:16px}',
     ].join('\n')
 
     let styleEl
@@ -826,6 +837,9 @@ window.__ModuleLoader__.load({
       'error.fieldValuesWindow': '还没有可用的时间窗：先查一次，再展开字段的值',
       'hint.addFilter': '加一条筛选：左边选字段、右边填值，回车生效',
       'badge.pageField': '本页',
+      'hint.fieldCountBucket': '这个值 {count} 条',
+      // 值下拉的计数口径（第三十一刀）：本字段自己的那条筛选被摘掉了，所以数不能与页面命中数并列对比
+      'hint.fieldValuesOwnFilter': '这一格的数是「不受本字段约束」的子集：想切换这个字段的值，这里才列得出别的值。',
       'btn.filterRemove': '移除这条筛选',
       'error.needFilterField': '这条筛选没有字段名',
       'error.needFilterValue': '这条筛选没有值（空值那一桶筛不了：筛选只能表达「字段 = 某值」）',
@@ -1048,6 +1062,8 @@ window.__ModuleLoader__.load({
       'error.fieldValuesWindow': 'No time window yet — run a query first, then expand the field’s values',
       'hint.addFilter': 'Add a filter: pick a field on the left, type a value on the right, press Enter',
       'badge.pageField': 'this page',
+      'hint.fieldCountBucket': '{count} in this subset',
+      'hint.fieldValuesOwnFilter': 'The numbers here come from a subset that ignores this field’s own filter — that is how the other values show up.',
       'btn.filterRemove': 'Remove this filter',
       'error.needFilterField': 'This filter has no field name',
       'error.needFilterValue': 'This filter has no value (the empty-value bucket cannot be filtered: a filter can only say “field = some value”)',
@@ -2065,12 +2081,23 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 点下拉里的一个字段：填进左格，**接着把右格打开**——选字段的下一步必然是填值，
+       * 点下拉里的一个字段：填进左格、**清空右格**、接着把右格打开——选字段的下一步必然是填值，
        * 让人再点一下右格是纯白给的一步（与「点开就拉」同一条判据）。
        *
-       * 右格此刻已经有值时**不动它**：改字段不该顺手把用户打的字吞掉。
+       * **右格必须清空**（第三十一刀，真机抓到的静默错误）：原来这里刻意「不动用户打的字」，
+       * 听着体贴，实际代价是把上一个字段的值安到新字段上，而且回车就能提交：
+       *
+       *     选 host.name → 右格打 node-1 → 改选 container.name → 回车
+       *     → 芯片变成 container.name = node-1     ← 静默筛错，没人会发现
+       *
+       * 判据是**值属于字段**，不是属于这一格。换了字段，上一格的字就不再是「这个字段的值」，
+       * 留着它只会变成一个看起来还能按的错条件。所以换字段 = 换一个要填的空。
+       *
+       * 同一个字段重复点选（`name` 没变）**不**清空：那是「重选同一个」，把用户刚打的字抹掉
+       * 才是真的捣乱。
        */
       const pickFilterField = (name) => {
+        if (String(name) !== fxField) setFxValue('')
         setFxField(name)
         setFxIndex(-1)
         openValueChoices(name)
@@ -2969,17 +2996,38 @@ window.__ModuleLoader__.load({
         if (valueChoiceRows.length === 0) {
           return jsx('div', { className: 'll_fxState', children: t('msg.fieldValuesEmpty') })
         }
+        /*
+         * 每行的数字**不进界面**，只进 title（第三十一刀，真机读数定下的）。
+         *
+         * 改前每行右缘摆着一条桶计数，而它与页面上那个「命中 N」是**两个不同瞬间**量的：
+         * 真机上抓到一起「值行写 15242、同屏命中写 15199」——ES 是近实时索引，`/query` 算完之后
+         * 又有几十条落进窗口，后跑的聚合就多看见了。两次请求的窗口与筛选逐字相同，数却不是同一个。
+         *
+         * 一个值不可能比它的总数还多，所以这个画面**必然**被读成「数算错了」。而这件事没有
+         * 便宜的修法（要对齐就得每次聚合前重查一次命中，等于把一次点击变成两次查询）。
+         * 所以这里的判据是：**并排摆两个不同口径的数，不如不摆**。行的相对长短仍由条说
+         * （`barRatio`），悬停仍能读到这个桶的条数——想核对的人有出处，扫一眼的人不会被误导。
+         */
+        const maxCount = valueChoiceRows.reduce((top, row) => (row.count > top ? row.count : top), 0)
         return valueChoiceRows.map((row, at) => jsxs('button', {
           type: 'button',
           className: at === fxIndex ? 'll_fxItem ll_fxItemOn' : 'll_fxItem',
-          title: row.active ? t('hint.valueActive', { value: row.value }) : t('hint.valueDrill', { field: fxField, value: row.value }),
+          title: (row.active ? t('hint.valueActive', { value: row.value }) : t('hint.valueDrill', { field: fxField, value: row.value }))
+            + '（' + t('hint.fieldCountBucket', { count: row.count }) + '）',
           // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
           onMouseDown: (event) => { event.preventDefault() },
           onMouseEnter: () => { setFxIndex(at) },
           onClick: () => { void submitFilter(fxField, row.value) },
           children: [
             jsx('span', { className: 'll_fxItemText', title: row.value, children: row.value }),
-            jsx('span', { className: 'll_fxItemCount', children: String(row.count) }),
+            // 条：只表达**相对长短**（与值清单当初那条判据同源，见 valueTrack 的注释）
+            jsx('span', {
+              className: 'll_fxItemBar',
+              children: jsx('span', {
+                className: 'll_fxItemFill',
+                style: { width: String(Math.max(maxCount === 0 ? 0 : (row.count / maxCount) * 100, 2)) + '%' },
+              }),
+            }),
             // 已经在筛的那一条：勾一下（再点是取消，与榜上同一条）
             row.active ? jsx('span', { className: 'll_fxItemOn2', children: '✓' }) : null,
           ],
@@ -3036,6 +3084,19 @@ window.__ModuleLoader__.load({
                       onFocus: () => { setFxOpen('field'); setFxIndex(-1) },
                       onClick: () => { setFxOpen('field'); setFxIndex(-1) },
                       onChange: (event) => {
+                        /*
+                         * 手打改字段名也算**换字段**（第三十一刀）。这条路径比点候选更常见：
+                         * 用户想换字段时多半直接把左格的内容删掉重打，而不是等下拉里挑。
+                         *
+                         * 判据与 `pickFilterField` 同一条：值属于字段，换了字段之后上一格的
+                         * 字就不再是「这个字段的值」——留着它回车就变成 `新字段 = 旧字段的值`。
+                         * 不清空的话，真机上的录像就是：host.name 打 node-1 → 手打改成
+                         * container.name → 回车 → 芯片 `container.name = node-1`，静默筛错。
+                         *
+                         * 判据放在**这里**而不是渲染时按「字段是否变过」推断：只有 onChange
+                         * 知道「上一个字段是什么」，而那是这一次改动唯一需要的信息。
+                         */
+                        if (event.target.value !== fxField) setFxValue('')
                         setFxField(event.target.value)
                         setFxOpen('field')
                         setFxIndex(-1)
@@ -3184,7 +3245,18 @@ window.__ModuleLoader__.load({
                           row.group === 'hit' ? jsx('span', { className: 'll_fxItemTag', children: t('badge.pageField') }) : null,
                         ],
                       }, 'll-fx-field-' + row.name)))
-                    : renderFilterValueList(),
+                    : [
+                      /*
+                       * 本字段正在筛时先说清口径（第三十一刀）：这一格列的是**别的值**
+                       * （本字段自己的筛选被摘掉了），所以数与页面命中数不是一回事。
+                       * 不说这句，用户会把「15242」读成「这个值命中 15242 条」。
+                       */
+                      filterOf(activeFilters, fxField) === undefined ? null : jsx('div', {
+                        className: 'll_fxState ll_fxNote',
+                        children: t('hint.fieldValuesOwnFilter'),
+                      }),
+                      renderFilterValueList(),
+                    ],
                 }),
               ],
             }),

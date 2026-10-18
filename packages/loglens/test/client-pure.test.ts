@@ -1882,6 +1882,53 @@ describe('字段 top 值：请求体、缓存键、画出来的行（第二十�
 })
 
 /*
+ * 第三十一刀：值下拉**摘掉本字段自己的筛选**。
+ *
+ * 不摘的话聚合只在「字段 = 当前值」里算，答案永远只有它自己——换值换不动，而且画面看起来
+ * 像「这个字段只有一个值」。Kibana 的做法也是把本字段的 filter 从自己的候选请求里摘出去。
+ */
+describe('值下拉摘掉本字段自己的筛选（第三十一刀）', () => {
+  const outcome = { target: { id: 'es' }, window: { from: 0, to: 900_000 } }
+  const draft = {
+    ...emptyQuery(),
+    target: 'es',
+    filters: [{ field: 'container.name', value: 'grafana' }, { field: 'host.name', value: 'node-1' }],
+  }
+
+  it('本字段那条被摘掉，**别的**字段照旧下发（值仍要是这一屏的子集）', () => {
+    const payload = fieldValuesPayload(draft, outcome, 'container.name')
+    expect(payload?.filters).toEqual({ 'host.name': 'node-1' })
+    expect(payload?.by).toBe('container.name')
+  })
+
+  it('看**别的**字段的值时，全部筛选都在（含 container.name 那条）', () => {
+    const payload = fieldValuesPayload(draft, outcome, 'container.id')
+    expect(payload?.filters).toEqual({ 'container.name': 'grafana', 'host.name': 'node-1' })
+  })
+
+  it('只有本字段那一条时，摘完就没有 filters 键了（不发空对象）', () => {
+    const onlySelf = { ...draft, filters: [{ field: 'container.name', value: 'grafana' }] }
+    const payload = fieldValuesPayload(onlySelf, outcome, 'container.name')
+    expect(payload?.filters).toBeUndefined()
+    expect('filters' in (payload ?? {})).toBe(false)
+  })
+
+  it('摘掉之后缓存键与「本来就没筛这个字段」时**相同**（同一份条件只有一种答案）', () => {
+    const onlySelf = { ...draft, filters: [{ field: 'container.name', value: 'grafana' }] }
+    const none = { ...draft, filters: [] }
+    expect(fieldValuesKey(onlySelf, outcome, 'container.name')).toBe(fieldValuesKey(none, outcome, 'container.name'))
+  })
+
+  it('换值也有各自的键（grafana 与 prometheus 不是同一份条件）', () => {
+    const a = { ...draft, filters: [{ field: 'container.name', value: 'grafana' }] }
+    const b = { ...draft, filters: [{ field: 'container.name', value: 'prometheus' }] }
+    // 摘掉之后两者都只剩「空 filters」，所以键相同——这正是缓存的意图：
+    // 候选列表与「当前筛的是哪个值」无关，换值不必重新问后端
+    expect(fieldValuesKey(a, outcome, 'container.name')).toBe(fieldValuesKey(b, outcome, 'container.name'))
+  })
+})
+
+/*
  * 第三十刀：筛选行 = 两格输入框（左边字段、右边值）。
  *
  * 四个判据各自都能独立坏掉，所以分开钉：

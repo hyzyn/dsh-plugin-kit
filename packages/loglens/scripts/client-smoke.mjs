@@ -3059,7 +3059,14 @@ await test('左格打下半个名字 → 候选收窄；选中一个**自动把�
   const rows = fxItems(runtime.tree)
   assert.ok(rows.length >= 2, '右格该列出这个字段的值：' + String(rows.length))
   assert.ok(treeText(rows[0]).includes('grafana'), '值原样显示：' + treeText(rows[0]))
-  assert.ok(treeText(rows[0]).includes('42'), '计数要跟着：' + treeText(rows[0]))
+  /*
+   * 计数**不进行**（第三十一刀）：它与页面命中数是两个瞬间量出来的，真机上抓到过
+   * 「值行 15242 / 同屏命中 15199」，一个值不可能多于总数——并排摆必然被读成算错了。
+   * 行里改成一条**相对长短**的条，具体条数进 title（要核对的人有出处）。
+   */
+  assert.ok(rows[0].props.title.includes('42'), '条数要留在 title 里：' + rows[0].props.title)
+  assert.equal(treeText(rows[0]).includes('42'), false, '行里不该再出现那个数（它与页面命中数口径不同）')
+  assert.ok(treeFind(rows[0], (node) => hasClass(node, 'll_fxItemBar')).length === 1, '每一行该有一条相对长短的条')
 })
 
 await test('候选里点一个值 → 立刻带 filters 重查（与榜下钻同一条 drillDown），两格清空', async () => {
@@ -3135,6 +3142,151 @@ await test('值那一格**回车**提交候选里选中的那一条；没选中�
   assert.ok(query !== undefined, '回车要提交：' + JSON.stringify(calls.map((c) => c.path)))
   assert.deepEqual(query.body.filters, { 'container.name': 'prometheus' },
     '提交的是**选中的那一条**，不是空串：' + JSON.stringify(query.body.filters))
+})
+
+await test('**换字段就清空右格**：上一字段的值不许跟着搬过去（回车会静默筛错）', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+
+  // 选 host.name，右格打 node-1（**不提交**）
+  fxFieldInput(tree).props.onChange({ target: { value: 'host.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  assert.equal(fxFieldInput(runtime.tree).props.value, 'host.name')
+  fxValueInput(runtime.tree).props.onChange({ target: { value: 'node-1' } })
+  runtime.tick()
+  await runtime.update()
+  assert.equal(fxValueInput(runtime.tree).props.value, 'node-1')
+
+  // 改选 container.name：右格必须空
+  fxFieldInput(runtime.tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  assert.equal(fxFieldInput(runtime.tree).props.value, 'container.name')
+  assert.equal(fxValueInput(runtime.tree).props.value, '',
+    '换字段之后右格必须清空——留着 node-1 就是在说 container.name = node-1')
+
+  // 此刻直接回车：**不该**提交出 container.name = node-1
+  calls.length = 0
+  fxValueInput(runtime.tree).props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  await runtime.update()
+  await runtime.update()
+  assert.equal(calls.filter((call) => call.path === '/api/dsh-loglens/query').length, 0,
+    '右格空着就发不出去（没有可提交的值）')
+})
+
+await test('**同一个字段重选**不抹掉已打的字（那是「重选同一个」，不是换字段）', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  fxFieldInput(tree).props.onChange({ target: { value: 'host.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  fxValueInput(runtime.tree).props.onChange({ target: { value: 'node-1' } })
+  runtime.tick()
+  await runtime.update()
+
+  // 重新点同一个字段的候选
+  fxFieldInput(runtime.tree).props.onChange({ target: { value: 'host.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  assert.equal(fxValueInput(runtime.tree).props.value, 'node-1', '同一个字段重选不该清空')
+})
+
+await test('**正在筛的字段**打开值下拉：载荷摘掉它自己那条筛选，候选取得到别的值', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+
+  /*
+   * 场景：container.name **已经在筛**，再打开它自己的值下拉。
+   *
+   * 要守的是这件事：聚合不能带着本字段那条筛选下发，否则它只在「= grafana」这个子集里算，
+   * 候选永远只有 grafana 一条——换值换不动，而画面看起来像「这个字段只有一个值」。
+   *
+   * 判据落在**载荷**上（界面只是它的后果）：请求里不许出现 `filters['container.name']`。
+   */
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  const grafana = fxItems(runtime.tree).find((node) => treeText(node).includes('grafana'))
+  await clickAndSettle(runtime, grafana)
+  assert.ok(treeText(runtime.tree).includes('container.name = grafana'), '前面得真有一条筛选')
+
+  /*
+   * 再打开同一个字段的值下拉——**载荷**与**界面**两半都在这一步验。
+   *
+   * 为什么载荷要看「筛上之后再开」这一次：第一次打开时这个字段还没被筛，请求里本来就不该有它，
+   * 那种请求无论摘没摘本字段筛选都长一个样（反例抓不到）。
+   * 只有在「已经筛着」的条件下发出去的请求才有区分度：
+   *   - 摘掉了 → 键与第一次相同 → 缓存命中、**一个请求都不发**；
+   *   - 没摘   → 键变了 → 会发一次、而且带着 `filters['container.name']`。
+   * 所以判据是「这一步发出去的请求里，一条都不许带本字段的筛选」（允许 0 条 = 缓存命中）。
+   */
+  calls.length = 0
+  fxFieldInput(runtime.tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  const reloaded = calls
+    .filter((call) => call.path === '/api/dsh-loglens/facets' && call.body?.by === 'container.name')
+    .map((call) => call.body)
+  for (const body of reloaded) {
+    assert.equal(body.filters === undefined ? undefined : body.filters['container.name'], undefined,
+      '本字段自己的筛选不许下发（否则聚合只在那个子集里算，候选永远只有它自己）：' + JSON.stringify(body.filters))
+  }
+  const options = fxItems(runtime.tree).map((node) => treeText(node))
+  assert.equal(options.length >= 2, true,
+    '正在筛的字段也要列得出**别的**值，否则换值只能先删芯片：' + JSON.stringify(options))
+  assert.equal(options.some((text) => text.includes('prometheus')), true,
+    '别的值该在候选里：' + JSON.stringify(options))
+})
+
+await test('**别的**字段的筛选照旧下发（值仍是这一屏的子集）', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  // 筛上 host.name
+  fxFieldInput(tree).props.onChange({ target: { value: 'host.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  const value = fxItems(runtime.tree)[0]
+  await clickAndSettle(runtime, value)
+  const hostChip = treeFind(runtime.tree, (node) => hasClass(node, 'll_chip'))[0]
+  const hostValue = String(treeText(hostChip)).split(' = ')[1].replace('×', '').trim()
+
+  // 换一个字段看它的值：host.name 那条**必须还在**
+  calls.length = 0
+  fxFieldInput(runtime.tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  const sent = calls.filter((call) => call.path === '/api/dsh-loglens/facets' && call.body?.by !== undefined)
+  assert.equal(sent.length >= 1, true)
+  assert.equal(sent[0].body.filters?.['host.name'], hostValue,
+    '别的字段的筛选要照旧带走：' + JSON.stringify(sent[0].body.filters))
+})
+
+await test('本字段正在筛时，值下拉顶部**说清口径**（那些数不受本字段约束）', async () => {
+  serverRoutes = VALUES_ROUTES()
+  const { runtime, tree } = await runPanelQueryFull('es')
+  fxFieldInput(tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])   // 筛上第一条值
+
+  fxFieldInput(runtime.tree).props.onChange({ target: { value: 'container.name' } })
+  runtime.tick()
+  await runtime.update()
+  await clickAndSettle(runtime, fxItems(runtime.tree)[0])
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_fxNote')).length, 1,
+    '摘掉本字段筛选这件事要说出来，不能默默换口径')
+  const note = treeFind(runtime.tree, (node) => hasClass(node, 'll_fxNote'))[0]
+  assert.ok(treeText(note).includes('不受本字段约束'), '口径要写明白：' + treeText(note))
 })
 
 await test('Backspace 在值格有字时删字、值格空了退回字段格（不把整条条件清掉）', async () => {
