@@ -70,7 +70,7 @@ import {
   histogramInterval,
   histogramPayload,
   formatTickTime,
-  kindOptions,
+  kindOptionsFor,
   pageFieldUsage,
   pickMove,
   queryPayload,
@@ -887,7 +887,7 @@ window.__ModuleLoader__.load({
     const I18N_NS = 'loglens'
     const I18N_ZH = {
       'card.name': '日志查询',
-      'card.desc': '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面：来源清单、直连查询、时间分布与按字段分组。',
+      'card.desc': '把 Elasticsearch / OpenSearch 等日志后端归一化成一个查询面：来源清单、直连查询、时间分布与按字段分组。',
       'panel.title': '日志来源',
       // 收起 / 展开来源配置区（第十五刀）。两句都写**动作**：按钮上说的事点下去就发生
       'btn.sourcesShow': '编辑来源',
@@ -1156,7 +1156,7 @@ window.__ModuleLoader__.load({
     }
     const I18N_EN = {
       'card.name': 'Log query',
-      'card.desc': 'Normalizes log backends such as Loki / Elasticsearch / OpenSearch into one query surface: source list, direct query, volume over time and grouping by field.',
+      'card.desc': 'Normalizes log backends such as Elasticsearch / OpenSearch into one query surface: source list, direct query, volume over time and grouping by field.',
       'panel.title': 'Log sources',
       'btn.sourcesShow': 'Edit sources',
       'btn.sourcesHide': 'Hide source settings',
@@ -3752,7 +3752,7 @@ window.__ModuleLoader__.load({
             value: draft.kind,
             disabled: saving,
             onChange: (event) => { updateDraft(index, { kind: event.target.value }) },
-            children: kindOptions().map((kind) => jsx('option', { value: kind, children: kindLabel(kind) }, kind)),
+            children: kindOptionsFor(draft.kind).map((kind) => jsx('option', { value: kind, children: kindLabel(kind) }, kind)),
           }),
           jsx('input', {
             className: 'll_input',

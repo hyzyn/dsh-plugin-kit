@@ -2,10 +2,15 @@
 
 [中文](README.md) | English
 
-> DSH's log query panel: **one query surface** normalized over Loki / Elasticsearch / OpenSearch / Docker — query, read the trend and drill down by field in the same card; the agent side is the read-only `loglens_*` tools.
+> DSH's log query panel: **one query surface** normalized over Elasticsearch / OpenSearch / Docker — query, read the trend and drill down by field in the same card; the agent side is the read-only `loglens_*` tools.
 
-Queryable backends: **Loki**, **Elasticsearch**, **OpenSearch**. Docker is not given its own adapter — it is a
-**collection source** pointing at the existing `docker_logs` / `docker_logs_grep`.
+Queryable backends: **Elasticsearch**, **OpenSearch**. Docker is not given its own adapter — it is a
+**collection source** pointing at the existing `docker_logs` / `docker_logs_grep`. **Loki is not offered
+by the UI in this version** (the adapter and its real-machine acceptance are in the tree, but its
+capability gate was never verified on a real machine) — see
+[§ Known limitations](#known-limitations) for the rule and how to restore it.
+
+![The query card on an ES source: query string with dialect-specific clickable examples, filter chips, time distribution (with axis labels and the peak), and result rows colored by level with identity tags](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
 ## Features
 
@@ -41,7 +46,6 @@ Queryable backends: **Loki**, **Elasticsearch**, **OpenSearch**. Docker is not g
   metadata addresses refused), does not follow redirects, and caps a single request at 8 MiB with a 20s
   default timeout (`NET_MAX_RESPONSE_BYTES` / `NET_DEFAULT_TIMEOUT_MS`). The full boundary is in "Known limitations".
 
-![The query card on an ES source: query string with dialect-specific clickable examples, filter chips, time distribution (with axis labels and the peak), and result rows colored by level with identity tags](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
 ## Installation
 
@@ -270,7 +274,7 @@ is in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1).
 |---|---|---|
 | Read config | `GET /api/dsh-loglens/config` | Returns `{ ok, config: { enabled, targets }, plugins: { docker: true\|false } }` — `plugins.docker` is the freshly computed "is the docker plugin here" verdict ([src/plugins.ts](./src/plugins.ts)); the panel uses it to decide whether the Docker cell gets an entry |
 | Toggle | `POST {"action":"enabled","enabled":false}` | **Exempt from the same-origin proof** (once disabled, the settings card is the only way back) |
-| Add source | `POST {"action":"targets.add","target":{"kind":"loki","label":"Local Loki","url":"http://127.0.0.1:3100"}}` | `kind` is `loki` / `elasticsearch` / `opensearch` / `docker` |
+| Add source | `POST {"action":"targets.add","target":{"kind":"elasticsearch","label":"Local ES","url":"http://127.0.0.1:9200"}}` | `kind` is `elasticsearch` / `opensearch` / `docker`; `loki` is **still accepted by the host** (the adapter exists) but is not offered by the UI — see [§ Known limitations](#known-limitations) |
 | Update source | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | The id cannot be changed (it is the only way the browser side references it) |
 | Remove source | `POST {"action":"targets.remove","id":"<id>"}` | |
 | Query once | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | Used by the panel; returns rows + counts + truncation signals, **the same shape as `loglens_search`** (one execution layer). May carry `filters` (`{"field":"value"}`) — that is how the panel drills down from the board, and `/facets` carries the same copy |
@@ -289,8 +293,8 @@ Addresses accept http / https absolute URLs only.
 ```bash
 # read
 curl -s http://127.0.0.1:3080/api/dsh-loglens/config
-# add a local Loki: the command line has no browser same-origin proof, so bring an Origin header
-curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: application/json' -H 'origin: http://127.0.0.1:3080' -d '{"action":"targets.add","target":{"kind":"loki","label":"Local Loki","url":"http://127.0.0.1:3100"}}'
+# add a local ES: the command line has no browser same-origin proof, so bring an Origin header
+curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: application/json' -H 'origin: http://127.0.0.1:3080' -d '{"action":"targets.add","target":{"kind":"elasticsearch","label":"Local ES","url":"http://127.0.0.1:9200"}}'
 ```
 
 ## Anatomy
@@ -373,8 +377,20 @@ Read these three before changing code (each is the single home for its subject; 
 - The query area inside the panel is **controlled duplication** — the **final position** of design §5's
   three-way choice (settled 2026-10-12, option 1): the log view is built inside this plugin's own card and
   shares no browser module with other plugins. The reasoning is in [docs/design.md §5](./docs/design.md).
-- **Real-machine acceptance progress**: the Loki side is complete (real Loki 3.7.8, including the two paging
-  defects `loglens D02` / `D03`, item by item in [DEFECTS.md](./DEFECTS.md)); the ES / OpenSearch side has
+- **Loki is not offered by the UI in this version** (2026-10-18, maintainer's decision). It is not
+  "unimplemented": the adapter, the cursor, the two paging fixes (`D02`/`D03`) and that real-machine
+  acceptance (real Loki 3.7.8) are all still in the tree, and the host still accepts `kind: loki`.
+  What is missing is the **real-machine acceptance of its capability gate** (see
+  [ROADMAP.md](./ROADMAP.md) § "not verified"). So the kind dropdown no longer lists it and a new row
+  defaults to ES; **an existing Loki row still displays and queries faithfully** (`kindOptionsFor`
+  appends it to that row's options — when a `<select>`'s value matches no `<option>`, the browser falls
+  back to drawing the first one, which is exactly the shape of `loglens D04`). To restore: add `'loki'`
+  back to `KIND_OPTIONS` in `client-src/pure.js`. Guard:
+  [test/client-pure.test.ts](./test/client-pure.test.ts) pins both "not in the dropdown" and "a known
+  kind is never rewritten".
+- **Real-machine acceptance progress**: the Loki side **paging** is verified (real Loki 3.7.8, including
+  the two paging defects `loglens D02` / `D03`, item by item in [DEFECTS.md](./DEFECTS.md); but its
+  capability gate is not — see the bullet above); the ES / OpenSearch side has
   been through several read-only review rounds; **click-a-bar zoom** is covered by three layers — static
   checks, unit tests and the render regression — and **that click has not been made on a real machine**. The
   per-item conclusions are in [ROADMAP.md](./ROADMAP.md) and not restated here.

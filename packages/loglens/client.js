@@ -28,16 +28,51 @@ window.__ModuleLoader__.load({
      * 这里只放「判对错」的部分：草稿的合法性判定与提交载荷。DOM / React / fetch 都不进来，
      * 于是它能被 vitest 锁住（conventions 的客户端半体规矩 ②：要判对错的逻辑留在组件闭包里
      * 等于没有测试入口）。插件之间不许互相 import，所以类型清单在这里有一份对偶——宿主侧
-     * 那份在 src/config.ts，两边漂了会在真机验收里露出来。
+     * 那份在 src/config.ts，两边漂了会在真机验收里露出来。**这份对偶有两层**：`KNOWN_KINDS`
+     * （认得的，与宿主 `SOURCE_KINDS` 对齐）与 `KIND_OPTIONS`（下拉里提供的，可以是它的真子集：
+     * Loki 2026-10-18 起就不在提供之列）。
      */
 
-    /** 支持的类型（与宿主 src/config.ts 的 SOURCE_KINDS 对齐）。 */
-    const KIND_OPTIONS = ['loki', 'elasticsearch', 'opensearch', 'docker']
-    const DEFAULT_KIND = 'loki'
+    /**
+     * 类型下拉**对外提供**的选项。
+     *
+     * **2026-10-18：Loki 从下拉里摘掉**（维护者决定）——它的能力闸没在真机上验过
+     * （判据：`packages/loglens/ROADMAP.md` §「没验到的（明写，不混进 PASS）」第一条）。
+     * 注意这是「不主动提供」，**不是「不支持」**：适配器、游标与那次真机验收（`loglens D02`/`D03`）
+     * 都还在仓库里，恢复＝把 `'loki'` 加回这一行；`KNOWN_KINDS` 一个字不动，
+     * 所以（经 API / 旧配置）已经存在的 Loki 来源照旧能查、照旧如实显示。
+     */
+    const KIND_OPTIONS = ['elasticsearch', 'opensearch', 'docker']
+
+    /** 新行的默认类型（Loki 摘掉之后取剩下的第一个）。 */
+    const DEFAULT_KIND = 'elasticsearch'
+
+    /**
+     * 这一版**认得**的类型（判据与宿主 `src/config.ts` 的 `SOURCE_KINDS` 对齐）。
+     *
+     * 为什么不与 `KIND_OPTIONS` 合成一份：`draftFromTarget` / `draftProblem` 拿它做**有效性**判据。
+     * 若沿用「对外提供」那一份，一条已存在的 Loki 来源在进卡片时会被**静默改写**成默认类型
+     * （状态还是 loki、下拉却画成第一项，而卡片其余部分按 loki 走——同一块区域两处自相矛盾），
+     * 那正是本包 `D04` 的形状。两份清单的差别就是「提供」与「认得」，别合回去。
+     */
+    const KNOWN_KINDS = ['loki', 'elasticsearch', 'opensearch', 'docker']
 
     /** 类型下拉的选项（返回副本：调用方改了它不该影响本模块）。 */
     function kindOptions() {
       return KIND_OPTIONS.slice()
+    }
+
+    /**
+     * 类型下拉在**某一行**上该画哪些选项：对外提供的那几个，外加「当前值是已知的、但已经不提供」的那一个。
+     *
+     * 为什么必须带上它：`<select>` 的 `value` 与任何 `<option>` 都对不上时，浏览器会回落画第一项
+     * （`D04` 就是这么来的）——一条 Loki 行会显示成 Elasticsearch，而同一行的查询区还按 Loki 走。
+     * 末尾那个选项只是**如实回显**，不是重新提供：把它改成别的类型反而会写坏那条来源。
+     */
+    function kindOptionsFor(kind) {
+      const options = KIND_OPTIONS.slice()
+      if (KNOWN_KINDS.indexOf(kind) !== -1 && KIND_OPTIONS.indexOf(kind) === -1) options.push(kind)
+      return options
     }
 
     /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
@@ -53,7 +88,7 @@ window.__ModuleLoader__.load({
       const row = target == null ? {} : target
       return {
         id: typeof row.id === 'string' ? row.id : '',
-        kind: KIND_OPTIONS.indexOf(row.kind) === -1 ? DEFAULT_KIND : row.kind,
+        kind: KNOWN_KINDS.indexOf(row.kind) === -1 ? DEFAULT_KIND : row.kind,
         label: typeof row.label === 'string' ? row.label : '',
         url: typeof row.url === 'string' ? row.url : '',
         dockerTarget: typeof row.dockerTarget === 'string' ? row.dockerTarget : '',
@@ -69,7 +104,7 @@ window.__ModuleLoader__.load({
      * 刻意不在这层拦（宿主会带原因回 400，界面直接显示那句话）。
      */
     function draftProblem(draft) {
-      if (KIND_OPTIONS.indexOf(draft.kind) === -1) return 'badKind'
+      if (KNOWN_KINDS.indexOf(draft.kind) === -1) return 'badKind'
       if (draft.kind === 'docker') return ''
       const url = String(draft.url == null ? '' : draft.url).trim()
       if (url === '') return 'needUrl'
@@ -2903,7 +2938,7 @@ window.__ModuleLoader__.load({
     const I18N_NS = 'loglens'
     const I18N_ZH = {
       'card.name': '日志查询',
-      'card.desc': '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面：来源清单、直连查询、时间分布与按字段分组。',
+      'card.desc': '把 Elasticsearch / OpenSearch 等日志后端归一化成一个查询面：来源清单、直连查询、时间分布与按字段分组。',
       'panel.title': '日志来源',
       // 收起 / 展开来源配置区（第十五刀）。两句都写**动作**：按钮上说的事点下去就发生
       'btn.sourcesShow': '编辑来源',
@@ -3172,7 +3207,7 @@ window.__ModuleLoader__.load({
     }
     const I18N_EN = {
       'card.name': 'Log query',
-      'card.desc': 'Normalizes log backends such as Loki / Elasticsearch / OpenSearch into one query surface: source list, direct query, volume over time and grouping by field.',
+      'card.desc': 'Normalizes log backends such as Elasticsearch / OpenSearch into one query surface: source list, direct query, volume over time and grouping by field.',
       'panel.title': 'Log sources',
       'btn.sourcesShow': 'Edit sources',
       'btn.sourcesHide': 'Hide source settings',
@@ -5768,7 +5803,7 @@ window.__ModuleLoader__.load({
             value: draft.kind,
             disabled: saving,
             onChange: (event) => { updateDraft(index, { kind: event.target.value }) },
-            children: kindOptions().map((kind) => jsx('option', { value: kind, children: kindLabel(kind) }, kind)),
+            children: kindOptionsFor(draft.kind).map((kind) => jsx('option', { value: kind, children: kindLabel(kind) }, kind)),
           }),
           jsx('input', {
             className: 'll_input',

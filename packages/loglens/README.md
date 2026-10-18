@@ -2,10 +2,13 @@
 
 中文 | [English](README.en.md)
 
-> DSH 的日志查询面板：把 Loki / Elasticsearch / OpenSearch / Docker 归一化成**一个查询面**——同一张卡片里查、看趋势、按字段下钻；agent 侧是 `loglens_*` 只读工具。
+> DSH 的日志查询面板：把 Elasticsearch / OpenSearch / Docker 归一化成**一个查询面**——同一张卡片里查、看趋势、按字段下钻；agent 侧是 `loglens_*` 只读工具。
 
-可查后端：**Loki**、**Elasticsearch**、**OpenSearch**。Docker 不另做适配器，作为**采集来源**指向现成的
-`docker_logs` / `docker_logs_grep`。
+可查后端：**Elasticsearch**、**OpenSearch**。Docker 不另做适配器，作为**采集来源**指向现成的
+`docker_logs` / `docker_logs_grep`。**Loki 本版不从界面提供**（适配器与真机验收成果都在仓库里，
+但它的能力闸没在真机上验过）——判据与恢复方式见 [§ 已知限制](#已知限制)。
+
+![日志查询卡片：ES 来源上的一次查询——查询串与按方言给的可点例子、筛选芯片、时间分布（带时间刻度与峰值）、结果行（级别染色 + 身份标签）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
 ## 特性
 
@@ -33,7 +36,6 @@
   的围栏按**解析后的 IP** 判定（链路本地与云元数据地址拒绝），不跟随重定向，单次请求上限 8 MiB、
   超时默认 20s（`NET_MAX_RESPONSE_BYTES` / `NET_DEFAULT_TIMEOUT_MS`）。完整边界见「已知限制」。
 
-![日志查询卡片：ES 来源上的一次查询——查询串与按方言给的可点例子、筛选芯片、时间分布（带时间刻度与峰值）、结果行（级别染色 + 身份标签）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
 ## 安装
 
@@ -208,7 +210,7 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 |---|---|---|
 | 读配置 | `GET /api/dsh-loglens/config` | 返回 `{ ok, config: { enabled, targets }, plugins: { docker: true\|false } }`——`plugins.docker` 是「docker 插件在不在」的现算判据（[src/plugins.ts](./src/plugins.ts)），面板靠它决定 Docker 那一格给不给入口 |
 | 开关 | `POST {"action":"enabled","enabled":false}` | **免同源证明**（禁用后设置卡片是唯一的恢复入口） |
-| 新增来源 | `POST {"action":"targets.add","target":{"kind":"loki","label":"本地 Loki","url":"http://127.0.0.1:3100"}}` | `kind` 取 `loki` / `elasticsearch` / `opensearch` / `docker` |
+| 新增来源 | `POST {"action":"targets.add","target":{"kind":"elasticsearch","label":"本地 ES","url":"http://127.0.0.1:9200"}}` | `kind` 取 `elasticsearch` / `opensearch` / `docker`；`loki` **宿主仍收**（适配器在），但界面上不提供——见 [§ 已知限制](#已知限制) |
 | 改来源 | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | id 不可改（它是浏览器侧唯一的引用方式） |
 | 删来源 | `POST {"action":"targets.remove","id":"<id>"}` | |
 | 查一次 | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | 面板用；返回行 + 计数 + 截断信号，**形状与 `loglens_search` 一致**（同一个执行层）。可带 `filters`（`{"字段":"值"}`）——面板点榜上下钻时就是这么带的，`/facets` 也会带上同一份 |
@@ -224,8 +226,8 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 ```bash
 # 读
 curl -s http://127.0.0.1:3080/api/dsh-loglens/config
-# 加一个本地 Loki：命令行没有浏览器的同源证明，自己带 Origin 头
-curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: application/json' -H 'origin: http://127.0.0.1:3080' -d '{"action":"targets.add","target":{"kind":"loki","label":"本地 Loki","url":"http://127.0.0.1:3100"}}'
+# 加一个本地 ES：命令行没有浏览器的同源证明，自己带 Origin 头
+curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: application/json' -H 'origin: http://127.0.0.1:3080' -d '{"action":"targets.add","target":{"kind":"elasticsearch","label":"本地 ES","url":"http://127.0.0.1:9200"}}'
 ```
 
 ## 解剖
@@ -295,6 +297,14 @@ pnpm --filter @hyzyn/dsh-loglens smoke        # 客户端半体的装载 + 渲�
 - **一次只查一个来源**（v1 不做跨后端 fan-out）。
 - 面板里的查询区是**受控重复**——设计 §5 三选一的**最终口径**（2026-10-12 拍板，选项 1）：
   日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。理由见 [docs/design.md §5](./docs/design.md)。
-- **真机验收进度**：Loki 侧已完成（真 Loki 3.7.8，含两个分页缺陷 `loglens D02` / `D03`，逐条见
-  [DEFECTS.md](./DEFECTS.md)）；ES / OpenSearch 侧跑过若干轮只读复核；**点柱放大**的覆盖是静态检查、
-  单测与渲染回归三层，真机上还没点过那一下。逐条结论在 [ROADMAP.md](./ROADMAP.md)，不在这里复述。
+- **Loki 本版不从界面提供**（2026-10-18，维护者决定）。它不是「没做」：适配器、游标、`D02`/`D03`
+  两个分页缺陷的修复与那次真机验收（真 Loki 3.7.8）都还在仓库里，宿主也仍收 `kind: loki`；
+  缺的是**能力闸那一段真机验收**（见 [ROADMAP.md](./ROADMAP.md) §「没验到的（明写，不混进 PASS）」）。
+  所以类型下拉里不列它、新行默认 ES；**已经存在的 Loki 行照旧如实显示与查询**（`kindOptionsFor`
+  把它附在当前行的选项末尾——`<select>` 的 value 对不上任何 option 时浏览器会回落画第一项，
+  那正是 `loglens D04` 的形状）。恢复＝把 `'loki'` 加回 `client-src/pure.js` 的 `KIND_OPTIONS`。
+  守卫：[test/client-pure.test.ts](./test/client-pure.test.ts) 同时钉住「下拉里没有」与「已知的不被改写」。
+- **真机验收进度**：Loki 侧**分页已验**（真 Loki 3.7.8，含两个分页缺陷 `loglens D02` / `D03`，逐条见
+  [DEFECTS.md](./DEFECTS.md)；但能力闸没验，见上一条）；ES / OpenSearch 侧跑过若干轮只读复核；
+  **点柱放大**的覆盖是静态检查、单测与渲染回归三层，真机上还没点过那一下。逐条结论在
+  [ROADMAP.md](./ROADMAP.md)，不在这里复述。

@@ -507,6 +507,43 @@ await test('来源列表：表头与行的列宽模板**逐字相同**（否则�
   assert.ok(kindMin >= 160, '类型列下限要 ≥160px 才放得下「Docker（采集来源）」，实得 ' + String(kindMin))
 })
 
+/*
+ * 2026-10-18：Loki 从类型下拉里摘掉（维护者决定，理由见 ROADMAP §「Loki 本版不从界面提供」）。
+ * 这一条同时钉住两半：**提供的清单里没有它**，以及**已存在的 Loki 行照旧如实回显**——
+ * 后半才是容易漏的那个：`<select>` 的 value 与任何 option 都对不上时，浏览器会回落画第一项
+ * （`loglens D04` 就是这么来的），于是一行 Loki 显示成 Elasticsearch，而同一行的查询区还按
+ * LogQL 走：同一块区域两处自相矛盾。桩里正好三种类型各一行，一次比三行。
+ */
+await test('类型下拉：不提供 Loki，但已有的 Loki 行把它如实画在末尾（回落画第一项＝D04）', async () => {
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  tree = await runtime.update()
+
+  /** 一个类型下拉的选项值：`<option>` 的 value 就是 kind。 */
+  const optionsOf = (select) => {
+    const kids = Array.isArray(select.props.children) ? select.props.children : [select.props.children]
+    return kids.map((option) => option?.props?.value)
+  }
+  // 「是不是类型下拉」按「选项里有 docker」认，免得撞上来源下拉（它的选项值是来源 id）
+  const kindSelects = treeFind(tree, (node) => node.type === 'select')
+    .filter((select) => optionsOf(select).includes('docker'))
+  assert.equal(kindSelects.length, 3, '三条来源该有三个类型下拉，实得 ' + String(kindSelects.length))
+
+  const byValue = new Map(kindSelects.map((select) => [String(select.props.value), optionsOf(select)]))
+  const withoutLoki = ['elasticsearch', 'opensearch', 'docker']
+  assert.deepEqual(byValue.get('elasticsearch'), withoutLoki, '普通行的下拉里不该出现 Loki')
+  assert.deepEqual(byValue.get('docker'), withoutLoki, 'Docker 行的下拉里不该出现 Loki')
+  assert.deepEqual(byValue.get('loki'), [...withoutLoki, 'loki'],
+    '已有的 Loki 行必须把 loki 画进自己的选项，否则下拉回落画第一项、与同一行的查询区自相矛盾')
+})
+
 await test('选中的来源被删掉之后：下拉回到占位、查询回一句「先选一个来源」——不许打一个已经不存在的 id', async () => {
   const backup = serverConfig
   serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true) }

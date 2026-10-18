@@ -63,6 +63,7 @@ import {
   histogramInterval,
   histogramPayload,
   kindOptions,
+  kindOptionsFor,
   queryPayload,
   queryProblem,
   querySignature,
@@ -108,11 +109,24 @@ describe('draft 形状', () => {
   it('kindOptions 是副本：改动不会污染模块内部', () => {
     const options = kindOptions()
     options.push('splunk')
-    expect(kindOptions()).toEqual(['loki', 'elasticsearch', 'opensearch', 'docker'])
+    expect(kindOptions()).toEqual(['elasticsearch', 'opensearch', 'docker'])
+  })
+
+  it('下拉里**没有** Loki（2026-10-18 摘掉：能力闸真机未验，见 ROADMAP §没验到的）', () => {
+    expect(kindOptions()).not.toContain('loki')
+    expect(emptyDraft().kind).not.toBe('loki')
+  })
+
+  it('已存在的 Loki 行**如实回显**：kindOptionsFor 把它附在末尾（否则下拉回落画第一项＝D04）', () => {
+    expect(kindOptionsFor('loki')).toEqual(['elasticsearch', 'opensearch', 'docker', 'loki'])
+    // 对外提供的类型不重复追加
+    expect(kindOptionsFor('docker')).toEqual(['elasticsearch', 'opensearch', 'docker'])
+    // 认不出来的类型不硬塞（回落到默认类型那条路由 draftFromTarget 管）
+    expect(kindOptionsFor('splunk')).toEqual(['elasticsearch', 'opensearch', 'docker'])
   })
 
   it('emptyDraft 是「还没落盘」的新行', () => {
-    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', index: '' })
+    expect(emptyDraft()).toEqual({ id: '', kind: 'elasticsearch', label: '', url: '', dockerTarget: '', index: '' })
   })
 
   it('index 只在 ES / OpenSearch 的载荷里出现（其余类型带上它宿主会 400）', () => {
@@ -125,12 +139,18 @@ describe('draft 形状', () => {
     expect(draftFromTarget({ kind: 'elasticsearch' }).index).toBe('')
   })
 
-  it('draftFromTarget 缺字段补空串、未知类型回落 loki', () => {
-    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', index: '' })
+  it('draftFromTarget 缺字段补空串、未知类型回落默认类型；**已知的 Loki 不被改写**', () => {
+    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'elasticsearch', label: '', url: '', dockerTarget: '', index: '' })
     expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200' }))
       .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200', dockerTarget: '', index: '' })
-    expect(draftFromTarget({ kind: 'splunk', id: 7 }).kind).toBe('loki')
+    expect(draftFromTarget({ kind: 'splunk', id: 7 }).kind).toBe('elasticsearch')
     expect(draftFromTarget({ kind: 'splunk', id: 7 }).id).toBe('')
+    /*
+     * 这一条是「两份清单为什么不能合并」的反例：Loki 已不在下拉里，但它仍是**认得**的类型。
+     * 若 draftFromTarget 拿的是「对外提供」那一份，下面这行会变成 elasticsearch——
+     * 一条已配好的 Loki 来源被静默改写，而卡片其余部分还按 Loki 走（D04 的同一形状）。
+     */
+    expect(draftFromTarget({ kind: 'loki', label: '本地 Loki' }).kind).toBe('loki')
   })
 })
 

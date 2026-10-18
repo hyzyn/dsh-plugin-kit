@@ -26,7 +26,7 @@
 
 | 名字 | 身份 | 集成方式 |
 |---|---|---|
-| Loki | 存储后端（LogQL） | 适配器，**第一个做** |
+| Loki | 存储后端（LogQL） | 适配器，**第一个做**。**2026-10-18 起不从界面提供**（能力闸未真机验收 ⇒ `KIND_OPTIONS` 不列它；适配器与验收成果保留，见 [ROADMAP.md](../ROADMAP.md) §「Loki 本版不从界面提供」） |
 | Elasticsearch + OpenSearch | 存储后端，同一个 `_search` | **一个**适配器，`flavor` 分流 `es` / `os` |
 | Docker | 采集来源，非后端 | **选项 0**（见 §5），零新机制 |
 
