@@ -42,7 +42,7 @@ importers:
         specifier: 0.4.9
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.9
+        specifier: 0.4.10
         version: link:packages/search
       '@hyzyn/dsh-tty':
         specifier: 0.32.3
@@ -94,7 +94,7 @@ importers:
         specifier: 0.4.9
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.9
+        specifier: 0.4.10
         version: link:../search
       '@hyzyn/dsh-tty':
         specifier: 0.32.3
