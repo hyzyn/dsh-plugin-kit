@@ -1,5 +1,5 @@
 #!/bin/sh
-# 提交信息里的公网 IP 闸门。
+# 提交信息的两道闸：公网 IP + 真实内部标识。
 #
 # 为什么单独一个 commit-msg 钩子：pre-commit 跑在**消息还不存在**的时候，而提交信息
 # 是同样要入库的内容——扫文件扫不到它。一旦漏进历史，只能重写全部历史来补救
@@ -14,6 +14,14 @@ fi
 
 if ! node scripts/check-no-public-ip.mjs --message-file "$1"; then
   echo "✘ [commit-msg] 提交信息含公网 IP，已中止（详见上方指引）"
+  exit 1
+fi
+
+# 内网标识闸门（2026-10-18 新增）：提交信息里同样不许出现内网服务名 / 项目代号 / 账号。
+# 为什么也要查消息：写提交信息时最自然的动作就是「引用现场」——把真名原样抄进去，
+# 而这与文件内容一样会永久留在公开历史里，且同样只能靠重写历史来清。
+if ! node scripts/check-internal-identifiers.mjs --message-file "$1"; then
+  echo "✘ [commit-msg] 提交信息含真实内部标识，已中止（详见上方指引）"
   exit 1
 fi
 exit 0

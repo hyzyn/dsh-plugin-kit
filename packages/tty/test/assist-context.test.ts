@@ -77,10 +77,10 @@ describe('maskSecrets：逐条规则 + 反向（不许错杀）', () => {
   it('反向：普通日志一个字都不许改（错杀比漏掉一个罕见格式更伤信任）', () => {
     const lines = [
       'npm error code ENOENT',
-      'npm error path /Users/czz/demo/package.json',
+      'npm error path /Users/you/demo/package.json',
       'Process exited with status 127',
       '[INFO] tokenizer loaded in 120ms',
-      'total 48\ndrwxr-xr-x  5 czz staff  160 Oct  1 12:00 src',
+      'total 48\ndrwxr-xr-x  5 you staff  160 Oct  1 12:00 src',
     ].join('\n')
     const out = maskSecrets(lines)
     expect(out.text).toBe(lines)
@@ -167,14 +167,14 @@ describe('plainAnswerText：界面正文只「去标记」，不「解释标记�
 })
 
 describe('buildFailurePrompt：取材规则与遮盖时机', () => {
-  const base = { shell: 'zsh', cwd: '/Users/czz/demo' }
+  const base = { shell: 'zsh', cwd: '/Users/you/demo' }
 
   it('输出与屏幕互补时两段都发：命令行**只存在于屏幕上**（实测输出里没有回显）', () => {
     const p = buildFailurePrompt({
       ...base,
       exitCode: 2,
       output: 'ls: /definitely-not-here: No such file or directory',
-      screen: '(base) czz@192 /tmp % ls /definitely-not-here\nls: /definitely-not-here: No such file or directory\n(base) czz@192 /tmp %',
+      screen: '(base) user@host /tmp % ls /definitely-not-here\nls: /definitely-not-here: No such file or directory\n(base) user@host /tmp %',
     })
     expect(p.user).toContain('[命令输出]')
     expect(p.user).toContain('[当前屏幕（含你敲的命令行与提示符）]')
@@ -183,7 +183,7 @@ describe('buildFailurePrompt：取材规则与遮盖时机', () => {
   })
 
   it('屏幕被输出完全覆盖时不再重复发（tmux 持久会话里两者本是同一份 pane 快照）', () => {
-    const shared = ['total 0', 'drwxr-xr-x 2 czz staff 64 Oct 1 12:00 src', 'error: boom']
+    const shared = ['total 0', 'drwxr-xr-x 2 you staff 64 Oct 1 12:00 src', 'error: boom']
     const p = buildFailurePrompt({ ...base, output: shared.join('\n'), screen: shared.join('\n') })
     expect(p.user).toContain('[命令输出]')
     expect(p.user).not.toContain('[当前屏幕')
@@ -203,7 +203,7 @@ describe('buildFailurePrompt：取材规则与遮盖时机', () => {
     expect(p.user).toContain('[已遮盖')
     // 另一半同样重要：遮盖不许把现场一起吃掉——该留的上下文一个字不少
     expect(p.user).toContain('boom')
-    expect(p.user).toContain('cwd: /Users/czz/demo')
+    expect(p.user).toContain('cwd: /Users/you/demo')
   })
 
   it('语言分派：zh 走中文系统提示，en 走英文', () => {

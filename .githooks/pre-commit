@@ -44,4 +44,13 @@ if ! node scripts/check-no-public-ip.mjs --staged; then
   echo "✘ [pre-commit] 提交内容含公网 IP，已中止（详见上方指引）"
   exit 1
 fi
+
+# 内网标识闸门（2026-10-18 新增）：内网服务名 / 项目代号 / 登录账号 / 私网主机号。
+# 公网 IP 闸门管不到这一类，而它才是实际反复泄露的东西——`92f01eaf6` 清过一轮，
+# 一周后 `768b7720b` 又写回测试夹具。同样放在重建之后（产物里的注释也要被扫到），
+# 同样按 **index** 扫：只有暂存的才进历史。提交信息里的那部分由 commit-msg 钩子查。
+if ! node scripts/check-internal-identifiers.mjs --staged; then
+  echo "✘ [pre-commit] 提交内容含真实内部标识，已中止（详见上方指引）"
+  exit 1
+fi
 exit 0

@@ -642,7 +642,7 @@ await test('承载分发（S2）：终端连接栏入口走 dock、不开标签�
 await test('连接栏：本插件自己开的 exec 标签不再提供「容器」入口', async () => {
   // 纯函数部分：只认 spawnSpec.command（API 开的命令标签），用户手敲的不算
   const carrier = carrierApi()
-  assert.equal(carrier.isOwnExec(carrier.buildExec('ems-service-test')), true, '自家生成的命令必须认得出来')
+  assert.equal(carrier.isOwnExec(carrier.buildExec('app-svc-1-test')), true, '自家生成的命令必须认得出来')
   assert.equal(carrier.isOwnExec("docker exec -it 'x' sh"), true)
   assert.equal(carrier.isOwnExec(undefined), false, '普通 SSH 标签没有 command → 照旧带按钮')
   assert.equal(carrier.isOwnExec(''), false)
@@ -661,7 +661,7 @@ await test('连接栏：本插件自己开的 exec 标签不再提供「容器�
   state.connbarFactory({ spec: base, bookName: 'prod-a', addAction: push })
   assert.equal(buttons.length, 1, '普通 SSH 标签应带「容器」按钮')
   buttons.length = 0
-  state.connbarFactory({ spec: { ...base, command: "docker exec -it 'ems-service-test' sh" }, bookName: 'prod-a', addAction: push })
+  state.connbarFactory({ spec: { ...base, command: "docker exec -it 'app-svc-1-test' sh" }, bookName: 'prod-a', addAction: push })
   assert.equal(buttons.length, 0, 'exec 标签不该再给「容器」入口')
 })
 

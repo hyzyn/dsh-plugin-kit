@@ -3926,7 +3926,7 @@ limit=2  → reasons ["hit_limit"]        hasCursor true
 ## 第三十九刀：容器下拉换成可搜的自绘候选（2026-10-18）
 
 用户发来一张截图：容器下拉弹开后**铺满整个面板**，从 `app-svc-1` 一路列到
-`website-service`，盖住了下面的「看日志」按钮和整个结果区。
+`app-svc-12`，盖住了下面的「看日志」按钮和整个结果区。
 
 > 优化一下docker的ui和交互
 
@@ -4238,7 +4238,7 @@ value: containerQuery !== '' ? containerQuery : containerLabel
 真机验活：
 ```
 initial: app-svc-1（正确显示选中的那个）
-ems-servic → ems-servi → ems-serv → ems-s → ems → em → e → ""   每一步都如实回显
+app-svc-1 → app-svc- → app-svc → app-sv → app-s → app- → app → ap → a → ""   每一步都如实回显
 清空之后候选恢复 34 个
 ```
 

@@ -22,7 +22,7 @@
     { id: 'sess-1', displayTitle: '把全局搜索改造成命令面板', updatedAt: minutes(2) },
     { id: 'sess-2', displayTitle: '修复 tty 面板在窄侧边栏下的布局', updatedAt: minutes(46) },
     { id: 'sess-3', displayTitle: 'Codegraph 索引卡住的原因', updatedAt: hours(5) },
-    { id: 'sess-4', displayTitle: 'cdqas-5.0 上线前的回归清单', updatedAt: days(1) },
+    { id: 'sess-4', displayTitle: '订单中心 5.0 上线前的回归清单', updatedAt: days(1) },
     { id: 'sess-5', displayTitle: 'docker 面板只读模式', updatedAt: days(3) },
     { id: 'sess-6', displayTitle: '把 RSS 摘要注入 systemPrompt', updatedAt: days(9) },
     // 新建但没说过话的空会话：不该出现在「最近会话」里

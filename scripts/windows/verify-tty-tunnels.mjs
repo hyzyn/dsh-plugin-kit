@@ -14,7 +14,7 @@
  *
  * 用法（Windows guest，Ubuntu1 可达）：
  *   node scripts/windows/verify-tty-tunnels.mjs --host http://127.0.0.1:3092 ^
- *        --ssh-host 10.211.55.5 --ssh-user parallels --ssh-key C:\cg-verify\ssh\id_ed25519 ^
+ *        --ssh-host <地址> --ssh-user <账号> --ssh-key C:\cg-verify\ssh\id_ed25519 ^
  *        --report C:\cg-verify\tunnels.json
  *
  * 隧道配置（把它加进 scratch 的 settings.yaml `tty.tunnels`，然后重启宿主）：
@@ -46,7 +46,8 @@ const flag = (name) => {
 }
 const hostUrl = flag('--host') ?? 'http://127.0.0.1:3092'
 const sshHost = flag('--ssh-host')
-const sshUser = flag('--ssh-user') ?? 'parallels'
+/* 账号也不留默认值：它是真机上的登录名，不该入库（同 `a2150d347` 立的规矩）。 */
+const sshUser = flag('--ssh-user')
 const sshKey = flag('--ssh-key')
 const sshBin = flag('--ssh-bin') ?? 'ssh'
 const localPort = Number(flag('--local-port') ?? 18822)
@@ -165,8 +166,8 @@ if (sshHost === undefined || sshUser === undefined) {
 }
 
 /* ---------- T3 远程转发：从远端连回来 ---------- */
-if (sshHost === undefined) {
-  skip('T3 -R：从远端连它的监听端口', '未给 --ssh-host')
+if (sshHost === undefined || sshUser === undefined) {
+  skip('T3 -R：从远端连它的监听端口', '未给 --ssh-host/--ssh-user')
 } else {
   try {
     const listening = runSsh([`${sshUser}@${sshHost}`, `ss -ltn 2>/dev/null | grep -c ':${String(remotePort)}' || true`]).trim()

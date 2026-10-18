@@ -14,7 +14,7 @@
  * 用法（Windows guest，宿主与 Ubuntu1 都在跑）：
  *
  *   node scripts/windows/verify-tty-extra.mjs --host http://127.0.0.1:3092 ^
- *        --book u1 --ssh-root /home/parallels --ws-url ws://127.0.0.1:3092/api/dsh-tty/ws ^
+ *        --book u1 --ssh-root <远端家目录> --ws-url ws://127.0.0.1:3092/api/dsh-tty/ws ^
  *        --report C:\cg-verify\tty-extra.json
  */
 import http from 'node:http'
@@ -28,7 +28,12 @@ const flag = (name) => {
 }
 const hostUrl = flag('--host') ?? 'http://127.0.0.1:3092'
 const book = flag('--book') ?? 'u1'
-const sshRoot = flag('--ssh-root') ?? '/home/parallels'
+/*
+ * 远端家目录**不留默认值**（2026-10-03 `a2150d347` 的规矩，2026-10-18 补到这批 Windows 脚本）：
+ * 原先写的是一条 `/home/<VM 账号名>` 的固定路径——它既绑死了 Parallels 共享网段的部署形态，
+ * 也把真机账号名带进了公开仓库。现在不给就整段 SKIP，不静默用一个可能是错的路径。
+ */
+const sshRoot = flag('--ssh-root') ?? ''
 const repo = flag('--repo')
 const reportPath = flag('--report')
 
@@ -304,6 +309,10 @@ try {
  * W2 SFTP 的 HTTP 面（面板走的就是这条）
  * ================================================================== */
 
+if (sshRoot === '') {
+  skip('W2 SFTP 的 HTTP 面', '未给 --ssh-root（远端家目录，不入库）')
+  skip('W3 本地 ⇄ 远端传输任务', '未给 --ssh-root（远端家目录，不入库）')
+} else {
 const base = '/api/dsh-tty/sftp'
 const remoteDir = `${sshRoot}/dsh-probe-tty-dir`
 const remoteFile = `${sshRoot}/dsh-probe-tty.txt`
@@ -455,6 +464,7 @@ rmSync(localDownFile, { force: true })
 const cleaned = await post(`${base}/list`, { name: book, path: sshRoot })
 const leftover = (JSON.stringify(jsonOf(cleaned.text)?.entries ?? []).match(/dsh-probe/g) ?? []).length
 record('W3 收尾：远端探针文件已清理（列表里不再有 dsh-probe）', leftover === 0, `残留命中 ${leftover}`)
+}
 
 /* ================================================================== *
  * 汇总

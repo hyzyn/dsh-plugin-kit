@@ -302,6 +302,22 @@ docker 与 tty 两个消费包的调用点与测试要同步；kit 版本一动�
 跟到 D14，全仓 9 个 kit 钉子 bump 0.5.1 → 0.5.2。kit 修好后两类行同通道，docker README
 的保留条件已删。
 
+### 12. ✅ 内网标识的专项排查 + 闸门
+
+**起因（2026-10-18）**：用户截图里出现一串内网服务名，并要求「做一下专项排查」。先量了一遍：
+`gitleaks detect` 全树 **0 命中**——缺的不是密钥扫描，而是**公网 IP 闸门管不到的那半边**：
+内网服务名、项目代号、登录账号、私网主机号。这一类此前**没有任何守卫**，所以同类问题在
+`92f01eaf6`（2026-10-12 清过一轮）与 `768b7720b`（一周后又写回来）之间来回漂。
+
+**为什么是 L0**：横跨 `loglens` / `docker` / `codegraph` / `search` / `tty` / `kit` 六个包，
+外加 `scripts/windows/*` 与 `docs/`，并且要新增一道仓库级闸门——任何一个包单独做都收不住。
+
+**状态**：**同日完成**——五类共 85 处换成中性取值；新增
+[`scripts/check-internal-identifiers.mjs`](./scripts/check-internal-identifiers.mjs)
+（`pnpm internal-ids:check`，词表只存 `sha256`），配 22 条单测与四条逐条实跑的反例。
+历史不动（用户明确「历史记录先不处理了」）。落点与门槛见
+[§ 已完成第 12 项](#12--内网标识的专项排查--闸门)。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp
@@ -745,6 +761,59 @@ README 中英「两类行同通道」的收口同步。
 （断言面从注入 logger 改为 **console 捕获**——捕到的就是真宿主 stdout 上会出现的字节，
 这一步同时让测试与真机行为对齐：此前这些断言消费的是 `ctx.logger`，而真宿主上它不可见）；
 `defects-table` 守卫 33 条（kit 两段范围 D06–D14 现算 + 反例针更新）。
+
+### 12. ✅ 内网标识的专项排查 + 闸门
+
+**起因（2026-10-18）**：用户截图里出现一串内网服务名，并要求「做一下专项排查」。先量了一遍：
+`gitleaks detect` 全树 **0 命中**（密钥层面是干净的）——缺的不是密钥扫描，而是**公网 IP 闸门
+管不到的那半边**：内网服务名、项目代号、登录账号、私网主机号。这一类此前**没有任何守卫**，
+所以同类问题在 `92f01eaf6`（2026-10-12 清过一轮）与 `768b7720b`（一周后又写回来）之间来回漂。
+
+**为什么是 L0**：横跨 `loglens` / `docker` / `codegraph` / `search` / `tty` / `kit` 六个包，
+外加 `scripts/windows/*` 与 `docs/`；并且要新增一道仓库级闸门（`scripts/` + `package.json` +
+`conventions.md`），任何一个包单独做都收不住。
+
+**落点**：五类共 **85 处**换成中性取值——内网服务名（56 处，含 `loglens/src/tools.ts` 那条
+**agent 直接读得到的 tool description**）、项目代号与真实业务类名（6 处，在
+`codegraph/docs/adoption-audit.md` 的「调用质量举证」里连 Java 类名一起贴了）、本机用户名
+（10 处）、Parallels 网段与账号（6 处）、登录账号（13 处）。脱敏口径沿用 `92f01eaf6` 的先例
+（服务名 → `app-svc-N` / `batch-job-a`，主机名 → `host-a.internal`，账号 → `operator`，
+本机路径 → `/Users/you`，地址 → RFC 5737 文档网段）；**夹具的搜索词与名字是一对**，必须成组换
+（`'ems'` 前缀命中改成 `'app'` 前缀命中），否则用例要么变红、要么变成假绿。
+
+四个 `scripts/windows/*.mjs` 原先把内网地址与账号写成**默认值**（`--ssh-host` / `--ssh-user` /
+`--ssh-root`），改成「不给就整档 SKIP 并说清怎么给」——这正是 `a2150d347`（2026-10-03）给
+devdata / devenv 立过的规矩，那轮漏了这批脚本。
+
+新增闸门 [`scripts/check-internal-identifiers.mjs`](./scripts/check-internal-identifiers.mjs)
+（`pnpm internal-ids:check`，另有 `--staged` / `--message-file` / `--self-test` / `--hash`），
+接进 `package.json` 与 [conventions.md § 提交](./docs/conventions.md#提交)。两个设计决定：
+**词表只存 `sha256`**（闸门自身不含明文，否则等于换个地方泄露）；**判据是「是不是那批已知
+真名」而不是「像不像敏感」**（公开产品名与泛化账号词不进表——一道总在报假警的闸最后会被绕过）。
+
+**门槛**：`scripts/test/internal-identifiers.test.ts` **22 条**（切段 / 边界 / 大小写 / 注入 /
+真实语料 / 「闸门自身不含明文」）。四条反例逐条实跑变红：
+
+1. 片段预算被掐掉（`> TOKEN_MAX` 改成 `> 0`）→ 11 条红；
+2. **默认词表被摘掉**（`banned ?? BANNED_HASHES` → `new Set()`）→ 自检红（`锚点词应命中 1 处，
+   实得 0 处`）。这条是补的：第一版自检**抓不到**它——所有用例都显式注入临时表，于是「默认表
+   被清空」时自检全绿、全仓扫描也照样「通过」，闸门静默失效。修法是在词表里留一条**人为造的
+   假词**当锚点（写法见脚本里的 `ANCHOR_WORD`），专门反证「默认这条路接上了」；
+3. 超长 token 整条跳过（旧实现的盲区）→ 新用例红，改成「按**片段**算预算」；
+4. 边界改松成子串匹配 → 粘连变体上误报，反例用例红。
+
+全仓 **3125/3127**（两条红是既有的 `os-consent-scope` 版本基线，与本改动无关）；typecheck /
+build / i18n（11/11 客户端半体）/ doc-links（644 条）/ 公网 IP 闸门全绿。`artifacts:check` 与
+`aggregate:check` 都是对 HEAD 做 diff，须在提交后判定。
+
+**接线（同日，用户批准后补）**：`.githooks/pre-commit` 扫 **index**（`--staged`，放在重建之后
+——产物里的注释也要被扫到）、`.githooks/commit-msg` 扫**提交信息**（写消息时「引用现场」把真名
+抄进去是最常见的泄露路径）、`.github/workflows/ci.yml` 两个 step 兜底（`pnpm internal-ids:check`
+＋按推送区间扫消息，口径照抄公网 IP 那两条）。两处钩子都实测过反例：带真名的提交信息 `exit=1`
+并点名「提交信息含真实内部标识」；暂存区带真名的文件 `--staged` 也 `exit=1`。
+
+**没做的（如实记下）**：历史未处理（用户明确「历史记录先不处理了」——本仓是公开仓，已公开的
+内容不做重写；清理历史只能重写，代价远高于入口拦一次）。
 
 ## 已由 L0 资产承接（不再是待办）
 

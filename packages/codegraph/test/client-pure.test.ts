@@ -197,7 +197,7 @@ describe('P1 采纳率：adoptionText 的边界', () => {
 
 describe('P2 项目列表：shortPath / seenAgoText', () => {
   it('shortPath 保留最后两段（这是还能分辨的粒度），非字符串原样空串', () => {
-    expect(shortPath('/Users/czz/coding/project/cdc-manage')).toBe('…/project/cdc-manage')
+    expect(shortPath('/Users/you/coding/project/demo-app')).toBe('…/project/demo-app')
     expect(shortPath('/a/b')).toBe('/a/b')            // 两段以内不动
     expect(shortPath('/a')).toBe('/a')
     expect(shortPath('')).toBe('')

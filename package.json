@@ -45,6 +45,8 @@
     "i18n:check": "node scripts/check-i18n.mjs --self-test && node scripts/check-i18n.mjs",
     "no-public-ip:check": "node scripts/check-no-public-ip.mjs --self-test && node scripts/check-no-public-ip.mjs",
     "no-public-ip:message": "node scripts/check-no-public-ip.mjs",
+    "internal-ids:check": "node scripts/check-internal-identifiers.mjs --self-test && node scripts/check-internal-identifiers.mjs",
+    "internal-ids:message": "node scripts/check-internal-identifiers.mjs",
     "release:publish": "node scripts/release-publish-tag.mjs"
   },
   "devDependencies": {

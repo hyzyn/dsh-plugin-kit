@@ -178,6 +178,37 @@ jobs:
             rm -f "$msg_file"
           done
           echo "提交信息检查通过（$base..$head）"
+      # 防回归：仓库里不得出现**真实内部标识**（内网服务名 / 项目代号 / 登录账号 / 私网主机号）。
+      # 公网 IP 那道闸管不到这一类，而它才是实际反复泄露的东西——`92f01eaf6`（2026-10-12）
+      # 清过一轮，一周后 `768b7720b` 又把同类名字写回了测试夹具。判据与词表口径见脚本文件头：
+      # **词表只存 sha256**，闸门自身不含明文（把真名写进闸门等于换个地方泄露）。
+      # 自检先跑：闸门自己的判据被改坏（锚点失效 / 默认词表被摘）必须当场红，而不是静默放行。
+      - name: Check no real internal identifiers
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm internal-ids:check
+      - name: Check commit messages carry no internal identifiers
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # 与公网 IP 那条同口径：只查本次推送 / PR 新增的提交信息。
+          # 写提交信息时「引用现场」把真名原样抄进去，是最常见的泄露路径之一。
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.sha }}'
+          if [ -z "$base" ]; then base='${{ github.event.before }}'; fi
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "无法确定比较基线（首次推送 / 新分支），跳过提交信息检查"
+            exit 0
+          fi
+          for sha in $(git rev-list "$base..$head"); do
+            msg_file=$(mktemp)
+            git log -1 --format=%B "$sha" > "$msg_file"
+            if ! pnpm internal-ids:message --message-file "$msg_file"; then
+              rm -f "$msg_file"
+              echo "::error::提交 $sha 的信息含真实内部标识"
+              exit 1
+            fi
+            rm -f "$msg_file"
+          done
+          echo "提交信息检查通过（$base..$head）"
       # 防回归：入库产物必须与源码一致——曾发生过源码改了、产物没重建，修复在浏览器侧
       # 完全无效。重建后对全部包的浏览器半体（client.js）与宿主半体（lib/）做 diff。
       # ⚠️ lib/ 那半边**必须**用 ':(glob)…/**'：默认 pathspec 下 `*` 不递归目录内容，写

@@ -3035,7 +3035,7 @@ window.__ModuleLoader__.load({
       return { rows, from, to }
     }
 
-    /** 选中区间的可读描述，用于菜单标题（「6 行 · ems-service」）。 */
+    /** 选中区间的可读描述，用于菜单标题（「6 行 · app-svc-1」）。 */
     function describeSelection(context, range) {
       const count = String(range.to - range.from + 1)
       if (context.containers.length === 1) return count + t('meta.rowsSuffix') + ' · ' + context.containers[0].name

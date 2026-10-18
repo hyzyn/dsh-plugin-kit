@@ -43,9 +43,26 @@ const sshBook = flag('--ssh-book') ?? dockerTarget
 const port = Number(flag('--port') ?? 3199)
 const prefix = flag('--prefix') ?? 'dsh-probe'
 const reportPath = flag('--report')
-const sshHost = flag('--ssh-host') ?? '10.211.55.5'
-const sshUser = flag('--ssh-user') ?? 'parallels'
-const keyPath = flag('--ssh-key') ?? 'C:\\cg-verify\\ssh\\id_ed25519'
+/*
+ * SSH 目标**不留默认值**（2026-10-03 `a2150d347` 立的规矩，2026-10-18 补到这批 Windows 脚本）：
+ * 原先这里把 Parallels 共享网段的一个固定地址与固定账号写成了默认值——公开仓库里那等于把
+ * 内网寻址方案与账号写进去。私网地址没有公网 IP 闸门管，所以只能靠「不给就不跑」。
+ */
+const sshHost = flag('--ssh-host') ?? ''
+const sshUser = flag('--ssh-user') ?? ''
+const keyPath = flag('--ssh-key') ?? ''
+
+if (sshHost === '' || sshUser === '' || keyPath === '') {
+  console.log('# agent 工具真机验证：缺少 SSH 目标，整档 SKIP')
+  console.log('')
+  console.log('  这个脚本要连一台真的远端机器才有意义，目标地址**没有默认值**（不入公共仓库）。')
+  console.log('  请显式给出三项：')
+  console.log('')
+  console.log('    node scripts/windows/verify-agent-tools.mjs --ssh-host <地址> --ssh-user <账号> --ssh-key <私钥路径>')
+  console.log('')
+  console.log('  其余参数（--docker-target / --ssh-book / --port / --prefix / --report / --node-pty）见脚本头注释。')
+  process.exit(0)
+}
 
 const results = []
 const record = (name, ok, detail) => {

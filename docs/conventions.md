@@ -179,8 +179,17 @@
 - **用户可见变更请附截图或验证证据**。
 - **提交信息也要过公网 IP 闸门**：`.githooks/commit-msg` 调 `scripts/check-no-public-ip.mjs`。
   真实内网 IP、真实主机名一律换成文档网段 / 中性取值。
+- **内部标识另有一道闸**：`scripts/check-internal-identifiers.mjs`（`pnpm internal-ids:check`）。
+  它管的是公网 IP 闸门管不到的那半边——**内网服务名 / 项目代号 / 登录账号 / 私网主机号**，
+  判据见该脚本文件头（词表只存 `sha256`，闸门本身不含明文）。为什么非有不可：这一类
+  在 2026-10-12（`92f01eaf6`）清过一轮，一周后的 `768b7720b` 又写回了同类名字——
+  **没有守卫的规矩会在下一次改动里漂掉**。脱敏口径（服务名 → `app-svc-N`、主机名 →
+  `host-a.internal`、账号 → `operator`、地址 → RFC 5737 文档网段）与真机脚本
+  「目标地址不留默认值」同属这一条。
+  接线与公网 IP 那道**逐一对应**：`pre-commit` 扫 index（`--staged`）、`commit-msg` 扫提交信息、
+  `ci.yml` 两个 step 兜底（全仓 + 按推送区间扫消息）。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
-  `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 扫公网 IP。
+  `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 依次扫公网 IP 与内部标识。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
 
 ## Issue（提 issue 的格式约束）

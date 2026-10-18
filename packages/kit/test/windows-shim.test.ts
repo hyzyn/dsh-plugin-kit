@@ -142,13 +142,13 @@ describe('portableSpawnPlan（要不要套 cmd.exe）', () => {
       windowsVerbatimArguments: true,
     })
 
-    const cmd = portableSpawnPlan('C:\\Users\\czz\\AppData\\Local\\codegraph\\current\\bin\\codegraph.cmd', ['--version'], {
+    const cmd = portableSpawnPlan('C:\\Users\\you\\AppData\\Local\\codegraph\\current\\bin\\codegraph.cmd', ['--version'], {
       platform: 'win32',
       comspec: 'cmd.exe',
     })
     // 整条命令行被一对引号包住，交给 /s 剥掉最外层——与 cross-spawn 同形
     expect(cmd.file).toBe('cmd.exe')
-    expect(cmd.args[3]).toBe('"C:\\Users\\czz\\AppData\\Local\\codegraph\\current\\bin\\codegraph.cmd ^"--version^""')
+    expect(cmd.args[3]).toBe('"C:\\Users\\you\\AppData\\Local\\codegraph\\current\\bin\\codegraph.cmd ^"--version^""')
     expect(cmd.windowsVerbatimArguments).toBe(true)
   })
 

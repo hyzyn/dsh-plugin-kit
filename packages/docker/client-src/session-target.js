@@ -43,7 +43,7 @@ export function sessionHostPort(spec, liveTarget) {
 /**
  * 在已配置目标里按 host:port 找出匹配的那个（`label` 形如 `user@host:port`）。
  *
- * **用户名不参与比较**：同一台主机常用不同账号配多条连接簿条目（root / hsadmin），
+ * **用户名不参与比较**：同一台主机常用不同账号配多条连接簿条目（root / operator），
  * 只按账号比会漏配。端口按 22 缺省（label 省略端口时视为 22）。
  *
  * @param rows 宿主 `/targets` 返回的目标行。

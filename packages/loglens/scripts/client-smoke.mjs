@@ -1579,7 +1579,7 @@ const optionsOf = (select) => select.props.children.filter((node) => node !== nu
 
 await test('Docker 区：选中 Docker 来源就**自动拉容器**（不需要点按钮），第一条自动选中', async () => {
   serverRoutes = {
-    '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }, { id: 'gateway', name: 'gateway' }] },
+    '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'app-svc-1', name: 'app-svc-1' }, { id: 'gateway', name: 'gateway' }] },
   }
   const { runtime, tree } = await runPanelQueryFull('target', { skipQuery: true })
   await runtime.update()
@@ -1593,12 +1593,12 @@ await test('Docker 区：选中 Docker 来源就**自动拉容器**（不需要�
    * 第三十九刀之后这一格是**自绘候选**：输入框显示「已选的那个」，点开列出全部。
    * 判据（显示哪个 / 候选有哪些）仍是同一份 `containerSlot` 与 `containers`。
    */
-  assert.equal(containerText(runtime.tree), 'upms-service', '第一条该被自动选中（不然「看日志」只会回一句「先选容器」）')
+  assert.equal(containerText(runtime.tree), 'app-svc-1', '第一条该被自动选中（不然「看日志」只会回一句「先选容器」）')
   openContainers(runtime)
   await runtime.update()
   // 当前选中的那一条带勾（勾是**行内另一段**，不在名字里——所以分开断言，不靠空格猜）
   const rows = containerRows(runtime.tree)
-  assert.deepEqual(rows.map((node) => treeText(node)), ['upms-service✓', 'gateway'],
+  assert.deepEqual(rows.map((node) => treeText(node)), ['app-svc-1✓', 'gateway'],
     '候选该列出全部容器：' + JSON.stringify(rows.map((node) => treeText(node))))
   assert.equal(treeFind(rows[0], (node) => hasClass(node, 'll_pickDone')).length, 1, '当前那个要带勾')
   assert.equal(treeFind(rows[1], (node) => hasClass(node, 'll_pickDone')).length, 0, '别的行不该有勾')
@@ -1610,14 +1610,14 @@ await test('Docker 区：同一目标不重拉；换目标重拉（选中项跟�
   serverRoutes = {
     '/api/dsh-docker/containers': (body) => ({
       ok: true,
-      containers: body.target === 'local' ? [{ id: 'nginx', name: 'nginx' }] : [{ id: 'upms', name: 'upms-service' }],
+      containers: body.target === 'local' ? [{ id: 'nginx', name: 'nginx' }] : [{ id: 'app-svc-1', name: 'app-svc-1' }],
     }),
   }
   const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
   await runtime.update()
   await runtime.update()
   assert.equal(containerCalls().length, 1)
-  assert.equal(containerText(runtime.tree), 'upms-service')
+  assert.equal(containerText(runtime.tree), 'app-svc-1')
   // 同一个键：再来几轮渲染也不该重拉（缓存判据就是 containersKey）
   await runtime.update()
   await runtime.update()
@@ -1628,25 +1628,25 @@ await test('Docker 区：同一目标不重拉；换目标重拉（选中项跟�
   targetSelect.props.onChange({ target: { value: 'local' } })
   runtime.tick()
   /*
-   * 这一刻清单还没回来，但**旧清单还在**（上一条目标拉回来的 upms）。所以那一格仍该显示
+   * 这一刻清单还没回来，但**旧清单还在**（上一条目标拉回来的 app-svc-1）。所以那一格仍该显示
    * 那个旧容器名：把显示改成「加载中…」等于替用户扔掉看得见的东西（那几秒里他不是没有选项，
    * 是有**上一条目标**的选项）。
    *
    * 「正在拉」这句话现在落在**候选浮层页脚的「刷新」**上（第四十刀把主行那颗按钮撤了）：
    * 没点开候选时主行里一个字都不该提「在拉」，那一格显示的仍是旧容器名。
    */
-  assert.equal(containerText(runtime.tree), 'upms-service', '有旧清单时那一格不该改口')
+  assert.equal(containerText(runtime.tree), 'app-svc-1', '有旧清单时那一格不该改口')
   assert.equal(buttonByText(runtime.tree, '刷新容器清单'), undefined, '主行不该再有那颗按钮（第四十刀撤掉了）')
 
   await runtime.update()
   await runtime.update()
   assert.equal(containerCalls().length, 2, '换了目标要重拉一次')
   assert.equal(containerCalls()[1].body.target, 'local', '重拉要带新目标')
-  assert.equal(containerText(runtime.tree), 'nginx', '原来的 upms 不在新清单里：选中项要换成新清单的第一条，不许留一个候选里没有的 id')
+  assert.equal(containerText(runtime.tree), 'nginx', '原来的 app-svc-1 不在新清单里：选中项要换成新清单的第一条，不许留一个候选里没有的 id')
 })
 
 await test('Docker 区：清单还没到的那几秒，占位项说的是「加载中…」（不是看起来没事的空下拉）', async () => {
-  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }] } }
+  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'app-svc-1', name: 'app-svc-1' }] } }
   /*
    * 这一条**不用 runPanelQueryFull**：那个助手会把每件事都 settle 到稳定，正好吃掉我们要看的那一帧
    * （选中 Docker 来源、请求还在路上的那一刻）。所以手动挂载，自己控制 tick 与让位的时机。
@@ -1674,7 +1674,7 @@ await test('Docker 区：清单还没到的那几秒，占位项说的是「加�
 
   await runtime.update()
   await runtime.update()
-  assert.equal(containerText(runtime.tree), 'upms-service', '清单到手后该显示选中的那个')
+  assert.equal(containerText(runtime.tree), 'app-svc-1', '清单到手后该显示选中的那个')
 })
 
 await test('Docker 区：拉回来是空清单 → 占位项说「没有容器」，hint 说清「只列运行中的」', async () => {
@@ -1735,7 +1735,7 @@ await test('Docker 区：拉容器失败只落在那一格（不动卡片顶部�
 })
 
 await test('Docker 区：「刷新」强制重拉一次（容器会变，自动拉之外要留手动出口）', async () => {
-  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }] } }
+  serverRoutes = { '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'app-svc-1', name: 'app-svc-1' }] } }
   const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
   await runtime.update()
   await runtime.update()
@@ -1782,7 +1782,7 @@ await test('容器候选：能按名字收窄、方向键+回车选、Esc 收起
       ok: true,
       containers: [
         { id: 'a1', name: 'app-svc-1' }, { id: 'b2', name: 'app-svc-3' },
-        { id: 'c3', name: 'upms' }, { id: 'd4', name: 'batch-job-a' },
+        { id: 'c3', name: 'app-svc-1' }, { id: 'd4', name: 'batch-job-a' },
       ],
     },
   }
@@ -1799,7 +1799,7 @@ await test('容器候选：能按名字收窄、方向键+回车选、Esc 收起
   // ② id 也能搜（用户可能只记得短 id）
   typeContainer(runtime, 'c3')
   await runtime.update()
-  assert.deepEqual(containerRows(runtime.tree).map((node) => treeText(node)), ['upms'], 'id 也要能搜')
+  assert.deepEqual(containerRows(runtime.tree).map((node) => treeText(node)), ['app-svc-1'], 'id 也要能搜')
 
   // ③ 命中 0 个**不画空盒子**（与分组框、字段补全同一条）
   typeContainer(runtime, 'zzz')
@@ -1817,7 +1817,7 @@ await test('容器候选：能按名字收窄、方向键+回车选、Esc 收起
   key('Enter')
   await runtime.update()
   const picked = containerText(runtime.tree)
-  assert.ok(['app-svc-1', 'app-svc-3', 'upms', 'batch-job-a'].includes(picked), '回车该选中当前那一行：' + String(picked))
+  assert.ok(['app-svc-1', 'app-svc-3', 'app-svc-1', 'batch-job-a'].includes(picked), '回车该选中当前那一行：' + String(picked))
   assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList')).length, 0, '选中之后候选该收起')
 
   // ⑤ Esc 收起候选（不改变已选的那个）
@@ -1969,7 +1969,7 @@ await test('容器那一格：能一直删到空（原来最后一个字删不�
 
 await test('Docker 日志：换了容器之后明说「这是上一次的」，重拉之后提示消失', async () => {
   serverRoutes = {
-    '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'upms', name: 'upms-service' }, { id: 'gateway', name: 'gateway' }] },
+    '/api/dsh-docker/containers': { ok: true, containers: [{ id: 'app-svc-1', name: 'app-svc-1' }, { id: 'gateway', name: 'gateway' }] },
     '/api/dsh-docker/logs': { ok: true, logs: 'line-a\nline-b\n' },
   }
   const { runtime } = await runPanelQueryFull('target', { skipQuery: true })
@@ -1986,7 +1986,7 @@ await test('Docker 日志：换了容器之后明说「这是上一次的」，�
   await runtime.update()
   const logsCalls = () => calls.filter((call) => call.path === '/api/dsh-docker/logs')
   assert.equal(logsCalls().length, 1, '该真的拉一次：' + String(logsCalls().length))
-  assert.equal(logsCalls()[0].body.id, 'upms', '拉的是当前选中的容器')
+  assert.equal(logsCalls()[0].body.id, 'app-svc-1', '拉的是当前选中的容器')
   assert.ok(treeText(runtime.tree).includes('line-a'), '日志该画出来')
   assert.equal(treeText(runtime.tree).includes('上一次拉取的'), false, '刚拉完，不该说「上一次」')
 

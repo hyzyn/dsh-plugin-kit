@@ -65,7 +65,7 @@ describe('needsStatusResync', () => {
 describe('statusForTab', () => {
   it('【本 bug】已连上的标签回的是它自己的「已连接」，不是上一个标签的错误', () => {
     // 关键：错误文本记在失败标签自己身上（statusText），活动标签有自己的那条
-    const failed = { sid: 'sess-failed', errored: true, statusText: '错误：SSH 连接失败（hsadmin@192.0.2.10）：Timed out while waiting for handshake', statusState: 'error' }
+    const failed = { sid: 'sess-failed', errored: true, statusText: '错误：SSH 连接失败（operator@192.0.2.10）：Timed out while waiting for handshake', statusState: 'error' }
     const live = { sid: 'sess-live', live: true, statusText: 'SSH root@192.0.2.161 已连接', statusState: 'connected' }
     expect(statusForTab(failed, t)).toEqual({ text: failed.statusText, state: 'error' })
     expect(statusForTab(live, t)).toEqual({ text: 'SSH root@192.0.2.161 已连接', state: 'connected' })

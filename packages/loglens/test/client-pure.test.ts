@@ -482,7 +482,7 @@ describe('dockerTargetChoices：把 Docker 面板的目标清单变成选项', (
 
 describe('dockerLogTextOf：Docker /logs 的两种形状', () => {
   it('对象形状（真实响应）：取 logs.text', () => {
-    expect(dockerLogTextOf({ ok: true, logs: { id: 'upms', text: 'line1' } })).toBe('line1')
+    expect(dockerLogTextOf({ ok: true, logs: { id: 'app-svc-1', text: 'line1' } })).toBe('line1')
   })
 
   it('字符串形状也认（旧版/别的实现）', () => {
@@ -2332,28 +2332,28 @@ describe('正文高亮切片（第三十五刀）', () => {
  */
 describe('Docker 日志的条件键与 stale 判据（第三十八刀）', () => {
   it('条件键由三项拼成：任一变了就不是同一份', () => {
-    const key = dockerRunKey('upms', '1h', 200)
+    const key = dockerRunKey('app-svc-1', '1h', 200)
     expect(key).not.toBe(dockerRunKey('gateway', '1h', 200))
-    expect(key).not.toBe(dockerRunKey('upms', '15m', 200))
-    expect(key).not.toBe(dockerRunKey('upms', '1h', 500))
-    expect(key).toBe(dockerRunKey('upms', '1h', 200))
+    expect(key).not.toBe(dockerRunKey('app-svc-1', '15m', 200))
+    expect(key).not.toBe(dockerRunKey('app-svc-1', '1h', 500))
+    expect(key).toBe(dockerRunKey('app-svc-1', '1h', 200))
   })
 
   it('没拉过（键为空）永远不算 stale——没有「上一次」可言', () => {
-    expect(dockerStale('', 'upms', '1h', 200)).toBe(false)
-    expect(dockerStale(undefined, 'upms', '1h', 200)).toBe(false)
+    expect(dockerStale('', 'app-svc-1', '1h', 200)).toBe(false)
+    expect(dockerStale(undefined, 'app-svc-1', '1h', 200)).toBe(false)
   })
 
   it('条件与拉取时一致 → 不是 stale；任一项改了 → stale', () => {
-    const ran = dockerRunKey('upms', '1h', 200)
-    expect(dockerStale(ran, 'upms', '1h', 200)).toBe(false)
+    const ran = dockerRunKey('app-svc-1', '1h', 200)
+    expect(dockerStale(ran, 'app-svc-1', '1h', 200)).toBe(false)
     expect(dockerStale(ran, 'gateway', '1h', 200)).toBe(true)
-    expect(dockerStale(ran, 'upms', '24h', 200)).toBe(true)
-    expect(dockerStale(ran, 'upms', '1h', 50)).toBe(true)
+    expect(dockerStale(ran, 'app-svc-1', '24h', 200)).toBe(true)
+    expect(dockerStale(ran, 'app-svc-1', '1h', 50)).toBe(true)
   })
 
   it('数字与字符串写法不敏感（下拉给的是字符串，状态里存的是 number）', () => {
-    expect(dockerStale(dockerRunKey('upms', '1h', 200), 'upms', '1h', '200')).toBe(false)
+    expect(dockerStale(dockerRunKey('app-svc-1', '1h', 200), 'app-svc-1', '1h', '200')).toBe(false)
   })
 })
 
@@ -2361,36 +2361,41 @@ describe('Docker 日志的条件键与 stale 判据（第三十八刀）', () =>
  * 第三十九刀：容器候选的收窄。
  *
  * 用户截图：原生 `<select>` 的弹层铺满整个面板、不能搜、样式改不动；真机十几个容器，
- * 找 `osce-exam` 只能滚。换成自绘候选之后，收窄规则与字段补全**同一条**（前缀优先、子串次之）。
+ * 找 `queue-job` 只能滚。换成自绘候选之后，收窄规则与字段补全**同一条**（前缀优先、子串次之）。
+ *
+ * 夹具一律中性名（`app-svc-N` / `web-app` / `worker` …）：真机上那批容器名是内网服务标识，
+ * 不随用例进公共仓库（见 ROADMAP「内网标识」一节）。名字与搜索词是**一对**，成组换。
  */
 describe('容器候选（第三十九刀）', () => {
   const list = [
-    { id: 'a1', name: 'ems-service' },
-    { id: 'b2', name: 'cdc-service' },
-    { id: 'c3', name: 'upms' },
-    { id: 'd4', name: 'osce-exam' },
+    { id: 'a1', name: 'app-svc-1' },
+    { id: 'b2', name: 'app-svc-2' },
+    { id: 'c3', name: 'worker' },
+    { id: 'd4', name: 'web-app' },
     { id: 'e5' },
   ]
 
   it('不打字就是全部，且保持清单原顺序（不重排：顺序是后端/宿主的结论）', () => {
     expect(containerChoices(list, '').map((row) => row.label))
-      .toEqual(['ems-service', 'cdc-service', 'upms', 'osce-exam', 'e5'])
+      .toEqual(['app-svc-1', 'app-svc-2', 'worker', 'web-app', 'e5'])
   })
 
   it('前缀命中排前面，子串次之', () => {
-    expect(containerChoices(list, 'ems').map((row) => row.label)).toEqual(['ems-service'])
-    // `service` 不是任何名字的前缀，但都是子串 → 按原顺序
-    expect(containerChoices(list, 'service').map((row) => row.label))
-      .toEqual(['ems-service', 'cdc-service'])
-    // `e` 前缀命中 ems-service / e5，子串命中 cdc-service / osce-exam
+    // `app` 是两个名字的前缀，`web-app` 只是子串 → 前缀那两个整体排在它前面
+    expect(containerChoices(list, 'app').map((row) => row.label))
+      .toEqual(['app-svc-1', 'app-svc-2', 'web-app'])
+    // `svc` 不是任何名字的前缀，但都是子串 → 按原顺序
+    expect(containerChoices(list, 'svc').map((row) => row.label))
+      .toEqual(['app-svc-1', 'app-svc-2'])
+    // `e` 前缀命中 e5，子串命中 worker / web-app（前缀照样排最前）
     const rows = containerChoices(list, 'e').map((row) => row.label)
-    expect(rows.slice(0, 2)).toEqual(['ems-service', 'e5'])
-    expect(rows).toContain('cdc-service')
+    expect(rows[0]).toBe('e5')
+    expect(rows).toContain('web-app')
   })
 
   it('id 也能搜（用户可能只记得短 id）', () => {
-    expect(containerChoices(list, 'c3').map((row) => row.label)).toEqual(['upms'])
-    expect(containerChoices(list, 'd4').map((row) => row.label)).toEqual(['osce-exam'])
+    expect(containerChoices(list, 'c3').map((row) => row.label)).toEqual(['worker'])
+    expect(containerChoices(list, 'd4').map((row) => row.label)).toEqual(['web-app'])
   })
 
   it('没有 name 就用 id 当显示名（绝不显示空行）', () => {
@@ -2398,7 +2403,7 @@ describe('容器候选（第三十九刀）', () => {
   })
 
   it('大小写不敏感；命中 0 个回空数组（界面据此不画浮层）', () => {
-    expect(containerChoices(list, 'OSCE').map((row) => row.label)).toEqual(['osce-exam'])
+    expect(containerChoices(list, 'WORKER').map((row) => row.label)).toEqual(['worker'])
     expect(containerChoices(list, 'zzz')).toEqual([])
     expect(containerChoices(undefined, 'x')).toEqual([])
     expect(containerChoices([], '')).toEqual([])

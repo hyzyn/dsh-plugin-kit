@@ -299,8 +299,8 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 - **名字**（规则恒定）：`DSH_TTY_<用户名>_<主机>[_<端口>]_<字段>`，**端口留空或 22（默认）时省略**
   —— 与连接侧的 `spec.port ?? 22` 一致（留空即 22），所以"留空 / `22` / `" 22 "`"三种写法归成同一个键，
   同一个账号不会有两个名字、同一个密码不会存两份；非默认端口进键（同一主机不同端口常是 NAT 后面的
-  不同盒子）。字段 = `PASSWORD` / `PASSPHRASE`；例 `hsadmin@192.0.2.10:22` →
-  `DSH_TTY_HSADMIN_192_0_2_10_PASSWORD`（点分 IP 的 `.` 折成 `_`）。**按资源身份派生、不带哈希**——与
+  不同盒子）。字段 = `PASSWORD` / `PASSPHRASE`；例 `operator@192.0.2.10:22` →
+  `DSH_TTY_OPERATOR_192_0_2_10_PASSWORD`（点分 IP 的 `.` 折成 `_`）。**按资源身份派生、不带哈希**——与
   git-credential-store 的 `protocol://username@host`、docker credential helpers 的
   `ServerURL` + `Username` 同一派：host 与 username **本来就是 ASCII 标识符**，不需要清洗、
   也就不需要哈希兜底。曾经的哈希版是在补救"把人类标签清洗成键"：引用文法只认 ASCII，

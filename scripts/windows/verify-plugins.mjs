@@ -40,6 +40,13 @@ const dshHome = flag('--dsh-home')
 const codegraphCli = flag('--codegraph-cli')
 const nodeExe = flag('--node')
 const dockerSshKey = flag('--docker-ssh-key') ?? 'C:\\cg-verify\\ssh\\id_ed25519'
+/*
+ * SSH 目标**不留默认值**（2026-10-03 `a2150d347` 的规矩，2026-10-18 补到这批 Windows 脚本）：
+ * 原先 B13 那一格把 Parallels 共享网段的一个固定地址与固定账号写死了——公开仓库里那等于
+ * 把内网寻址方案与账号写进去。私网地址没有公网 IP 闸门管，只能靠「不给就整条 SKIP」。
+ */
+const dockerSshHost = flag('--docker-ssh-host') ?? ''
+const dockerSshUser = flag('--docker-ssh-user') ?? ''
 const dshBin = flag('--dsh-bin')
 const reportPath = flag('--report')
 
@@ -248,7 +255,7 @@ console.log('--- 阶段 A：静态探针（已构建的 lib/，不需要宿主�
     const cases = [
       { name: '回环 + 127.0.0.1 Host → 放行', req: { headers: { host: '127.0.0.1:3092' }, socket: { remoteAddress: '127.0.0.1' } }, want: true },
       { name: '回环 + localhost Host → 放行', req: { headers: { host: 'localhost:3092' }, socket: { remoteAddress: '::ffff:127.0.0.1' } }, want: true },
-      { name: '非回环来源 → 拒绝', req: { headers: { host: '127.0.0.1:3092' }, socket: { remoteAddress: '10.211.55.1' } }, want: false },
+      { name: '非回环来源 → 拒绝', req: { headers: { host: '127.0.0.1:3092' }, socket: { remoteAddress: '192.0.2.1' } }, want: false },
       { name: '外部域名 Host（DNS rebinding）→ 拒绝', req: { headers: { host: 'evil.example.com' }, socket: { remoteAddress: '127.0.0.1' } }, want: false },
       { name: 'sec-fetch-site: cross-site → 拒绝', req: { headers: { host: '127.0.0.1:3092', 'sec-fetch-site': 'cross-site' }, socket: { remoteAddress: '127.0.0.1' } }, want: false },
     ]
@@ -1134,9 +1141,13 @@ if (hostUrl === undefined) {
 {
   // 前置：把 u1 这个 SSH 目标装回去。B9 的复位（以及 `verify-docker-ssh.mjs` 自己的复位）
   // 会用 clearTargets 把 targets 清空，之后所有数据路由都会回 400「未知目标」。
+  // 目标地址与账号没有默认值（见文件头 `--docker-ssh-host` 那段）：没给就整条 SKIP，不静默用假地址。
+  if (dockerSshHost === '' || dockerSshUser === '') {
+    skip('B13 前置：重新装上 u1 这个 SSH 目标', '缺 --docker-ssh-host / --docker-ssh-user（目标地址不入库，必须显式给）')
+  } else {
   const restored = await call('POST', '/api/dsh-docker/config', {
     dockerBin: 'docker',
-    targets: [{ name: 'u1', kind: 'ssh', host: '10.211.55.5', port: 22, username: 'parallels', auth: 'key', keyPath: dockerSshKey }],
+    targets: [{ name: 'u1', kind: 'ssh', host: dockerSshHost, port: 22, username: dockerSshUser, auth: 'key', keyPath: dockerSshKey }],
   })
   record(
     'B13 前置：重新装上 u1 这个 SSH 目标（否则后面所有 docker 数据路由都是 400 未知目标）',
@@ -1184,6 +1195,7 @@ if (hostUrl === undefined) {
   const stillRead = await call('POST', '/api/dsh-docker/containers', { target: 'u1' }, { headers: sameOrigin })
   record('B13 门禁：只读路由在门禁关闭时照常可用（不是一刀切）', stillRead.status === 200, `status=${stillRead.status} body=${String(stillRead.body).slice(0, 120)}`)
   await call('POST', '/api/dsh-docker/config', { allowMutations: true, allowExec: true })
+  }
 }
 
 /* ================================================================== *

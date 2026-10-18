@@ -192,7 +192,7 @@ dsh --profile <测试 profile> --patch <port.yml>
   收尾把计划任务、node 进程、日志、临时目录一并清掉。
 - **`prlctl exec` 的 SYSTEM 身份这次反而省事（2026-09-26）**：VM 里 SYSTEM 侧已有上一轮装的
   node / pnpm / dsh（`…\systemprofile\AppData\Local\dsh-nodes\v22.23.3`，正是本仓要的
-  cohort 0.1.7-rc.2），于是全程按 SYSTEM 跑，**绕开了交互式计划任务那套**；用户 `czz` 侧反而
+  cohort 0.1.7-rc.2），于是全程按 SYSTEM 跑，**绕开了交互式计划任务那套**；普通用户账户侧反而
   没有工具链。先探一句 `where node` 再决定走哪条路，能省一大截。
 - **`\\Mac\Home\Downloads` 在 SYSTEM 上下文里也能读**（这次实测）：runbook 原来只记了
   「仓库目录不在共享列表」——`Downloads` 恰好在共享列表里，把 tarball 放那儿再反向拷日志回来
@@ -210,7 +210,8 @@ dsh --profile <测试 profile> --patch <port.yml>
   - **VM 里没有工具链，apt 的 `nodejs` 只到 18**（本仓要 ≥22.19）→ 从 nodejs.org 取官方
     arm64 tarball 解到 `/usr/local`（`tar -xJf … --strip-components=1`）+ `npm i -g pnpm@10.30.3`。
   - **VM→外网很慢**：nodejs.org 实测 ~30KB/s、npm registry ~155KB/s。**大文件在宿主机下好、
-    用 `python3 -m http.server` + `curl` 从 `10.211.55.2` 喂进去**（这条链是本地网络，快得多）；
+    用 `python3 -m http.server` + `curl` 从 VM 的宿主侧地址（Parallels 的共享网段，例如
+    `192.0.2.2` 这类占位写法；**真实网段不写进仓库**）喂进去**（这条链是本地网络，快得多）；
     `pnpm install --frozen-lockfile` 在这条链上花了 **7m47s**（可接受）。
   - **`prlctl exec <vm> bash -c "含空格的命令"` 会被拆参数**（Linux 与 Windows 都踩到）：
     现象是 `cd /root/x && pnpm …` 只剩 `cd` 生效，pnpm 在 `/` 里跑（`ERR_PNPM_NO_PKG_MANIFEST`）。

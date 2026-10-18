@@ -40,7 +40,7 @@ describe('sessionHostPort', () => {
 
   it('【本 bug】spec 只有连接簿条目名时，用宿主回显的实际连接兜底', () => {
     const spec = { t: 'ssh', name: '192.0.2.10', command: '' }
-    expect(sessionHostPort(spec, 'hsadmin@192.0.2.10')).toEqual({ host: '192.0.2.10', port: 22 })
+    expect(sessionHostPort(spec, 'operator@192.0.2.10')).toEqual({ host: '192.0.2.10', port: 22 })
   })
 
   it('两边都拿不到 host 时返回 undefined（不猜）', () => {
@@ -52,7 +52,7 @@ describe('sessionHostPort', () => {
 describe('pickTargetByHost', () => {
   it('【本 bug 的完整判定】会话经 192.0.2.10 条目、目标是 lab-a 条目 → 仍命中目标1', () => {
     const spec = { t: 'ssh', name: '192.0.2.10' }
-    const session = sessionHostPort(spec, 'hsadmin@192.0.2.10')
+    const session = sessionHostPort(spec, 'operator@192.0.2.10')
     expect(pickTargetByHost(TARGETS, session)).toBe('目标1')
   })
 

@@ -38,19 +38,19 @@ describe('asciiRefToken', () => {
 
 describe('derivedCredentialRef', () => {
   it('文档示例逐字对得上（README 中英与源码注释共用这两例）', () => {
-    expect(derivedCredentialRef('192.0.2.10', '22', 'hsadmin', 'PASSWORD'))
-      .toBe('DSH_TTY_HSADMIN_192_0_2_10_PASSWORD')
+    expect(derivedCredentialRef('192.0.2.10', '22', 'operator', 'PASSWORD'))
+      .toBe('DSH_TTY_OPERATOR_192_0_2_10_PASSWORD')
     expect(derivedCredentialRef('192.0.2.10', '2222', 'root', 'PASSWORD'))
       .toBe('DSH_TTY_ROOT_192_0_2_10_2222_PASSWORD')
   })
 
   it('默认端口（留空 / 22 / " 22 "）都不进键，归成同一个名字', () => {
-    const a = derivedCredentialRef('192.0.2.10', '', 'hsadmin', 'PASSWORD')
-    const b = derivedCredentialRef('192.0.2.10', '22', 'hsadmin', 'PASSWORD')
-    const c = derivedCredentialRef('192.0.2.10', ' 22 ', 'hsadmin', 'PASSWORD')
+    const a = derivedCredentialRef('192.0.2.10', '', 'operator', 'PASSWORD')
+    const b = derivedCredentialRef('192.0.2.10', '22', 'operator', 'PASSWORD')
+    const c = derivedCredentialRef('192.0.2.10', ' 22 ', 'operator', 'PASSWORD')
     expect(a).toBe(b)
     expect(b).toBe(c)
-    expect(a).toBe('DSH_TTY_HSADMIN_192_0_2_10_PASSWORD')
+    expect(a).toBe('DSH_TTY_OPERATOR_192_0_2_10_PASSWORD')
   })
 
   it('非默认端口进键（同一主机不同端口多是不同盒子）', () => {
@@ -81,8 +81,8 @@ describe('derivedCredentialRef', () => {
 
   it('连接名不参与键：同一主机同一账号永远同名（改连接名不产生孤儿引用）', () => {
     // 只有 host / username / port 进键，函数签名里根本没有"连接名"这一维
-    const one = derivedCredentialRef('192.0.2.10', '22', 'hsadmin', 'PASSWORD')
-    const two = derivedCredentialRef('192.0.2.10', '22', 'hsadmin', 'PASSWORD')
+    const one = derivedCredentialRef('192.0.2.10', '22', 'operator', 'PASSWORD')
+    const two = derivedCredentialRef('192.0.2.10', '22', 'operator', 'PASSWORD')
     expect(one).toBe(two)
   })
 })

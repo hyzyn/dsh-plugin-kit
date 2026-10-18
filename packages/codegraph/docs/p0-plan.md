@@ -14,7 +14,7 @@
 
 | 问题 | 结论 |
 | --- | --- |
-| **A** scope 里的挂载只对该 scope 可见 | **成立**。`schemas(agentA)` / `schemas(agentB)` 都是 `mcp__codegraph__codegraph_explore`，但 `defA !== defB`、`defA.execute !== defB.execute`；真实调用各答各自的项目（A 回 plugin-kit 的 `packages/*`，B 回 cdqas 的 `*.java`）；两个不同 cwd 的子进程。 |
+| **A** scope 里的挂载只对该 scope 可见 | **成立**。`schemas(agentA)` / `schemas(agentB)` 都是 `mcp__codegraph__codegraph_explore`，但 `defA !== defB`、`defA.execute !== defB.execute`；真实调用各答各自的项目（A 回 plugin-kit 的 `packages/*`，B 回另一个 Java 项目的 `*.java`）；两个不同 cwd 的子进程。 |
 | **B** 同一 `serverName` 跨 scope 不冲突 | **成立**。两处挂载都成功；**同一** scope 内重复则报 `serverName "codegraph" is already in use`（隔离的实证）。 |
 | **C** 全局层保持干净 | **成立**。两个 agent 都挂上之后，`schemas(undefined)` 仍为空；全局提示词装配里也没有 `mcp:codegraph` 段。 |
 | **D** 整包 namespace 对象能当插件 | **成立**（`Context.resolve` 的 `isApplicable` 认「有 apply 的对象」）。**踩坑点**：传 `McpClient.apply` 会失败（`cannot get property "tools" without inject`）——async 函数没有 `prototype`、且裸 `apply` 不带 `inject`。实现里传的是整包对象。 |

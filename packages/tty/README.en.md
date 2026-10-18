@@ -343,8 +343,8 @@ lacks that service the box is switched back off and disabled, with a note that o
   empty or 22 (the default)** — matching the connecting side's `spec.port ?? 22` (empty means 22), so
   “empty / `22` / `" 22 "`” all collapse into one key and the same account never ends up with two names or one
   password stored twice; a non-default port does take part (the same host on another port is often a different
-  box behind NAT). `field` is `PASSWORD` / `PASSPHRASE`; e.g. `hsadmin@192.0.2.10:22` →
-  `DSH_TTY_HSADMIN_192_0_2_10_PASSWORD` (the dots of a dotted IP fold to `_`). It is **derived from the resource identity and carries no hash** — the
+  box behind NAT). `field` is `PASSWORD` / `PASSPHRASE`; e.g. `operator@192.0.2.10:22` →
+  `DSH_TTY_OPERATOR_192_0_2_10_PASSWORD` (the dots of a dotted IP fold to `_`). It is **derived from the resource identity and carries no hash** — the
   same school as git-credential-store's `protocol://username@host` and docker credential helpers'
   `ServerURL` + `Username`: host and username **are ASCII identifiers already**, so nothing needs sanitizing and
   nothing needs a hash to disambiguate. The old hash-based version was patching over "sanitize a human label into a

@@ -1362,7 +1362,7 @@ export function dockerSince(preset) {
  * 容器候选：按输入收窄（**前缀优先、子串次之**），保持清单原顺序。
  *
  * 为什么要有它（第三十九刀，用户截图）：容器下拉原来是原生 `<select>`，真机上有十几个容器
- * （`app-svc-1` / `app-svc-3` / `upms` / `app-svc-8` / `batch-job-a` / …）。
+ * （`app-svc-1` / `app-svc-3` / `app-svc-8` / `worker` / `batch-job-a` / …）。
  * 原生弹层**高度不受控**（铺满整个面板）、**不能搜**、**不能改样式**——找 `batch-job-a`
  * 只能靠滚。
  *

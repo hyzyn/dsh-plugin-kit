@@ -26,7 +26,7 @@ export function asciiRefToken(value) {
  *
  * 规则（**恒定不变，别按需省略**）：
  *   `DSH_TTY_<用户名>_<主机>[_<端口>]_<字段>`，端口为 22（默认）时省略；字段 = PASSWORD / PASSPHRASE
- *   例：`hsadmin@192.0.2.10:22` → `DSH_TTY_HSADMIN_192_0_2_10_PASSWORD`
+ *   例：`operator@192.0.2.10:22` → `DSH_TTY_OPERATOR_192_0_2_10_PASSWORD`
  *       `root@192.0.2.10:2222` → `DSH_TTY_ROOT_192_0_2_10_2222_PASSWORD`
  *   （点分 IP 的 `.` 折成 `_`；**改示例时输入与派生名必须字面对得上**——`test/credential-ref.test.ts`
  *   就是为此钉的。）

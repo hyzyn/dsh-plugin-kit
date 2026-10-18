@@ -271,7 +271,7 @@ export function registerLoglensTools(deps: ToolDeps): void {
       filters: {
         type: 'object',
         additionalProperties: true,
-        description: '结构化过滤：字段 → 值（如 {"container.name":"ems-service","log.level":"error"}）。'
+        description: '结构化过滤：字段 → 值（如 {"container.name":"app-svc-1","log.level":"error"}）。'
           + '**字段该不该带 .keyword 由适配器查 _field_caps 决定**，你不用管；是 text 且没有子字段时自动退回 match_phrase（近似匹配）。'
           + 'Loki 不支持它（过滤写进 LogQL 的 {} 或过滤表达式）',
       },
