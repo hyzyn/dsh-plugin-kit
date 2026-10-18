@@ -138,6 +138,23 @@ describe('docs-index：现算（唯一真值来源）', () => {
     const codegraph = real.packageRoadmaps.find((file) => file.pkg === 'codegraph')
     expect(parsePackageLandedSections(codegraph.text).landed.length, 'codegraph 也应被扫到').toBeGreaterThan(0)
 
+    /*
+     * 第三种标题形态（2026-10-18 补）：loglens 的落地记录一节都不带 ✅、也不以日期开头，
+     * 写的是「## 面板第三十刀：…（2026-10-17）」与「### P0-甲：…（2026-10-11 落地）」。
+     * 补之前这条判据对整份 4274 行的 ROADMAP **现算 0 命中**——恒绿。
+     */
+    const loglens = real.packageRoadmaps.find((file) => file.pkg === 'loglens')
+    expect(loglens, 'packages/loglens/ROADMAP.md 应在输入里').toBeDefined()
+    const loglensParsed = parsePackageLandedSections(loglens.text)
+    expect(loglensParsed.landed.length, 'loglens 的「第 N 刀 + 括号日期」也要被扫到（否则判据 4 对它恒绿）').toBeGreaterThan(0)
+    for (const item of loglensParsed.landed) {
+      expect(item.line, `「${item.heading}」应在锚点之后`).toBeGreaterThan(loglensParsed.anchorLine)
+    }
+    // 待办侧的「括号里带日期」不是落地记录（误报方向：会把 `### P0-乙 计数清单（2026-10-11 全仓勘察）` 判成住错了地方）
+    const todoWithDate = loglens.text.split('\n').findIndex((line) => line.startsWith('### P0-乙 计数清单（2026-10-11')) + 1
+    expect(todoWithDate, 'fixture 前提：loglens 的计数清单标题带日期且是待办').toBeGreaterThan(0)
+    expect(loglensParsed.landed.map((item) => item.line)).not.toContain(todoWithDate)
+
     expect(checkPackageRoadmapLanded(real)).toEqual([])
   })
 
@@ -299,6 +316,24 @@ describe('反例 4：包内 ROADMAP 的落地记录节住错了地方 → 必须
     expect(before.length, '每一处错位的记录节都要报').toBeGreaterThan(1)
     expect(before[0].message).toContain('本文只放还没做的事')
     expect(before[0].line).toBeGreaterThan(0)
+  })
+
+  it('待办里的「括号日期」不是落地记录：`（2026-10-11 全仓勘察）` 不许被判成住错了地方', () => {
+    /*
+     * 2026-10-18 补第三种标题形态时的**反例**：把判据放宽成「标题里带括号日期」一句话，
+     * loglens 的 `### P0-乙 计数清单（2026-10-11 全仓勘察）` 就会被当成落地记录，
+     * 而它排在锚点**之前**（它是待办）→ 立刻误报 `pkgRoadmap.landed.before`。
+     * 现在只认两种精确形态（括号里只有日期 / 日期后面跟「落地」），这一条钉住那个边界。
+     */
+    const loglens = real.packageRoadmaps.find((file) => file.pkg === 'loglens').text
+    const fixture = mutate(loglens, '### P0-乙 计数清单（2026-10-11 全仓勘察）', '### P0-乙 计数清单（2026-10-11 全仓勘察，待办）')
+    const diffs = checkPackageRoadmapLanded({ packageRoadmaps: [{ pkg: 'loglens', path: 'packages/loglens/ROADMAP.md', text: fixture }] })
+    expect(diffs, '待办标题带括号日期不该被当落地记录').toEqual([])
+    // 而把同一处改成「括号里只有日期」的形态，它**就会**被认成落地记录并因为位置报错——
+    // 证明「没命中」不是判据根本没看它。
+    const asLanded = mutate(loglens, '### P0-乙 计数清单（2026-10-11 全仓勘察）', '### P0-乙 计数清单（2026-10-11）')
+    const diffs2 = checkPackageRoadmapLanded({ packageRoadmaps: [{ pkg: 'loglens', path: 'packages/loglens/ROADMAP.md', text: asLanded }] })
+    expect(kinds(diffs2)).toContain('pkgRoadmap.landed.before')
   })
 
   it('待办条目里的内联 ✅ 不是「节」，不许误报（历史原文要留着）', () => {
