@@ -8,14 +8,17 @@
 > **状态：设置面、查询地基（契约 / 归一化 / 游标）、Loki 与 ES / OpenSearch 适配器、出站围栏与 agent 工具都已就位
 > （2026-10-11 ~ 10-12）；浏览器侧的结果视图、时间分布、**按字段分组榜**、**点桶下钻**与**点柱放大**
 > 也已就位（榜与下钻是 2026-10-13 补的，点柱放大 2026-10-15 收口）。**点桶下钻**在**真宿主 + 真 ES** 上点过
-> 一遍（2026-10-13：含下钻那一枪的请求体、芯片、再点一次取消）；**点柱放大目前只有静态检查、单测与
-> 渲染回归（`client-smoke`）的覆盖，真机验收还没跑**——逐条结论见 [ROADMAP.md](./ROADMAP.md)。**
+> 一遍（2026-10-13：含下钻那一枪的请求体、芯片、再点一次取消）；**点柱放大**的覆盖是静态检查、单测与
+> 渲染回归（`client-smoke`）三层——**真机还没点过那一下**（2026-10-18 复核，见 [ROADMAP.md](./ROADMAP.md)
+> 的第五刀一节；后面十几刀在真机上量的是分布图别的面，不是放大这一下）。逐条结论见 ROADMAP，不在这里复述。**
 > **Loki 侧已完成真机验收**（真 Loki 3.7.8，隔离环境）：分页翻成 `cursor`，真机抓到并修掉两个缺陷
 > （`loglens D02` / `D03`，逐条见 [DEFECTS.md](./DEFECTS.md)）；真机对账 12/12 组不丢不重。
 > ES / OpenSearch 侧已在真集群上跑过若干轮只读复核。逐条结论都在 [ROADMAP.md](./ROADMAP.md)，**不在这里复述**。
 > 设计与契约的唯一归宿是 [docs/design.md](./docs/design.md)；分期与待办见 [ROADMAP.md](./ROADMAP.md)。
 
 ## 现在能做什么
+
+![日志查询卡片：ES 来源上的一次查询——查询串与按方言给的可点例子、筛选芯片、时间分布（带时间刻度与峰值）、结果行（级别染色 + 身份标签）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
 - 在 **设置 → 插件配置 → 日志查询** 卡片里增删改「日志来源」（类型 / 名称 / 地址 / ES 的**索引表达式**）与插件开关。
 - 让 agent 用这几个工具查（配好来源之后，**名单以 [src/tools.ts](./src/tools.ts) 的注册处为准**）：
@@ -58,6 +61,8 @@
   结果区顶上一句「下面这份还是上一次查询的」，同时收起「下一页」并禁用「分组」。这不是观感问题——
   **ES / OpenSearch 的翻页游标是 PIT + `search_after`**，拿旧游标配新条件翻页**不会报错**，只会静默
   少行 / 错位；「分组」也会把新查询串配上一次回显的窗口。先点「查询」把两边对齐，入口才回来。
+  （「分组」另有一条**来源侧**的前提：这条来源声明了可聚合才点得动——Loki 没有指标查询，
+  那两颗按钮本来就是灰的，与「条件改过」不是同一件事。）
 - **两种聚合都在卡片里画**（都由宿主随 `/query` 响应下发的能力自述决定画不画，面板不按类型猜）：
   **时间分布**（按时间分桶的柱状图）与**按字段分组**（terms 榜——「哪个服务在报错」的那个答案）。
   时间分布上**有数据的柱子点一下就是放大到那一段**：时间窗夹到那一档再重查一次（行、分布、榜一起收窄），
@@ -91,8 +96,9 @@
   横向差 **0px**。改前它钉在结果区左端，而按钮在整行右侧——横向差 **123px**，按的是右边那颗、
   展开的东西出现在最左边（与第十七刀「读数条钉在左端、柱子在图中间」同一条毛病）。
   遮罩也跟着改成全屏 `fixed`：面板浮到元信息行那一层之后，只铺结果区的遮罩会漏掉上面那几块，
-  点面板上方的空白会「没反应」。面板里从当前页的
-  `labels` 数出**本页命中**的字段（带出现行数），再按 `/fields` 分成**其余可用字段**与**类型冲突**两个区；
+  点面板上方的空白会「没反应」。面板里从当前页的 `labels` 数出**本页命中**的字段（带出现行数），
+  **只画这一区**——第三十刀把筛选搬进两格输入框之后，原来那两个「其余可用字段」「类型冲突」
+  分区跟着筛选一起退场（它们存在的唯一理由就是给「筛」提供字段，而列只能从本页命中加）。
   顶部有过滤框，长字段名在点处折行（不是硬切）。**收起时不会去拉 `/fields`**，展开才拉一次（同来源缓存）。
   **过滤是「多词 AND」**（2026-10-17 第二十一刀）：空格分词、每个词都要命中，所以 `cont name`
   和 `container name` 都筛得到 `container.name`——改前只认一整串子串，打空格会得到 0 个结果
@@ -102,8 +108,9 @@
   把 `agent.name` 这种短名字和 `container.labels.com_docker_compose_project_environment_file`
   这种长名字混排在一起。现在每组一个可折叠的组头（写父路径 + 计数），**行里只写末段**——
   那 58 个折行文字变成 58 个短词（`architecture` / `build-date` / …），父路径由组头说，
-  完整名仍在行悬停的 `title` 里。默认只展开**命中区**（那是这个来源真在用的字段），
-  其余与冲突折叠（滚动高度从 ~2878px 降到 **1494px**）。
+  完整名仍在行悬停的 `title` 里。（分组是按 `/fields` 那张全量表设计的：那时面板还画三个分区，
+  默认只展开命中区，滚动高度从 ~2878px 降到 **1494px**；第三十刀之后面板只画命中区，
+  这两个读数因此成了历史值——**分组本身照旧**。）
   **长末段断在「词」上**（2026-10-17 第二十三刀）：`container.labels.*` 的末段本身就是 40 个字符上下
   （`com_docker_compose_project_environment_file`），原来靠 CSS 的 `overflow-wrap:anywhere` 让浏览器
   把一行**填满**再断——真机上 `com_docker_compose_config-hash` 被切成 `com_docker_compose_conf` /
@@ -206,9 +213,14 @@
 - 面板与 agent 工具走**同一个执行层**（[src/execute.ts](./src/execute.ts)）：同一份归一化、同一份截断信号——
   不会出现「面板说的和工具说的不一样」。
 - **Docker 目标**在卡片里换成「容器日志」区（**选中这条来源就自动拉容器**，不用点按钮；换 Docker 目标会重拉，
-  同一个目标不重复拉，容器会变所以留了一个「刷新」→ 选容器 / 行数 → 看日志），走 Docker 面板插件自己的
-  路由（相对路径）；这条路没有 `until`、`tail` 有上限、没有 grep，界面上写着这句，要精确检索请用 agent 侧的
-  `docker_logs_grep`。拉容器清单失败时**只落在那一格**（不动卡片顶部那条错误行，失败不留缓存所以下次触发仍会重试）。
+  同一个目标不重复拉。容器起停之后清单才会变，所以主行**不摆**刷新按钮——重拉入口收在容器候选浮层的页脚
+  （与字段候选的「共 N 个字段 + 刷新」同一套），失败态与空清单态在页脚给「重试」/「刷新」）→
+  选容器 / 时间窗 / 行数 → 看日志，走 Docker 面板插件自己的路由（相对路径）；这条路没有 `until`、
+  `tail` 有上限、没有 grep，界面上写着这句，要精确检索请用 agent 侧的 `docker_logs_grep`。
+  拉容器清单失败时**只落在那一格**（不动卡片顶部那条错误行，失败不留缓存所以下次触发仍会重试）。
+  换容器**不会**自动重拉日志（那是一次 `docker logs`，重）：屏上那份还是上一次按的，日志上方会明说「这是上一次的」。
+
+![Docker 来源：整张卡片换成容器日志区——选容器 / 时间窗 / 行数 / 看日志，弱面（无 until、tail 有上限、无 grep）写在界面上](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-docker.png)
 
 ## HTTP 面（回环）
 
@@ -216,7 +228,7 @@
 
 | 动作 | 请求 | 说明 |
 |---|---|---|
-| 读配置 | `GET /api/dsh-loglens/config` | 返回 `{ ok, config: { enabled, targets } }` |
+| 读配置 | `GET /api/dsh-loglens/config` | 返回 `{ ok, config: { enabled, targets }, plugins: { docker: true\|false } }`——`plugins.docker` 是「docker 插件在不在」的现算判据（[src/plugins.ts](./src/plugins.ts)），面板靠它决定 Docker 那一格给不给入口 |
 | 开关 | `POST {"action":"enabled","enabled":false}` | **免同源证明**（禁用后设置卡片是唯一的恢复入口） |
 | 新增来源 | `POST {"action":"targets.add","target":{"kind":"loki","label":"本地 Loki","url":"http://127.0.0.1:3100"}}` | `kind` 取 `loki` / `elasticsearch` / `opensearch` / `docker` |
 | 改来源 | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | id 不可改（它是浏览器侧唯一的引用方式） |
@@ -245,7 +257,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `loki` | `http://127.0.0.1:3100` | 可以带网关前缀（如 `https://gw.example/loki`）；查询走 `/loki/api/v1/query_range` |
 | `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **索引表达式**：优先用那一行第 3 格下面填的「索引」；没填就用地址路径（兼容旧配置）；两者都没有则是 `*,-.*`（全部索引**但排除 `.kibana_1` / `.infini_*` 这类点号系统索引）。`loglens_sources` 会**回显解析结果**，probe 还会报「最近 15 分钟 N 条」；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after`；**ES 7.10 / 7.11 也已适配**（PIT 键名与 `_shard_doc` 的差异见 [ROADMAP](./ROADMAP.md)） |
 | 公网地址 | 同上，直接填 | **连接面 = 你配置的来源**：回环 / 私网 / 公网一律放行（托管日志服务、内网用公网段都算正常用法）；被无条件拒绝的只有链路本地 / 云元数据那一档 |
-| `docker` | 第三格填 **Docker 面板里的目标名**（如 `local`），**不是** URL | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep`；面板侧走 Docker 插件自己的 `/api/dsh-docker/logs`（相对路径），弱面：无 `until`、`tail` 有上限、无 grep |
+| `docker` | 第三格填 **Docker 面板里的目标名**（如 `local`），**不是** URL | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep`；面板侧走 Docker 插件自己的 `/api/dsh-docker/config`（拉目标清单）+ `/containers` + `/logs`（相对路径），弱面：无 `until`、`tail` 有上限、无 grep |
 
 ## 解剖
 
@@ -260,8 +272,9 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `src/execute.ts` | 找来源 / 归一化 / 拼返回形状：**agent 工具与面板路由共用**的那一层 |
 | `src/backends/registry.ts` | kind → 适配器（Loki / ES / OS；Docker 按设计不进这里） |
 | `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |
-| `src/backends/loki.ts` | Loki 适配器：`query_range` / `labels` / `ready`，摊平、合并顺序与计数（真机验收待跑） |
+| `src/backends/loki.ts` | Loki 适配器：`query_range` / `labels` / `ready`，摊平、合并顺序与计数（真机验收的结论与逐条读数见 [ROADMAP](./ROADMAP.md) 的 P2 一节，**这里不复述**） |
 | `src/backends/elastic.ts` | ES / OpenSearch 适配器（`flavor` 分流）：`_search` / PIT 分页 / `_field_caps` / health |
+| `src/plugins.ts` | 「某个插件装没装」的宿主侧判据：读 cordis 的 plugin registry（`ctx.registry.values()`），用来决定 Docker 那一格给不给入口；枚举失败一律当「没装」 |
 | `src/tools.ts` | agent 工具（`loglens_sources` / `search` / `fields` / `facets` / `context`）+ 档位分类表 |
 | `src/query.ts` | 归一化与夹取：时间戳单位、时间窗上限、limit 夹取、计数与截断归并 |
 | `src/cursor.ts` | 两份游标共用版本号常量：Loki 那份（同 ts 多行不丢行）与 ES 那份（`pitId` + `searchAfter`）；拿错适配器的游标在 decode 时被拒，解不开就报错、不当作没有游标 |

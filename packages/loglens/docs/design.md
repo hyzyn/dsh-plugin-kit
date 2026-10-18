@@ -9,7 +9,10 @@
 把异构日志后端归一化成**一个查询前端 + N 个薄后端适配器**。核心资产是
 「归一化行模型 + 诚实的计数与截断信号 + 交给 Agent」，不是「支持了几个后端」。
 
-`@hyzyn/dsh-loglens`（id `loglens`，路由 `/api/dsh-loglens/…`，env `DSH_LOGLENS_*`，缺陷前缀 `D`）。
+`@hyzyn/dsh-loglens`（id `loglens`，路由 `/api/dsh-loglens/…`，缺陷前缀 `D`）。
+**没有专属环境变量**：2026-10-18 复核 `grep -rn 'DSH_LOGLENS' packages/ docs/` 只命中本行——
+这一句此前写的 `env \`DSH_LOGLENS_*\`` 是照 [conventions § 命名](../../../docs/conventions.md#命名) 的命名规矩
+预留的，代码里从来没有读过它。要配的东西全在设置卡片的来源清单里。
 
 ### 非目标
 
@@ -138,6 +141,9 @@
 - **Loki**：**不能**用「end = 最旧 ts − 1ns」——同 stream 同 ns 多行合法，limit 切在同值批中间会
   **永久丢行**。形态是 `{ tsNs, streamIdx, ordinalAtTs }`：下一次 `end = tsNs`（含边界），丢弃该 ts
   上该 stream 的前 `ordinalAtTs` 行。
+  > **⚠️ 这三条（形态 / 未验证前提 / 保守退路）已被真机整条推翻**——`{ tsNs, streamIdx, ordinalAtTs }`
+  > 这个坐标**不在代码里**，现行形态是「完整 ts 组」。原文按纪律保留，推翻它的证据、根因与现行口径
+  > 全在往下 6 行的 **REVISION（2026-10-12）** 一节；读到这里就直接跳过去，别拿这段当实现。
 - **未验证前提**：这套玩法预设「同一 stream、同一 ts 内多行的返回顺序稳定」。重复日志行内容不可区分，
   去重只能按出现序号。→ P1 反例两条：**同 ts 三行 / limit=2 不丢第三行**；
   **同 ts 同内容两行 / limit=1 不吞第二行**。P2 真机单独测顺序稳定性。
@@ -290,19 +296,33 @@
   **HTTP 200 + `_shards.failed` + 空 hits**；
   字段 `_field_caps` / `_cat/indices`。方言差异进 `capabilities()`（OS 的 PPL / SQL / tenant；
   ES 8.11+ 的 ES|QL）。认证统一 Basic / `Authorization: ApiKey`。
-- **Docker（P5）**：按选项 0；契约上它是退化 `LogBackend`（`queryLanguage:'none'`、`fields:'fixed'`）。
+- **Docker（P5）**：按选项 0。**它没有适配器**——`src/backends/registry.ts` 里没有 Docker 这一项，
+  `loglens_search` 见到 `kind: 'docker'` 时只回一句指路（见 `src/tools.ts`）。设计早期设想把它做成
+  退化的 `LogBackend`（`queryLanguage:'none'` / `fields:'fixed'`，这两个值只是枚举里的合法取值），
+  **那一版没有落地**，别照着它找代码。
 
 ## 7. 包结构
 
     packages/loglens/
-      src/index.ts              # 宿主半体：路由 + agent 工具 + 能力/档位接线
-      src/backends/{types,loki,elastic,docker}.ts
-      src/net.ts                # 出站围栏（SSRF / 重定向 / IP 校验 / 超时 / 体积）
+      src/index.ts              # 宿主半体：四条路由 + 设置持久化 + 档位闸接线
+      src/config.ts             # 来源清单的纯判据（id / 地址校验 / 宽松读盘 / 增删改）
+      src/tools.ts              # agent 工具注册处 + 档位分类表（名单以这里为准）
+      src/execute.ts            # 找来源 / 归一化 / 拼返回形状（工具与面板路由共用）
       src/query.ts              # 归一化 + 时间窗/limit 夹取 + 计数与截断归并
+      src/cursor.ts             # 两份游标（Loki 的完整 ts 组 / ES 的 pitId + searchAfter）
+      src/line.ts               # 行可观性：标签摊平、级别归一与正文推断
+      src/net.ts                # 出站围栏（SSRF / 重定向 / IP 校验 / 超时 / 体积）
+      src/plugins.ts            # 「某个插件装没装」的 registry 判据（Docker 那一格用）
+      src/backends/{types,registry,loki,elastic}.ts   # 契约 / 注册表 / 两个适配器
       client-src/index.js       # loglens 是「构建型」包：i18n 内联于此
-      client-src/*.js           # 要判对错的纯逻辑（级别识别 / 行合并 / 缓冲区）
+      client-src/pure.js        # 客户端的纯逻辑（进 vitest，不 import 目录）
       scripts/build-client.mjs  # 照 codegraph：遇任何残留 import 直接 exit(1)
       test/*.test.ts
+      scripts/client-smoke.mjs  # 无浏览器的渲染回归（进不了 CI 的真机脚本另算）
+
+> 这份清单在 2026-10-18 按磁盘**现算**过一遍：此前写的 `backends/{…,docker}.ts` 里
+> `docker.ts` **不存在**，`registry.ts` / `config.ts` / `execute.ts` / `tools.ts` / `cursor.ts` /
+> `line.ts` / `plugins.ts` 都没列。改文件就顺手改这里，别再让它变成一份三周前的目录树。
       scripts/*-smoke.mjs       # 真机脚本（进不了 CI）
 
 **客户端半体还必须在 manifest 里声明（2026-10-11 真机验收补）**：`package.json` 要有
@@ -341,6 +361,9 @@ client-modules 按这份声明把包变成可加载的浏览器 bundle——**�
   裸 `client.js` 的是 `env` · `kit-settings` · `mcp` · `profile` · `prompt` · `rss` · `search`（7）。
   → 现存 `client-lint.mjs` 的注释与该名单**不一致**（写「两个包」且漏掉 `kit-settings`），
   属已登记的漂移，按 conventions § 文档分档 纪律 3 **只加标注、不擅自修正**。
+  **2026-10-18 补**：这是加本包之前的数。`node scripts/check-i18n.mjs` 现在的输出是
+  「已接入 **11/11** 个客户端半体」，有 `client-src/` 的是 **4** 个（`codegraph` · `docker` · `tty` ·
+  `loglens`——本包走的就是构建型）。
 - **面板的侧边栏入口是「手搓 DOM」的，且 family 名单在 4 个包各有一份硬编码**（2026-10-15 复核）：
   侧边栏那几个入口用的都是 `data-dsh-*-entry` 属性选择器，**同一条 family 名单在 `docker` / `tty` /
   `rss` / `search` 四个包的产物里各出现一次**，且覆盖面并不一致——
@@ -366,6 +389,12 @@ client-modules 按这份声明把包变成可加载的浏览器 bundle——**�
 就直接开工——每一条都给出「借它的哪一点、落在哪个现成接口、契约动不动、诚实的边界在哪」。
 分期判据、守卫、门槛与真机验收口径的**执行面**在 [ROADMAP.md](../ROADMAP.md#分期) 的 P8-甲…丁；
 **本文不复述那里的门槛数字**（复制即第二真相源）。
+
+> **⚠️ 读这一章之前先知道：§9 描述的「右侧栏工作台」一节都还没落地**（2026-10-18 复核：
+> `client-src/index.js` 里 `sidebarRightTabs` / `sidebar.right.pane.tab` / 「打开查询台」**零命中**）。
+> 已经落地的是 §9.3 里那些**做在卡片里**的条目——字段侧栏、列集与行展开、本页排序、
+> 点值即筛、筛选两格、直方图放大等，逐条标着「已落地」并指向 ROADMAP 的那一刀。
+> 本章其余部分是**将来照着做**的交底，不是现状描述；别把它当成「已经有了什么」。
 
 **一句话**：把面板从「设置卡片里的一条查询区」变成**与对话同屏的日志查询工作台**，
 功能骨架照 Kibana Discover 的核心（字段侧栏 / 查询栏 / 结果表 / 直方图 / 筛选芯片 / 时间与自动刷新），

@@ -60,6 +60,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | 全局搜索 | 仅会话标题 / 内容 | 侧边栏一处全文检索历史会话、Prompt、MCP 工具与设置面板 |
 | 终端面板 | 无 | xterm.js 多标签真实 PTY + SSH 直连（连接簿 / 指纹钉扎 / 断线重连）+ SFTP 双栏直传；注册 `tty_*` / `sftp_*` 工具 |
 | Docker 容器面板 | 无 | 容器 / 镜像 / Compose / 实时日志与统计 / 多目标总览；**默认只读**，变更与 exec 需显式开关；注册 `docker_*` 工具 |
+| 日志查询 | 无 | Loki / Elasticsearch / OpenSearch 归一化成一个查询面（Docker 走现成 `docker_logs`）；面板里直接查 + 时间分布 + 分组榜；注册 `loglens_*` 工具（全 read 档） |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 共享工具库 |
 
@@ -83,7 +84,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | `@hyzyn/dsh-codegraph` | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 终端面板：PTY / SSH / SFTP / 隧道 | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker 容器面板（本机 / SSH），默认只读 | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | 日志查询：Loki / Elasticsearch / OpenSearch / Docker 归一化查询前端 + `loglens_*` 工具（**查询未实现**；来源清单与开关的设置面已落地） | [README](packages/loglens/README.md) |
+| `@hyzyn/dsh-loglens` | 日志查询：Loki / Elasticsearch / OpenSearch / Docker 归一化查询前端 + `loglens_*` 工具（**只读**，无写操作） | [README](packages/loglens/README.md) · [DEFECTS](packages/loglens/DEFECTS.md) · [ROADMAP](packages/loglens/ROADMAP.md) |
 | `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 11 个插件 | [README](packages/all/README.md) |
 
 ## 快速开始
@@ -114,6 +115,7 @@ dsh plugin --profile web add @hyzyn/dsh-search       # ⌘/Ctrl+K 全局搜索
 dsh plugin --profile web add @hyzyn/dsh-codegraph    # 代码图谱卡片
 dsh plugin --profile web add @hyzyn/dsh-tty          # 终端面板（PTY / SSH / SFTP）
 dsh plugin --profile web add @hyzyn/dsh-docker       # Docker 容器面板
+dsh plugin --profile web add @hyzyn/dsh-loglens      # 日志查询（Loki / ES / OpenSearch）
 ```
 
 包名、一句话说明与各自的文档见上方 [包索引](#包索引)。
@@ -123,7 +125,7 @@ dsh plugin --profile web add @hyzyn/dsh-docker       # Docker 容器面板
 
 | 装了它 | 意味着 |
 |---|---|
-| **给模型注册工具**，真正改变 agent 能力 | `tty`（`tty_*` / `sftp_*`——真实的 shell / SFTP 通道）· `docker`（`docker_*`）· `codegraph`（替宿主托管 codegraph MCP 行，于是 `mcp__codegraph__*` 进模型工具箱） |
+| **给模型注册工具**，真正改变 agent 能力 | `tty`（`tty_*` / `sftp_*`——真实的 shell / SFTP 通道）· `docker`（`docker_*`）· `loglens`（`loglens_*`，全部 **read** 档：只查你配置的日志后端）· `codegraph`（替宿主托管 codegraph MCP 行，于是 `mcp__codegraph__*` 进模型工具箱） |
 | **只往 systemPrompt 添一段** | `rss`（「今日值得读」那段）· `search`（插件能力公告）；`prompt` 卡片做的本身就是编辑 systemPrompt |
 | **只动你自己的配置与界面** | `env`（保存即写进宿主的 `process.env`，环境变量仍是你自己的配置）· `profile` · `kit-settings` · `mcp`（它是配置入口——自己不加工具，你填进去的服务器会） |
 

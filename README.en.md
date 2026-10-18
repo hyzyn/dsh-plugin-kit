@@ -61,6 +61,7 @@ Grouped configuration → panels → development:
 | Global search | session titles / content only | one full-text search in the sidebar over past sessions, Prompts, MCP tools and settings panels |
 | Terminal panel | none | real xterm.js multi-tab PTY + native SSH (connection book / host-key pinning / auto reconnect) + SFTP dual-pane transfer; registers `tty_*` / `sftp_*` tools |
 | Docker container panel | none | containers / images / Compose / live logs and stats / multi-target overview; **read-only by default**, mutations and exec behind explicit switches; registers `docker_*` tools |
+| Log query | none | Loki / Elasticsearch / OpenSearch normalized into one query surface (Docker goes through the existing `docker_logs`); query straight from the card + time distribution + group-by board; registers `loglens_*` tools (all read tier) |
 | Codegraph integration | none | code graph card: index status / symbol search / call chain / impact / one-click sync-index |
 | Plugin development | boilerplate by hand | `pnpm create-plugin` scaffolding + the `@hyzyn/dsh-kit` shared library |
 
@@ -85,7 +86,7 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 | `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | Terminal panel: PTY / SSH / SFTP / tunnels | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | Log query front-end: normalized query over Loki / Elasticsearch / OpenSearch / Docker + `loglens_*` tools (**query not implemented**; the source list and enable switch are shipped) | [README](packages/loglens/README.md) |
+| `@hyzyn/dsh-loglens` | Log query front-end: normalized query over Loki / Elasticsearch / OpenSearch / Docker + `loglens_*` tools (**read-only**; no write operations) | [README](packages/loglens/README.md) · [DEFECTS](packages/loglens/DEFECTS.md) · [ROADMAP](packages/loglens/ROADMAP.md) |
 | `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 11 plugins above | [README](packages/all/README.md) |
 
 ## Quick start
@@ -121,6 +122,7 @@ dsh plugin --profile web add @hyzyn/dsh-search       # ⌘/Ctrl+K global search
 dsh plugin --profile web add @hyzyn/dsh-codegraph    # code graph card
 dsh plugin --profile web add @hyzyn/dsh-tty          # terminal panel (PTY / SSH / SFTP)
 dsh plugin --profile web add @hyzyn/dsh-docker       # Docker container panel
+dsh plugin --profile web add @hyzyn/dsh-loglens      # log query (Loki / ES / OpenSearch)
 ```
 
 Package names, one-line descriptions and per-package docs are in the [Packages](#packages) table above.
@@ -131,7 +133,7 @@ package's README; the mechanism is in
 
 | Install it | What it means |
 |---|---|
-| **Registers tools — genuinely changes what the agent can do** | `tty` (`tty_*` / `sftp_*` — a real shell / SFTP channel) · `docker` (`docker_*`) · `codegraph` (it hosts the codegraph MCP row for you, so `mcp__codegraph__*` lands in the model's toolbox) |
+| **Registers tools — genuinely changes what the agent can do** | `tty` (`tty_*` / `sftp_*` — a real shell / SFTP channel) · `docker` (`docker_*`) · `loglens` (`loglens_*`, all **read** tier: it only queries the log backends you configured) · `codegraph` (it hosts the codegraph MCP row for you, so `mcp__codegraph__*` lands in the model's toolbox) |
 | **Only appends a section to the systemPrompt** | `rss` (the “Today's Worth Reading” section) · `search` (its capability announcement); what `prompt` does *is* edit the systemPrompt |
 | **Only touches your own configuration and UI** | `env` (saving writes into the host's `process.env` — still your own configuration) · `profile` · `kit-settings` · `mcp` (a configuration entry point — it adds no tools itself, but the servers you type into it will) |
 

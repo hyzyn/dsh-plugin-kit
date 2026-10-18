@@ -249,6 +249,10 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
 | docker 目标连不上，回 500 | 目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在 PATH）→ `docker D138`，应为 200 + `ok:false` |
 | 容器日志 / 刷新列表偶发失败，报 `SSH exec 失败：(SSH) Channel open failure: open failed`（远端 sshd 侧原文 `error: no more sessions`） | 到该目标的**那条** SSH 连接被 `MaxSessions`（默认 10）打满：长流（聚合日志 ≤6 + 事件 + 统计）最多 8 条，余下两条要装下全部短命令（列表 / inspect / 日志快照 / agent 工具）→ `docker D150`。**先别只顾点「重试」**：关掉其它面板与标签页的实时跟随（尤其聚合日志）再试；要根治就在那台主机上 `printf 'MaxSessions 50\n' > /etc/ssh/sshd_config.d/10-dsh-maxsessions.conf && sshd -t && systemctl reload ssh`（reload 只影响新连接）→ [docker](../packages/docker/README.md) |
 | 同一个端口在两个 profile 里冲突 | 端口是**机器级资源**，profile 复制会把端口一并拷走 → `tty D60`；错开 webserver 端口与隧道 `localPort` |
+| 日志查询卡片里「查询」没反应 / 回一句「先选一个来源」 | 来源清单是**空的**或有来源但没选：卡片顶部「编辑来源」加一条（`kind` + 名称 + 地址），Docker 那条填的是 **Docker 面板里的目标名**、不是 URL → [loglens README § 来源地址怎么写](../packages/loglens/README.md#来源地址怎么写) |
+| 日志查询的 `level:ERROR` 一个都不回、或「分组」那两颗按钮是灰的 | 两件事都不是坏：`level:ERROR` 常回 0 条是因为这套索引里 `log.level` 多半为空、级别是从正文**推断**的（行上有 `levelInferred`），按级别筛请用级别下拉；分组与时间分布**只对有聚合能力的来源画**（当前 ES / OpenSearch），Loki 没有指标查询——能力由宿主随响应下发，界面不按类型猜 → [loglens README § 现在能做什么](../packages/loglens/README.md#现在能做什么) |
+| 日志查询的「下一页」灰着，或条件改过之后翻页结果不对 | **预期行为**：ES / OpenSearch 的游标是 PIT + `search_after`，拿旧游标配新条件翻页**不报错、只静默少行**，所以条件一改就收「下一页」并禁用「分组」，先点「查询」把两边对齐 → [loglens README](../packages/loglens/README.md) |
+| Docker 来源那一格说「容器清单取不到」/ 选不了容器 | 那条来源消费的是 **docker 插件**自己的 `/api/dsh-docker/*`：装没装由 cordis registry 判（`packages/loglens/src/plugins.ts`），没装就只有 agent 侧的 `docker_logs` / `docker_logs_grep` 那条路；装了仍失败就看容器是否在运行（这里**只列运行中的**）→ [docker](../packages/docker/README.md) |
 | 面板显示「已索引」但 CLI 说索引过期 | 卡片接的是 CLI 的 `reindexRecommended` / `builtWithVersion` 信号 → codegraph 卡片的警告行 |
 | 桌面版看不到浏览器里存的标签 / 配置 | **预期行为**：两者 origin 不同 → localStorage / IndexedDB 是两套独立存储 |
 
@@ -276,4 +280,10 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
   （DSH 硬编码 `node-pty name:"dumb"`）。
 - **`docker` 没有交互式 TTY**：exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`。
   流式能力只在浏览器面板里，agent 侧的 `docker_logs` / `docker_stats` 保持快照语义。
+- **`loglens` 的 Docker 来源只是「够用的一档」**：它走 docker 插件的 `/api/dsh-docker/logs`，
+  这条路没有 `until`、`tail` 有上限、没有 grep——要精确检索请用 agent 侧的 `docker_logs_grep`。
+  界面把这三条弱面写在那一格下面（不是藏起来）。它**一次只查一个来源**，v1 不做跨后端 fan-out。
+- **`loglens` 的出站围栏判的是「解析之后的 IP」**：链路本地 / 云元数据地址无条件拒、不跟随重定向；
+  而解析与建连是两步，两步之间 DNS 翻脸（rebinding）仍有窗口——这一层挡的是事故与过期的名字，
+  不是持域名的对手（威胁模型见 [loglens design.md §4](../packages/loglens/docs/design.md)）。
 - **仓库安装需要 Node.js ≥ 22.19 与 pnpm 10**，仅供开发调试；npm 安装不受影响。

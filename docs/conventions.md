@@ -19,7 +19,7 @@
 |---|---|
 | **AI 代理 / 新读者的第一入口**（先读什么 · 命令与门禁 · 不可逆边界清单） | L0 [`AGENTS.md`](../AGENTS.md)（入口与门禁，**不是知识库**：判据与代价一律指向本文与 `docs/`；存在性与登记由 [`scripts/docs-index.mjs`](../scripts/docs-index.mjs) 判据 6 守） |
 | 项目定位 / 装哪个 | L0 [`README.md`](../README.md) |
-| 12 包关系与协作 | L0 [`docs/architecture.md`](./architecture.md) |
+| 13 包关系与协作 | L0 [`docs/architecture.md`](./architecture.md) |
 | 命名 / 提交 / 文档 / 编号规范 | 本文 |
 | 跨包路线图 | L0 [`ROADMAP.md`](../ROADMAP.md) |
 | 跨包通用故障诊断路径 | L0 [`docs/troubleshooting.md`](./troubleshooting.md) |
@@ -37,7 +37,7 @@
 | 包内使用 / 配置 / 工具 | L1 `packages/<pkg>/README.md` |
 | 包内缺陷编号 | L1 `packages/<pkg>/DEFECTS.md` |
 | 包内待办 | L1 `packages/<pkg>/ROADMAP.md` |
-| **包内已完成落点 / 工作记录**（做完回填的「落点 + 门槛」、逐轮实测、刻意不做的边界） | L1 `packages/<pkg>/ROADMAP.md` 的 `## 已完成（落点 + 门槛）` 节，**形态照 L0 [ROADMAP.md](../ROADMAP.md#已完成落点--门槛) 的同名节**：`### ✅` 与 `## <日期>：` 这类落地记录节**必须排在这一节之后**（包内 ROADMAP 头部写的是「只放还没做的事」——记录不许散在待办里，否则几百行落地记录会把待办淹掉）。判据见 [`scripts/docs-index.mjs`](../scripts/docs-index.mjs) 的 `checkPackageRoadmapLanded`（2026-10-01 起）。落点与门槛写这里，缺陷的症状 / 根因 / 修法仍只在 `DEFECTS.md` |
+| **包内已完成落点 / 工作记录**（做完回填的「落点 + 门槛」、逐轮实测、刻意不做的边界） | L1 `packages/<pkg>/ROADMAP.md` 的 `## 已完成（落点 + 门槛）` 节，**形态照 L0 [ROADMAP.md](../ROADMAP.md#已完成落点--门槛) 的同名节**：`### ✅` 与 `## <日期>：` 这类落地记录节**必须排在这一节之后**（包内 ROADMAP 头部写的是「只放还没做的事」——记录不许散在待办里，否则几百行落地记录会把待办淹掉）。**「落地记录节」认三种标题形态**：带 ✅ 的、以 `YYYY-MM-DD：` 开头的、以及「标题 + 括号里只有日期（或日期紧跟『落地』）」的（`## 面板第三十刀：…（2026-10-17）`——第三种是 2026-10-18 补的，此前 loglens 那份 4274 行的 ROADMAP 一条都不命中、判据对它**恒绿**）。判据见 [`scripts/docs-index.mjs`](../scripts/docs-index.mjs) 的 `checkPackageRoadmapLanded`（2026-10-01 起）。落点与门槛写这里，缺陷的症状 / 根因 / 修法仍只在 `DEFECTS.md` |
 | 包特有的深层设计 / API | L1 `packages/<pkg>/docs/`（仅需要时建） |
 | **已完成批次 / 设计方案的冻结记录** | L1 `packages/<pkg>/docs/`（设计方案，例：[codegraph/docs/p0-plan.md](../packages/codegraph/docs/p0-plan.md)——首行即标「已实现」，**不是活待办**）；**指针表**在各包 `DEFECTS.md` §4「冻结记录」，检索方式 `git show <sha>:<path>` |
 | **入库产物与 CI 产物闸门** | L0 [docs/conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线) |
@@ -85,9 +85,17 @@
 
 | 档 | 包 |
 |---|---|
-| 复杂 | `docker` · `tty` · `codegraph` |
-| 中等 | `kit` · `rss` · `search` · `mcp` |
-| 简单 | `profile` · `env` · `prompt` · `kit-settings` · `all` |
+| 复杂 | `docker` · `tty` · `codegraph` · `kit` · `loglens` |
+| 中等 | `rss` · `search` |
+| 简单 | `profile` · `env` · `prompt` · `kit-settings` · `mcp` · `all` |
+
+> **本表是报告，不是判据**：档位由 [`scripts/docs-index.mjs`](../scripts/docs-index.mjs) 按实测行数**现算**
+> 并在每次跑时打出来（「`README.md N 行 / … → 复杂（…）」）。这里手抄一份只为让读文档的人一眼看到分布，
+> 两边不一致时**以脚本输出为准**，别把这张表当闸门。
+>
+> 2026-10-18 按脚本输出逐行对过一次：此前 `kit` 被列在中等档（它 `README.md` 286 行，判据是**复杂**）、
+> `mcp` 被列在中等档（97 行，判据是**简单**），而 `loglens` 根本没进表。三处都是手抄漂移——
+> 这正是本表上面那句「数字会漂」的实例：**判据在脚本里，表只是它的影子**。
 
 **三条纪律**：
 

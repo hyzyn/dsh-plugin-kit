@@ -33,7 +33,7 @@
 | `@hyzyn/dsh-codegraph` | 插件 | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](../packages/codegraph/README.md) · [DEFECTS](../packages/codegraph/DEFECTS.md) · [ROADMAP](../packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 插件 | 终端面板（PTY / SSH / SFTP / 隧道）+ `tty_*` `sftp_*` 工具 | [README](../packages/tty/README.md) · [DEFECTS](../packages/tty/DEFECTS.md) · [ROADMAP](../packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | 插件 | Docker 容器面板（本机 / SSH）+ `docker_*` 工具，默认只读 | [README](../packages/docker/README.md) · [DEFECTS](../packages/docker/DEFECTS.md) · [ROADMAP](../packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | 插件 | 日志查询：把异构日志后端（Loki / Elasticsearch / OpenSearch / Docker）归一化成统一查询前端 + `loglens_*` 工具（**查询未实现**；来源清单 + 插件开关的设置面已落地，走构建型） | [README](../packages/loglens/README.md) · [设计](../packages/loglens/docs/design.md) · [ROADMAP](../packages/loglens/ROADMAP.md) |
+| `@hyzyn/dsh-loglens` | 插件 | 日志查询：把异构日志后端（Loki / Elasticsearch / OpenSearch / Docker）归一化成统一查询前端 + `loglens_*` 工具（**全部 read 档**，走构建型） | [README](../packages/loglens/README.md) · [设计](../packages/loglens/docs/design.md) · [ROADMAP](../packages/loglens/ROADMAP.md) |
 | `@hyzyn/dsh-all` | 聚合 | 一条 bundle patch 挂载上面 11 个插件 | [README](../packages/all/README.md) |
 
 > `kit` 是**唯一的库**：它没有 `cordis.patch.yml`，不挂载任何东西，也不出现在 `dsh-all` 的
@@ -97,6 +97,7 @@
 | `mcp` | `codegraph` | — | 同一份 `cordis.patch.yml` 托管区块；codegraph 只补自己那行的 `cwd`，已在 MCP 卡片配置过的行不动其它字段 |
 | `prompt` | `search` | — | `search` **只读** `~/.dsh/prompts.yml` 托管区块 |
 | `mcp` | `search` | — | `search` 按 `mcp__` 前缀枚举已挂载工具并标注所属 server |
+| `docker` | `loglens` | 任意 | `loglens` 的「Docker 来源」在面板里直接调 docker 插件的 `/api/dsh-docker/config` / `containers` / `logs`（相对路径 = **同源**，连接簿与指纹不复制一份）；在不在的判据是 cordis registry 里有没有 `docker`（`packages/loglens/src/plugins.ts`）。**没装就退化**：agent 侧只指路到现成的 `docker_logs` / `docker_logs_grep`，面板不摆会 404 的入口 |
 | `kit-settings` | 全部插件 | — | 提供「设置 → 插件配置」这一行入口（0.1.5 时代卡片形态）；各插件同时注册三代插槽 |
 
 **协作的硬约束**：消费方必须**在提供方未安装 / 版本过低时优雅退化**（上面每一行都有退化路径）。
@@ -206,14 +207,14 @@
    **与之互补的第二层：会话权限档位闸（tier gate，2026-10-07 起）**。能力开关管**注册不注册**
    （宿主级、持久授权）；档位闸管**已注册的这一次调用放不放行**（逐调用、随会话档位即时变）——
    防的对手也不同：前者拦页面与脚本凭空提权，后者把「被误导的 agent」的关键动作拉回人的视野。
-   插件在 `tools/pre-execute` 瀑布上挂监听（实现只有一份：kit 的 `tier-gate.ts`，docker 与 tty
-   各出一张工具分类表），每次调用解析会话的有效档位（`sandboxPolicy.resolve` × 审批策略），
+   插件在 `tools/pre-execute` 瀑布上挂监听（实现只有一份：kit 的 `tier-gate.ts`，docker / tty /
+   loglens 各出一张工具分类表），每次调用解析会话的有效档位（`sandboxPolicy.resolve` × 审批策略），
    按矩阵决定放行 / 走宿主 approval 服务逐次询问 / 拒绝；受限档下 `write` / `exec` 类必问或必拒，
    完全权限档零询问（该档审批策略是 `never`，ask 会被确定性拒绝），Auto review 档插件让位给
    宿主的模型预审。服务未组合（老宿主）时不闸 + 启动审计一行；监听器永不 claim `allow`
    （要么 `next()` 透传，要么 `deny` / `ask`）。机制推演、决策矩阵与运行时证据见
    [permission-tier-plan.md](./permission-tier-plan.md)；各包的分类表在其 `src/` 里（`tty` / `docker` 在 `index.ts`、`loglens` 在 `tools.ts`）
-   （`TTY_TIER_CLASS` / `DOCKER_TIER_CLASS`，与注册处对账的守卫测试在各包 test）。
+   （`TTY_TIER_CLASS` / `DOCKER_TIER_CLASS` / `LOGLENS_TIER_CLASS`，与注册处对账的守卫测试在各包 test）。
 3. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
    调用方必须把 `undefined` 当 **400**，**不能**当「没传这个字段」。写操作尤其。
 4. **截断要有信号**：任何截断（列表、日志、输出）都要显式报 `truncated` / 计数说明，

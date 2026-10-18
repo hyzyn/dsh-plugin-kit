@@ -58,6 +58,14 @@
 | **优雅退化** | 跨插件依赖缺失 / 版本过低时降级而不是报错（如 docker 的终端按钮三级退化） |
 | **空壳行** | `DEFECTS.md` 里只有编号、没有症状或修法说明的行。台账守卫会拦 |
 
+## 日志查询（loglens）
+
+| 术语 | 含义 |
+|---|---|
+| **日志来源（target）** | 用户在卡片里显式添加的一条后端（`kind` = `loki` / `elasticsearch` / `opensearch` / `docker`）。**添加动作即白名单**——连接面就是「你配的那几条」，不是按网段判。定义在 [packages/loglens/docs/design.md](../packages/loglens/docs/design.md) §3 |
+| **归一化行模型** | 三个后端各自解析完都收成同一形状（`ts` / `level` / `labels` / `raw` / `highlights` + 计数与截断信号）。面板与 agent 工具走**同一个执行层**，所以「面板说的和工具说的不一样」不可能发生 |
+| **选项 0** | Docker 只当**采集来源**、不当后端适配器：agent 侧指路到现成的 `docker_logs` / `docker_logs_grep`，面板侧直接调 docker 插件的 `/api/dsh-docker/*`。理由与代价见 [design.md §5](../packages/loglens/docs/design.md) 的同名小节 |
+
 ## 台账
 
 | 术语 | 含义 |

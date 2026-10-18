@@ -12,9 +12,11 @@ count and truncation signals, and tools handed to the agent.
 > drill-down** and **click-a-bar zoom** are also in place (the board and drill-down landed 2026-10-13,
 > click-to-zoom closed out 2026-10-15). **Click-a-bucket drill-down** has been clicked through once on a
 > **real host + real ES** (2026-10-13: the request body of the drill-down shot, the chips, and clicking
-> again to cancel); **click-a-bar zoom so far only has static checks, unit tests and render regression
-> (`client-smoke`) coverage — no real-machine acceptance run yet** — the per-item conclusions are in
-> [ROADMAP.md](./ROADMAP.md).**
+> again to cancel); **click-a-bar zoom** is covered by three layers — static checks, unit tests and the
+> render regression (`client-smoke`) — and **that click has not been made on a real machine**
+> (re-checked 2026-10-18; see the fifth-knife section of [ROADMAP.md](./ROADMAP.md) — the dozen-plus
+> passes made on real machines since then measured other faces of the chart, not this click). Per-item
+> conclusions are in ROADMAP and not restated here.**
 > **The Loki side has passed real-machine acceptance** (real Loki 3.7.8, isolated environment): paging was
 > flipped to `cursor`, and two defects were caught and fixed on the real machine (`loglens D02` / `D03`,
 > item by item in [DEFECTS.md](./DEFECTS.md)); the real-machine reconciliation is 12/12 groups with no
@@ -24,6 +26,8 @@ count and truncation signals, and tools handed to the agent.
 > and open work are in [ROADMAP.md](./ROADMAP.md).
 
 ## What you can do today
+
+![The query card on an ES source: query string with dialect-specific clickable examples, filter chips, time distribution (with axis labels and the peak), and result rows colored by level with identity tags](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-query.png)
 
 - Add, edit and remove "log sources" (kind / label / address / the ES **index expression**) and toggle the
   plugin in the **Settings → Plugin config → Log query** card.
@@ -85,7 +89,9 @@ count and truncation signals, and tools handed to the agent.
   This is not cosmetic — **the ES / OpenSearch paging cursor is PIT + `search_after`**, so paging with an
   old cursor under new conditions **raises no error**, it just silently loses or misaligns rows; "group"
   would likewise pair the new query string with the previously echoed window. Click "query" to align both
-  sides and the entries come back.
+  sides and the entries come back. ("Group" has a separate, **source-side** precondition: the buttons only
+  respond when the source declares aggregations — Loki has no metric queries, so there they are grey from
+  the start, which is not the same thing as "conditions changed".)
 - **Both aggregations are drawn inside the card** (whether to draw each is decided by the capability
   self-description the host sends with the `/query` response; the panel does not guess by type):
   **time distribution** (a bar chart bucketed by time) and **group by field** (the terms board — the answer
@@ -140,10 +146,12 @@ count and truncation signals, and tools handed to the agent.
   The backdrop changed to full-screen `fixed` to match: once the panel floats at the meta-line layer, a
   backdrop covering only the result area would miss the blocks above it, and clicking the empty space above
   the panel would "do nothing". Inside the panel, the fields **hit on this page** are counted from the
-  current page's `labels` (with per-field row counts), and are then split by `/fields` into **other
-  available fields** and **type conflicts**; there is a filter box at the top, and long field names wrap at
-  the point (not hard-cut). **Collapsed, it does not call `/fields`**; expanding is what fetches it, once
-  (cached per source).
+  current page's `labels` (with per-field row counts) and **that is the only section drawn** — after knife
+  30 moved filtering into the two-cell input box, the former "other available fields" and "type conflicts"
+  sections retired together with the filter panel (their only reason to exist was to feed "filter", and a
+  column can only be added from fields hit on this page). There is a filter box at the top, and long field
+  names wrap at the point (not hard-cut). **Collapsed, it does not call `/fields`**; expanding is what
+  fetches it, once (cached per source).
   **Filtering is multi-word AND** (knife 21, 2026-10-17): split on spaces, every word must hit, so both
   `cont name` and `container name` find `container.name` — before the change only one whole substring was
   accepted, and typing a space returned 0 results (not "not found" but "this box does not accept your way
@@ -155,9 +163,10 @@ count and truncation signals, and tools handed to the agent.
   `container.labels.com_docker_compose_project_environment_file`. Now each group has a collapsible header
   (parent path plus count) and **the row shows only the last segment** — those 58 wrapped strings become 58
   short words (`architecture` / `build-date` / …), the parent path is stated by the header, and the full
-  name is still in the row's `title`. By default only the **hit section** is expanded (those are the fields
-  this source actually uses), the rest and the conflicts are collapsed (scroll height went from ~2878px
-  down to **1494px**).
+  name is still in the row's `title`. (Grouping was designed against the full `/fields` list, back when the
+  panel still drew three sections: by default only the **hit section** was expanded, and scroll height went
+  from ~2878px down to **1494px**. After knife 30 the panel draws only the hit section, so those two
+  readings are historical — **the grouping itself is unchanged**.)
   **Long last segments break on "words"** (knife 23, 2026-10-17): the last segment of a `container.labels.*`
   field is itself around 40 characters (`com_docker_compose_project_environment_file`), and CSS's
   `overflow-wrap:anywhere` used to let the browser **fill** the line before breaking — on the real machine
@@ -321,12 +330,19 @@ count and truncation signals, and tools handed to the agent.
   normalization, the same truncation signals — so "the panel says one thing and the tool says another" cannot
   happen.
 - A **Docker target** turns the card into a "container logs" area (**selecting this source auto-fetches the
-  containers**, no button needed; changing the Docker target re-fetches, the same target is not fetched twice,
-  and since containers change there is a "refresh" → pick a container / row count → view logs), going through
+  containers**, no button needed; changing the Docker target re-fetches, the same target is not fetched twice.
+  The list only changes when containers start or stop, so the main row carries **no** refresh button — the
+  re-fetch entry lives in the container-candidate popup footer (the same recipe as the field popup's
+  "N fields in total + refresh"), and the failure / empty states get "retry" / "refresh" there) →
+  pick a container / time window / row count → view logs, going through
   the Docker panel plugin's own routes (relative paths); this path has no `until`, a capped `tail`, and no
   grep — the UI says so, and for precise searching use the agent-side
   `docker_logs_grep`. A failed container-list fetch **stays in that cell only** (it does not touch the error
   line at the top of the card, and a failure caches nothing, so the next trigger retries).
+  Switching containers does **not** re-fetch the logs automatically (that is one `docker logs`, a heavy
+  call): what is on screen is still the previous pull, and a line **above the logs** says so.
+
+![A Docker source: the whole card becomes the container-logs area — pick a container / time window / row count, with the weak surface (no until, capped tail, no grep) stated inline](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-loglens-docker.png)
 
 ## HTTP surface (loopback)
 
@@ -335,7 +351,7 @@ Configuration lives on the current profile's plugin entry (the volatile path of
 
 | Action | Request | Notes |
 |---|---|---|
-| Read config | `GET /api/dsh-loglens/config` | Returns `{ ok, config: { enabled, targets } }` |
+| Read config | `GET /api/dsh-loglens/config` | Returns `{ ok, config: { enabled, targets }, plugins: { docker: true\|false } }` — `plugins.docker` is the freshly computed "is the docker plugin here" verdict ([src/plugins.ts](./src/plugins.ts)); the panel uses it to decide whether the Docker cell gets an entry |
 | Toggle | `POST {"action":"enabled","enabled":false}` | **Exempt from the same-origin proof** (once disabled, the settings card is the only way back) |
 | Add source | `POST {"action":"targets.add","target":{"kind":"loki","label":"Local Loki","url":"http://127.0.0.1:3100"}}` | `kind` is `loki` / `elasticsearch` / `opensearch` / `docker` |
 | Update source | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | The id cannot be changed (it is the only way the browser side references it) |
@@ -368,7 +384,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `loki` | `http://127.0.0.1:3100` | May include a gateway prefix (e.g. `https://gw.example/loki`); queries go to `/loki/api/v1/query_range` |
 | `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **Index expression**: the "index" filled into the third cell of that row takes precedence; if empty, the address path is used (backwards compatible); with neither it is `*,-.*` (all indices **but excluding dotted system indices** such as `.kibana_1` / `.infini_*`). `loglens_sources` **echoes the resolved result**, and probe also reports "N rows in the last 15 minutes"; credentials become a Basic header and never enter the URL; paging uses PIT + `search_after`; **ES 7.10 / 7.11 are supported too** (the PIT key name and `_shard_doc` differences are in [ROADMAP](./ROADMAP.md)) |
 | Public address | Same as above, fill it in directly | **The connection surface = the sources you configure**: loopback / private / public are all allowed (hosted logging services, and using public ranges internally, are both normal usage); only the link-local / cloud-metadata tier is unconditionally refused |
-| `docker` | The third cell takes a **Docker panel target name** (e.g. `local`), **not** a URL | A collection source ("option 0" in the design): the agent side uses the existing `docker_logs` / `docker_logs_grep`; the panel side goes through the Docker plugin's own `/api/dsh-docker/logs` (relative path), a weak surface: no `until`, a capped `tail`, no grep |
+| `docker` | The third cell takes a **Docker panel target name** (e.g. `local`), **not** a URL | A collection source ("option 0" in the design): the agent side uses the existing `docker_logs` / `docker_logs_grep`; the panel side goes through the Docker plugin's own `/api/dsh-docker/config` (to fetch the target list) + `/containers` + `/logs` (relative paths), a weak surface: no `until`, a capped `tail`, no grep |
 
 ## Anatomy
 
@@ -383,8 +399,9 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `src/execute.ts` | Find the source / normalize / shape the response: the layer **shared by the agent tools and the panel routes** |
 | `src/backends/registry.ts` | kind → adapter (Loki / ES / OS; Docker does not go here by design) |
 | `src/backends/types.ts` | The **shape** of the backend contract (`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…), with no implementation |
-| `src/backends/loki.ts` | Loki adapter: `query_range` / `labels` / `ready`, flattening, merge order and counts |
+| `src/backends/loki.ts` | Loki adapter: `query_range` / `labels` / `ready`, flattening, merge order and counts (the acceptance verdict and its per-item readings live in the P2 section of [ROADMAP](./ROADMAP.md) and are **not restated here**) |
 | `src/backends/elastic.ts` | ES / OpenSearch adapter (split by `flavor`): `_search` / PIT paging / `_field_caps` / health |
+| `src/plugins.ts` | The host-side "is a given plugin installed" rule: reads cordis's plugin registry (`ctx.registry.values()`) to decide whether the Docker cell gets an entry; a failed enumeration is always treated as "not installed" |
 | `src/tools.ts` | Agent tools (`loglens_sources` / `search` / `fields` / `facets` / `context`) + the tier table |
 | `src/query.ts` | Normalization and clamping: timestamp units, window caps, limit clamping, count and truncation merging |
 | `src/cursor.ts` | Both cursors share the version constant: the Loki one (no row loss when the same ts has multiple rows) and the ES one (`pitId` + `searchAfter`); a cursor from the wrong adapter is rejected at decode, and an undecodable one raises an error rather than being treated as absent |
