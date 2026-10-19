@@ -24,11 +24,22 @@
 | 轨道 | 索引真源 | 在市场里的位置 | 本仓材料 |
 |---|---|---|---|
 | **精选列表** | `awesome-dsh-plugin/awesome-dsh-plugin` 的 `data/plugins/*.yml` | 「发现」的分类筛选与卡片标签——**现场读的就是这一条** | 无（PR 正文当时直接写在 GitHub 上） |
-| 「创意工坊」 | DSH Web GUI 插件仓 `zhu1090093659/dsh-web`：`packages/dsh-community-plugins/community.json` + `scripts/market-build` → `market/dist/manifest/plugins.json` | 设置 → 创意工坊 | [community-submission.json](./community-submission.json)（9 条）+ [pr-body-dsh-market.md](./pr-body-dsh-market.md) |
+| 「创意工坊」 | 卫星仓 `zhu1090093659/dsh-community-plugins` 根目录的 `community.json`（`pnpm community:check` 校验）；`dsh-web` 以 submodule 钉扎它，再构建 `market/dist/manifest/plugins.json` | 设置 → 创意工坊 | [community-submission.json](./community-submission.json)（9 条）+ [pr-body-dsh-market.md](./pr-body-dsh-market.md) |
 
 **2026-10-01 复查「创意工坊」轨道**：`zhu1090093659/dsh-web` 的全仓树里已经**没有**
 `packages/dsh-community-plugins/`，也没有任何 `community*.json`（`market/dist/manifest/plugins.json`
 仍在）——那条流程已经改过。所以 `community-submission.json` 是**历史提交载荷**，不是可照抄的活格式。
+
+**2026-10-19 补记：那条轨道迁到独立卫星仓了。** 索引真源现在是
+`zhu1090093659/dsh-community-plugins` 仓根的 `community.json`（一条一个对象、**按文件顺序排**），
+投稿是向**那个仓**发 PR，门禁两条：`pnpm community:check` 与
+`node --test scripts/community-index.test.mjs`（CI 另外跑 typecheck / test / build）。三处与旧材料不同：
+
+- **没有 `rank` 字段**：该仓 CONTRIBUTING 模板里那句「next free `rank`」是旧文案，
+  `scripts/community-index.cjs` 的 `REQUIRED` / `OPTIONAL` 都不看它。
+- **分类是两级封闭集合**：`ui` / `agent` / `tools` / `knowledge` / `integration` / `security` / `utility`，
+  每档另有自己的 subcategory 白名单——与精选列表那套单值分类**不是同一组取值**。
+- **描述是商店文案**，会按插件当前源码核对默认值 / 权限 / 平台支持（该仓 `AGENTS.md`）。
 
 **`subcategory` 是死字段**：上游 4400 条里出现 **0 次**；schema 只有单值 `category`（JSON 侧的数组是
 生成时归一的）。`community-submission.json` 里那 9 组 `"subcategory"` 不影响任何东西，**别再按它投稿**。
@@ -52,6 +63,16 @@
 所以不是「漏登记」而是「尚未投稿」——真要投时按 §3 的流程走，别把这张表当成上游的现状。
 （2026-10-18 加这一句：第 13 个包进来之后，这张表的标题「我们 8 条」仍是实况，但读者不该把
 「表里没有」读成「这个包不存在」。）
+
+**2026-10-19 补记：loglens 两条轨道都投了**（都还待审，合并前别把下面两行当现场值）：
+
+| 轨道 | 提交物 | 我们的取值 | PR |
+|---|---|---|---|
+| 精选列表 | `data/plugins/hyzyn__dsh-plugin-kit--packages-loglens.yml` | `category: tools`（与 `codegraph` / `mcp` / `docker` 一致；它是查询面 + 只读工具集，不是界面增强） | [awesome-dsh-plugin#8128](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/8128) |
+| 创意工坊 | `community.json` 末尾追加一条 `dsh-loglens` | `tools` / `dev`（对齐 `dsh-docker` / `dsh-mcp`） | [dsh-community-plugins#45](https://github.com/zhu1090093659/dsh-community-plugins/pull/45) |
+
+配套改动：`packages/loglens/screenshots.json` 声明了仓库里已有的两张截图（查询面、Docker 来源），
+市场详情页按这个顺序展示；不声明则回退到从 README 抽图。
 
 每条的 `category:` 是**我们自己提交时写的**，不是维护者改的。证据是上游 PR 的标题与正文：
 #4945 标题即 `Add hyzyn/dsh-plugin-kit#mcp and #docker (tools / ui)`、正文写 docker `(ui)`；
