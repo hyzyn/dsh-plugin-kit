@@ -163,10 +163,6 @@ export declare const LINE_SCHEMA: {
     };
 };
 export declare function registerLoglensTools(deps: ToolDeps): void;
-/**
- * before / after 的夹取：负数夹到 **0**（不是回落缺省值——「要 0 行更早的」是合法诉求，夹成 5 就多给了），
- * 超过 50 夹到 50，**非整数**（含非 number）才回落缺省值。
- */
 export declare function clampCount(value: unknown, fallback: number): number;
 /**
  * `loglens_context` 的锚点匹配档位，数字越小越可信（顺序就是优先级）。

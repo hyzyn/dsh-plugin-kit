@@ -666,16 +666,43 @@ export function registerLoglensTools(deps: ToolDeps): void {
       const before = clampCount(input.before, 5)
       const after = clampCount(input.after, 5)
       const spanMs = typeof input.spanMs === 'number' && Number.isInteger(input.spanMs) && input.spanMs > 0 ? input.spanMs : 60_000
-      const normalized = normalizeQuery({
+      /*
+       * 锚点两侧**分段取**，不能一次取（loglens D09，2026-10-19 真机）。
+       *
+       * 旧写法是「一个窗口 + `limit = before + after + 1` + `backward`」。`backward` 取的是窗口里
+       * **最新**的那几条，而 `before/after` 的语义是「锚点前后各 N 行」——两者只在窗口足够稀疏时
+       * 才碰巧一致。真机实测：窗口 60s 内有 636 条、只取 11 条，拿到的全是最新的
+       * `04:35:00.0xx`，锚点 `04:34:53` 根本没进这一页，连「ts 精确相等」那一档都命不中。
+       * 日志密度越高越必然失败（该环境 455 条/分钟），而既有用例只用 5 行假数据，永远测不出来。
+       *
+       * 拆成两段后各自的边界都成立（已用真 ES 逐条验过）：
+       *   · 早的一段 `[ts - span, ts]` + backward → 从锚点往回数，锚点在最前；
+       *   · 晚的一段 `[ts, ts + span]` + forward  → 从锚点往后数。
+       * **锚点会出现在哪一段，取决于后端的时间边界口径**：ES 的 `range` 是闭区间（`gte`/`lte`），
+       * 两段都含锚点；Loki 的 `end` 是**开**区间（`D02`），只有晚一段（`from` 闭）含锚点。
+       * 所以两段都要取、合并去重后再找锚点——这样两家都不依赖「谁的边界是闭的」这种实现细节。
+       */
+      const caps = backend.capabilities()
+      const olderWindow = normalizeQuery({
         targetId: picked.target.id,
         from: anchorTs - spanMs,
-        to: anchorTs + spanMs,
-        limit: before + after + 1,
+        to: anchorTs,
+        limit: before + 1,
         direction: 'backward',
-      }, backend.capabilities())
-      if (!normalized.ok) throw new Error(normalized.error)
-      const result = await backend.query(normalized.query, picked.target)
-      const lines = result.lines
+      }, caps)
+      if (!olderWindow.ok) throw new Error(olderWindow.error)
+      const newerWindow = normalizeQuery({
+        targetId: picked.target.id,
+        from: anchorTs,
+        to: anchorTs + spanMs,
+        limit: after + 1,
+        direction: 'forward',
+      }, caps)
+      if (!newerWindow.ok) throw new Error(newerWindow.error)
+      const olderResult = await backend.query(olderWindow.query, picked.target)
+      const newerResult = await backend.query(newerWindow.query, picked.target)
+      const lines = mergeContextLines(olderResult.lines, newerResult.lines)
+      const normalized = { warnings: [...olderWindow.warnings, ...newerWindow.warnings] }
       /*
        * id 有两个候选，**原值优先**（收口 H1）：
        *   ① 调用方给的原文（只去首尾空白）——ES 的 `_id` 用户可自定、**可以含 `#`**，而结构化返回值
@@ -709,8 +736,13 @@ export function registerLoglensTools(deps: ToolDeps): void {
        * 静默换成了另一个时刻的同一段正文（复核实证：随机窗口里 36% 会这样）。
        * 所以要先把「整窗取全了吗」问出来：命中数与返回行数相等、或截断标记为假，两个判据任一到手才算。
        */
-      const matched = result.counts.matched
-      const windowComplete = matched !== undefined ? matched === lines.length : result.truncation.truncated === false
+      /*
+       * 「整窗取全」现在是**两段都要取全**：任何一段被 limit 截过，就说明锚点那一侧的行没取尽，
+       * `ties === 1` 依然只是「这一页里唯一」。判据本身沿用上一轮（命中数 vs 行数，或截断标记）。
+       */
+      const segmentComplete = (r: { lines: LogLine[], counts: { matched?: number }, truncation: { truncated: boolean } }): boolean =>
+        r.counts.matched !== undefined ? r.counts.matched === r.lines.length : r.truncation.truncated === false
+      const windowComplete = segmentComplete(olderResult) && segmentComplete(newerResult)
       if (found === undefined) {
         // 说清**这次实际试过哪几档**：不然调用方只能看到一句「没找到」，无从判断该补 id 还是放宽窗口
         const tried = [
@@ -740,9 +772,17 @@ export function registerLoglensTools(deps: ToolDeps): void {
       }
       const index = found.index
       const anchor = lines[index]
-      // lines 是 backward（新的在前）：比锚点更早的在 index 之后，更晚的在 index 之前。两侧都按时间升序返回，读起来跟日志文件一样。
-      const older = lines.slice(index + 1, index + 1 + before).reverse()
-      const newer = lines.slice(Math.max(0, index - after), index).reverse()
+      /*
+       * `lines` 是 {@link mergeContextLines} 合并后的**时间升序**（不是旧版那种「新的在前」）。
+       * 于是「更早的」在 index **之前**、「更晚的」在 index **之后**——与旧版正好相反，
+       * 改两段取法时这里是必须一起改的一处（loglens D09）：只改取数不改切片，返回的「前 5 行」
+       * 会是锚点**之后**的 5 行，而且没有任何报错。
+       *
+       * 两侧都按时间升序返回（读起来跟日志文件一样）：`before` 取紧邻锚点的那几行、保持升序，
+       * 所以从 index-before 切到 index 即可，不再需要 `.reverse()`。
+       */
+      const older = lines.slice(Math.max(0, index - before), index)
+      const newer = lines.slice(index + 1, index + 1 + after)
       /*
        * 锚点档位必须回给调用方（收口 F4）：非 id 档都是启发式挑出来的，静默换行等于让调用方
        * 以为自己拿的是精确坐标。warnings 通道 schema 里本来就有（output.warnings），render 也输出。
@@ -768,6 +808,31 @@ export function registerLoglensTools(deps: ToolDeps): void {
  * before / after 的夹取：负数夹到 **0**（不是回落缺省值——「要 0 行更早的」是合法诉求，夹成 5 就多给了），
  * 超过 50 夹到 50，**非整数**（含非 number）才回落缺省值。
  */
+/**
+ * 合并两段上下文重查的结果（loglens D09），**按行去重后统一成时间升序**。
+ *
+ * 为什么必须去重：锚点那一行可能同时落进两段——ES 的 `range` 是闭区间，`[ts-span, ts]` 与
+ * `[ts, ts+span]` 都含 `ts`；Loki 的 `end` 是开区间，只有晚一段含。**不能靠「哪家是闭区间」来决定
+ * 要不要去重**：那是适配器的实现细节，换个后端就又错了。按内容去重，两家都对。
+ *
+ * 去重键用 `id`：它是契约里行的稳定标识（ES 是文档 `_id`、Loki 是 `tsNs:内容序`）。`id` 为空的行
+ * （ES 文档 `_id` 缺失那种）退回「ts + 正文」——宁可多留一条，也不要把两条不同时刻的同文行并成一条。
+ *
+ * 排序统一成**时间升序**（与 `renderLines` 的读法、「跟日志文件一样」的口径一致）；同 ts 的保持
+ * 后端给的相对次序（`D03` 的教训：同纳秒组内的次序不该由我们重排——`Array#sort` 在 V8 上稳定）。
+ */
+function mergeContextLines(older: readonly LogLine[], newer: readonly LogLine[]): LogLine[] {
+  const seen = new Set<string>()
+  const merged: LogLine[] = []
+  for (const line of [...older, ...newer]) {
+    const key = line.id === '' ? String(line.ts) + '\u0000' + line.message : line.id
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(line)
+  }
+  return merged.sort((a, b) => a.ts - b.ts)
+}
+
 export function clampCount(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) return fallback
   if (value < 0) return 0
@@ -962,15 +1027,22 @@ function anchorWarnings(found: { kind: AnchorTier, ties: number }, context: {
      * 相同，只是空白被折叠过，它跟严格相等几乎一样可靠；`substring` 才是真正「可能挑错行」的那一档
      * （片段能在几十条里出现）。上一版对两档用同一句「**这是模糊命中，可能不是你要的那一行**」，
      * 对前者是过度惊吓。
+     *
+     * 「有几行命中」只在 **ties > 1** 时才说（真机修正）：`ties === 1` 时说「有 1 行含这个片段」是
+     * 一句废话，而且会让人以为还有别的候选。唯一命中但整窗没取全时（`unique` 为假而 ties 为 1），
+     * 该说的是「**窗里可能还有更早/更晚的行没取到**」，不是「有 1 行」。
      */
+    const tieNote = found.ties > 1
+      ? '，且' + scope + '有 ' + String(found.ties) + ' 行都命中'
+      : (unique ? '' : '，但这一页被 `limit` 截过——更早或更晚的行没取到，窗里可能还有别的命中')
     if (found.kind === 'normalized') {
       warnings.push('锚点按「正文（规范化空白后）相等」定位' + basis + '：整条正文对上了，只是空白与原文'
-        + '不完全一致（换行/缩进/多余空格被折叠）——内容是同一条。'
-        + (unique ? '' : scope + '有 ' + String(found.ties) + ' 行规范化后相同，取的是离 ts 最近的一条。'))
+        + '不完全一致（换行/缩进/多余空格被折叠）——内容是同一条'
+        + (found.ties > 1 ? '，且' + scope + '有 ' + String(found.ties) + ' 行规范化后相同，取的是离 ts 最近的一条' : '')
+        + (unique ? '' : found.ties > 1 ? '。' : '，但这一页被 `limit` 截过——更早或更晚的行没取到。'))
     } else {
       warnings.push('**这是模糊命中，可能不是你要的那一行**：锚点按「' + ANCHOR_TIER_LABEL[found.kind] + '」'
-        + '定位' + basis + '——原文并不逐字相同'
-        + (unique ? '' : '，且' + scope + '有 ' + String(found.ties) + ' 行都含这个片段')
+        + '定位' + basis + '——原文并不逐字相同' + tieNote
         + '。请核对上面的 anchor 是不是你要的行，或改用 id 精确定位。')
     }
   } else {

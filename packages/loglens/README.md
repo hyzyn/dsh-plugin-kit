@@ -202,7 +202,7 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 | `loglens_search` | 查：支持 `filters` 结构化过滤与 `level`（**及以上**语义）、`from` / `to` / `limit` / `direction` / `cursor` |
 | `loglens_fields` | 看有哪些字段。ES / OpenSearch 侧**不列 `object` / `nested` 容器行**；同名在不同索引里**类型不一致**的标 `conflict: true` 并带 `esTypes` / `conflictDescriptions` |
 | `loglens_facets` | 按字段分组 / 按时间分桶（「哪个服务在报错」）；目前只有 ES / OpenSearch 有。**0 桶时会说清是哪种成因**——按「这个窗口里有多少条日志」区分「这个字段是空壳」与「这段时间没有命中」，两种情形给的下一步相反 |
-| `loglens_context` | 取某一行前后的上下文。锚点按**优先级**匹配：id 精确 → 剥一个前导 `#` 的变体 → 正文严格相等 → 规范化空白后相等 → 规范化空白后单向包含 → 只按 `ts`（兜底档，**不看**有没有给正文；高档位一律压过低档位，同档取离 `ts` 最近的、并列按 id 与正文的字典序定）。渲染文本里紧跟在正文之后的 `#id` 就是那个精确坐标（同一行更后面可能还有 labels）；非 id 档命中时会在 warnings 里说明用的是哪一档 |
+| `loglens_context` | 取某一行前后的上下文（**两侧分段取**：早段从锚点往回、晚段从锚点往后，各按 `before`/`after` 取满，所以高密度窗口里也一定包含锚点本身）。锚点按**优先级**匹配：id 精确 → 剥一个前导 `#` 的变体 → 正文严格相等 → 规范化空白后相等 → 规范化空白后单向包含 → 只按 `ts`（兜底档，**不看**有没有给正文；高档位一律压过低档位，同档取离 `ts` 最近的、并列按 id 与正文的字典序定）。渲染文本里紧跟在正文之后的 `#id` 就是那个精确坐标（同一行更后面可能还有 labels）；非 id 档命中时会在 warnings 里说明用的是哪一档 |
 
 **渲染文本的形态**（`loglens_search` / `loglens_context` 两条路共用）：一行是「时间 · 级别 · 正文 ·
 `#id` · 标签」。三处细节都为了**读得顺**：

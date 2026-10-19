@@ -518,6 +518,47 @@ describe('loglens_context', () => {
     return captured.get('loglens_context')!
   }
 
+  it('高密度窗口：按窗口**真过滤**的后端上，锚点仍要能被取到（loglens D09）', async () => {
+    /*
+     * 这条用例对付的是一个具体的坏形状：既有用例的 `contextBackend()` **无视 query 参数**、
+     * 永远返回同一份 5 行假数据，于是「窗口里只有 5 条」这个前提被白送了——`limit=11` 必然覆盖全窗。
+     * 真机上那条前提不成立（窗口 60s 内 636 条），旧实现取到的全是**最新**的 11 条，锚点根本不在页里。
+     *
+     * 所以这里的后端**按 from/to/direction/limit 真过滤**，模拟真实高密度：
+     * 在锚点前后各铺 200 条（每 100ms 一条），锚点位于中间。旧实现会取到窗口里最新的 11 条而失配，
+     * 新实现（两段取）必须命中。
+     */
+    const anchorTs = at(10_000)
+    const dense: LogLine[] = []
+    for (let offset = -200; offset <= 200; offset++) {
+      const ts = anchorTs + offset * 100
+      dense.push({ ts, message: 'row-' + String(offset), source: 's', labels: {}, raw: '', id: 'id-' + String(offset) })
+    }
+    const windowed = fakeBackend({
+      query: async (query) => {
+        // 按方向与边界真过滤，再按方向取 limit —— 与真实后端的语义一致
+        const inWindow = dense.filter((line) => line.ts >= query.from && line.ts <= query.to)
+        const ordered = query.direction === 'forward'
+          ? [...inWindow].sort((a, b) => a.ts - b.ts)
+          : [...inWindow].sort((a, b) => b.ts - a.ts)
+        const lines = ordered.slice(0, query.limit)
+        return resultOf(lines, {
+          counts: { returned: lines.length, matched: inWindow.length, totalKnown: true },
+          truncation: { truncated: inWindow.length > lines.length, reasons: inWindow.length > lines.length ? ['hit_limit'] : [] },
+        })
+      },
+    })
+    const value = await harness(windowed).execute({ ts: anchorTs, id: 'id-0', before: 2, after: 2 }) as {
+      anchor: LogLine
+      before: LogLine[]
+      after: LogLine[]
+    }
+    // 锚点必须真的被取到，两侧各 2 行、且顺序为时间升序
+    expect(value.anchor.id).toBe('id-0')
+    expect(value.before.map((line) => line.id)).toEqual(['id--2', 'id--1'])
+    expect(value.after.map((line) => line.id)).toEqual(['id-1', 'id-2'])
+  })
+
   it('按 id 定位锚点，两侧都按时间升序返回（读起来跟日志文件一样）', async () => {
     const value = await harness(contextBackend()).execute({ ts: at(4000), id: 'anchor-id', before: 1, after: 1 }) as {
       anchor: LogLine
@@ -876,7 +917,7 @@ describe('loglens_context', () => {
     ]
     const duplicated = await harness(fakeBackend({ query: async () => resultOf(many) }))
       .execute({ ts: at(4000), message: 'Application run failed' }) as { anchor: LogLine, warnings: string[] }
-    expect(duplicated.warnings.join()).toContain('有 2 行都含这个片段')
+    expect(duplicated.warnings.join()).toContain('有 2 行都命中')
   })
 
   it('降噪**不许**把「页内唯一」当成「窗内唯一」：页被截断时仍要提醒（复核 F1）', async () => {
@@ -1036,14 +1077,27 @@ describe('loglens_context', () => {
     await expect(harness(contextBackend()).execute({ id: 'anchor-id' })).rejects.toThrow('ts 必填')
   })
 
-  it('before / after 夹取到 0~50，且重查的窗口半径按 spanMs', async () => {
+  it('锚点两侧**分段取**，各段窗口按 spanMs、limit 按 before/after（loglens D09）', async () => {
+    /*
+     * 旧实现是单个窗口 `[ts-span, ts+span]` + `limit = before+after+1` + backward，真机上
+     * 锚点经常落不进那一页（窗口 636 条只取 11 条，取到的全是最新的）。现在改两段：
+     *   早段  [ts-span, ts] + backward + limit=before+1
+     *   晚段  [ts, ts+span] + forward  + limit=after+1
+     * 这条用例钉的就是**两段**这个契约——退回单窗口会让下面第一个断言（长度 2）立刻红。
+     */
     const queries: NormalizedQuery[] = []
     const backend = fakeBackend({ query: async (query) => { queries.push(query); return resultOf(LINES) } })
     await harness(backend).execute({ ts: at(3000), id: 'anchor-id', before: 999, after: -3, spanMs: 5000 })
-    // limit = before + after + 1（锚点自己也算一行）：before 夹到 50、after 0，所以是 51
-    expect(queries[0].limit).toBe(51)
+    expect(queries).toHaveLength(2)
+    // 早段：before 夹到 50 → limit = 50 + 1（锚点自己也算一行）；after -3 夹到 0 → limit = 0 + 1
+    expect(queries[0].direction).toBe('backward')
     expect(queries[0].from).toBe(at(3000) - 5000)
-    expect(queries[0].to).toBe(at(3000) + 5000)
+    expect(queries[0].to).toBe(at(3000))
+    expect(queries[0].limit).toBe(51)
+    expect(queries[1].direction).toBe('forward')
+    expect(queries[1].from).toBe(at(3000))
+    expect(queries[1].to).toBe(at(3000) + 5000)
+    expect(queries[1].limit).toBe(1)
     expect(clampCount(3, 5)).toBe(3)
     expect(clampCount(-1, 5)).toBe(0)
     expect(clampCount(99, 5)).toBe(50)
