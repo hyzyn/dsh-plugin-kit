@@ -13,6 +13,7 @@ import {
   canonicalLevel,
   flattenLabels,
   inferLevel,
+  isContinuation,
   levelHint,
   levelMatches,
   withLevel,
@@ -155,5 +156,74 @@ describe('级别：归一化、及以上语义、从正文推断', () => {
     const none = withLevel(line({ message: 'just a message' }), [])
     expect(none.level).toBeUndefined()
     expect(none.levelInferred).toBeUndefined()
+  })
+})
+
+describe('真机补的级别形态（2026-10-19，固定窗口 300 条里未分类从 139 降到 3）', () => {
+  /*
+   * 这两条都是"级别不在你以为的位置"：一条在 `|-` 之后（logback 自己的状态日志），
+   * 一条在 JSON 的 `"log.level"` 键里（ECS 惯例带点，把原来的裸 `level` 模式打断了）。
+   * 认不出来它们不会报错——它们会被当成"无级别"，然后在按级别筛时静默丢掉。
+   */
+  it('logback 状态日志：`18:31:54,850 |-INFO in ch.qos.logback…`', () => {
+    expect(inferLevel('18:31:54,850 |-INFO in ch.qos.logback.classic.joran.action.ConfigurationAction - Adding from resource')).toBe('info')
+    expect(inferLevel('18:31:54,849 |-WARN in ch.qos.logback.core.joran.spi.ConfigurationWatchList@1234 - URL is not of type URL')).toBe('warn')
+  })
+
+  it('JSON 正文：`{"log.level":"info",...}`', () => {
+    expect(inferLevel('{"log.level":"info","@timestamp":"2026-10-19T10:00:00Z","message":"x"}')).toBe('info')
+    expect(inferLevel('{"log.level":"error","message":"boom"}')).toBe('error')
+    // 裸 level 的老形态仍然认（不许被新模式挤掉）
+    expect(inferLevel('time=2026-10-19T04:34:25.204Z level=ERROR msg="x"')).toBe('error')
+    expect(inferLevel('{"level":"warn"}')).toBe('warn')
+  })
+})
+
+describe('堆栈续行判定（levelContinuation，真机 2026-10-19）', () => {
+  /*
+   * 采集侧没配 multiline 时，一次异常会被拆成多个文档：首文档带 `[ERROR] …`，其余是堆栈后半截。
+   * 实测 400 条样本里 63% 属于后者，正文里没有任何级别词——按级别筛时它们被静默丢掉，
+   * 用户看到的 error 数因此偏小。这里钉的是**判据本身**：只认堆栈语法，不靠"看起来像"。
+   */
+  it('堆栈后半截的几种形态都认', () => {
+    const tails = [
+      '\tat com.moan.cdc.EmsService.run(EmsService.java:42)',
+      '\tat org.springframework.beans.factory.support.AbstractBeanFactory.doGetBean(AbstractBeanFactory.java:334)',
+      'Caused by: java.lang.IllegalStateException: boom',
+      '... 23 more',
+      'Suppressed: java.io.IOException: closed',
+      '### Error querying database.  Cause: org.opengauss.util.PSQLException',
+      '### The error may exist in com/moan/cdc/emsservice/dao/ExamInfoMapper.java',
+      // 真机补的两条：MyBatis 把一次异常拆成 11 条，这两条既没 ### 也不是 \tat
+      'org.springframework.jdbc.BadSqlGrammarException: ',
+      '; bad SQL grammar []',
+    ]
+    for (const tail of tails) expect(isContinuation(tail), tail).toBe(true)
+  })
+
+  it('正常日志**不许**被误标（误标会让它被排除在任何级别之外）', () => {
+    const normal = [
+      '[INFO ] [2026-10-19 18:27:30] [scheduling-1] ==> [TxId: , SpanId: ] 已释放分布式锁',
+      '[ERROR] [2026-10-19 18:27:30] something failed',
+      'time=2026-10-19T04:34:25.204Z level=ERROR msg="Failed to determine"',
+      'plain log line without any level',
+      '2026-10-19 18:27:30 INFO 12345 --- [main] started',
+    ]
+    for (const line of normal) expect(isContinuation(line), line).toBe(false)
+  })
+
+  it('首行带级别的堆栈**不算**续行（它是一条独立日志，只是后面跟了堆栈）', () => {
+    const withStack = '[ERROR] [2026-10-19 18:27:30] failed\n\tat com.foo.Bar(Bar.java:1)'
+    expect(isContinuation(withStack)).toBe(false)
+  })
+
+  it('withLevel 推断不出级别时才标续行；推断得出就标 levelInferred', () => {
+    const tail = withLevel({ ts: 1, message: '\tat com.foo.Bar(Bar.java:1)', source: 's', labels: {}, raw: '', id: 'x' }, [])
+    expect(tail.levelContinuation).toBe(true)
+    expect(tail.level).toBeUndefined()
+    const inferred = withLevel({ ts: 1, message: '[ERROR] boom', source: 's', labels: {}, raw: '', id: 'y' }, [])
+    expect(inferred.level).toBe('error')
+    expect(inferred.levelInferred).toBe(true)
+    expect(inferred.levelContinuation).toBeUndefined()
   })
 })

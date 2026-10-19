@@ -139,6 +139,10 @@ export declare const LINE_SCHEMA: {
             readonly type: "boolean";
             readonly description: "true = 级别是从正文推断的（文档里没有级别字段），不是来源自己标的";
         };
+        readonly levelContinuation: {
+            readonly type: "boolean";
+            readonly description: "true = 这一行是**上一条日志的续行**（堆栈后半截 / MyBatis 诊断块），本身没有级别、也不属于任何级别。按级别筛或分组时它会被单独计数，不会静默消失";
+        };
         readonly highlights: {
             readonly type: "array";
             readonly description: "message 里命中查询串的字符区间 [start, end)，按 start 升序、互不重叠；只有后端明确报了高亮（ES 的 highlight）才带";

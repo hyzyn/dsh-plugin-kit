@@ -57,6 +57,14 @@ export interface LogLine {
    * 契约不许把后者写成前者——与 LogCounts.totalKnown 同一口径。
    */
   levelInferred?: boolean
+  /**
+   * `true` = 这一行**不是一条独立的日志**，而是上一条的续行（堆栈后半截 / MyBatis 诊断块），
+   * 所以它**没有级别、也不该被算进任何级别**（真机 2026-10-19）。
+   *
+   * 为什么单列一位而不是「没级别就算续行」：两者是不同的事实——「不知道级别」可能是数据缺失，
+   * 「是续行」是结构判断。契约不许把后者写成前者（与 `levelInferred` / `totalKnown` 同一口径）。
+   */
+  levelContinuation?: boolean
   message: string
   /**
    * `message` 里**命中了查询串**的那几段（字符区间 `[start, end)`，按 start 升序、互不重叠）。

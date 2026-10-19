@@ -127,6 +127,17 @@ The **source configuration** collapses by default into one summary line on the p
 
 - The result list shows timestamp to the millisecond · level · body, with the matching spans inside the body
   highlighted; when there is a cursor you get "next page" (deduplicated by id).
+- **Rows with no level are marked `↳`**: without `multiline` on the collection side, one exception becomes
+  several documents (measured: MyBatis splits a single failure into 11), and only the first carries a level —
+  the rest are continuation lines like `\tat …` / `Caused by:` / `### Error querying`. They have no level and
+  belong to none, so the row is marked `↳`, and **filtering by level reports "N of them are stack continuation
+  lines"** — otherwise they would vanish silently and the error count would look smaller than it is. The
+  criterion only recognises stack syntax (never "looks like one"): a false positive would exclude a real log
+  from every level, so under-marking is preferred.
+- **Level inference covers the shapes seen on a real machine**: `[ERROR]` prefixes, `level=ERROR` and
+  `"log.level":"info"` (logfmt and JSON), logback's `18:31:54,850 |-INFO in …`, and logback's
+  `14:00:00.123 ERROR 12345 ---`. Over a fixed 300-row sample, unclassified dropped from 139 to 3 (the rest
+  being startup banners that genuinely have no level).
 - **A row carries only one identity tag** (the first in host order, usually the container name) and shows
   only the **value** — the field name lives in the row hover / the ＋N popup / the field panel. The remaining
   tags are collected in a **"＋N"** at the end of the row: opening it lists **all** tags, and clicking any one

@@ -183,10 +183,19 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
      * **走得通**的路：ES 上 `log.level` 常常整列是空的（级别从正文推断），那种来源连
      * `loglens_facets` 按它分组也是空桶（真机 2026-10-17 实测），只指聚合等于指一条死路。
      */
+    /*
+     * 续行要**单独报数**（真机 2026-10-19）：采集侧没配 multiline 时，一次异常会被拆成 5–30 个文档，
+     * 其中只有首文档带级别、其余是 `\tat …` / `Caused by:` 这类续行（实测样本 63%）。
+     * 它们本来就"没有级别"，按级别筛必然把它们全筛掉——**不报数就等于让它们静默消失**，
+     * 而用户看到的 error 数会因此偏小、且完全不知道为什么。
+     */
+    const continuation = lines.filter((line) => line.levelContinuation === true).length
     warnings.push(
       'level=' + wanted.level + '（' + levelHint(wanted.level) + '）是按「返回的这一页」筛的：'
-      + String(lines.length - kept.length) + ' / ' + String(lines.length) + ' 行被筛掉，'
-      + 'counts 与 truncation 仍是未筛的整页——按级别看全量要求后端真有级别字段'
+      + String(lines.length - kept.length) + ' / ' + String(lines.length) + ' 行被筛掉'
+      + (continuation === 0 ? '' : '（其中 ' + String(continuation) + ' 行是**堆栈续行**——它们本身没有级别，'
+        + '是上一条日志的后半截，所以必然被筛掉）')
+      + '，counts 与 truncation 仍是未筛的整页——按级别看全量要求后端真有级别字段'
       + '（ES 上 log.level 常为空、级别是从正文推断的），否则只能在查询串里搜级别关键字',
     )
     lines = kept

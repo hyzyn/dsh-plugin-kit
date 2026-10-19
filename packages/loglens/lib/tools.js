@@ -151,7 +151,18 @@ function renderLabels(labels) {
  * 且只在**渲染文本**里加，工具返回值与面板用的是结构化字段，不受这层影响。
  */
 export function formatLine(line, options = {}) {
-    const level = line.level === undefined ? '' : line.level + (line.levelInferred === true ? '? ' : ' ');
+    /*
+     * 级别位有三种状态，**必须区分**（真机 2026-10-19）：
+     *   · `error `  = 来源自己标的级别；
+     *   · `error? ` = 从正文推断的（`levelInferred`）；
+     *   · `↳ `      = **这一行没有级别，它是上一条的续行**（`levelContinuation`）。
+     * 第三种以前什么都不显示，于是读的人会以为「这条日志没级别」是数据缺失——其实是结构问题：
+     * 一次异常被采集侧拆成了多个文档，它是后半截。用一个箭头而不是留白，是为了让"这一行属于上一行"
+     * 在扫读时可见（也是"按级别筛会把它筛掉"的唯一线索）。
+     */
+    const level = line.levelContinuation === true
+        ? '↳ '
+        : line.level === undefined ? '' : line.level + (line.levelInferred === true ? '? ' : ' ');
     const id = typeof line.id === 'string' && line.id !== '' ? '  #' + line.id : '';
     return formatTimestamp(line.ts) + '  ' + level + renderMessage(line.message, options) + id + renderLabels(line.labels);
 }
@@ -201,6 +212,7 @@ export const LINE_CONTRACT_KEYS = {
     message: true,
     level: true,
     levelInferred: true,
+    levelContinuation: true,
     highlights: true,
     source: true,
     id: true,
@@ -223,6 +235,7 @@ export const LINE_SCHEMA = {
         message: { type: 'string', required: true },
         level: { type: 'string', description: '归一化级别（trace / debug / info / warn / error / fatal）' },
         levelInferred: { type: 'boolean', description: 'true = 级别是从正文推断的（文档里没有级别字段），不是来源自己标的' },
+        levelContinuation: { type: 'boolean', description: 'true = 这一行是**上一条日志的续行**（堆栈后半截 / MyBatis 诊断块），本身没有级别、也不属于任何级别。按级别筛或分组时它会被单独计数，不会静默消失' },
         /*
          * 高亮区间是**数组套数组**（契约是 `Array<[number, number]>`）。宿主校验器是递归下钻的
          * （`items` 里还能再是 array），所以这么写能被真正执行；而它在契约里是**可选**字段，

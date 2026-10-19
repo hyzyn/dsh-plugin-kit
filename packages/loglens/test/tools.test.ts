@@ -373,12 +373,12 @@ describe('LINE_SCHEMA 与 LogLine 契约对账（loglens D05）', () => {
       .map(([key]) => key)
       .sort()
     expect(required).toEqual(['id', 'message', 'raw', 'source', 'ts'])
-    for (const optional of ['level', 'levelInferred', 'highlights', 'labels'] as const) {
+    for (const optional of ['level', 'levelInferred', 'levelContinuation', 'highlights', 'labels'] as const) {
       expect(Object.keys(LINE_SCHEMA.properties)).toContain(optional)
       expect(required).not.toContain(optional)
     }
     // 键集本身不许是空壳（它要是被清空了，上面两条会「等于空集」而假绿）
-    expect(Object.keys(LINE_CONTRACT_KEYS)).toHaveLength(9)
+    expect(Object.keys(LINE_CONTRACT_KEYS)).toHaveLength(10)
   })
 
   it('**宿主真校验器**接受带 highlights 的行，也仍然拦得住未声明的键', () => {

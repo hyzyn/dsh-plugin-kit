@@ -52,6 +52,14 @@ export declare function levelHint(wanted: CanonicalLevel): string;
  */
 export declare function inferLevel(message: string): CanonicalLevel | undefined;
 /**
+ * 这一行是不是**上一条日志的续行**（堆栈后半截 / MyBatis 诊断块），而不是一条独立的日志。
+ *
+ * 只对「正文里没有级别」的行有意义——有级别就是一条独立日志，不必问。所以调用方是
+ * {@link withLevel}：推断不出级别时再问这一句，避免把 `[ERROR] \tat …` 这种（首行带级别的）
+ * 误标成续行。
+ */
+export declare function isContinuation(message: string): boolean;
+/**
  * 给一行补级别：**文档 / 流标签里有就用它，没有才从正文推断**，并标出级别是推断来的。
  *
  * 为什么要标：level 是筛选项，而「文档说它是 error」与「我从正文看着像 error」是两种可信度——

@@ -135,9 +135,23 @@ export function levelHint(wanted) {
 const LEVEL_PATTERNS = [
     /^\[(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRITICAL|SEVERE)\s*\]/iu,
     /(?:^|[\s,{"'])(?:level|severity|lvl)["']?\s*[=:]\s*["']?([A-Za-z]+)/iu,
+    /*
+     * JSON 正文里的 **`"log.level":"info"`**（真机 2026-10-19）：上一条模式只认裸 `level`，
+     * 而 ECS 惯例的键名带点（`log.level`），那个 `.` 把匹配打断了。补一条专门认带点前缀的键。
+     */
+    /["']?(?:log\.)?level["']?\s*:\s*["']?([A-Za-z]+)/iu,
     /^(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRITICAL|SEVERE)\b/u,
     /\d{2}:\d{2}:\d{2}[.,]\d{3}\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s/u,
     /^(TRACE|DEBUG|INFO|WARN|ERROR)\s+\d{4}-\d{2}-\d{2}/u,
+    /*
+     * logback 自己的状态日志（真机 2026-10-19 抓到，固定窗口里 139 条未分类中占大头）：
+     *   `18:31:54,850 |-INFO in ch.qos.logback.classic.joran.action.ConfigurationAction - …`
+     *   `18:31:54,849 |-WARN in ch.qos.logback.core.joran.spi.ConfigurationWatchList@…`
+     * 形态是「时间 + `|-` + 级别 + ` in ` + 类名」。级别**不在行首**、也没有 `level=`，所以前面几条
+     * 模式都落空；而它确实是**独立日志**（不是上一条的续行），所以必须在这里认出来，
+     * 否则它会被误判成"无级别"，进而被按级别筛时静默丢掉。
+     */
+    /\d{2}:\d{2}:\d{2}[.,]\d{3}\s+\|-\s*(TRACE|DEBUG|INFO|WARN|ERROR)/u,
 ];
 /**
  * 从正文推断级别。测的形态都是真机里出现过的：方括号包着的断语、level=ERROR、
@@ -155,6 +169,55 @@ export function inferLevel(message) {
     }
     return undefined;
 }
+/*
+ * 「堆栈续行」的形状。**这不是级别推断**，是「这条压根不是一条独立的日志」的判据。
+ *
+ * 为什么需要它（真机 2026-10-19）：采集侧没配 multiline，一次 Java 异常会被拆成 5–30 个文档——
+ * 首文档带 `[ERROR] …` 前缀，其余是 `\tat …` / `Caused by:` / `### Error querying …` / `... N more`。
+ * 实测 400 条样本里 **63% 属于这一类**：正文里没有任何级别词，`inferLevel` 返回 undefined，
+ * 于是它们在「按级别筛 / 按级别分组」时被**静默丢掉**——用户看到的 error 数因此偏小，
+ * 而偏小的原因（"它们是同一次异常的后半截"）界面上一个字都没有。
+ *
+ * 判据刻意保守：只认**堆栈语法本身的形态**，不靠"看起来像"。宁可漏标（漏标只是维持现状），
+ * 也不能把一条正常日志标成续行（那会让它被排除在任何级别之外）。
+ */
+const CONTINUATION_PATTERNS = [
+    /^\s+at\s+\S/u, // \tat com.foo.Bar.method(Bar.java:42)
+    /^\s*\.\.\.\s*\d+\s+more\s*$/u, // ... 23 more
+    /^\s*Caused by:\s/u, // Caused by: java.lang.IllegalStateException
+    /^\s*Suppressed:\s/u, // Suppressed: （try-with-resources / addSuppressed）
+    /^\s*###\s/u, // MyBatis 的 ### Error querying / ### The error may exist
+    /^\s*(?:Exception|Error)\s+in\s+thread\b/u,
+    /*
+     * 下面两条是真机补的（2026-10-19，200 条样本里各占 11/11 条）：MyBatis 把一次异常拆成固定 11 条，
+     * 其中两条既没有 `###` 前缀、也不是 `\tat`：
+     *   · `org.springframework.jdbc.BadSqlGrammarException: ` —— **异常类名 + 冒号**（无 message 的头）
+     *   · `; bad SQL grammar []`                                  —— 上一行的**续句**（以分号开头）
+     * 前者靠「整行就是一个类名:」的形态认，后者靠「行首分号」认——两者都只可能是续行：
+     * 一条独立日志不会以分号开头，也不会以「类名:」结束而没有内容。
+     */
+    /^[\w$]+(?:\.[\w$]+)+Exception:\s*$/u,
+    /^\s*;/u,
+];
+/**
+ * 这一行是不是**上一条日志的续行**（堆栈后半截 / MyBatis 诊断块），而不是一条独立的日志。
+ *
+ * 只对「正文里没有级别」的行有意义——有级别就是一条独立日志，不必问。所以调用方是
+ * {@link withLevel}：推断不出级别时再问这一句，避免把 `[ERROR] \tat …` 这种（首行带级别的）
+ * 误标成续行。
+ */
+export function isContinuation(message) {
+    const head = message.split('\n', 1)[0] ?? '';
+    // 首行就有级别 → 它是一条独立日志（哪怕后面跟着堆栈）
+    if (inferLevel(head) !== undefined)
+        return false;
+    const text = head.length > 400 ? head.slice(0, 400) : head;
+    for (const pattern of CONTINUATION_PATTERNS) {
+        if (pattern.test(text))
+            return true;
+    }
+    return false;
+}
 /**
  * 给一行补级别：**文档 / 流标签里有就用它，没有才从正文推断**，并标出级别是推断来的。
  *
@@ -168,8 +231,14 @@ export function withLevel(line, candidates) {
             return { ...line, level };
     }
     const guessed = inferLevel(line.message);
-    if (guessed === undefined)
-        return line;
+    if (guessed === undefined) {
+        /*
+         * 推断不出级别：先问「它是不是上一条的续行」（真机 63% 属于这一类）。
+         * 标出来之后，按级别筛 / 分组时就能说清「另有 N 条是无级别的堆栈续行」，
+         * 而不是让它们静默消失——**「不知道」与「不属于任何级别」是两件事**。
+         */
+        return isContinuation(line.message) ? { ...line, levelContinuation: true } : line;
+    }
     return { ...line, level: guessed, levelInferred: true };
 }
 //# sourceMappingURL=line.js.map
