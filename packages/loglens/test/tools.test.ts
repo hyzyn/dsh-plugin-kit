@@ -1165,6 +1165,44 @@ describe('渲染', () => {
     expect(formatLine(line(1_700_000_000_000, 'a\nb'))).toMatch(/a\n {4}\| b/)
   })
 
+  it('多行堆栈默认截断、`expand` 时整段铺开（真机反馈：长 body 没有就地展开的手段）', () => {
+    /*
+     * 排障时要能「先看 20 行确认是不是它、再要全文」，而不是一上来就吃下上百行堆栈。
+     * 数据一直没丢（`lines[].message` 是全文），截断只发生在**渲染层**——这条钉住两者互不影响。
+     */
+    const stack = Array.from({ length: 30 }, (_unused, index) => 'frame-' + String(index)).join('\n')
+    const line: LogLine = { ts: 1_700_000_000_000, message: stack, source: 's', labels: {}, raw: '', id: 'x' }
+    // 默认：只铺 20 行，并报出还有多少
+    const compact = formatLine(line)
+    expect(compact).toContain('frame-19')
+    expect(compact).not.toContain('frame-20')
+    expect(compact).toContain('还有 10 行未显示，共 30 行')
+    // expand：整段都在，且不再出现截断提示
+    const full = formatLine(line, { expand: true })
+    expect(full).toContain('frame-29')
+    expect(full).not.toContain('未显示')
+    // 返回值里的 message 始终是全文（渲染不改数据）
+    expect(line.message).toBe(stack)
+    expect(line.message.split('\n')).toHaveLength(30)
+  })
+
+  it('计数口径：说清「条」是日志**文档**，不是「报错次数」（真机反馈）', () => {
+    /*
+     * 多行堆栈在采集侧常被拆成多个文档（真机：一次 Java 异常占 30 条），于是 `matched` 与人心里的
+     * 「报错了几次」不是一个量。工具改不了采集侧，但**必须说清楚**，否则计数会被当成事件数。
+     */
+    const backend = fakeBackend({ query: async () => resultOf([line(1_700_000_000_000, 'boom', 'a')], {
+      counts: { returned: 1, matched: 689, totalKnown: true },
+    }) })
+    const captured = new Map()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => backend, add: (n, d) => captured.set(n, d) })
+    const tool = captured.get('loglens_search')!
+    const rendered = tool.output.render({}, { returned: 1, lines: [line(1_700_000_000_000, 'boom', 'a')], counts: { matched: 689, totalKnown: true }, truncation: { truncated: false, reasons: [] }, warnings: [] })
+    const text = rendered[0].text
+    expect(text).toContain('689 个文档')
+    expect(text).toContain('多行堆栈常被拆成多条')
+  })
+
   it('formatLine 带出标签；renderLines 标出锚点、空结果不装样子', () => {
     expect(formatLine(line(1_700_000_000_000, 'hello'))).toContain('hello')
     // `app` 不是身份键 → 折进计数，不再逐条铺开（渲染口径②：正文不该被 metadata 淹没）

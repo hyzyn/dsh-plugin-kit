@@ -93,6 +93,18 @@ The **source configuration** collapses by default into one summary line on the p
   everything (`match_all`); `"phrase"`, `a OR b` (**space-separated words default to "or"**; "and" must be
   uppercase `AND`), and `name*` all follow Lucene's rules. `level:ERROR` often returns 0 rows and that is not
   breakage — in this index family `log.level` is mostly empty, so filter by level with the level dropdown.
+- **Three spellings that silently change the meaning** (measured on a real machine; a wrong one **does not
+  error, it just changes the count**):
+  - **Square brackets are range syntax**, not a literal: `[ERROR]` becomes a range expression to Lucene, which
+    is **not** the same as "contains the word ERROR". To match the word exactly write `"ERROR"` (a phrase) or
+    `message:ERROR`.
+  - **`=` has no special meaning**: `level=error` is not "field equals value"; it is usually read as two
+    ordinary words (OR by default). For a real field filter use `field:value` (`log.level:ERROR`) or the
+    panel's filter row.
+  - **Only uppercase `AND` / `OR` / `NOT` are operators**; lowercase ones are ordinary words.
+  Together these explain a common confusion: in the same window `[ERROR]` and `level=error` differ by 2x.
+  **It is not tokenization** — neither spelling means "match ERROR exactly". For a reproducible denominator
+  use `"ERROR"`, and when comparing counts across spellings suspect one of the three first.
 - **The placeholder and the clickable examples follow the source dialect**: LogQL for Loki, Lucene
   (`query_string`) for ES / OpenSearch. The ES examples are `error` / `"Failed to"` / `error AND failed` /
   `stream:stderr`, the Loki ones are things like `{job="app"} |= "error"` — clicking one **fills it into the

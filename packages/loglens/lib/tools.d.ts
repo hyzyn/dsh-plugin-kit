@@ -48,7 +48,9 @@ export declare function formatTimestamp(ts: number): string;
  * **超过 {@link MESSAGE_MAX_LINES} 行就截断并报出还有多少行**：一整段异常链能上百行，全铺开会把
  * 后面的日志行挤出视野，而「悄悄少显示几行」比截断更坏（与 `raw` 的 2 万字符预览同一口径）。
  */
-export declare function renderMessage(message: string): string;
+export declare function renderMessage(message: string, options?: {
+    expand?: boolean;
+}): string;
 /**
  * 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）+ 级别 + **id** + 正文 + 标签。
  *
@@ -66,8 +68,12 @@ export declare function renderMessage(message: string): string;
  * 代价是每行多 `2 + id 长度` 个字符——id 本身很短（ES 侧是文档 `_id`，Loki 侧是 `ts:内容序`），
  * 且只在**渲染文本**里加，工具返回值与面板用的是结构化字段，不受这层影响。
  */
-export declare function formatLine(line: LogLine): string;
-export declare function renderLines(lines: readonly LogLine[], markId?: string): string;
+export declare function formatLine(line: LogLine, options?: {
+    expand?: boolean;
+}): string;
+export declare function renderLines(lines: readonly LogLine[], markId?: string, options?: {
+    expand?: boolean;
+}): string;
 /** `loglens_fields` 的渲染输入（从工具返回值里取用的那一小撮）。 */
 export interface FieldsView {
     fields?: Array<{

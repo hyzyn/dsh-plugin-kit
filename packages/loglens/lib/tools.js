@@ -89,12 +89,13 @@ export function formatTimestamp(ts) {
  * **超过 {@link MESSAGE_MAX_LINES} 行就截断并报出还有多少行**：一整段异常链能上百行，全铺开会把
  * 后面的日志行挤出视野，而「悄悄少显示几行」比截断更坏（与 `raw` 的 2 万字符预览同一口径）。
  */
-export function renderMessage(message) {
+export function renderMessage(message, options = {}) {
     // Windows 侧采集的日志常带 `\r\n`：统一成 `\n` 再分行，否则续行前缀后面会跟一个看不见的 `\r`
     const lines = message.replace(/\r\n?/g, '\n').split('\n');
     if (lines.length === 1)
         return message;
-    const shown = lines.slice(0, MESSAGE_MAX_LINES);
+    // expand=true 时整段铺开（调用方明确要全文，通常是已经确认过是它）
+    const shown = options.expand === true ? lines : lines.slice(0, MESSAGE_MAX_LINES);
     const body = shown.map((text, index) => (index === 0 ? text : CONTINUATION_PREFIX + text)).join('\n');
     const dropped = lines.length - shown.length;
     return dropped === 0
@@ -149,15 +150,16 @@ function renderLabels(labels) {
  * 代价是每行多 `2 + id 长度` 个字符——id 本身很短（ES 侧是文档 `_id`，Loki 侧是 `ts:内容序`），
  * 且只在**渲染文本**里加，工具返回值与面板用的是结构化字段，不受这层影响。
  */
-export function formatLine(line) {
+export function formatLine(line, options = {}) {
     const level = line.level === undefined ? '' : line.level + (line.levelInferred === true ? '? ' : ' ');
     const id = typeof line.id === 'string' && line.id !== '' ? '  #' + line.id : '';
-    return formatTimestamp(line.ts) + '  ' + level + renderMessage(line.message) + id + renderLabels(line.labels);
+    return formatTimestamp(line.ts) + '  ' + level + renderMessage(line.message, options) + id + renderLabels(line.labels);
 }
-export function renderLines(lines, markId) {
+export function renderLines(lines, markId, options = {}) {
     if (lines.length === 0)
         return '（没有命中）';
-    return lines.map((line) => (line.id === markId ? '→ ' : '  ') + formatLine(line)).join('\n');
+    const expand = options.expand === true;
+    return lines.map((line) => (line.id === markId ? '→ ' : '  ') + formatLine(line, { expand })).join('\n');
 }
 /**
  * `loglens_fields` 的渲染文本（导出是为了能直接测：冲突标记这种东西不该只靠人肉看）。
@@ -352,7 +354,17 @@ export function registerLoglensTools(deps) {
             + '返回值里的时间戳一律 epoch 毫秒；**入参**的 from / to 还能写 ISO 8601 或 -30m 这类相对时间（省得自己算毫秒）。',
         parameters: {
             target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
-            q: { type: 'string', description: '查询串（Loki 是 LogQL，ES / OpenSearch 是各自的方言）；留空即全量' },
+            q: {
+                type: 'string',
+                description: '查询串（Loki 是 LogQL，ES / OpenSearch 是各自的方言）；留空即全量。'
+                    + '**ES / OpenSearch 侧原样交给 `query_string`，有三个写法会静默改变口径（不报错、只是数字不对）**：'
+                    + '① 方括号是**区间语法**，`[ERROR]` 不是「含 ERROR 这个词」，要精确匹配请写 `"ERROR"`（短语）或 `message:ERROR`；'
+                    + '② `=` 没有特殊含义，`level=error` 不是「字段等于值」，多半被当成两个普通词（默认 OR），'
+                    + '真字段筛选用 `字段:值` 或 filters；'
+                    + '③ 只有**大写** `AND` / `OR` / `NOT` 是运算符，小写是普通词。'
+                    + '同一个窗口里 `[ERROR]` 与 `level=error` 命中数差一倍，通常就是这三条之一造成的——'
+                    + '要一个可复现的口径，用 `"ERROR"`。',
+            },
             from: {
                 description: '起始时间：epoch 毫秒整数、ISO 8601（不带时区按本机时区）或相对时间；缺省 = to 前面 15 分钟',
                 oneOf: [
@@ -376,6 +388,12 @@ export function registerLoglensTools(deps) {
                 description: '结构化过滤：字段 → 值（如 {"container.name":"app-svc-1","log.level":"error"}）。'
                     + '**字段该不该带 .keyword 由适配器查 _field_caps 决定**，你不用管；是 text 且没有子字段时自动退回 match_phrase（近似匹配）。'
                     + 'Loki 不支持它（过滤写进 LogQL 的 {} 或过滤表达式）',
+            },
+            expand: {
+                type: 'boolean',
+                description: 'true = 正文**整段展开**（多行堆栈默认只渲染 20 行，超出会报「还有 N 行未显示」）。'
+                    + '只影响**渲染文本**，返回值里 `lines[].message` 一直是全文。'
+                    + '排查长堆栈时先用默认、确认是你要的那条再用 expand 重查（省 token）。',
             },
             level: {
                 type: 'string',
@@ -402,12 +420,24 @@ export function registerLoglensTools(deps) {
                     level: { type: 'string', description: '生效的 level 过滤（回显）' },
                 },
             },
-            render: (_args, value) => {
+            render: (args, value) => {
+                // `expand` 只影响渲染：正文默认只铺 MESSAGE_MAX_LINES 行，要全文得显式要（真机反馈）
+                const expanded = args?.expand === true;
                 const result = value;
                 const lines = result.lines === undefined ? [] : result.lines;
-                const head = '返回 ' + String(result.returned) + ' 行' + (result.level === undefined ? '' : '（level ≥ ' + result.level + '）') + (result.counts?.scannedRows === undefined ? '' : '，扫描 ' + String(result.counts.scannedRows) + ' 行') + (result.truncation?.truncated === true ? '（截断：' + (result.truncation.reasons ?? []).join(' / ') + '）' : '');
+                /*
+                 * 「条」= **日志文档**，不是「次报错」（真机反馈）：多行堆栈在采集侧常被拆成多个文档，
+                 * 一次 Java 异常能占 30 条，于是 `matched` 与人心里的「报错了几次」不是一个量。这条口径
+                 * 工具改变不了（要改得在采集侧配 multiline），但**必须说清楚**，否则计数会被当成事件数。
+                 */
+                const docs = result.counts?.matched === undefined ? '' : '，命中 ' + String(result.counts.matched) + ' 个文档';
+                const head = '返回 ' + String(result.returned) + ' 行（= ' + String(result.returned) + ' 个日志文档；多行堆栈常被拆成多条）'
+                    + (result.level === undefined ? '' : '（level ≥ ' + result.level + '）')
+                    + (result.counts?.scannedRows === undefined ? '' : '，扫描 ' + String(result.counts.scannedRows) + ' 行')
+                    + docs
+                    + (result.truncation?.truncated === true ? '（截断：' + (result.truncation.reasons ?? []).join(' / ') + '）' : '');
                 const tail = [result.hint === undefined ? '' : result.hint, ...(result.warnings ?? [])].filter((item) => item !== '');
-                return [{ type: 'text', text: [head, renderLines(lines), ...tail].join('\n') }];
+                return [{ type: 'text', text: [head, renderLines(lines, undefined, { expand: expanded }), ...tail].join('\n') }];
             },
         },
         async execute(args) {
@@ -476,7 +506,7 @@ export function registerLoglensTools(deps) {
             target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
             by: { type: 'string', description: '按这个字段分组（terms），如 container.name / host.name / log.level' },
             interval: { type: 'string', description: '按时间分桶（如 5m / 1h / 1d）；与 by 可以同时要' },
-            q: { type: 'string', description: '查询串（先筛出要统计的那部分日志；留空即全量）' },
+            q: { type: 'string', description: '查询串（先筛出要统计的那部分日志；留空即全量）。ES / OpenSearch 侧的写法陷阱见 loglens_search 的 q：方括号是区间、`=` 无特殊含义、只有大写 AND/OR 是运算符——写法不同会静默改变计数口径' },
             filters: {
                 type: 'object',
                 additionalProperties: true,
@@ -534,7 +564,8 @@ export function registerLoglensTools(deps) {
                 const parts = [];
                 if (result.buckets !== undefined) {
                     const total = result.buckets.reduce((sum, bucket) => sum + bucket.count, 0);
-                    parts.push('按 ' + String(result.by) + ' 分组（' + String(result.buckets.length) + ' 个桶，共 ' + String(total) + ' 条）：');
+                    parts.push('按 ' + String(result.by) + ' 分组（' + String(result.buckets.length) + ' 个桶，共 ' + String(total)
+                        + ' 个日志文档——多行堆栈常被拆成多条，所以它不等于「报错了几次」）：');
                     for (const bucket of result.buckets)
                         parts.push('  ' + String(bucket.count) + '  ' + bucket.key);
                     if (result.otherCount !== undefined)

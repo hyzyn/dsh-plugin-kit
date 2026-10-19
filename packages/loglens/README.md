@@ -72,6 +72,15 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 - ES / OpenSearch 的查询串**原样**交给 `query_string`，面板不改写：留空即全量（`match_all`）；
   `"短语"`、`a OR b`（**空格分隔的词默认是「或」**，要「与」得写大写 `AND`）、`name*` 都按 Lucene 走。
   `level:ERROR` 常回 0 条不是坏了——这套索引里 `log.level` 多半为空，按级别筛请用级别下拉。
+- **三个最容易误判的写法**（真机上实测栽过，写错了**不报错、只是数字不对**）：
+  - **方括号是区间语法**，不是「一个字面量」：`[ERROR]` 会被 Lucene 当成区间表达式，行为与
+    「含 ERROR 这个词」**不是一回事**。要精确匹配这个词，写 `"ERROR"`（短语）或 `message:ERROR`。
+  - **`=` 没有特殊含义**：`level=error` 不是「字段等于值」，多半被当成两个普通词（默认 OR）。
+    真字段筛选请用 `字段:值`（`log.level:ERROR`）或面板的筛选行。
+  - **大写 `AND` / `OR` / `NOT` 才是运算符**，小写是普通词。
+  这三条合起来解释了一个常见困惑：同一个窗口里 `[ERROR]` 与 `level=error` 命中数差一倍，
+  **不是分词把哪个拆错了**，是两者都不是「精确匹配 ERROR」。
+  **要一个可复现的口径，就用 `"ERROR"`（短语）**，并在不同写法之间比对时先怀疑上面三条。
 - **占位提示与可点的例子都按来源方言给**：Loki 是 LogQL、ES / OpenSearch 是 Lucene（`query_string`）。
   ES 的例子是 `error` / `"Failed to"` / `error AND failed` / `stream:stderr`，Loki 是
   `{job="app"} |= "error"` 这类——点一下**填进框里、不自动查**（先看清楚，必要时改一改）。
