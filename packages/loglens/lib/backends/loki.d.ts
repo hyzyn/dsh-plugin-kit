@@ -1,3 +1,18 @@
+/**
+ * @hyzyn/dsh-loglens — Loki 适配器（P2）。
+ *
+ * 一个薄层：把归一化查询翻译成 `/loki/api/v1/query_range` 的请求、把 `streams[].values` 摊平成
+ * 行、把 stats 搬进计数、把「同 ts 多行」的边界交给 src/cursor.ts。所有夹取与校验都在
+ * src/query.ts（适配器**不再夹一遍**——两处夹取就是两份会漂的口径）。
+ *
+ * **真机验收已跑（2026-10-12，Loki 3.7.8，隔离环境）**，抓到两条与窗口/坐标有关的缺陷
+ * （loglens D02 / D03，见 DEFECTS.md），分页能力随之从保守的 `'none'` 翻成 `'cursor'`。
+ * 两条真语义现在是本文件所有窗口计算的判据：
+ *
+ *   1. **`start` 是闭区间、`end` 是开区间**（真机逐纳秒实测：`end = ts` 命中 0 行）；
+ *   2. **`limit` 会切在同纳秒组中间**，而组内次序跨查询不稳定 → 组必须整组交付。
+ */
+import type { LoglensTarget } from '../config.js';
 import type { LookupFn } from '../net.js';
 import type { LogBackend, PaginationKind } from './types.js';
 /** Loki 单页上限的默认声明（Loki 自己的默认是 100，这里放宽；再大要动服务端 max_entries_limit）。 */
@@ -61,6 +76,21 @@ interface LokiRow {
     /** 内容键（标签 + 正文）：同 ts 组内的定序依据，也是「整组是否已交付」的指纹成分。 */
     groupKey: string;
 }
+/**
+ * Loki 的基址与认证头（与 ES 的 `targetAccess` 同一口径，但**保留路径**）。
+ *
+ * 为什么必须有（2026-10-19 外部测评 issue #13 第 9 条）：Loki 侧原来直接把 `target.url`
+ * 拼进 `joinUrl()` 去 fetch。地址写成 `http://user:pass@host:3100` 时，undici 直接拒绝
+ * （`Request cannot be constructed from a URL that includes credentials`）——**带凭据的
+ * Loki 来源根本用不了**，而报错文案还把含密码的原始 URL 原样带了回来。
+ *
+ * 与 ES 的差别：ES 取 `origin`（索引表达式单独给），Loki **必须保留路径**——它常挂在网关
+ * 的子路径下（`joinUrl` 的头注释就是为这个写的）。所以这里只摘掉 userinfo。
+ */
+export declare function targetAccess(target: LoglensTarget): {
+    url: string;
+    headers: Record<string, string>;
+};
 /** epoch 毫秒 → 纳秒字符串（BigInt 走一遍，别用浮点乘）。 */
 export declare function toNanoString(ms: number): string;
 /** 取两个纳秒字符串里较早的那个（不能先换成 ms：亚毫秒边界会被磨掉，而边界正是「含它」的那条线）。 */

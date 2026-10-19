@@ -16,7 +16,7 @@
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { dshHome, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit';
+import { dshHome, readManagedBlock, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 export const name = 'prompt-manager';
 export const inject = [];
@@ -25,6 +25,8 @@ export const inject = [];
  * ------------------------------------------------------------------ */
 const MARK_START = '# --- dsh-prompt-manager managed (auto-generated; do not edit) ---';
 const MARK_END = '# --- end dsh-prompt-manager managed ---';
+/** 交给 kit 的托管区块读写：标记必须**整行相等**才认（见下面 readManagedStore 的注释）。 */
+const BLOCK_MARKERS = { beginMarker: MARK_START, endMarker: MARK_END };
 const PROMPT_ID_RE = /^p-[A-Za-z0-9-]{1,64}$/;
 const VERSION_ID_RE = /^v-[A-Za-z0-9-]{1,64}$/;
 const MAX_NAME_LENGTH = 80;
@@ -50,21 +52,29 @@ export function readManagedStore() {
     const file = promptFilePath();
     const existed = existsSync(file);
     const text = existed ? readFileSync(file, 'utf8') : '';
-    const lines = text.split('\n');
-    const start = lines.findIndex((line) => line.includes('dsh-prompt-manager managed'));
     const result = { store: emptyStore(), file };
-    if (start === -1)
-        return result;
-    const end = lines.findIndex((line, index) => index > start && line.includes('end dsh-prompt-manager managed'));
-    if (end === -1) {
-        result.fileError = '托管区块缺少结束标记（# --- end dsh-prompt-manager managed ---）';
+    /*
+     * 标记按**整行相等**匹配（kit 的 readManagedBlock，只容忍行尾空白 / CR）。
+     *
+     * 为什么不能再用 `line.includes('… managed')`（2026-10-19 外部测评 issue #13 第 3 条）：
+     * 区块正文是 js-yaml 渲染的，版本内容里的**多行文本**会写成缩进块；只要其中一行恰好
+     * 含 `end dsh-prompt-manager managed`，子串匹配就会把它当成结束标记——区块被**静默
+     * 截断**（注入的 systemPrompt 少掉后半截，界面没有任何提示），而多行值越界那种更糟：
+     * 下一次写入会把截断后的形状当真，文件逐步走形。
+     */
+    const block = readManagedBlock(text, BLOCK_MARKERS);
+    if (block === undefined) {
+        // 区分「没有区块」与「起始标记在、结束标记丢」：前者是正常空配置，后者必须报错，
+        // 否则用户会以为自己什么都没丢。
+        const hasBegin = text.split('\n').some((line) => line.trimEnd() === MARK_START);
+        if (hasBegin)
+            result.fileError = '托管区块缺少结束标记（# --- end dsh-prompt-manager managed ---）';
         return result;
     }
-    const block = lines.slice(start + 1, end).join('\n');
-    if (block.trim() === '' || block.split('\n').every((line) => line.trim() === '' || line.trim().startsWith('#')))
+    if (block.body.trim() === '' || block.body.split('\n').every((line) => line.trim() === '' || line.trim().startsWith('#')))
         return result;
     try {
-        const parsed = yaml.load(block);
+        const parsed = yaml.load(block.body);
         if (typeof parsed !== 'object' || parsed === null) {
             result.fileError = '托管区块不是 YAML 对象';
             return result;
@@ -107,23 +117,14 @@ export function writeManagedStore(store) {
     const existed = existsSync(file);
     const mode = existed ? (statSync(file).mode & 0o777) : 0o600;
     const raw = existed ? readFileSync(file, 'utf8') : '# dsh prompt manager file\n';
-    // CG67 同源（codegraph）：根位置上的 `[]` 是**完整**的 YAML 文档（flow 序列根），
-    // 往它后面追加托管区块会让整份文件非法。先摘掉这个根，文件就回到「无区块」的形状。
-    const text = stripEmptyFlowSequenceRoot(raw) ?? raw;
-    const lines = text.split('\n');
-    const start = lines.findIndex((line) => line.includes('dsh-prompt-manager managed'));
-    const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.includes('end dsh-prompt-manager managed'));
-    const block = MARK_START + '\n' + renderManagedBlock(store) + MARK_END + '\n';
-    let next;
-    if (start === -1) {
-        next = text.replace(/\s*$/, '') + (text.trim() === '' ? '' : '\n') + '\n' + block;
-    }
-    else if (end === -1) {
-        next = lines.slice(0, start).join('\n') + '\n' + block;
-    }
-    else {
-        next = [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n');
-    }
+    /*
+     * 拼接走 kit 的 spliceManagedBlock（2026-10-19 外部测评 issue #13 第 3 条）：
+     *   - 标记**整行相等**才算边界——版本正文里的多行值恰好含标记文本时不会被误判成边界；
+     *   - 根位置上的裸 `[]`（flow 序列根）会被换掉而不是追加，不再写出非法 YAML（CG67 同源）；
+     *   - 悬空起始标记只重写标记行、不吞掉其后内容；区块外内容逐字节保留。
+     * 这三条此前在本包各写了一遍（且是子串匹配版本），现在只有 kit 一份实现。
+     */
+    const next = spliceManagedBlock(raw, { ...BLOCK_MARKERS, body: renderManagedBlock(store) });
     const tmp = join(dirname(file), '.prompts.yml.' + process.pid + '.tmp');
     writeFileSync(tmp, next, { mode });
     renameSync(tmp, file);
@@ -244,6 +245,80 @@ function validateImportPayload(raw) {
         ? input.activePromptId
         : null;
     return { store: { activePromptId, prompts } };
+}
+/**
+ * 把导入的 store 合并进本地 store（纯函数，导出是为了直接测）。
+ *
+ * 三条语义，都是「**不丢用户数据**」这一条的展开（issue #14 第 2 条）：
+ *
+ * 1. **同 id 合并版本，不整条替换**：本地 p-x 有 [v1,v2]，导入的 p-x 有 [v1,v3]，
+ *    结果是 [v1,v2,v3]。原先的 `byId.set(prompt.id, prompt)` 会把 v2 直接抹掉，
+ *    而接口只回 `{ok:true, imported:1}`——用户看不到任何损失。
+ * 2. **同 id 版本冲突时保留本地**：同 id 同内容的版本只算一次；同 id **不同内容**时
+ *    以本地为准（本地是用户编辑过的），导入的那份不覆盖——要覆盖请用户自己删了再导。
+ * 3. **默认不改 activePromptId**：导入是「把别人的东西拿进来」，不是「切换我当前的
+ *    systemPrompt」。原先 `imported.activePromptId ?? local` 会让一次导入立刻改变
+ *    每个会话注入的内容，而用户没有点过任何「启用」。
+ *
+ * @param local - 本地现有 store
+ * @param imported - 校验过的导入 store
+ * @param options.activate - 用户显式勾选「导入后启用这份 Prompt」时才为 true
+ * @returns 合并后的 store 与摘要
+ */
+export function mergeImportedStore(local, imported, options = {}) {
+    const byId = new Map(local.prompts.map((prompt) => [prompt.id, prompt]));
+    const created = [];
+    const merged = [];
+    for (const incoming of imported.prompts) {
+        const existing = byId.get(incoming.id);
+        if (existing === undefined) {
+            // 本地没有：整条进来，但**版本 id 冲突不跨 Prompt 讨论**——同一条 Prompt 内
+            // validateImportPayload 已经保证不重复。
+            byId.set(incoming.id, incoming);
+            created.push(incoming.id);
+            continue;
+        }
+        const localVersions = new Map(existing.versions.map((version) => [version.id, version]));
+        const addedVersions = [];
+        const keptVersions = [];
+        for (const version of incoming.versions) {
+            const same = localVersions.get(version.id);
+            if (same === undefined) {
+                localVersions.set(version.id, version);
+                addedVersions.push(version.id);
+            }
+            else {
+                // 同 id 版本：**保留本地**（见上面第 2 条）。记进摘要，卡片可以提示「M 个版本
+                // 已存在、未覆盖」——沉默地跳过和不导入在界面上长得一样。
+                keptVersions.push(version.id);
+            }
+        }
+        const versions = [...localVersions.values()];
+        // 本地的激活版本 / A/B 引用在合并后必须仍然存在（新增版本不会让它们失效，
+        // 但导入方可能带来本地没有的引用——那种情况回落到第一个版本）。
+        const activeVersionId = existing.activeVersionId !== null && localVersions.has(existing.activeVersionId)
+            ? existing.activeVersionId
+            : (versions[0]?.id ?? null);
+        const abA = localVersions.has(existing.ab.aVersionId) ? existing.ab.aVersionId : versions[0].id;
+        const abB = localVersions.has(existing.ab.bVersionId) ? existing.ab.bVersionId : versions[versions.length - 1].id;
+        byId.set(existing.id, {
+            ...existing,
+            versions,
+            activeVersionId,
+            ab: { ...existing.ab, aVersionId: abA, bVersionId: abB },
+        });
+        merged.push({ id: existing.id, addedVersions, keptVersions });
+    }
+    let activePromptId = local.activePromptId;
+    let activeChanged = false;
+    if (options.activate === true && imported.activePromptId !== null && byId.has(imported.activePromptId)) {
+        activePromptId = imported.activePromptId;
+        activeChanged = activePromptId !== local.activePromptId;
+    }
+    return {
+        store: { activePromptId, prompts: [...byId.values()] },
+        summary: { created, merged, activeChanged },
+    };
 }
 function resolveActiveText(store) {
     const empty = { promptId: null, variantId: null, text: '', ab: null };
@@ -605,7 +680,13 @@ function makeRoutes(ctx, onChanged) {
                     schema: EXPORT_SCHEMA,
                     version: EXPORT_VERSION,
                     exportedAt: nowIso(),
-                    activePromptId: managed.store.activePromptId,
+                    /*
+                     * 单条导出（带 promptId）**不带全库的 activePromptId**：那个字段描述的是
+                     * 「导出方本机当前启用的是谁」，与这条 Prompt 无关。带出去会让导入方误以为
+                     * 「同事启用的就是这条」，并在导入时改变自己启用的 Prompt（issue #14 第 2 条）。
+                     * 全库导出才带——那时它确实是有意义的上下文。
+                     */
+                    ...(promptId !== null && promptId !== '' ? {} : { activePromptId: managed.store.activePromptId }),
                     prompts,
                 };
                 writeJson(res, 200, { ok: true, data: payload });
@@ -630,15 +711,17 @@ function makeRoutes(ctx, onChanged) {
                 }
                 const managed = readManagedStore();
                 const imported = validated.store;
-                const byId = new Map(managed.store.prompts.map((prompt) => [prompt.id, prompt]));
-                for (const prompt of imported.prompts)
-                    byId.set(prompt.id, prompt);
-                const nextStore = {
-                    activePromptId: imported.activePromptId ?? managed.store.activePromptId,
-                    prompts: [...byId.values()],
-                };
+                /*
+                 * 导入 = **合并**，不是替换（2026-10-19 外部测评 issue #14 第 2 条）：
+                 * 同 id 的 Prompt 保留本地版本、只补进本地没有的版本；`activePromptId` 默认不动
+                 * （要切换请显式传 `activate: true`，那是用户点过「启用」才该发生的事）。
+                 * 原先的 `byId.set(prompt.id, prompt)` 会整条覆盖——同事分享的 JSON 带
+                 * `activePromptId` 时，导入方本地那份 Prompt 的版本**当场消失**，而且新的正文
+                 * 立刻热注入 system prompt，界面没有任何预览或确认。
+                 */
+                const merged = mergeImportedStore(managed.store, imported, { activate: body.activate === true });
                 try {
-                    writeManagedStore(nextStore);
+                    writeManagedStore(merged.store);
                 }
                 catch (error) {
                     writeJson(res, 500, { error: '写入 prompts 文件失败: ' + (error instanceof Error ? error.message : String(error)) });
@@ -646,7 +729,13 @@ function makeRoutes(ctx, onChanged) {
                 }
                 onChanged();
                 const after = readManagedStore();
-                writeJson(res, 200, { ok: true, imported: imported.prompts.length, ...storeDto(after.store), ...(after.fileError !== undefined ? { fileError: after.fileError } : {}) });
+                writeJson(res, 200, {
+                    ok: true,
+                    imported: imported.prompts.length,
+                    importSummary: merged.summary,
+                    ...storeDto(after.store),
+                    ...(after.fileError !== undefined ? { fileError: after.fileError } : {}),
+                });
             },
         },
     ];
@@ -660,6 +749,17 @@ export function apply(ctx, config) {
         return;
     const announce = config?.announceToAgent !== false;
     const applyToSystemPrompt = config?.applyToSystemPrompt !== false;
+    /*
+     * `systemPrompt.section()` 的形状走 kit 的 PromptSectionApi（`kit D15`）。
+     *
+     * 原来这里手写的是 `{ name; order?; text: string }`——**少了 `interpolate`**，
+     * 于是「把用户编辑的 Prompt 正文原样注入」这件事在类型层面根本表达不出来。
+     * 宿主缺省 `interpolate: true`：正文里只要出现 `{{language}}` / `<span>{{ msg }}</span>`
+     * 这类文本，`renderPrompt()` 就会在**每一步请求**上抛 `unknown prompt variable` /
+     * `malformed prompt variable reference`——`dsh headless` 直接 exit 1，模型收到 0 次请求，
+     * 而插件的 /save、/list、/active 全部 200、`fileError` 为空，卡片上看不出任何原因
+     * （2026-10-19 外部测评 issue #14 第 1 条）。
+     */
     let systemPromptApi = null;
     let sectionDisposer = null;
     let announcementDisposer = null;
@@ -679,7 +779,8 @@ export function apply(ctx, config) {
         if (text === '')
             return;
         try {
-            sectionDisposer = systemPromptApi.section({ name: 'plugin:dsh-prompt-manager', order: 140, text });
+            // 正文是**用户内容**：一律不插值（见上面那段注释）。
+            sectionDisposer = registerLiteralSection(systemPromptApi, { name: 'plugin:dsh-prompt-manager', order: 140, text });
         }
         catch {
             sectionDisposer = null;
@@ -709,7 +810,9 @@ export function apply(ctx, config) {
                 systemPromptApi = systemPrompt;
                 if (announce) {
                     try {
-                        announcementDisposer = systemPrompt.section({ name: 'plugin:dsh-prompt-manager:announcement', order: 150, text: PROMPT_GUIDANCE });
+                        // 公告正文是本仓自己的静态文案，同样不插值：文案里出现 `{{` 就该原样呈现，
+                        // 而不是变成一条「未知变量」把整个会话拖死。
+                        announcementDisposer = registerLiteralSection(systemPrompt, { name: 'plugin:dsh-prompt-manager:announcement', order: 150, text: PROMPT_GUIDANCE });
                     }
                     catch {
                         /* 公告失败不阻塞 */

@@ -65,6 +65,68 @@ const SCRIPTS = [
 ]
 
 /**
+ * **自起宿主**类脚本的形状声明（与上面 `SCRIPTS` 的「打外部宿主」判据不同）。
+ *
+ * 分家的理由：`SCRIPTS` 那 4 个打的是**已经在跑**的宿主，所以「不许出现 `DSH_HOME`」是对的；
+ * 而 `verify-issue-13-14.mjs` **自己起**宿主，它**必须**设 `DSH_HOME`——不设就会写用户的真实配置
+ * （这正是本仓 `verify-codegraph-agent-integration.mjs` 第一版踩过的坑）。
+ * 所以这一组的判据是「**必须**隔离」而不是「不许碰」。
+ */
+const SELF_HOSTED_SCRIPTS = [
+  {
+    file: 'verify-issue-13-14.mjs',
+    /**
+     * 收尾自证必须有的标记。缺任何一条，这条脚本的「不污染真实配置」就退化成一句承诺
+     * （`docs/agent-real-test.md` 硬约束 ① 的「必须自证」）。
+     */
+    selfProofMarkers: [
+      'const REAL_FILES = [',
+      'record(\'SELF\'',
+      'fs.readFileSync(abs)',
+    ],
+    /** 隔离必须同时覆盖 home 与授权落点（kit D12：只隔离 home 会继承机器上已有的带外授权）。 */
+    isolationMarkers: ['DSH_HOME: isoHome', 'DSH_KIT_HOME: kitHome'],
+    /** 只删自己记下来的目录。 */
+    cleanupMarkers: ['createdDirs.push(isoHome)', 'for (const dir of createdDirs)'],
+  },
+]
+
+/**
+ * 自起宿主脚本的检查（**纯函数**）。
+ *
+ * @param source - 脚本源码。
+ * @param spec - `SELF_HOSTED_SCRIPTS` 里的一项。
+ * @returns 违规描述数组（空 = 通过）。
+ */
+export function selfHostedViolationsOf(source, spec) {
+  const problems = []
+  for (const marker of spec.isolationMarkers) {
+    if (!source.includes(marker)) problems.push(`隔离缺一项：${marker}（漏 DSH_KIT_HOME 会继承机器上已有的带外授权）`)
+  }
+  for (const marker of spec.selfProofMarkers) {
+    if (!source.includes(marker)) problems.push(`缺少收尾自证：${marker}`)
+  }
+  for (const marker of spec.cleanupMarkers) {
+    if (!source.includes(marker)) problems.push(`清理没有只认自己记下的路径：${marker}`)
+  }
+  /*
+   * 隔离目录的前缀必须可识别（与 SCRIPTS 同一条规矩），但**只针对新建的那个**：
+   * 脚本里还会出现 `path.join(os.homedir(), '.dsh')`——那是**读**真实 home 用来做收尾自证，
+   * 本来就该是 `.dsh`。第一版把两者一起判，于是正确的代码被判红（判据要测对对象）。
+   * 判法：只检查**带模板占位 / 变量后缀**的那些（即真正在造新目录的）。
+   */
+  for (const match of source.matchAll(/join\(\s*os\.homedir\(\)\s*,\s*(['"`])([^'"`]+)\1/g)) {
+    const literal = match[2]
+    // 纯字面量（如 `.dsh`）= 指向真实 home 的常量，不是新建的隔离目录
+    if (!literal.includes('${') && !literal.includes('$')) continue
+    if (!/^\.[a-z][a-z0-9-]*-/.test(literal)) {
+      problems.push(`隔离目录前缀不可识别（没有「是谁的」这条线索）：${literal}`)
+    }
+  }
+  return problems
+}
+
+/**
  * 真机脚本的通用检查（**纯函数**，喂 fixture 就能造反例）。
  *
  * @param source - 脚本源码。
@@ -164,6 +226,13 @@ describe('跨包真机脚本：形状现算（真实仓库必须零违规）', (
   it('公共隔离引导 live-harness.mjs：隔离 home / 先清空再拷 / 真的比对补丁 / 前缀由调用方给', () => {
     expect(harnessViolations(read('../lib/live-harness.mjs')).join('\n')).toBe('')
   })
+
+  for (const spec of SELF_HOSTED_SCRIPTS) {
+    it(`${spec.file}（自起宿主）：隔离 home + 授权落点 + 收尾自证 + 只删自己记下的目录`, () => {
+      const source = read(`../${spec.file}`)
+      expect(selfHostedViolationsOf(source, spec).join('\n')).toBe('')
+    })
+  }
 })
 
 describe('反例 1：碰了真实 home → 必须报出来', () => {
@@ -239,5 +308,30 @@ describe('反例 4：把隔离抽没了 → harness 检查必须报出来', () =
   it('临时目录不用调用方给的前缀 → 报', () => {
     const fixture = mutate(real, 'mkdtempSync(join(tmpdir(), prefix))', "mkdtempSync(join(tmpdir(), 'tmp-'))")
     expect(harnessViolations(fixture).join('\n')).toContain('没有用调用方给的前缀')
+  })
+})
+
+describe('反例 5：自起宿主脚本把隔离抽掉 → 必须报出来', () => {
+  const real = read('../verify-issue-13-14.mjs')
+  const spec = SELF_HOSTED_SCRIPTS[0]
+
+  it('漏掉 DSH_KIT_HOME（会继承机器上已有的带外授权）→ 报', () => {
+    const fixture = mutate(real, 'DSH_KIT_HOME: kitHome, ', '')
+    expect(selfHostedViolationsOf(fixture, spec).join('\n')).toContain('隔离缺一项')
+  })
+
+  it('删掉收尾自证（不污染真实配置退化成承诺）→ 报', () => {
+    const fixture = mutate(real, "record('SELF'", "record('SKIPPED'")
+    expect(selfHostedViolationsOf(fixture, spec).join('\n')).toContain('缺少收尾自证')
+  })
+
+  it('清理改成按前缀扫（会删别人的目录）→ 报', () => {
+    const fixture = mutate(real, 'createdDirs.push(isoHome)', 'void 0')
+    expect(selfHostedViolationsOf(fixture, spec).join('\n')).toContain('清理没有只认自己记下的路径')
+  })
+
+  it('隔离目录前缀失去「是谁的」线索 → 报', () => {
+    const fixture = mutate(real, '`.dsh-verify-${pid}`', '`${pid}`')
+    expect(selfHostedViolationsOf(fixture, spec).join('\n')).toContain('隔离目录前缀不可识别')
   })
 })

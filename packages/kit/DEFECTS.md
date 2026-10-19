@@ -2,7 +2,7 @@
 
 > **本文件是「转入台账」，不是本包的权威序列。** 下表 `kit D01`–`kit D05` 是**转入镜像**——
 > 权威记录在**原包**（主要是 `codegraph CGxx`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口。
-> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D14` 之后编号。
+> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D16` 之后编号。
 > 跨包引用一律写 `<包名> <前缀><号>`（如 `codegraph CG05`、`tty D61`、`docker D13`），
 > 裸编号只在本包文件内使用。规范见 [docs/conventions.md § 编号规范](../../docs/conventions.md#编号规范)。
 
@@ -19,11 +19,11 @@
 
 - 每条只写**一句话**（这段代码为什么长这样）+ **指回原编号**；
 - **不复制原文、不重新编号、不删除原编号**（原编号仍是权威记录）；
-- 新的、**在 kit 内部发现**的缺陷，直接接在 `D14` 之后编号，写在本文件里。
+- 新的、**在 kit 内部发现**的缺陷，直接接在 `D16` 之后编号，写在本文件里。
 
 ## 现状
 
-**已修 14 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D14` 是**本包内部**发现的）。
+**已修 16 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D16` 是**本包内部**发现的）。
 逐条见下表；`D01–D05` 原文见 [codegraph 的台账](../codegraph/DEFECTS.md)对应行。
 
 ## 转入清单
@@ -47,9 +47,12 @@
 | **kit D13** | —（本包内部） | `consoleEncoding`（Windows 控制台代码页探测）把**超时**与「没有控制台」合成同一个确定性结论、并**进程级缓存**：`chcp` 探测超时是瞬态的（宿主启动争抢期 `cmd.exe` 能被拉起过 3s），而结论写入 `cachedConsoleEncoding` 后再不重试——**一次争抢就把整个会话钉死成错码表解码**，此后每条 CLI 输出都按 `windows-1252` 重解（CP936 中文系统上就是乱码被当成真实工具输出），恢复要重启宿主。同一条路径还漏了「为什么失败」：裸 `catch` 把超时与「没有控制台」写成了同一句话。修法：探测用 `undefined` 表示「没探明白」（判据只认 `killed` / `signal` / `ETIMEDOUT` 标记，不猜文案），超时结论**不缓存**、只在 30s 退避窗口内直接给兜底（免得每次建解码器都同步起一次 `cmd.exe`），窗口过后自动重探；确定性失败照旧缓存。`setConsoleEncodingProbe` 是给三平台矩阵用的注入缝——非 Windows 恒返回 UTF-8，跑不到这条分支 | [src/decode.ts](../../packages/kit/src/decode.ts) · [test/decode.test.ts](../../packages/kit/test/decode.test.ts) |
 | **kit D14** | —（本包内部） | elevation 审计行（begin / grant / expire / revoke / load 五种，即 kit D09 可见性承诺的载体）的出口走了**注入的插件 logger（`ctx.logger`）**：真机验收（2026-10-07，DSH 0.2.1-alpha.1，同一发现见 docker D162）实测插件经 `ctx.logger.info` 打的行**既不出现在宿主 stdout、也找不到落盘文件**——「持久授权今天一开机就静默开着」恰恰是这些行存在要回答的问题，走一个不可见的通道等于没写。修法：`audit()` 与 `auditLoadedGrants()` 的出口固定 `console.log`（行前缀与格式不变；tier-gate 的日志出口默认就是 console，kit 内先例），`auditLoadedGrants` 去掉 logger 形参（docker / tty 两个调用点同步瘦身后重启可见）；`ElevationOptions.logger` 保留给 removeFile 的 best-effort 告警。测试断言面改为 console 捕获（kit elevation.test.ts 与 docker / tty 各自的 elevate-route.test.ts） | [src/elevation.ts](../../packages/kit/src/elevation.ts) · [test/elevation.test.ts](../../packages/kit/test/elevation.test.ts) |
 
+| **kit D15** | —（本包内部） | 各插件注册 systemPrompt 段落时**各写一份内联结构类型**`{ section(options: { name: string; order?: number; text: string }): () => void }`，而宿主 `PromptSection` 还有 `interpolate?: boolean`——这份类型把「不插值」**挡在类型之外**（想传也传不进去：`tsc` 报 `TS2353: 'interpolate' does not exist in type`）。于是本仓 10 处段落全是裸调 `section()`，而宿主缺省 `interpolate: true` 且对未知变量**直接 throw**：prompt 插件把用户编辑的正文原样注入，正文里有 `{{language}}` 就每一步请求都抛 `unknown prompt variable`（`dsh headless` exit 1、模型收到 0 次请求），而插件的 /save /list /active 全部 200、`fileError` 为空，卡片上看不出任何原因（2026-10-19 外部测评 issue #14 第 1 条）。rss 更糟：它拼的是**第三方订阅源标题**，外部源就能触发。修法：kit 收一份 `PromptSectionApi` + `registerLiteralSection()`（固定 `interpolate: false`），10 处全改走它；新增 `scripts/check-prompt-sections.mjs` 把「裸调 section()」变成静态红（附 12 条反例用例） | [src/prompt-section.ts](../../packages/kit/src/prompt-section.ts) · [scripts/check-prompt-sections.mjs](../../scripts/check-prompt-sections.mjs) · [scripts/test/check-prompt-sections.test.ts](../../scripts/test/check-prompt-sections.test.ts) |
+| **kit D16** | —（本包内部） | 出站围栏原先落在 loglens 的 `src/net.ts`，而它文件头写着「**第二个消费者出现时上收到 kit**」。2026-10-19 那个条件满足了：rss 也要抓外部地址，却只有 `new URL()` 一层校验、`redirect: 'follow'` 默认跟随跳转——一个 `302 Location: http://169.254.169.254/…` 就把请求带进云元数据，响应作为条目写进 `latest.json` 并注入 systemPrompt（外部测评 issue #13 第 6 条）。两处各写一套判据必然漂，所以按原计划上收：判据（解析后的 IP / 不跟随重定向 / 体积与超时上限）搬进 kit 的 `net-fence.ts`，loglens 改为 re-export（`LoglensNetError` = `FenceError` 别名，`instanceof` 照样成立），rss 的 feed 与目录抓取都改走它。顺带补两处：`readCapped` 对响应形状宽容（`headers` / `body` 可能缺，本仓用例与部分 fetch 实现都不给），`sanitizeErrorMessage` 把 transport 报错里的凭据洗掉（undici 的 `Request cannot be constructed from a URL that includes credentials` 会带完整 URL） | [src/net-fence.ts](../../packages/kit/src/net-fence.ts) · [test/net-fence.test.ts](../../packages/kit/test/net-fence.test.ts) |
+
 ## 维护规则
 
-1. **在 kit 内部发现**的缺陷：接在 `D14` 之后编号，只加一行 + 在代码注释里落编号；
+1. **在 kit 内部发现**的缺陷：接在 `D16` 之后编号，只加一行 + 在代码注释里落编号；
    详细 postmortem 写进 commit message。
 2. **在消费包发现、修在 kit** 的缺陷：原编号留在那个包的台账（权威），本文加一行转入记录。
    **不要**在两个地方都写详细正文。

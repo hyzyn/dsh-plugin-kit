@@ -8,7 +8,9 @@
  *     子进程输出编码容错解码（decode）、Windows `.cmd` shim 启动与转义
  *     （windows-shim）、DSH ≥0.1.7 的 settings 存储适配（settings）、
  *     能力开关的宿主侧授权（capability）、带外授权的持久存储（grant-store）、
- *     就地提权（elevation）、会话权限档位闸（tier-gate）。
+ *     就地提权（elevation）、会话权限档位闸（tier-gate）、systemPrompt 段落的形状
+ *     契约与「不插值」注册口（prompt-section）、出站围栏（net-fence，地址判据 +
+ *     不跟随重定向 + 体积 / 超时上限）。
  * 全部为增量导出：0.2.0 的 definePlugin 等原样保留。
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -47,3 +49,5 @@ export * from './tier-gate.js'
 export * from './managed-block.js'
 export * from './decode.js'
 export * from './windows-shim.js'
+export * from './prompt-section.js'
+export * from './net-fence.js'

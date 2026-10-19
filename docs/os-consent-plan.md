@@ -3,9 +3,10 @@
 > 执行对象：AI 代理。本文自包含，按 PR 顺序执行；每节末尾有可勾选验收项。
 > **状态**：**方案已定，代码未动（2026-10-07）**。§0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
-> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-rc.1`** 现算的
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-rc.2`** 现算的
 > （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 复核于 `0.2.1-alpha.2`，
-> 2026-10-16 复核于 `0.2.1-alpha.5`，2026-10-17 复核于 `0.2.1-rc.1`，见 §2.1 末「升级复核」）。
+> 2026-10-16 复核于 `0.2.1-alpha.5`，2026-10-17 复核于 `0.2.1-rc.1`，
+> 2026-10-19 复核于 `0.2.1-rc.2`，见 §2.1 末「升级复核」）。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
@@ -84,7 +85,7 @@
 
 ## 2. 现算事实与那条实现约束
 
-### 2.1 三条实测事实（DSH `0.2.1-rc.1`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 复核）
+### 2.1 三条实测事实（DSH `0.2.1-rc.2`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 / 10-19 复核）
 
 **事实 1：审批瀑布的答案今天由「页面」给出。**
 
@@ -221,6 +222,23 @@ Linux 的 zenity / kdialog 仍是 `errorCode(error) === 1`。事实 3 的正文�
 `checkHostWorld()` 返回空数组——**红的只有「基准版本对不上」这条绊线**（按设计），
 本节基准随之更新到 `0.2.1-rc.1`。上一轮新增的两条反例（macOS 必须仍用 `NSOpenPanel`；
 「退出码 + stderr 文本」不许回来）在这一档仍然全绿。
+
+**升级复核（2026-10-19，宿主 `0.2.1-rc.1` → `0.2.1-rc.2`）**：这一档同样**没有可复核的漂移**——
+三条事实的五个载体文件在两档之间**逐字节相同**（`cmp` 逐文件比对，rc.1 装一份临时依赖树）：
+`dsh-user-approval/lib/index.js`、`dsh-client-ui-approval/lib/client.js`、
+`dsh-client-modules/lib/client.js`、`dsh-api-remotes/lib/types/remote-events.js`、
+`dsh-host-directory-picker-native/lib/index.js`。按惯例仍逐条重跑：审批瀑布仍是
+`dsh-user-approval` 的 `ctx.waterfall(…, "approval/request", …)`，浏览器侧 answerer 仍是
+`dsh-client-ui-approval` 的 `.$on("approval/request", …)`，
+`dsh-client-modules` 的 `defaultLoadBundle` 仍走同源 classic script 且宿主仍是 **0** 处 CSP
+（`dsh-host-webserver` / `dsh-host-frontend-static` 都不发该头），
+`dsh-host-directory-picker-native` 逐字节未动（AppKit `NSOpenPanel`、取消靠空 stdout、无 `confirm(` 原语）。
+`checkHostWorld()` 返回空数组——**红的只有「基准版本对不上」这条绊线**（按设计），
+本节基准随之更新到 `0.2.1-rc.2`。
+
+> 一条容易误判的观察：rc.2 里 `srcdoc` 有命中，但那是
+> `dsh-client-ui-sidebar-documentpreview` 的**恶意 HTML 检测规则表**（`html-srcdoc` 那条正则），
+> 不是宿主拿 iframe 隔离插件半体——`createElement("iframe")` 全树零命中。事实 2 不受影响。
 
 ### 2.2 把事实合起来：两个形态，只有一个成立
 

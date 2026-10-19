@@ -211,6 +211,14 @@ export declare function readTtyBooks(settings: SettingsLookup | undefined): Map<
  * 为什么本包要用 **tty 的**开关而不是自己再加一个：连接簿只有一处（tty），代理命令也只有
  * 一处能填；两个开关会让「连接簿配了、这个面板不认」变成说不清的状态。代价是本包多依赖一个
  * 只读 settings 字段——settings 句柄缺失（启动早期）时恒 false，即**关**（失败方向安全）。
+ *
+ * **但配置值不等于授权**（2026-10-19 外部测评 issue #13 第 4 条）：tty 侧的闸门是
+ * `granted && enabled`（`packages/tty/src/index.ts` 的 `setProxyCommandPolicy`），
+ * 而这里原先只读配置值。于是「点过撤销宿主授权 / 升级前在界面里开过 / 手改 settings.yaml」
+ * 的机器上，tty 自己拒绝执行，docker 引用同一连接簿条目却照样 `spawn(cmd, {shell:true})`
+ * ——同一份连接簿在两个面板里得到两种安全结论，而弱的那一侧能执行任意命令。
+ *
+ * 现在两边同口径：**宿主授权 && 配置开关**，缺一即关。
  */
 export declare function readTtyProxyCommandAllowed(settings: SettingsLookup | undefined): boolean;
 /** 把一个配置目标解析成可连接的规格（连接簿查找在此完成）。 */

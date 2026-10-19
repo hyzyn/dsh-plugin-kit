@@ -12,7 +12,7 @@
  */
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { definePlugin, dshHome } from '@hyzyn/dsh-kit';
+import { definePlugin, dshHome, registerLiteralSection } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 const promptFilePath = () => process.env.DSH_PROMPT_FILE?.trim() || join(dshHome(), 'prompts.yml');
 function emptyStore() {
@@ -839,7 +839,7 @@ const plugin = definePlugin({
             ctx.inject(['systemPrompt'], (promptCtx) => {
                 promptCtx.effect(() => {
                     const systemPrompt = promptCtx.systemPrompt;
-                    return systemPrompt.section({ name: 'plugin:dsh-global-search', order: 170, text: SEARCH_GUIDANCE });
+                    return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-global-search', order: 170, text: SEARCH_GUIDANCE });
                 }, 'dsh-global-search: announcement');
             });
         }

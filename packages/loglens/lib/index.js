@@ -1,6 +1,6 @@
 import z from '@deepseek-ai/schemastery';
 import { attachTierGate, definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readJsonBody, settingsEntryScope, writeJson, } from '@hyzyn/dsh-kit';
-import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js';
+import { MAX_TARGETS, addTarget, normalizeConfig, publicConfig, removeTarget, updateTarget } from './config.js';
 import { backendFor } from './backends/registry.js';
 import { runFacets, runFields, runSearch } from './execute.js';
 import { dockerPluginLoaded } from './plugins.js';
@@ -85,7 +85,8 @@ export function makeRoutes(state) {
                         writeJson(res, 405, { error: '只支持 POST，收到 ' + String(req.method) });
                         return;
                     }
-                    writeJson(res, 200, { ok: true, config, plugins: { docker: state.dockerLoaded() } });
+                    // 回显脱敏：地址里的 user:pass 永不回传浏览器（loglens 外部测评 issue #13 第 9 条）
+                    writeJson(res, 200, { ok: true, config: publicConfig(config), plugins: { docker: state.dockerLoaded() } });
                     return;
                 }
                 if (req.method !== 'POST') {
@@ -171,7 +172,7 @@ export function makeRoutes(state) {
                     next = outcome.config;
                 }
                 const warning = await state.write(next);
-                writeJson(res, 200, { ok: true, config: next, plugins: { docker: state.dockerLoaded() }, ...(warning === undefined ? {} : { warning }) });
+                writeJson(res, 200, { ok: true, config: publicConfig(next), plugins: { docker: state.dockerLoaded() }, ...(warning === undefined ? {} : { warning }) });
             },
         },
     ];

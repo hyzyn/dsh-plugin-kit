@@ -35,7 +35,16 @@ interface McpRow {
     config: McpServerConfig;
     disabled?: boolean;
 }
-/** 纯函数：把托管区块（含首尾标记行）拼进 home 补丁文本，保留区块外的所有内容。 */
+/**
+ * 纯函数：把托管区块（含首尾标记行）拼进 home 补丁文本，保留区块外的所有内容。
+ *
+ * 实现已收进 kit 的 `spliceManagedBlock`（2026-10-19 外部测评 issue #13 第 3 条）：
+ * 标记**整行相等**才算边界（值里的多行文本含标记名时不会被误判），根位置上的裸 `[]`
+ * 会被换掉而不是追加（CG67 同源），悬空起始标记只重写标记行。这三条此前在本包各写了
+ * 一遍、且是子串匹配版本——同一份判据只有 kit 一份实现。
+ *
+ * 本函数保留原签名（`(text, rows) => string`）是为了不惊动本包已有的用例与调用方。
+ */
 export declare function spliceManagedBlock(text: string, rows: McpRow[]): string;
 /**
  * 保存前的「清空防护」判定：返回拒绝文案，放行则返回 undefined。

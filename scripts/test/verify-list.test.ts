@@ -15,8 +15,8 @@ import { collectVerifyList, formatVerifyList, VERIFY_SCRIPTS } from '../verify-l
 const items = collectVerifyList()
 
 describe('verify:list：清单现算（真实仓库）', () => {
-  it('九个脚本一个不少，且都真的存在', () => {
-    expect(items).toHaveLength(9)
+  it('十个脚本一个不少，且都真的存在', () => {
+    expect(items).toHaveLength(10)
     expect(items.filter((item) => !item.exists)).toEqual([])
     expect(items.map((item) => item.file).sort()).toEqual([...items.map((item) => item.file)].sort())
   })
@@ -32,9 +32,13 @@ describe('verify:list：清单现算（真实仓库）', () => {
 
   it('通用脚本不属于任何包，命令是 node 形态（不假装有包内入口）', () => {
     const generic = items.filter((item) => item.pkg === '（通用）')
-    expect(generic).toHaveLength(1)
-    expect(generic[0]?.entry).toBeUndefined()
-    expect(generic[0]?.command).toMatch(/^node scripts\//)
+    // 两个：verify-client-ui.mjs（打外部宿主，`--url/--token`）与
+    // verify-issue-13-14.mjs（**自起**宿主，命令自带 `--from`）
+    expect(generic).toHaveLength(2)
+    for (const item of generic) {
+      expect(item.entry).toBeUndefined()
+      expect(item.command).toMatch(/^node scripts\//)
+    }
   })
 
   it('渲染结果里每个脚本都有「需要什么」与一条命令（清单是给人粘的）', () => {

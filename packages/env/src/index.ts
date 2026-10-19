@@ -30,7 +30,7 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { dshHome, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit'
+import { dshHome, registerLiteralSection, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit'
 import type { Context } from '@deepseek-ai/cordis'
 import yaml from 'js-yaml'
 
@@ -698,7 +698,7 @@ export function apply(ctx: Context, config?: Config): void {
     ctx.inject(['systemPrompt'], (promptCtx: Context) => {
       promptCtx.effect(() => {
         const systemPrompt = (promptCtx as unknown as { systemPrompt: { section(options: { name: string; order?: number; text: string }): () => void } }).systemPrompt
-        return systemPrompt.section({ name: 'plugin:dsh-env-manager', order: 150, text: ENV_GUIDANCE })
+        return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-env-manager', order: 150, text: ENV_GUIDANCE })
       }, 'dsh-env-manager: announcement')
     })
   }

@@ -13,7 +13,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { definePlugin, dshHome } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome, registerLiteralSection } from '@hyzyn/dsh-kit'
 import yaml from 'js-yaml'
 
 export interface Config {
@@ -984,7 +984,7 @@ const plugin = definePlugin<Config>({
       ctx.inject(['systemPrompt'], (promptCtx: Context) => {
         promptCtx.effect(() => {
           const systemPrompt = (promptCtx as unknown as { systemPrompt: { section(options: { name: string; order?: number; text: string }): () => void } }).systemPrompt
-          return systemPrompt.section({ name: 'plugin:dsh-global-search', order: 170, text: SEARCH_GUIDANCE })
+          return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-global-search', order: 170, text: SEARCH_GUIDANCE })
         }, 'dsh-global-search: announcement')
       })
     }

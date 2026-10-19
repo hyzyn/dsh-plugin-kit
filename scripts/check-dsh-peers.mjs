@@ -114,8 +114,26 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  * 外**逐字节相同**，且 app-boot 用 `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`），
  * 所以同一条范围同时声明多段是如实表述，而不是「先放宽再说」。**第七档（rc.1）仍是
  * 4.0.5 / 3.18.5**（与第六档同一对，逐字节相同）。
+ *  - 0.2.1-rc.2 vs 0.2.1-rc.1：**同样是纯显式声明**（`^0.2.1-rc.1` 按 semver 预发布规则
+ *    本来就含 rc.2，官方判定器实测放行；本机 `dsh --version` = `0.2.1-rc.2`）。
+ *    逐文件比对（rc.1 装临时树 + 本机 rc.2，304 个宿主包逐个 `lib/`）：**有差异的只有 9 个
+ *    文件**，且逐个查清后**没有一处影响本仓**——
+ *      · 纯版本串 4 处：`dsh-client-modules`（commit hash）、`client-ui-settings-account` /
+ *        `-general` / `client-ui-sidebar`（`0.2.1-rc.1` → `rc.2`）；
+ *      · `dsh-web`：`searchProvider` / `fetchProvider` 改成 `.volatile()`（设置页可热改）。
+ *        本仓对这两个字段**零引用**（全仓 grep 无命中）；
+ *      · `dsh-web-search-deepseek`：请求多带 `thinking: {type:'disabled'}`，报错文案改指向
+ *        新设置页路径。本仓零引用；
+ *      · `client-ui-settings-web-search`：新增「Use the new Web Search API」开关与文案。
+ *        本仓零引用（不碰 `dsh-client-store`）；
+ *      · `dsh-cordis-client-runner`：slot 占用表新增官方 `deepseek-model-label` 一条
+ *        （`shadows-shipped-ui`）。本仓注册的槽未被动。
+ *    `cordis` / `schemastery` 仍解析到 **4.0.5 / 3.18.5**（与第六、七档同一对）。
+ *    包集合**只多两个**（`dsh-client-ui-deepseek-model-label-1017` / `dsh-web-deepseek-api`），
+ *    均为宿主自带、不改变本仓 import 的任何包。
+ *    真机复核：`live-smoke` 18/18、`verify-issue-13-14`（logs-test）16/16，均无回归。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

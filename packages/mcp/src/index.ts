@@ -10,7 +10,19 @@
  * 浏览器半体（./client）通过 /api/dsh-mcp/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, spawnPortable, stripEmptyFlowSequenceRoot, terminateChild } from '@hyzyn/dsh-kit'
+import {
+  createOutputDecoder,
+  dshHome,
+  hasSameOriginProof,
+  isLoopbackRequestStrict,
+  originProofHint,
+  readManagedBlock,
+  registerLiteralSection,
+  spliceManagedBlock as spliceManagedBlockKit,
+  spawnPortable,
+  stripEmptyFlowSequenceRoot,
+  terminateChild,
+} from '@hyzyn/dsh-kit'
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -34,6 +46,8 @@ export interface Config {
 const MCP_CLIENT_PACKAGE = '@deepseek-ai/dsh-mcp-client'
 const MARK_START = '# --- dsh-mcp-config managed (auto-generated; do not edit) ---'
 const MARK_END = '# --- end dsh-mcp-config managed ---'
+/** 交给 kit 的托管区块读写：标记必须**整行相等**才认（见 readManagedRows 的注释）。 */
+const MCP_BLOCK_MARKERS = { beginMarker: MARK_START, endMarker: MARK_END } as const
 const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
 const ROW_ID_RE = /^mcp-[a-z0-9-]{1,64}$/
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1
@@ -154,19 +168,29 @@ function readManagedRows(): ManagedRead {
   const patchFile = homePatchPath()
   const existed = existsSync(patchFile)
   const text = existed ? readFileSync(patchFile, 'utf8') : ''
-  const lines = text.split('\n')
-  const start = lines.findIndex((line) => line.includes('dsh-mcp-config managed'))
   const result: ManagedRead = { rows: [], patchFile }
-  if (start === -1) return result
-  const end = lines.findIndex((line, index) => index > start && line.includes('end dsh-mcp-config managed'))
-  if (end === -1) {
-    result.fileError = '托管区块缺少结束标记（# --- end dsh-mcp-config managed ---）'
+  /*
+   * 标记按**整行相等**匹配（kit 的 readManagedBlock，只容忍行尾空白 / CR）。
+   *
+   * 为什么不能再用 `line.includes('dsh-mcp-config managed')`（2026-10-19 外部测评 issue #13 第 3 条）：
+   * 区块正文是 js-yaml 渲染的，`args` / `env` / `headers` 里的**多行值**会写成缩进块；
+   * 只要其中一行恰好含 `end dsh-mcp-config managed`，子串匹配就把它当成结束标记——
+   * 配置被**静默截断**，下一次热加载拿到的是错误参数。更糟的是再保存一次：新块按
+   * 「已截断的边界」重写，文件逐步走形，最终成为非法 YAML（宿主启动抛
+   * `failed to parse patches`）。同理，区块**外**的用户注释里只要出现标记名，也会被
+   * 误判成区块边界，把用户内容吞掉。
+   */
+  const block = readManagedBlock(text, MCP_BLOCK_MARKERS)
+  if (block === undefined) {
+    // 起始标记在、结束标记丢 → 报错（不能拿半截内容当合法结果）
+    if (text.split('\n').some((line) => line.trimEnd() === MARK_START)) {
+      result.fileError = '托管区块缺少结束标记（# --- end dsh-mcp-config managed ---）'
+    }
     return result
   }
-  const block = lines.slice(start + 1, end).join('\n')
-  if (block.trim() === '' || block.split('\n').every((line) => line.trim() === '' || line.trim().startsWith('#'))) return result
+  if (block.body.trim() === '' || block.body.split('\n').every((line) => line.trim() === '' || line.trim().startsWith('#'))) return result
   try {
-    const parsed = yaml.load(block, { schema: YAML_SCHEMA })
+    const parsed = yaml.load(block.body, { schema: YAML_SCHEMA })
     if (Array.isArray(parsed)) {
       for (const entry of parsed) {
         if (typeof entry !== 'object' || entry === null) continue
@@ -210,26 +234,18 @@ function renderManagedBlock(rows: McpRow[]): string {
   return yaml.dump(patches, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true })
 }
 
-/** 纯函数：把托管区块（含首尾标记行）拼进 home 补丁文本，保留区块外的所有内容。 */
+/**
+ * 纯函数：把托管区块（含首尾标记行）拼进 home 补丁文本，保留区块外的所有内容。
+ *
+ * 实现已收进 kit 的 `spliceManagedBlock`（2026-10-19 外部测评 issue #13 第 3 条）：
+ * 标记**整行相等**才算边界（值里的多行文本含标记名时不会被误判），根位置上的裸 `[]`
+ * 会被换掉而不是追加（CG67 同源），悬空起始标记只重写标记行。这三条此前在本包各写了
+ * 一遍、且是子串匹配版本——同一份判据只有 kit 一份实现。
+ *
+ * 本函数保留原签名（`(text, rows) => string`）是为了不惊动本包已有的用例与调用方。
+ */
 export function spliceManagedBlock(text: string, rows: McpRow[]): string {
-  // CG67 同源（codegraph）：`[]` 是完整的 YAML 文档（flow 序列根），往它后面追加块
-  // 序列会让整份 cordis.patch.yml 非法——宿主启动时 `parsePatchList` 直接抛，热路径
-  // 则被 HMR 吞成一条 warn。先摘掉根位置上的空序列，把文件变回「无区块」的形状。
-  // 对已经写坏的旧文件同样生效：摘掉 `[]`、再就地替换区块，下一次写入即自愈。
-  const normalized = stripEmptyFlowSequenceRoot(text) ?? text
-  const lines = normalized.split('\n')
-  const start = lines.findIndex((line) => line.includes('dsh-mcp-config managed'))
-  const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.includes('end dsh-mcp-config managed'))
-  const block = MARK_START + '\n' + renderManagedBlock(rows) + MARK_END + '\n'
-  if (start === -1) {
-    return normalized.replace(/\s*$/, '') + (normalized.trim() === '' ? '' : '\n') + '\n' + block
-  }
-  if (end === -1) {
-    // 悬空起始标记（收尾标记丢失）：只重写标记行本身。区块体本来就是顶层
-    // 合法行，保留而不是吞掉——旧行为会连带删掉区块之后的所有内容。
-    return [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(start + 1)].join('\n')
-  }
-  return [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n')
+  return spliceManagedBlockKit(text, { ...MCP_BLOCK_MARKERS, body: renderManagedBlock(rows) })
 }
 
 /**
@@ -754,9 +770,34 @@ function probeStdio(config: McpServerConfig, timeoutMs: number): Promise<ProbeRe
     const timer = setTimeout(() => {
       finish({ ok: false, toolsCount: 0, error: '连接超时（' + timeoutMs + 'ms）' })
     }, timeoutMs)
+    /*
+     * stdin 必须挂 `error` 监听（2026-10-19 外部测评 issue #13 第 2 条）。
+     *
+     * 为什么：子进程启动即退出（服务器名写错、参数错、启动就崩）时，往它的 stdin 写数据
+     * 会拿到 **EPIPE**——而 EPIPE 不是同步异常，是异步发到 `child.stdin` 上的 `'error'`
+     * 事件。下面 `send()` 里的 try/catch 只接得住**同步**抛错，接不住它；`child` 上挂的
+     * `error` / `exit` 监听也不管 stdin 的事件。于是它成了 uncaught exception，宿主的
+     * `installFailLoud` 对 uncaught exception 一律 `exit(1)`：点一次「连接测试」，整个
+     * DSH 进程退出，所有会话、Web 页面、其它插件一起中断。
+     *
+     * 而连接测试最常见的用途正是验证**还没调通**的配置，所以这不是边角路径。
+     *
+     * 实测（macOS，Node 22）：小报文在子进程退出后写多半只是返回 false（`stdin.destroyed`
+     * 后 write 不抛），但**大报文**（≥64 KiB，例如超长的 args/env）与「子进程关掉 stdin
+     * 但继续运行」两种形态都能稳定复现 uncaught EPIPE。所以这个监听是必需的，不是防御性冗余。
+     *
+     * 吞掉即可：进程已经没了，写失败是预期结果；真正的结论由 `exit` / 超时那条路径给。
+     */
+    child.stdin?.on('error', () => {
+      /* 子进程已退出 / 关闭了 stdin：写失败是预期结果，不冒泡成 uncaught */
+    })
     const send = (message: unknown) => {
       try {
-        child.stdin?.write(JSON.stringify(message) + '\n')
+        const stdin = child.stdin
+        // 已 destroy 的流上 write 会同步抛 ERR_STREAM_DESTROYED；先判一下更干净，
+        // 但**不能只靠这一判**——EPIPE 仍走上面的 'error' 事件。
+        if (stdin === null || stdin.destroyed) return
+        stdin.write(JSON.stringify(message) + '\n')
       } catch {
         /* 进程已退出 */
       }
@@ -1199,7 +1240,7 @@ export function apply(ctx: Context, config?: Config): void {
     ctx.inject(['systemPrompt'], (promptCtx: Context) => {
       promptCtx.effect(() => {
         const systemPrompt = (promptCtx as unknown as { systemPrompt: { section(options: { name: string; order?: number; text: string }): () => void } }).systemPrompt
-        return systemPrompt.section({ name: 'plugin:dsh-mcp-config', order: 150, text: MCP_GUIDANCE })
+        return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-mcp-config', order: 150, text: MCP_GUIDANCE })
       }, 'dsh-mcp-config: announcement')
     })
   }

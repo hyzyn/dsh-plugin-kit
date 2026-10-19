@@ -132,7 +132,7 @@ dsh --profile <测试 profile> --patch <port.yml>
 
 ## 各包真机入口
 
-**入口一律写成一条可粘贴命令**（包的脚本条目在各自 `package.json` 里）。仓库根那 9 个
+**入口一律写成一条可粘贴命令**（包的脚本条目在各自 `package.json` 里）。仓库根那 10 个
 `scripts/verify-*.mjs` 也能被一条命令列全：`pnpm verify:list`——它现算「脚本 / 所在包 /
 需要什么 / 是否进 CI / 那条命令」，且**只列不跑**（它们会起真宿主与真 Chrome，聚合执行会把
 垃圾进程与临时目录留在机器上）。
@@ -145,6 +145,7 @@ dsh --profile <测试 profile> --patch <port.yml>
 | `rss` | `pnpm --filter @hyzyn/dsh-rss run opml-smoke`（OPML 导入 / 导出 / 回环；先存基线，收尾写回并重刷 digest） | 正在跑的宿主 + token + 真 Chrome（受限沙箱加 `--chrome-arg --no-sandbox`） |
 | `docker` | `pnpm --filter @hyzyn/dsh-docker run smoke`（`smoke.mjs` + `route-smoke.mjs` + `client-smoke.mjs`，hermetic，能进 CI）；真机项需真 docker daemon | 真 docker |
 | 通用（L0） | `node scripts/verify-client-ui.mjs --url <宿主> --token <token>`（应用壳 + 逐插件配置页；`--mode boot` 只验壳；**token 从哪来见 [§ 驱动真宿主的面板](#驱动真宿主的面板浏览器半体的真机验证）**）、`pnpm verify:list`（只列不跑） | 正在跑的宿主 + token + 真 Chrome |
+| 通用（L0） | `pnpm verify:issue-13-14`（= `node scripts/verify-issue-13-14.mjs --from test`）：外部测评 issue #13/#14 那 11 条的**真机**验收，**自起**隔离 home + 真宿主，逐条打真路由；`--from <profile>` 换模板、`--as <名>` 绕开 CLI 独占的 `desktop` | 装了 DSH 的任意机器（不需要外部宿主，也不碰真实 `~/.dsh`） |
 | 全部 | `pnpm live-smoke`（= `node scripts/live-host-smoke.mjs`；干净机器 `node scripts/live-host-smoke.mjs --bootstrap --strict`）（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
 | 全部 | `node scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
 
@@ -315,6 +316,43 @@ Windows 侧则是 junction，必须建成 junction（建目录符号链接要特
 安全性质由 `scripts/test/live-host-smoke-safety.test.ts` 读源码钉住（名字带 pid、拒绝覆盖、
 只删记录下来的目录、不设 `DSH_HOME`、非 CI）；生成物本身的形状由
 `scripts/test/live-profile.test.ts` 钉住。
+
+## 2026-10-19 一轮「11 条外部测评修复」的真机验收：六个当场踩到的坑
+
+> 这一轮的脚本是 [`verify-issue-13-14.mjs`](../scripts/verify-issue-13-14.mjs)（`pnpm verify:issue-13-14`）。
+> 下面六条**每一条都让第一版得出过相反结论**，而且**每一条都是脚本的错、不是产品的错**——
+> 正是 [§ 什么算「真机验证通过」](#什么算真机验证通过) 第 1 条要防的那种「假绿/假红」。
+
+1. **`DSH_KIT_HOME` 不隔离 → 「无授权」这一档根本不成立。** 带外授权落在
+   `<DSH home>/dsh-kit/`，而**只隔离 `DSH_HOME` 不够**：那台机器上若用过提权卡片，
+   隔离宿主照样读到真实的 `capability-grants.json`。现场形状：断言「无授权时闸门拒绝」，
+   实际代理命令**被执行了**（哨兵文件被创建）。范本 `live-host-smoke.mjs` 早就有这一步。
+2. **profile 装的是发布版，不是本仓 → 用旧代码验新修复，结论必然相反。** `desktop`
+   的 `@hyzyn/dsh-docker` 是 npm 上的 **0.13.2**（真目录，不是 `link:`），而 0.13.2 的
+   `readTtyProxyCommandAllowed` **只读配置值、不查授权**——正是这轮要修的漏洞本身。
+   于是「修复未生效」的假红出现，而修复其实是对的。**判据：验收前把 `node_modules/@hyzyn/*`
+   重指到本仓**（脚本里的「已把 N 个 @hyzyn/* 重指到本仓」那行就是这件事的自证）。
+3. **`desktop` 是 CLI 硬编码的独占名字。** `dsh --profile desktop …` 直接
+   `error: profile "desktop" is managed exclusively by the Electron application`，
+   **连副本都不让起**。要验它必须改名（`--as verify-desktop`），且副本的
+   `package.json.name` 也要跟着改成 `dsh-profile-<新名>`。
+4. **进程内挂插件必须**先**把 `DSH_HOME` 指向隔离目录。** `dshHome()` 是模块级读 env，
+   漏了这一步插件会去读**真实**的 `~/.dsh/prompts.yml`。它不会报错——插件自己的启动日志
+   里就写着 `prompts file: /Users/<you>/.dsh/prompts.yml`，而那条日志很容易被当成噪音。
+5. **判据要测对对象（第二次栽在同一个坑里）。** 两处：
+   - 托管区块的标记必须**行首锚定**计数。被测值里**嵌着**标记原文时，全文匹配会数到 2，
+     于是「写了两份标记」的假红——而真标记各只有一份，另两份是 YAML 字符串里的正文。
+   - 「出站围栏拦住了」要判**保存**那一步（`/config` POST 会先真抓一次），不是判
+     `/refresh`（它用内置源正常出 digest）。
+6. **该记 WARN 的别记 FAIL。** 某个 profile 没装对应插件时路由 404，那是「本次没覆盖到」，
+   不是回归（硬约束 ②）。但**也不能默默 PASS**——WARN 要写清「用 `--from <哪个 profile>` 能覆盖」。
+   本轮最终：`test` 14 PASS / 2 WARN、`logs-test`（带 loglens）16/16、`desktop` 6 PASS / 8 WARN，
+   **0 FAIL**；WARN 全部是 desktop 没装 rss / prompt / profile / loglens 那四个插件。
+
+> **另一条与脚本无关的观察**：`web` profile 的 `mcpScope` 是 `per-agent`，按设计会
+> **撤销** `~/.dsh/cordis.patch.yml` 里 `dsh-codegraph mcp managed` 那条全局托管行。
+> 所以「真机跑完发现真实补丁少了一条」**未必是脚本泄漏**——先看是不是有 `per-agent`
+> 的宿主正在跑（本轮就是）。判定方法：受控实验（隔离宿主跑一轮，看真实补丁哈希变不变）。
 
 ## 什么算「真机验证通过」
 

@@ -3,7 +3,7 @@
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { dshHome, spawnPortable } from '@hyzyn/dsh-kit';
+import { dshHome, registerLiteralSection, spawnPortable } from '@hyzyn/dsh-kit';
 export const name = 'profile-manager';
 export const inject = [];
 /* ------------------------------------------------------------------ *
@@ -193,9 +193,26 @@ async function installProfileDependencies(dir) {
         throw new Error('复制后安装依赖失败（pnpm 退出码 ' + String(outcome.code) + '）' + (detail ? ': ' + detail.slice(-600) : ''));
     }
 }
-async function copyProfile(source, target) {
+/**
+ * 复制 profile：**要么成功，要么什么都没发生**。
+ *
+ * 两条前置校验（源不存在 / 目标已存在）必须在**创建任何东西之前**抛出，且调用方的
+ * 回滚只允许删「本次请求创建的那个目录」——见 duplicate 路由里 `created` 的用法
+ * （2026-10-19 外部测评 issue #13 第 1 条：回滚曾无条件 `rm -rf` 目标目录，把用户
+ * 本来就存在的 profile 整目录删掉，连受保护的 `web` 也绕过）。
+ *
+ * @param onCreated - 目标目录**真的被创建之后**调用一次。调用方据此判断失败时能不能
+ *   回滚：前置校验（源不存在 / 目标已存在）失败时不会调用它，那时目标目录是用户的、
+ *   一个字节都不能动（2026-10-19 外部测评 issue #13 第 1 条）。
+ */
+async function copyProfile(source, target, onCreated) {
     const src = profileDir(source);
     const dest = profileDir(target);
+    /*
+     * 两条前置校验放在 try 外面（调用方也不再对它们做回滚）：它们失败时**目标目录
+     * 可能是用户早就存在的那个**，删它就是数据丢失。顺序也重要——先判源、再判目标，
+     * 否则「源不存在 + 目标存在」会先报目标已存在，掩盖真正的原因。
+     */
     if (!existsSync(join(src, 'package.json'))) {
         throw new Error('源 profile 不存在或未初始化: ' + source);
     }
@@ -204,6 +221,8 @@ async function copyProfile(source, target) {
     }
     ensureProfilesRoot();
     mkdirSync(dest, { recursive: true });
+    // 从这一刻起目录是「本次请求建的」：此后任何失败都可以安全回滚
+    onCreated?.();
     const entries = readdirSync(src, { withFileTypes: true });
     for (const entry of entries) {
         if (entry.name === 'node_modules' || entry.name === 'pnpm-lock.yaml')
@@ -399,17 +418,33 @@ function makeRoutes() {
                     writeJson(res, 400, { error: '非法源 profile 名称: ' + JSON.stringify(from) });
                     return;
                 }
+                /*
+                 * 失败回滚**只删本次请求创建的那个目录**（2026-10-19 外部测评 issue #13 第 1 条）。
+                 *
+                 * 原先这里无条件 `rmSync(profileDir(name), { recursive: true, force: true })`。
+                 * 而 `copyProfile` 会在**创建任何东西之前**抛出两条前置校验（源不存在 /
+                 * 目标已存在）——于是「把目标名填成一个已存在的 profile」这种最常见的误操作，
+                 * 结果是**用户那个 profile 被整目录删掉**（package.json、bundle 列表、自己的
+                 * cordis.patch.yml、端口配置、node_modules 全没），同时还绕过了 `deleteProfile`
+                 * 对 `web` 的保护。接口返回 400，看起来像「被拒绝了」，用户不会意识到目录已经没了。
+                 *
+                 * 现在的判据是「这个目录是不是**我**建的」：
+                 *   - 前置校验在 copyProfile 里、且在 mkdir 之前 → 抛错时目标目录没被动过，`created` 为 false；
+                 *   - mkdir 成功之后才置 `created = true`，此后任何失败（复制中途、装依赖）都回滚。
+                 */
+                let created = false;
                 try {
-                    await copyProfile(from, name);
+                    // copyProfile 在 mkdir 之前就抛的前置校验，此时目标目录一个字节都没动
+                    await copyProfile(from, name, () => { created = true; });
                 }
                 catch (error) {
-                    // 失败不留半成品：复制语义是「要么成功，要么什么都没发生」。
-                    // 原先装依赖抛错时目录已经复制完，用户看到失败却多出一个 profile。
-                    try {
-                        rmSync(profileDir(name), { recursive: true, force: true });
-                    }
-                    catch {
-                        /* 目录可能还没建出来：忽略 */
+                    if (created) {
+                        try {
+                            rmSync(profileDir(name), { recursive: true, force: true });
+                        }
+                        catch {
+                            /* 回滚失败不改变响应：错误原因仍然要如实回给用户 */
+                        }
                     }
                     writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
                     return;
@@ -540,7 +575,7 @@ export function apply(ctx, config) {
         ctx.inject(['systemPrompt'], (promptCtx) => {
             promptCtx.effect(() => {
                 const systemPrompt = promptCtx.systemPrompt;
-                return systemPrompt.section({ name: 'plugin:dsh-profile-manager', order: 150, text: PROFILE_GUIDANCE });
+                return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-profile-manager', order: 150, text: PROFILE_GUIDANCE });
             }, 'dsh-profile-manager: announcement');
         });
     }

@@ -226,7 +226,24 @@ export declare function validateRssStoreInput(raw: unknown): {
     error?: string;
     warnings?: string[];
 };
+/**
+ * 把 XML 按「开始标签 → 匹配的结束标签」切块，**线性**扫描。
+ *
+ * 为什么不能用 `xml.match(/<item\b[\s\S]*?<\/item>/gi)`（2026-10-19 外部测评 issue #13 第 7 条）：
+ * 惰性量词在**找不到结束标签**时会从每个起点一路扫到文件末尾——一个 688 KB、含上万条
+ * 未闭合 `<item>` 的响应实测 2.6 s，而解析是在 `response.text()` 之后**同步**跑的，
+ * `requestTimeoutMs` 管不到它，宿主整个被卡住（对方只要回一份畸形 feed 就能做到）。
+ *
+ * 这里的做法：只扫一遍，每个开始标签找**它自己**的结束标签，找不到就**停**——
+ * 未闭合之后的内容一律不解析（既不会二次方扫，也不会把半个条目当条目）。
+ *
+ * 顺带处理命名空间前缀（`<atom:item>`）：开始 / 结束标签都允许可选前缀，且必须**同名**，
+ * 免得 `<item>` 与 `<x:item>` 互相配对。
+ */
+export declare function splitXmlBlocks(xml: string, tag: string): string[];
 export declare function parseFeed(xml: string, baseUrl: string): FeedItem[];
+/** 单份 feed / OPML 响应体的上限：超过就掐断（不静默截断成半份 XML）。 */
+export declare const MAX_FEED_BYTES: number;
 /** ai-cache.json 里的单条缓存：text 为清洗后的摘要，at 为写入时间戳（毫秒）。 */
 export interface AiCacheEntry {
     text: string;

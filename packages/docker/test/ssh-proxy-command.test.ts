@@ -14,6 +14,7 @@
  */
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { bindCapabilitySources } from '@hyzyn/dsh-kit'
 import { readTtyBooks, readTtyProxyCommandAllowed } from '../src/index.js'
 import {
   dialProxyCommand,
@@ -204,6 +205,48 @@ describe('readTtyBooks / readTtyProxyCommandAllowed', () => {
     expect(readTtyProxyCommandAllowed({ get: () => ({}) })).toBe(false)
     expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: 'true' }) })).toBe(false)
     expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: false }) })).toBe(false)
-    expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: true }) })).toBe(true)
+  })
+
+  /*
+   * 2026-10-19 外部测评 issue #13 第 4 条：**配置值不等于授权**。
+   *
+   * tty 侧的闸门是 `granted && enabled`（`packages/tty/src/index.ts` 的
+   * `setProxyCommandPolicy`），而本包原先只读配置值。于是「点过撤销宿主授权 /
+   * 升级前在界面里开过 / 手改 settings.yaml」的机器上，tty 自己拒绝执行，
+   * docker 引用**同一条**连接簿条目却照样 `spawn(cmd, { shell: true })`——
+   * 同一份连接簿在两个面板里得到两种安全结论，而弱的那一侧能执行任意命令。
+   *
+   * 判据：配置 `allowProxyCommand: true` **但宿主未授权** → 必须是 false。
+   */
+  describe('闸门 = 配置值 && 宿主授权（与 tty 同口径）', () => {
+    afterEach(() => {
+      // 恢复「未授权」的缺省，免得影响同文件后面的用例
+      bindCapabilitySources(null)
+    })
+
+    it('配置为 true 但宿主未授权 → 关（撤销授权后 docker 也不许执行代理命令）', () => {
+      bindCapabilitySources(null)
+      expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: true }) })).toBe(false)
+    })
+
+    it('配置为 true 且宿主授权（环境变量通道）→ 开', () => {
+      bindCapabilitySources({
+        get: () => ({ getFrom: (name: string) => (name === 'DSH_TTY_ALLOW_PROXY_COMMAND' ? { value: '1' } : undefined) }),
+      })
+      expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: true }) })).toBe(true)
+    })
+
+    it('授权了但配置关着 → 关（两个维度缺一不可）', () => {
+      bindCapabilitySources({
+        get: () => ({ getFrom: (name: string) => (name === 'DSH_TTY_ALLOW_PROXY_COMMAND' ? { value: '1' } : undefined) }),
+      })
+      expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: false }) })).toBe(false)
+    })
+
+    it('带外授权被撤销（授权存储里没有这条）→ 关', () => {
+      // 只绑存储、不绑环境变量：存储里没有代理命令这条授权
+      bindCapabilitySources(null, { has: () => false })
+      expect(readTtyProxyCommandAllowed({ get: () => ({ allowProxyCommand: true }) })).toBe(false)
+    })
   })
 })

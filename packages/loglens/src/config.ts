@@ -4,7 +4,12 @@
  * 本模块不 import cordis / 网络 / 文件系统：路由层（src/index.ts）与用例直接调它，
  * 「什么样的来源算合法」「id 怎么生成」「坏行丢掉还是整份丢掉」三类判据只有一处归宿。
  * 契约与安全口径见 docs/design.md 的 §3（归一化行模型）与 §4（安全与凭据）。
+ *
+ * 唯一的例外是 `sanitizeUrl`：它来自 `@hyzyn/dsh-kit` 的 `net-fence`（纯函数，不碰网络），
+ * 而**脱敏必须在「出去的那一侧」只有一份实现**——本文件的 `publicTarget` / `publicConfig`
+ * 与错误文案共用它（2026-10-19 外部测评 issue #13 第 9 条）。
  */
+import { sanitizeUrl } from '@hyzyn/dsh-kit'
 
 /** 支持的后端 / 来源类型（设计 §2 后端分层）。 */
 export type SourceKind = 'loki' | 'elasticsearch' | 'opensearch' | 'docker'
@@ -223,6 +228,29 @@ export function normalizeConfig(input: unknown): { config: LoglensConfig; droppe
 }
 
 export type ConfigUpdate = { ok: true; config: LoglensConfig } | { ok: false; error: string }
+
+/**
+ * 给**界面与模型**看的来源：地址里的 `user:pass` 一律抹掉（2026-10-19 外部测评 issue #13 第 9 条）。
+ *
+ * 规格本来就是这样写的（design §4「凭据：官方凭据层 / `env:NAME` 引用，**永不回传浏览器**」；
+ * ROADMAP「URL 里不留凭据——错误文案与日志里也不该有密码」），但实现漏了两处出口：
+ *   - `GET /config` 原样回整份 config → 密码进了浏览器；
+ *   - `loglens_sources` 工具输出 `target.url` → 密码进了模型上下文。
+ *
+ * 判据：**回显一律脱敏，存储仍保留原值**。存储侧不能改——ES 的 `targetAccess` 要靠 URL 里的
+ * `user:pass` 现算 Basic 头，把存储也洗掉就等于把认证弄丢。所以脱敏只发生在「出去的那一侧」。
+ *
+ * @param target - 一条来源
+ * @returns 同一形状的副本，`url` 已去掉 userinfo
+ */
+export function publicTarget(target: LoglensTarget): LoglensTarget {
+  return { ...target, url: sanitizeUrl(target.url) }
+}
+
+/** 整份配置的对外形态（`/config` 与工具输出共用同一口径）。 */
+export function publicConfig(config: LoglensConfig): LoglensConfig {
+  return { ...config, targets: config.targets.map((target) => publicTarget(target)) }
+}
 
 export function findTarget(config: LoglensConfig, id: unknown): LoglensTarget | undefined {
   if (typeof id !== 'string') return undefined

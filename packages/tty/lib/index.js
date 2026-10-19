@@ -12,7 +12,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 // found），必须默认导入后取 Terminal；类型用 InstanceType 别名保持同名可用
 import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
-import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
+import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
 import { sharedGrantStore, auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
@@ -6395,7 +6395,7 @@ const plugin = definePlugin({
                             return head + tail + hiddenNote + '\n' + shellLine;
                         },
                     });
-                    sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE });
+                    sectionDisposable = registerLiteralSection(systemPrompt, { name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE });
                 };
                 refreshAnnouncementHook = rebuild;
                 rebuild();

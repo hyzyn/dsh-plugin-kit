@@ -498,7 +498,13 @@ function stubFetch(xml: string): void {
 
 function storeWithAi(ai?: AiStoreConfig): void {
   writeRssStore({
-    sources: [{ name: '测试源', url: 'https://s.example/feed' }],
+    /*
+     * 地址用 `localhost` 而不是 `s.example`：抓取走 kit 的出站围栏（判据是**解析后的 IP**），
+     * 而 `*.example` 是保留域名、解析不出来——围栏会在 DNS 那一步拒掉，用例就变成
+     * 「一条都没抓到」而不是「摘要逻辑对不对」。`localhost` 在围栏里走 RFC 6761 的
+     * 免解析分支（直接视为 127.0.0.1），fetch 本身仍由本文件的 stub 接管。
+     */
+    sources: [{ name: '测试源', url: 'http://localhost/feed' }],
     categories: [],
     catalogs: [],
     ...(ai !== undefined ? { ai } : {}),

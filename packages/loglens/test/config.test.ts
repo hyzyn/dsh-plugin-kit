@@ -12,6 +12,8 @@ import {
   isLinkLocalHost,
   normalizeConfig,
   normalizeUrl,
+  publicConfig,
+  publicTarget,
   removeTarget,
   slugId,
   slugSourceForUrl,
@@ -253,5 +255,56 @@ describe('增删改', () => {
     )
     const removed = removeTarget(start, 'loki')
     expect(removed.ok ? removed.config.targets.map((target) => target.id) : []).toEqual(['docker'])
+  })
+})
+
+/*
+ * 2026-10-19 外部测评 issue #13 第 9 条：**凭据永不回显**。
+ *
+ * 规格本来就是这么写的（design §4「凭据…永不回传浏览器」、ROADMAP「URL 里不留凭据——
+ * 错误文案与日志里也不该有密码」），但实现漏了两处出口：`GET /config` 原样回整份 config
+ * （密码进浏览器）、`loglens_sources` 输出 `target.url`（密码进模型上下文）。
+ *
+ * 判据是「**出去的那一侧**脱敏，存储保留原值」：ES 的 Basic 头要靠 URL 里的 user:pass
+ * 现算，把存储也洗掉就等于把认证弄丢。所以这里同时断言两件事：publicConfig 洗掉了、
+ * 原 config 还在。
+ */
+describe('publicConfig / publicTarget：回显脱敏，存储不动', () => {
+  const SECRET = 'sup3r-s3cret'
+  const withCredentials = () =>
+    configWith(
+      { kind: 'elasticsearch', label: 'es', url: `http://elastic:${SECRET}@127.0.0.1:9200` },
+      { kind: 'loki', label: 'loki', url: `http://admin:${SECRET}@127.0.0.1:3100/gateway` },
+      { kind: 'docker', label: 'docker', url: '' },
+    )
+
+  it('publicConfig 抹掉 user:pass，且不改变来源条数与 id', () => {
+    const config = withCredentials()
+    const shown = publicConfig(config)
+    const serialized = JSON.stringify(shown)
+    expect(serialized).not.toContain(SECRET)
+    expect(serialized).not.toContain('elastic:')
+    expect(serialized).not.toContain('admin:')
+    expect(shown.targets.map((target) => target.id)).toEqual(config.targets.map((target) => target.id))
+    // 地址本身还在（只是没了凭据）——脱敏不是「删掉这一条」
+    expect(shown.targets[0].url).toBe('http://127.0.0.1:9200/')
+    expect(shown.targets[1].url).toContain('/gateway')
+  })
+
+  it('原 config 里的凭据**必须保留**（ES 的 Basic 头要靠它现算）', () => {
+    const config = withCredentials()
+    // 先确认真的存进去了（否则上面的断言会因为「本来就没有」而假绿）
+    expect(config.targets[0].url).toContain(SECRET)
+    publicConfig(config)
+    expect(config.targets[0].url).toContain(SECRET)
+  })
+
+  it('publicTarget 对单条来源同样生效，且不改入参', () => {
+    const config = withCredentials()
+    const shown = publicTarget(config.targets[0])
+    expect(shown.url).not.toContain(SECRET)
+    expect(config.targets[0].url).toContain(SECRET)
+    expect(shown.id).toBe(config.targets[0].id)
+    expect(shown.kind).toBe(config.targets[0].kind)
   })
 })

@@ -16,4 +16,6 @@ export * from './tier-gate.js';
 export * from './managed-block.js';
 export * from './decode.js';
 export * from './windows-shim.js';
+export * from './prompt-section.js';
+export * from './net-fence.js';
 //# sourceMappingURL=index.js.map

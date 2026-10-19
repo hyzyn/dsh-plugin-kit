@@ -16,6 +16,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { TierClass } from '@hyzyn/dsh-kit'
 import { backendFor } from './backends/registry.js'
 import type { BackendCaps, LogBackend, LogLine } from './backends/types.js'
+import { publicTarget } from './config.js'
 import type { LoglensConfig, SourceKind } from './config.js'
 import { adapterHint, describeTarget, facetsHint, hintFor, resolveTarget, runFacets, runFields, runSearch } from './execute.js'
 /*
@@ -390,7 +391,12 @@ export function registerLoglensTools(deps: ToolDeps): void {
           id: target.id,
           kind: target.kind,
           label: target.label,
-          url: target.url,
+          /*
+           * 回显**脱敏**（2026-10-19 外部测评 issue #13 第 9 条）：`target.url` 可能带
+           * `user:pass@`，而这份行数据会进模型上下文（`loglens_sources` 的返回值）。
+           * 脱敏只在这一层做——存储侧必须保留原值，ES 的 Basic 头要靠它现算。
+           */
+          url: publicTarget(target).url,
           adapter: backend === undefined ? adapterHint(target.kind) : backend.id,
           ...(caps === undefined ? {} : { queryLanguage: caps.queryLanguage, pagination: caps.pagination, follow: caps.follow }),
           // 范围要回显：ES 的索引表达式可能来自配置、地址路径或默认通配，agent 猜不出来（真机反馈第 3 条）

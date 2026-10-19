@@ -11,6 +11,7 @@
  * 快照见 ./routes-data.ts（由 scripts/sync-routes.mjs 生成）。
  * ------------------------------------------------------------------ */
 
+import { requestJson } from '@hyzyn/dsh-kit'
 import { ROUTES } from './routes-data.js'
 import type { RouteRecord } from './routes-data.js'
 
@@ -37,6 +38,8 @@ export const BUILTIN_CATALOG_URL = 'https://raw.githubusercontent.com/JackyST0/a
 
 const CATALOG_REFRESH_TTL_MS = 12 * 60 * 60 * 1000
 const FETCH_TIMEOUT_MS = 8000
+/** 远端 OPML 目录的响应体上限：正常几 MB 以内，超过就掐断（不静默读到底）。 */
+const MAX_CATALOG_BYTES = 8 * 1024 * 1024
 
 const cache = new Map<string, { entries: CatalogEntry[]; at: number }>()
 const inflight = new Map<string, Promise<void>>()
@@ -92,26 +95,32 @@ export function parseOpml(xml: string): RouteRecord[] {
   return records
 }
 
+/**
+ * 拉一份远端 OPML 目录（**走 kit 的出站围栏**）。
+ *
+ * 与 feed 抓取同一个理由（2026-10-19 外部测评 issue #13 第 6 条）：目录地址也是用户
+ * 可填的外部 URL，原来同样是裸 `fetch(..., { redirect: 'follow' })`，一个 302 就能把
+ * 请求带到云元数据。现在统一走 `requestJson`（解析后 IP 判定 + 不跟随重定向 + 体积上限）。
+ * 目录内容是 OPML（XML），所以只用 `text`。
+ */
 async function fetchCatalogRemote(catalog: CatalogSource): Promise<CatalogEntry[]> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-  try {
-    const response = await fetch(catalog.url, {
-      signal: controller.signal,
+  const response = await requestJson({
+    fetchImpl: fetch,
+    label: '[rss 目录]',
+    url: catalog.url,
+    init: {
       headers: {
         'user-agent': 'Mozilla/5.0 (compatible; dsh-rss-digest/0.1; +https://github.com/hyzyn/dsh-plugin-kit)',
         accept: 'application/xml, text/xml, text/plain, */*; q=0.8',
       },
-      redirect: 'follow',
-    })
-    clearTimeout(timer)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const parsed = parseOpml(await response.text())
-    if (parsed.length === 0) throw new Error('未解析到任何订阅条目')
-    return parsed.map((record) => ({ ...record, catalog: catalog.name }))
-  } finally {
-    clearTimeout(timer)
-  }
+    },
+    timeoutMs: FETCH_TIMEOUT_MS,
+    maxBytes: MAX_CATALOG_BYTES,
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const parsed = parseOpml(response.text)
+  if (parsed.length === 0) throw new Error('未解析到任何订阅条目')
+  return parsed.map((record) => ({ ...record, catalog: catalog.name }))
 }
 
 /** 读取单个目录来源：优先 TTL 内缓存，过期或缺失时静默触发刷新并回退旧缓存。 */

@@ -48,6 +48,37 @@ function joinUrl(base, path) {
         trimmed = trimmed.slice(0, -1);
     return trimmed + path;
 }
+/**
+ * Loki 的基址与认证头（与 ES 的 `targetAccess` 同一口径，但**保留路径**）。
+ *
+ * 为什么必须有（2026-10-19 外部测评 issue #13 第 9 条）：Loki 侧原来直接把 `target.url`
+ * 拼进 `joinUrl()` 去 fetch。地址写成 `http://user:pass@host:3100` 时，undici 直接拒绝
+ * （`Request cannot be constructed from a URL that includes credentials`）——**带凭据的
+ * Loki 来源根本用不了**，而报错文案还把含密码的原始 URL 原样带了回来。
+ *
+ * 与 ES 的差别：ES 取 `origin`（索引表达式单独给），Loki **必须保留路径**——它常挂在网关
+ * 的子路径下（`joinUrl` 的头注释就是为这个写的）。所以这里只摘掉 userinfo。
+ */
+export function targetAccess(target) {
+    try {
+        const parsed = new URL(target.url);
+        const headers = {};
+        if (parsed.username !== '') {
+            const raw = decodeURIComponent(parsed.username) + ':' + decodeURIComponent(parsed.password);
+            headers.authorization = 'Basic ' + Buffer.from(raw, 'utf8').toString('base64');
+            parsed.username = '';
+            parsed.password = '';
+        }
+        // `href` 在无凭据时可能补尾斜杠；去掉它，与用户填的基址形状保持一致
+        const url = parsed.href.endsWith('/') && !target.url.endsWith('/')
+            ? parsed.href.slice(0, -1)
+            : parsed.href;
+        return { url, headers };
+    }
+    catch {
+        return { url: target.url, headers: {} };
+    }
+}
 /** epoch 毫秒 → 纳秒字符串（BigInt 走一遍，别用浮点乘）。 */
 export function toNanoString(ms) {
     return String(BigInt(Math.trunc(ms)) * 1000000n);
@@ -163,15 +194,20 @@ export function createLokiBackend(options = {}) {
     const fetchImpl = options.fetchImpl === undefined ? fetch : options.fetchImpl;
     const label = '[loki]';
     /**
-     * 一次 Loki 请求：出站围栏（src/net.ts：解析后的 IP 判定 / 不跟随重定向 / 体积与超时）+ 本层的
+     * 一次 Loki 请求：出站围栏（kit 的 net-fence：解析后的 IP 判定 / 不跟随重定向 / 体积与超时）+ 本层的
      * 「非 2xx 与不是 JSON 都算失败」。
+     *
+     * 认证头在**这里**统一注入（而不是每个调用点各自拼 URL）：调用点只拼路径，
+     * `targetAccess(target)` 给出「去凭据的基址 + Basic 头」。这样带凭据的 Loki 来源
+     * 能用了，且 URL 里不再有密码（2026-10-19 外部测评 issue #13 第 9 条）。
      */
-    async function callJson(target, url, init) {
+    async function callJson(target, path, init) {
+        const access = targetAccess(target);
         const response = await fetchJson({
             fetchImpl,
             label,
-            url,
-            init,
+            url: joinUrl(access.url, path),
+            init: { ...init, headers: { ...access.headers, ...init.headers } },
             timeoutMs,
             ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
         });
@@ -195,8 +231,8 @@ export function createLokiBackend(options = {}) {
         params.set('end', endNs);
         params.set('limit', String(limit));
         params.set('direction', direction);
-        const url = joinUrl(target.url, '/loki/api/v1/query_range') + '?' + params.toString();
-        const body = (await callJson(target, url, { method: 'GET' }));
+        const path = '/loki/api/v1/query_range?' + params.toString();
+        const body = (await callJson(target, path, { method: 'GET' }));
         if (body.status !== undefined && body.status !== 'success') {
             throw new Error(label + ' 查询失败：' + detailOf(body, 'status=' + String(body.status)));
         }
@@ -237,7 +273,7 @@ export function createLokiBackend(options = {}) {
          * 形状与 ES 那侧统一：不传 `limit` 就是全列（ES 侧 2026-10-14 起同样如此），只在显式给了 limit 时才截。
          */
         async fields(target, options = {}) {
-            const body = await callJson(target, joinUrl(target.url, '/loki/api/v1/labels'), { method: 'GET' });
+            const body = await callJson(target, '/loki/api/v1/labels', { method: 'GET' });
             const data = body.data;
             if (!Array.isArray(data))
                 return { fields: [], total: 0, truncated: false };
@@ -251,12 +287,14 @@ export function createLokiBackend(options = {}) {
         },
         async health(target) {
             try {
-                // 探测也走围栏：/ready 是本次查询真正要打的那个地址，绕开它等于留一条不打判据的出口
+                // 探测也走围栏：/ready 是本次查询真正要打的那个地址，绕开它等于留一条不打判据的出口。
+                // 认证头同 `callJson`：带凭据的 Loki 来源在探测这一步也要能过（否则卡片永远显示不可用）。
+                const access = targetAccess(target);
                 const response = await fetchJson({
                     fetchImpl,
                     label,
-                    url: joinUrl(target.url, '/ready'),
-                    init: { method: 'GET' },
+                    url: joinUrl(access.url, '/ready'),
+                    init: { method: 'GET', headers: access.headers },
                     timeoutMs,
                     ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
                 });
@@ -301,8 +339,8 @@ export function createLokiBackend(options = {}) {
             params.set('end', endNs);
             params.set('limit', String(query.limit));
             params.set('direction', query.direction);
-            const url = joinUrl(target.url, '/loki/api/v1/query_range') + '?' + params.toString();
-            const body = (await callJson(target, url, { method: 'GET' }));
+            const path = '/loki/api/v1/query_range?' + params.toString();
+            const body = (await callJson(target, path, { method: 'GET' }));
             if (body.status !== undefined && body.status !== 'success') {
                 throw new Error(label + ' 查询失败：' + detailOf(body, 'status=' + String(body.status)));
             }

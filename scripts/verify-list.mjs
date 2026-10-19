@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 九个**真机验证脚本**的清单（**只列不跑**）。
+ * 十个**真机验证脚本**的清单（**只列不跑**）。
  *
  * ## 为什么只列不跑
  *
  * [docs/conventions.md](../docs/conventions.md#真机脚本与-ci-接线) 写明「真机脚本进不了 CI」：
  * 它们要真实宿主、真实浏览器、真实 PTY。给它们补 CI 是错的方向——真正缺的是**可发现**：
  * 在 [`docs/agent-real-test.md`](../docs/agent-real-test.md) 之外，没人知道有哪几个脚本、
- * 各自要什么、入口叫什么。所以这里只做一件事：把 9 个脚本连同「所在包 / 需要什么 /
+ * 各自要什么、入口叫什么。所以这里只做一件事：把 10 个脚本连同「所在包 / 需要什么 /
  * 是否进 CI / 一条可粘贴命令」摊开。
  *
  * **刻意不做 `pnpm verify` 全跑**：这些脚本会起真宿主、真 Chrome，半路失败会留下垃圾进程与
@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * 清单的**唯一正文**（9 条，按「谁维护」分组排列）。
+ * 清单的**唯一正文**（10 条，按「谁维护」分组排列）。
  *
  * - `entry`：各包 `package.json` 里的脚本名；`undefined` = 通用脚本（不属于任何包），
  *   命令直接写成 `node scripts/<file>` 形态。
@@ -96,6 +96,15 @@ export const VERIFY_SCRIPTS = [
     entry: undefined,
     needs: '正在跑的宿主 + token + 真 Chrome（受限沙箱加 `--chrome-arg --no-sandbox`）；`--mode boot` 6/6、`--mode full` 18 PASS / 1 WARN / 0 FAIL',
   },
+  {
+    file: 'verify-issue-13-14.mjs',
+    pkg: '（通用）',
+    entry: undefined,
+    needs: '真 DSH 宿主（自起隔离 home 与真宿主；`--from <profile>` 选模板、`--as <名>` 绕开 CLI 独占的 desktop）',
+    // 它**自己起**宿主（不是打外部宿主），所以不能套 `--url/--token` 那套命令
+    command: 'node scripts/verify-issue-13-14.mjs --from test',
+    note: '✅ 2026-10-19 三腿实测：test 14 PASS / 2 WARN、logs-test 16/16、desktop 6 PASS / 8 WARN，0 FAIL',
+  },
 ]
 
 /** 读一个包的 `scripts`（读不到 = 空对象）。 */
@@ -146,7 +155,7 @@ export function collectVerifyList(repoRoot = REPO_ROOT) {
     const registered = item.entry !== undefined && scripts[item.entry] !== undefined
     const command =
       item.entry === undefined
-        ? `node scripts/${item.file} --url <宿主> --token <token>`
+        ? item.command ?? `node scripts/${item.file} --url <宿主> --token <token>`
         : registered
           ? `pnpm --filter ${String(name)} run ${item.entry}`
           : `node scripts/${item.file}   # ⚠️ 未登记：${String(item.pkg)} 的 package.json 里没有 ${String(item.entry)}`

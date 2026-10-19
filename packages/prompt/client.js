@@ -187,6 +187,8 @@ window.__ModuleLoader__.load({
       'msg.exportedMd': '已导出 Markdown',
       'msg.shareCopied': '分享 JSON 已复制到剪贴板',
       'msg.imported': '导入成功',
+      'msg.importMerged': '导入完成：新增 {created} 条、合并 {merged} 条（已存在的 {kept} 个版本保留本地内容，未覆盖）',
+      'msg.importEmpty': '导入完成：没有新增内容',
       'msg.markedActive': '已标记为激活，保存后生效',
       'msg.switchedActive': '已切换激活版本',
       'msg.versionDeleted': '已删除版本，点击“保存修改”生效',
@@ -198,6 +200,10 @@ window.__ModuleLoader__.load({
       'error.keepOneVersion': '至少保留一个版本',
       'confirm.deletePrompt': '确认删除 Prompt“{name}”？此操作不可恢复。',
       'confirm.deleteVersion': '确认删除该版本？',
+      'confirm.importPlan': '即将导入：新增 {created} 条、与本地已有合并 {merged} 条。继续？',
+      'confirm.importCreated': '新增：',
+      'confirm.importMerged': '合并进已有：',
+      'confirm.importKeepsLocal': '合并只补充本地没有的版本，本地已有的版本一律保留、不覆盖；启用中的 Prompt 不会改变（要启用请导入后手动点「启用」）。',
     }
     const I18N_EN = {
       'card.name': 'Prompt management',
@@ -256,6 +262,8 @@ window.__ModuleLoader__.load({
       'msg.exportedMd': 'Exported Markdown',
       'msg.shareCopied': 'Share JSON copied to the clipboard',
       'msg.imported': 'Imported',
+      'msg.importMerged': 'Import done: {created} new, {merged} merged ({kept} existing versions kept as-is, not overwritten)',
+      'msg.importEmpty': 'Import done: nothing new',
       'msg.markedActive': 'Marked active — takes effect after saving',
       'msg.switchedActive': 'Switched the active version',
       'msg.versionDeleted': 'Version deleted — click “Save changes” to apply',
@@ -267,6 +275,10 @@ window.__ModuleLoader__.load({
       'error.keepOneVersion': 'Keep at least one version',
       'confirm.deletePrompt': 'Delete prompt “{name}”? This cannot be undone.',
       'confirm.deleteVersion': 'Delete this version?',
+      'confirm.importPlan': 'Import: {created} new, {merged} merged into existing prompts. Continue?',
+      'confirm.importCreated': 'New: ',
+      'confirm.importMerged': 'Merged into: ',
+      'confirm.importKeepsLocal': 'Merging only adds versions you do not have; your existing versions are kept as-is and never overwritten. The currently enabled prompt will not change (click Enable yourself after importing).',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -805,14 +817,64 @@ window.__ModuleLoader__.load({
         try {
           const text = await file.text()
           const data = JSON.parse(text)
-          await apiImport(data)
+          /*
+           * 导入前先说清「会发生什么」（2026-10-19 外部测评 issue #14 第 2 条）：
+           * 后端现在按 **合并** 语义处理（同 id 只补进本地没有的版本、不覆盖、不改启用项），
+           * 但「会新增几条 / 会碰到哪几条已有 Prompt」是用户点之前就该知道的。
+           * 这里在本地比对一次（只读文件、不落盘），确认框里给出具体名字。
+           */
+          const plan = describeImportPlan(data)
+          if (plan.total === 0) {
+            toast(t('msg.importEmpty'), 'error')
+            return
+          }
+          if (!window.confirm(plan.message)) return
+          const result = await apiImport(data)
           await load()
-          toast(t('msg.imported'), 'ok')
+          const summary = result && result.importSummary
+          if (summary) {
+            const mergedCount = Array.isArray(summary.merged) ? summary.merged.length : 0
+            const kept = Array.isArray(summary.merged)
+              ? summary.merged.reduce((sum, entry) => sum + (Array.isArray(entry.keptVersions) ? entry.keptVersions.length : 0), 0)
+              : 0
+            toast(t('msg.importMerged', {
+              created: String(Array.isArray(summary.created) ? summary.created.length : 0),
+              merged: String(mergedCount),
+              kept: String(kept),
+            }), 'ok')
+          } else {
+            toast(t('msg.imported'), 'ok')
+          }
         } catch (error) {
           toast(error.message, 'error')
         }
       }
       input.click()
+    }
+
+    /**
+     * 把导入数据与本地状态比对成一句人话（只读，不改变任何状态）。
+     *
+     * 返回的 `total` 为 0 表示这份文件里没有可导入的 Prompt——此时不该发请求，
+     * 也不该弹一个「导入成功」把用户骗过去。
+     */
+    function describeImportPlan(data) {
+      const payload = data && data.data ? data.data : data
+      const incoming = Array.isArray(payload && payload.prompts) ? payload.prompts : []
+      const local = new Map(state.prompts.map((prompt) => [prompt.id, prompt]))
+      const created = []
+      const merged = []
+      for (const prompt of incoming) {
+        if (!prompt || typeof prompt.id !== 'string') continue
+        const existing = local.get(prompt.id)
+        if (existing === undefined) created.push(prompt.name || prompt.id)
+        else merged.push(prompt.name || prompt.id)
+      }
+      const lines = [t('confirm.importPlan', { created: String(created.length), merged: String(merged.length) })]
+      if (created.length > 0) lines.push(t('confirm.importCreated') + created.join('、'))
+      if (merged.length > 0) lines.push(t('confirm.importMerged') + merged.join('、'))
+      lines.push(t('confirm.importKeepsLocal'))
+      return { total: created.length + merged.length, message: lines.join('\n') }
     }
 
     async function setActiveVersion(versionId) {

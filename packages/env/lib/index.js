@@ -30,7 +30,7 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { dshHome, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit';
+import { dshHome, registerLiteralSection, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 export const name = 'env-manager';
 export const inject = [];
@@ -644,7 +644,7 @@ export function apply(ctx, config) {
         ctx.inject(['systemPrompt'], (promptCtx) => {
             promptCtx.effect(() => {
                 const systemPrompt = promptCtx.systemPrompt;
-                return systemPrompt.section({ name: 'plugin:dsh-env-manager', order: 150, text: ENV_GUIDANCE });
+                return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-env-manager', order: 150, text: ENV_GUIDANCE });
             }, 'dsh-env-manager: announcement');
         });
     }

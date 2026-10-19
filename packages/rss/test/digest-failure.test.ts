@@ -46,8 +46,8 @@ describe('全源失败不落盘', () => {
     const digestDir = join(root, 'digest')
     writeRssStore({
       sources: [
-        { name: '源A', url: 'https://a.example/feed' },
-        { name: '源B', url: 'https://b.example/feed' },
+        { name: '源A', url: 'http://localhost/feed-a' },
+        { name: '源B', url: 'http://localhost/feed-b' },
       ],
       categories: [],
       catalogs: [],
@@ -66,7 +66,7 @@ describe('全源失败不落盘', () => {
   it('有源成功（哪怕只有一条）→ 照旧落盘，且 latest.json 完整可解析', async () => {
     const digestDir = join(root, 'digest')
     writeRssStore({
-      sources: [{ name: '源A', url: 'https://a.example/feed' }],
+      sources: [{ name: '源A', url: 'http://localhost/feed-a' }],
       categories: [],
       catalogs: [],
     })
@@ -85,7 +85,7 @@ describe('全源失败不落盘', () => {
 describe('store 写入原子性', () => {
   it('writeRssStore 写出的内容完整、不留 .tmp 残渣', () => {
     writeRssStore({
-      sources: [{ name: '源A', url: 'https://a.example/feed' }],
+      sources: [{ name: '源A', url: 'http://localhost/feed-a' }],
       categories: [],
       catalogs: [],
     })

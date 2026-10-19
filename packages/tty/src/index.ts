@@ -89,7 +89,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import xtermHeadless from '@xterm/headless'
 const HeadlessTerminal = xtermHeadless.Terminal
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>
-import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js'
@@ -6780,7 +6780,7 @@ const plugin = definePlugin<Config>({
               return head + tail + hiddenNote + '\n' + shellLine
             },
           })
-          sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE })
+          sectionDisposable = registerLiteralSection(systemPrompt, { name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE })
         }
 
         refreshAnnouncementHook = rebuild

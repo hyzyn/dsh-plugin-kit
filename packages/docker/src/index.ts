@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { accessSync, constants } from 'node:fs'
 import { delimiter, basename, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
-import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
+import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { auditCapabilityUse, audited } from './audit.js'
@@ -995,11 +995,29 @@ export function readTtyBooks(settings: SettingsLookup | undefined): Map<string, 
 }
 
 /**
+ * tty 的 ProxyCommand 能力（**与 tty 包同一份规格**，环境变量名必须逐字相同）。
+ *
+ * 为什么 docker 也要声明它：本包通过连接簿条目拨号时会执行那条 `proxyCommand`，
+ * 而「能不能执行代理命令」的闸门只有一处——tty 的能力开关。两包各写一份 env 名会
+ * 悄悄分叉（改名只红一侧），所以这里与 `packages/tty/src/index.ts` 的 `CAP_PROXY_COMMAND`
+ * 保持一致，由 `packages/docker/test/ssh-proxy-command.test.ts` 钉住。
+ */
+const CAP_PROXY_COMMAND = { env: 'DSH_TTY_ALLOW_PROXY_COMMAND', label: '代理命令（ProxyCommand）' } as const
+
+/**
  * 读 tty settings 里的 ProxyCommand 闸门（`allowProxyCommand`，默认关）。
  *
  * 为什么本包要用 **tty 的**开关而不是自己再加一个：连接簿只有一处（tty），代理命令也只有
  * 一处能填；两个开关会让「连接簿配了、这个面板不认」变成说不清的状态。代价是本包多依赖一个
  * 只读 settings 字段——settings 句柄缺失（启动早期）时恒 false，即**关**（失败方向安全）。
+ *
+ * **但配置值不等于授权**（2026-10-19 外部测评 issue #13 第 4 条）：tty 侧的闸门是
+ * `granted && enabled`（`packages/tty/src/index.ts` 的 `setProxyCommandPolicy`），
+ * 而这里原先只读配置值。于是「点过撤销宿主授权 / 升级前在界面里开过 / 手改 settings.yaml」
+ * 的机器上，tty 自己拒绝执行，docker 引用同一连接簿条目却照样 `spawn(cmd, {shell:true})`
+ * ——同一份连接簿在两个面板里得到两种安全结论，而弱的那一侧能执行任意命令。
+ *
+ * 现在两边同口径：**宿主授权 && 配置开关**，缺一即关。
  */
 export function readTtyProxyCommandAllowed(settings: SettingsLookup | undefined): boolean {
   if (settings === undefined) return false
@@ -1010,7 +1028,9 @@ export function readTtyProxyCommandAllowed(settings: SettingsLookup | undefined)
     return false
   }
   if (typeof raw !== 'object' || raw === null) return false
-  return (raw as { allowProxyCommand?: unknown }).allowProxyCommand === true
+  if ((raw as { allowProxyCommand?: unknown }).allowProxyCommand !== true) return false
+  // 配置说开还不够：宿主没授权就是没授权（与 tty 的 granted && enabled 同一判据）
+  return capabilityGranted(CAP_PROXY_COMMAND)
 }
 
 /** 从 tty 的 hostKeys 读取已钉扎指纹（作为本插件 TOFU 的种子）。 */
@@ -3408,7 +3428,7 @@ const plugin = definePlugin<Config>({
       const systemPrompt = systemPromptApi
       if (systemPrompt === undefined) return
       if (!live.enabled || !live.announceToAgent) return
-      announcementDispose = systemPrompt.section({ name: 'plugin:dsh-docker', order: 152, text: DOCKER_GUIDANCE })
+      announcementDispose = registerLiteralSection(systemPrompt, { name: 'plugin:dsh-docker', order: 152, text: DOCKER_GUIDANCE })
     }
 
     /* ---------- 日志实时流（SSE） ---------- */

@@ -31,6 +31,7 @@ import {
   suppressAutoSettingsPage,
   writeFileAtomic,
   writeJson,
+  registerLiteralSection,
 } from '@hyzyn/dsh-kit'
 import type { ReqLike, ResLike, SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
@@ -1960,7 +1961,38 @@ export function settleCliRun(input: {
  */
 function runViaSpawn(command: string, args: string[], cwd: string, timeoutMs: number, cancel?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawnPortable(command, args, { cwd, windowsHide: true, detached: true })
+    /*
+     * 中和被测仓库 `.git/config` 里的「命令执行」配置（2026-10-19 外部测评 issue #13 第 5 条）。
+     *
+     * 直接执行者是上游 CLI 里的 `git ls-files` / `git diff`；而 `.git/config` 是**仓库内容**
+     * 的一部分（压缩包、共享目录、别人给的目录都能带），它有两处能在 `git status` 这类
+     * 「看起来只读」的操作里执行命令：
+     *
+     *   - `core.fsmonitor`：git 会把它当**程序**调用；
+     *   - `core.hooksPath`：指向别处的 hooks 目录，`post-index-change` 之类照跑。
+     *
+     * 本插件连「查看状态」这种只读按钮都会起 CLI，所以用户点一下就可能触发。用
+     * `GIT_CONFIG_COUNT` 把这两项在**子进程环境**里覆盖成空值（git ≥ 2.31 支持该机制；
+     * 更老的 git 忽略这些变量，行为与改动前一致，不会更糟）。
+     *
+     * 为什么只覆盖这两项、不覆盖 `filter.<driver>.clean`：那个键的名字由 `.gitattributes`
+     * 决定，事先不知道要覆盖哪个；要收它得让上游 CLI 配合（或用不触发过滤器的读法）。
+     * 这一层的射程到此为止，边界写进 README 的安全段。
+     */
+    const gitNeutralizers = {
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'core.fsmonitor',
+      GIT_CONFIG_VALUE_0: '',
+      GIT_CONFIG_KEY_1: 'core.hooksPath',
+      GIT_CONFIG_VALUE_1: '/dev/null',
+    }
+    const child = spawnPortable(command, args, {
+      cwd,
+      windowsHide: true,
+      detached: true,
+      // 用户环境照旧继承（CLI 需要 PATH / HOME / 代理等），只在上面的两项 git 配置上覆盖
+      env: { ...process.env, ...gitNeutralizers },
+    })
     let stdout = ''
     let stderr = ''
     /**
@@ -3926,9 +3958,9 @@ const plugin = definePlugin<Config>({
       // 每次 refresh 现算：会话切换 / 设为默认项目 / uninit 都走 refreshGuidance。
       const indexed = indexState(effectiveProjectPath(runtimeRef)) === 'indexed'
       announceDisposer = setSection(announceDisposer, ready && announce, (api) =>
-        api.section({ name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }))
+        registerLiteralSection(api, { name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }))
       usageDisposer = setSection(usageDisposer, ready && usage && indexed, (api) =>
-        api.section({ name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }))
+        registerLiteralSection(api, { name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }))
     }
 
     let probeInFlight: Promise<CliProbeResult> | undefined

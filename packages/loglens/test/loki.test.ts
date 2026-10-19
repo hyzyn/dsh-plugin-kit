@@ -414,3 +414,68 @@ describe('fields 与 health', () => {
     expect(typeof report.detail).toBe('string')
   })
 })
+
+/*
+ * 2026-10-19 外部测评 issue #13 第 9 条（Loki 侧）：**带凭据的来源要能用，且报错里没有密码**。
+ *
+ * 原先 Loki 直接把 `target.url` 拼进 fetch：地址写成 `http://user:pass@host:3100` 时
+ * undici 直接拒绝（`Request cannot be constructed from a URL that includes credentials`）
+ * ——带凭据的 Loki 来源**根本用不了**；而 `net.ts` 又把 undici 的 message 原样拼进报错，
+ * 于是密码跟着进了 `/config` 的错误字段与 `loglens_sources` 的工具输出。
+ *
+ * 判据两条：① 凭据换成 `Authorization: Basic`、请求真的打到服务器上；② 任何对外文案都不含密码。
+ */
+describe('凭据：换成 Basic 头，不进 URL、不进报错', () => {
+  /** 起一个会记录 authorization 头的假 Loki。 */
+  async function startFakeLokiWithAuth(handler: (path: string) => { status?: number; body?: unknown; raw?: string }): Promise<{
+    url: string
+    auth: string[]
+    target: LoglensTarget
+  }> {
+    const auth: string[] = []
+    const server = createServer((req, res) => {
+      const parsed = new URL(req.url === undefined ? '/' : req.url, 'http://127.0.0.1')
+      auth.push(req.headers.authorization ?? '')
+      const outcome = handler(parsed.pathname)
+      res.writeHead(outcome.status === undefined ? 200 : outcome.status, { 'content-type': 'application/json' })
+      res.end(outcome.raw === undefined ? JSON.stringify(outcome.body ?? {}) : outcome.raw)
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', () => { resolve() }) })
+    const port = (server.address() as AddressInfo).port
+    return { url: 'http://127.0.0.1:' + String(port), auth, target: { id: 'loki', kind: 'loki', label: '带凭据', url: '' } }
+  }
+
+  const SECRET = 'loki-s3cret'
+
+  it('user:pass 换成 Basic 头：请求成功，且 URL 里没有凭据', async () => {
+    const fake = await startFakeLokiWithAuth(() => ({ body: { status: 'success', data: [] } }))
+    const backend = createLokiBackend()
+    // 把凭据塞进 URL（用户最常见的写法）
+    const withCreds: LoglensTarget = { ...fake.target, url: fake.url.replace('http://', `http://admin:${SECRET}@`) }
+
+    const result = await backend.fields(withCreds)
+    expect(result.fields).toEqual([])
+    // 真的带上了 Basic 头（base64("admin:loki-s3cret")）
+    expect(fake.auth[0]).toBe('Basic ' + Buffer.from(`admin:${SECRET}`, 'utf8').toString('base64'))
+  })
+
+  it('health 也带认证头（否则带凭据的来源在卡片上永远显示不可用）', async () => {
+    const fake = await startFakeLokiWithAuth(() => ({ raw: 'ready' }))
+    const backend = createLokiBackend()
+    const withCreds: LoglensTarget = { ...fake.target, url: fake.url.replace('http://', `http://admin:${SECRET}@`) }
+
+    const report = await backend.health(withCreds)
+    expect(report.ok).toBe(true)
+    expect(fake.auth[0]).toContain('Basic ')
+  })
+
+  it('失败文案里不含密码（transport 报错也过一遍脱敏）', async () => {
+    const backend = createLokiBackend()
+    // 指向一个没有服务在听的端口，强制走 transport 失败分支
+    const dead: LoglensTarget = { id: 'loki', kind: 'loki', label: '死的', url: `http://admin:${SECRET}@127.0.0.1:1` }
+    const report = await backend.health(dead)
+    expect(report.ok).toBe(false)
+    expect(report.detail).not.toContain(SECRET)
+  })
+})
