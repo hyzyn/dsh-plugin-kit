@@ -183,6 +183,19 @@ export interface FacetBucket {
 }
 
 export interface FacetsResult {
+  /**
+   * **仅供执行层判读，绝不进返回值**（loglens D07）：这个窗口里一共有多少条日志。
+   *
+   * 为什么需要它：0 桶有两种完全不同的成因——「字段一条有值的都没有（空壳）」与「这段时间压根没日志」，
+   * 而区分它们的**唯一**判据就是「窗口内命中数」；没有这个数，facets 只能把 0 桶原样回报、把判断
+   * 全推给调用方去试错。执行层拿它换算成 warnings 的措辞（见 runFacets），**不作为结果字段外传**：
+   * facets 的输出 schema 是 `additionalProperties: false`（src/tools.ts），多一个键就是一次崩溃。
+   *
+   * 适配器**拿不到就不带**（不知道就不写，别拿 0 冒充「没有数据」——与 BackendHealth.recent 同口径）；
+   * 给了就是给，近似值由 relation 决定，如实报（精确计数与「宿主给的默认上界」都能到这儿，
+   * 所以 `basis` 要跟着值走，别替它打包票）。
+   */
+  totalHits?: { value: number, relation: 'eq' | 'gte', basis: 'exact' | 'lower_bound' }
   /** 按字段分组的桶（by 有值才有），按 count 降序。 */
   buckets?: FacetBucket[]
   /** 时间分桶（interval 有值才有），按时间升序。 */

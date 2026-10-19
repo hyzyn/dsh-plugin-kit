@@ -201,8 +201,21 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 | `loglens_sources` | 列来源（含**解析后的索引表达式**与探测条数）；其他 `loglens_*` 的 `target` 取自这里 |
 | `loglens_search` | 查：支持 `filters` 结构化过滤与 `level`（**及以上**语义）、`from` / `to` / `limit` / `direction` / `cursor` |
 | `loglens_fields` | 看有哪些字段。ES / OpenSearch 侧**不列 `object` / `nested` 容器行**；同名在不同索引里**类型不一致**的标 `conflict: true` 并带 `esTypes` / `conflictDescriptions` |
-| `loglens_facets` | 按字段分组 / 按时间分桶（「哪个服务在报错」）；目前只有 ES / OpenSearch 有 |
-| `loglens_context` | 取某一行前后的上下文 |
+| `loglens_facets` | 按字段分组 / 按时间分桶（「哪个服务在报错」）；目前只有 ES / OpenSearch 有。**0 桶时会说清是哪种成因**——按「这个窗口里有多少条日志」区分「这个字段是空壳」与「这段时间没有命中」，两种情形给的下一步相反 |
+| `loglens_context` | 取某一行前后的上下文。锚点按**优先级**匹配：id 精确 → 剥一个前导 `#` 的变体 → 正文严格相等 → 规范化空白后相等 → 规范化空白后单向包含 → 只按 `ts`（兜底档，**不看**有没有给正文；高档位一律压过低档位，同档取离 `ts` 最近的、并列按 id 与正文的字典序定）。渲染文本里紧跟在正文之后的 `#id` 就是那个精确坐标（同一行更后面可能还有 labels）；非 id 档命中时会在 warnings 里说明用的是哪一档 |
+
+**渲染文本的形态**（`loglens_search` / `loglens_context` 两条路共用）：一行是「时间 · 级别 · 正文 ·
+`#id` · 标签」。三处细节都为了**读得顺**：
+
+- **时间带显式偏移**：`2026-10-18T22:01:43.123+08:00`，不是 `…Z`。日志正文里的时间几乎都是本地时间，
+  行首再给 UTC 就等于同一行两套时间、换算 epoch 必错；带偏移后 `Date.parse` 仍能原样解回同一个瞬间
+  （机器可用），人眼看到的也与正文一致。时区取**宿主进程**的本地时区。
+- **多行正文（堆栈）保留层次**：`log.flags=multiline` 的堆栈在采集侧是一个文档、`message` 里本就带
+  换行，原样吐出是「行内嵌换行」的扁平文本。现在续行加 `    | ` 前缀（正文内容一个字不改），
+  超过 20 行截断并**报出**总行数与未显示行数。
+- **标签只平铺身份键**（`src/line.ts` 的 `LABEL_PRIORITY` 前 3 条：容器 → 主机 → 流），其余折叠成
+  `+N labels`——一条 filebeat 文档能摊出 20 条标签，全铺开会把正文淹掉。**折叠不是丢弃**：完整的
+  labels 在返回值的 `lines[].labels` 里。
 
 ## HTTP 面（回环）
 

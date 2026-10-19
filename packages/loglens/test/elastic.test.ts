@@ -133,6 +133,10 @@ async function startFakeEs(options: {
   version?: string
   distribution?: string
   failSearch?: Outcome
+  /** `_field_caps` 回的字段表（缺省给一份最小的：@timestamp / message / app）。 */
+  fieldCaps?: Record<string, unknown>
+  /** 聚合响应里 `hits.total.relation`（模拟 track_total_hits 给的是下界那种情形）。 */
+  aggsTotalRelation?: 'eq' | 'gte'
 }): Promise<FakeEs> {
   const requests: Recorded[] = []
   const pits = { opened: 0, closed: 0, valid: new Set<string>() }
@@ -188,7 +192,13 @@ async function startFakeEs(options: {
         send({ body: { succeeded: true } })
         return
       }
-      if (req.method === 'POST' && parsed.pathname === '/_search') {
+      /*
+       * `/_search` 有两种形态，都要接住（loglens D08）：
+       *   - 裸 `/_search`：**带 PIT** 的翻页搜索（PIT 已绑定索引集，路径上不该再带索引）；
+       *   - `/<索引表达式>/_search`：**聚合**（facets 不开 PIT，必须自己带范围，否则是全集群通配）。
+       * 断言「哪个请求是哪种形态」落在各用例里，这里只负责两种都路由到同一段逻辑。
+       */
+      if (req.method === 'POST' && parsed.pathname.endsWith('/_search')) {
         if (options.failSearch !== undefined) {
           send(options.failSearch)
           return
@@ -210,7 +220,7 @@ async function startFakeEs(options: {
           if (aggs.over_time !== undefined) {
             aggregations.over_time = { buckets: [{ key: NOW - 300_000, doc_count: 2 }, { key: NOW, doc_count: 1 }] }
           }
-          send({ body: { timed_out: false, _shards: { failed: 0 }, hits: { total: { value: 10, relation: 'eq' }, hits: [] }, aggregations } })
+          send({ body: { timed_out: false, _shards: { failed: 0 }, hits: { total: { value: 10, relation: options.aggsTotalRelation === undefined ? 'eq' : options.aggsTotalRelation }, hits: [] }, aggregations } })
           return
         }
         const pitId = typeof body?.pit === 'object' && body.pit !== null ? (body.pit as { id?: unknown }).id : undefined
@@ -335,14 +345,57 @@ describe('请求形态', () => {
       { by: 'app', interval: '5m', size: 3 },
     )
     const search = fake.requests.find((request) => request.path.endsWith('/_search'))
-    const body = search?.body as { size: number, aggs: Record<string, unknown> }
+    /*
+     * 聚合必须**带上索引表达式**（loglens D08）：facets 不开 PIT，裸打 `/_search` 等于全集群通配，
+     * `.kibana_*` 与别的应用索引会被一起聚合进来——于是同一张卡片里榜与行来自不同的数据集。
+     * 这条断言钉的是「请求真的落在来源声明的范围内」，不是「有没有发出去」。
+     */
+    expect(search?.path).toBe('/' + INDEX + '/_search')
+    const body = search?.body as { size: number, aggs: Record<string, unknown>, track_total_hits?: unknown }
     expect(body.size).toBe(0)   // 聚合不该顺带把行拉回来
+    /*
+     * 传了 by 就要**精确**的窗口命中数（loglens D07）：0 桶的两种成因只能靠它区分。
+     * 只按时间分桶时不该付这笔钱——见下一条用例。
+     */
+    expect(body.track_total_hits).toBe(true)
     expect(body.aggs.by).toEqual({ terms: { field: 'app', size: 3 } })
     expect(body.aggs.over_time).toEqual({ date_histogram: { field: '@timestamp', fixed_interval: '5m', min_doc_count: 1 } })
     expect(result.buckets).toEqual([{ key: 'api', count: 2 }, { key: 'web', count: 1 }])
     expect(result.overTime).toEqual([{ ts: NOW - 300_000, count: 2 }, { ts: NOW, count: 1 }])
     expect(result.otherCount).toBe(7)                 // terms 只列 3 个桶时还剩多少条
     expect(result.countErrorUpperBound).toBe(2)       // 多分片下的近似性
+    // totalHits 是**执行层的判据**（供 runFacets 说清 0 桶），不是给调用方看的字段
+    expect(result.totalHits).toEqual({ value: 10, relation: 'eq', basis: 'exact' })
+  })
+
+  it('聚合：只按时间分桶时不开 track_total_hits（那个判据这里用不上）', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.facets(
+      normalized(backend, { targetId: 'es', q: '', from: FROM, to: NOW }),
+      fake.target,
+      { interval: '5m' },
+    )
+    const search = fake.requests.find((request) => request.path.endsWith('/_search'))
+    expect((search?.body as { track_total_hits?: unknown }).track_total_hits).toBe(false)
+    expect(result.overTime).toEqual([{ ts: NOW - 300_000, count: 2 }, { ts: NOW, count: 1 }])
+    /*
+     * 时间分桶**不需要**那个判据：`over_time` 自己就说明了窗口里有没有日志（min_doc_count: 1 只发有数据的桶）。
+     * 这里读回来的 totalHits 是**请求里带的精度**——没开 track_total_hits 时 ES 给的默认值（10000 + 'gte'）
+     * 只是个下界提示；执行层只在传了 by 时用它（见新增用例：没给 by 就不谈字段）。
+     */
+    expect(result.totalHits?.relation).toBe('eq')
+  })
+
+  it('聚合：`relation: gte` 时把总数标成下界（不把近似值说成精确值）', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS), aggsTotalRelation: 'gte' })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.facets(
+      normalized(backend, { targetId: 'es', q: '', from: FROM, to: NOW }),
+      fake.target,
+      { by: 'app' },
+    )
+    expect(result.totalHits).toEqual({ value: 10, relation: 'gte', basis: 'lower_bound' })
   })
 
   it('聚合：text 且无 .keyword 的字段明确报错（不猜、不静默空桶）', async () => {

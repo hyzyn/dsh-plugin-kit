@@ -681,6 +681,9 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
      * 真机反馈第 2 条：agent 要回答「哪个服务在报错」只能出去 curl。这里把两件事做进来，并且
      * **把聚合的近似性也如实回传**：terms 的 `sum_other_doc_count`（没列出来的桶还有多少条）与
      * `doc_count_error_upper_bound`（计数误差上界）都是这层必须报的信号——不然又是一次「看起来是全部」。
+     *
+     * 另外回一个**只给执行层看**的 `totalHits`（loglens D07）：0 桶既可能是字段空壳、也可能是窗口里
+     * 没日志，而这一层是唯一拿得到判据的地方；它不进 facets 的返回值（理由见 FacetsResult.totalHits）。
      */
     async facets(query: NormalizedQuery, target: LoglensTarget, spec: FacetsSpec): Promise<FacetsResult> {
       const access = targetAccess(target)
@@ -705,24 +708,52 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
         { range: { [ES_TIME_FIELD]: { gte: isoOf(query.from), lte: isoOf(query.to) } } },
         ...(query.filters === undefined ? [] : await filterClauses(target, access, query.filters)),
       ]
+      /*
+       * `track_total_hits`（loglens D07）：**只在真需要那个判据时才开**。
+       *
+       * 为什么聚合请求原本写死 false：`size: 0` 的聚合只回桶，没人要总数；而精确计数要跨分片数一遍
+       * 全部命中，在大索引上是有代价的——不为一个用不上的数字付这笔钱。
+       *
+       * 为什么 `by` 时就该付：0 桶有两种成因（这个字段一条有值的都没有 vs. 这段时间压根没日志），
+       * 而区分它们的唯一判据就是「窗口内命中数」。没有它，执行层只能把 0 桶原样回报——调用方于是
+       * 白烧一轮去猜「是字段空还是窗口空」。所以按需开：**传了 by 才要这个判据**，只按时间分桶
+       * （interval）时聚合结果自己就说明了有没有日志，照旧 false。
+       */
+      const wantsTotal = spec.by !== undefined && spec.by !== ''
       const body = {
         size: 0,
-        track_total_hits: false,
+        track_total_hits: wantsTotal,
         query: { bool: { must: query.q === '' ? [{ match_all: {} }] : [{ query_string: { query: query.q } }], filter: conditions } },
         aggs,
       }
-      const payload = await callJson(target, joinUrl(access.url, '/_search'), {
+      /*
+       * 聚合**必须自己带上索引表达式**（loglens D08）：它与 query 路不一样——query 先开 PIT，之后
+       * `search_after` 的搜索走裸 `/_search`（PIT 已经绑定了索引集，再带路径反而是错的）；而 facets
+       * 不开 PIT，裸打 `/_search` 等于**全集群**通配，`.kibana_*` / 别的应用索引会一起被聚合进来。
+       * 后果是同一张卡片里「榜 / 时间分布」与「行」来自不同的数据集，而界面上看不出来。
+       */
+      const payload = await callJson(target, joinUrl(access.url, '/' + targetIndex(target) + '/_search'), {
         method: 'POST',
         headers: { ...access.headers, 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
       const root = payload as {
+        hits?: { total?: { value?: unknown, relation?: unknown } },
         aggregations?: {
           by?: { buckets?: Array<{ key?: unknown, doc_count?: unknown }>, sum_other_doc_count?: unknown, doc_count_error_upper_bound?: unknown }
           over_time?: { buckets?: Array<{ key?: unknown, doc_count?: unknown }> }
         }
       }
       const result: FacetsResult = {}
+      /*
+       * 窗口内命中数（供执行层判「字段是空壳」还是「窗口里没日志」）：`relation` 的语义与 countsOf
+       * 同一口径——'gte' 是下界（近似），所以带 `basis` 一起报，别把一个下界说成精确值。
+       */
+      const totalValue = root.hits?.total?.value
+      if (typeof totalValue === 'number') {
+        const lowerBound = root.hits?.total?.relation === 'gte'
+        result.totalHits = { value: totalValue, relation: lowerBound ? 'gte' : 'eq', basis: lowerBound ? 'lower_bound' : 'exact' }
+      }
       const byBuckets = root.aggregations?.by?.buckets
       if (Array.isArray(byBuckets)) {
         result.buckets = byBuckets.map((bucket) => ({

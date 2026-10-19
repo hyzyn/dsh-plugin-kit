@@ -415,6 +415,14 @@ describe('判据 8：跨包引用的号必须真实存在（悬空引用）', ()
     expect(kinds(diffs)).toContain('ledger.ref.dangling')
   })
 
+  it('loglens 的悬空引用也要报（它登记进了台账，却漏在正则名单里——2026-10-18 补）', () => {
+    const bogus = danglingRef('loglens')
+    const diffs = checkWithReferences([...real.references, { path: 'docs/fixture.md', text: `见 ${bogus}。\n` }])
+    const diff = diffs.find((item) => item.kind === 'ledger.ref.dangling')
+    expect(diff, `${bogus} 应被报出来`).toBeDefined()
+    expect(diff?.actual).toBe(bogus)
+  })
+
   it('扫的扩展名覆盖 workflow 与代码注释——当初那条悬空引用正是写在这两类文件里', () => {
     const bogus = danglingRef('tty')
     const diffs = checkWithReferences([

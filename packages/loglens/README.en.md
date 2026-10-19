@@ -265,8 +265,24 @@ is in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1).
 | `loglens_sources` | List sources (with the **resolved index expression** and a probe count); other `loglens_*` tools take their `target` from here |
 | `loglens_search` | Query: supports `filters` structured filtering and `level` (**and-above** semantics), `from` / `to` / `limit` / `direction` / `cursor` |
 | `loglens_fields` | Show which fields exist. On the ES / OpenSearch side it **does not list `object` / `nested` container rows**, and a name whose **type differs** across indices is marked `conflict: true` with `esTypes` / `conflictDescriptions` |
-| `loglens_facets` | Group by field / bucket by time ("which service is erroring"); currently only ES / OpenSearch have it |
-| `loglens_context` | Fetch the context around one row |
+| `loglens_facets` | Group by field / bucket by time ("which service is erroring"); currently only ES / OpenSearch have it. **On zero buckets it says which cause it is** — using "how many rows this window holds" to tell "this field is a shell" from "nothing matched in this window", whose next steps are opposite |
+| `loglens_context` | Fetch the context around one row. The anchor is matched by **priority**: exact id → the variant with one leading `#` stripped → exact message → equal after whitespace normalization → one-way whitespace-normalized substring → `ts` alone (a **fallback** tier that applies whether or not a message was given; a higher tier always wins, within a tier the row nearest the `ts` wins, ties broken by id then message). The `#id` right after the message on each rendered row is that exact coordinate (labels may follow it); a non-id hit says in `warnings` which tier it used |
+
+**Shape of the rendered row** (shared by `loglens_search` and `loglens_context`): time · level · message ·
+`#id` · labels. Three details, all in service of reading it comfortably:
+
+- **The timestamp carries an explicit offset**: `2026-10-18T22:01:43.123+08:00`, not `…Z`. Times inside log
+  messages are almost always local, so a UTC stamp up front gives one row two different clocks and any
+  epoch conversion goes wrong; with the offset, `Date.parse` still resolves the same instant (machine-usable)
+  while the human sees the same clock as the message. The zone is the **host process's** local zone.
+- **Multi-line messages (stack traces) keep their shape**: a `log.flags=multiline` stack trace is one document
+  whose `message` already contains newlines, and echoing it raw yields flat "newline inside a line" text.
+  Continuation lines now get a `    | ` prefix (the message content is untouched), and past 20 lines it
+  truncates and **reports** the total and the number not shown.
+- **Only the identity keys are laid out** (`LABEL_PRIORITY` in `src/line.ts`, the first 3: container → host →
+  stream); the rest collapse into `+N labels` — one filebeat document can flatten into 20 labels, and laying
+  them all out drowns the message. **Collapsing is not dropping**: the full labels live in the result's
+  `lines[].labels`.
 
 ## HTTP surface (loopback)
 

@@ -6,7 +6,7 @@
  * 会漂的真相源；这一层是唯一实现，工具与路由各自只加一层自己的东西（工具加渲染、路由加围栏）。
  */
 import type { LoglensConfig, LoglensTarget, SourceKind } from './config.js'
-import type { BackendCaps, FacetsResult, LogBackend, LogCounts, LogLine, Truncation } from './backends/types.js'
+import type { BackendCaps, FacetBucket, FacetsResult, LogBackend, LogCounts, LogLine, Truncation } from './backends/types.js'
 import { CANONICAL_LEVELS, canonicalLevel, levelHint, levelMatches } from './line.js'
 import type { CanonicalLevel } from './line.js'
 import { normalizeQuery } from './query.js'
@@ -245,6 +245,65 @@ export type FacetsOutcome = {
   hint?: string
 }
 
+/**
+ * 0 桶时给一句解释（loglens D07）——**判据先行，别假装知道原因**。
+ *
+ * 为什么需要：0 桶有两种成因，而它们指向的「下一步」完全相反。「这个字段一条有值的都没有（空壳）」
+ * 该换字段 / 承认级别得从正文推断；「这段时间压根没日志」该放大时间窗或放宽 filters。上一版只把
+ * 0 桶原样回报，调用方只能自己试错。`totalHits`（窗口内命中数）就是这两者的**唯一**判据——由适配器
+ * 带上来，只在这一层用，**不进返回值**（facets 的输出 schema 是 additionalProperties: false，
+ * 多一个键就是崩溃；信息一律走 warnings 通道）。
+ *
+ * 措辞把 **判据本身（totalHits 是多少、精确还是下界）说出来**：这只是「这个数字给出的结论」，
+ * 不是对一个看不见的索引下的断语。桶里**还有**计数时就**一句都不说**——聚合自己已经说清楚了，
+ * 多说一句就是刷屏。
+ *
+ * **判据的边界也要认**（第二轮对抗复核的 F8）：`totalHits > 0` 只证明「窗口里有日志」，
+ * **证明不了这个字段有值**——字段名拼错 / 索引里没这个字段，同样一个桶都没有。这一层没拿 `by`
+ * 跟字段清单对过，所以它没资格在两种成因里挑一个说；那种情形把两种可能都摆出来、再给两条
+ * 「调用方自己验」的路，比给一个猜的结论有用。
+ *
+ * 为什么**不**在这里补一次 `fields()` 校验：那是每次 facets 都多一跳（而 facets 本来就是
+ * 「先看一眼分布」的便宜动作），代价与收益不成比例；而 `loglens_fields` 那条路调用方一次就能验完，
+ * 费用落在真需要它的人身上。另外 ES 适配器那层对未知字段会走 text 分支直接报错（不是回 0 桶）——
+ * 那是那一层的实现细节，不是这一层能依赖的判据（别的适配器没有这条），所以措辞照样两种都留。
+ */
+function explainEmptyFacets(
+  byField: string,
+  buckets: FacetBucket[] | undefined,
+  totalHits: { value: number, basis: 'exact' | 'lower_bound' } | undefined,
+): string | undefined {
+  /*
+   * 判定范围：一个桶都没有，或所有桶都是 0 条（terms 的 min_doc_count 默认是 1，所以第二种在 ES 上
+   * 基本见不到——但契约里 buckets 可以来自任何适配器，判定照「桶里到底有没有条数」来，不靠这个假设）。
+   */
+  if (buckets !== undefined && buckets.some((bucket) => bucket.count > 0)) return undefined
+  if (totalHits === undefined) {
+    // 适配器没给这个判据（不知道就不写，别拿 0 冒充「没有数据」）：给一句不冒充原因的话，指一条能自己验的路
+    return '按 ' + byField + ' 没分到任何桶，而这次查询没能拿到「窗口内共有多少条」这个判据：'
+      + '先用 loglens_search 看这个窗口里到底有没有日志——有日志就说明问题出在**这个字段**上'
+      + '（它在这批日志里没值，或者字段名压根不存在：用 loglens_fields 对一下拼写），'
+      + '没有日志则是窗口或查询串的问题'
+  }
+  // 下界（ES 的 relation: 'gte'）照样能用：它 > 0 就已经证明窗口里有日志了，只是不谎报成精确值
+  const bound = totalHits.basis === 'lower_bound' ? '（下界，非精确值）' : ''
+  if (totalHits.value > 0) {
+    /*
+     * 两种可能都摆出来（F8）：这个判据只证明「窗口里有日志」，证明不了「字段有值」——
+     * 字段名拼错 / 索引里没这个字段，同样是 0 桶。两条下一步各验一种可能：
+     * `loglens_fields` 验「字段名存在吗」，`loglens_search` 的 `?` 验「值是不是长在正文里」。
+     */
+    return '这个窗口里有 ' + String(totalHits.value) + ' 条日志' + bound + '（所以不是窗口里没日志），但按 ' + byField + ' 分组一个桶都没有：'
+      + '要么这个字段名压根不存在（索引里没这个字段，多半是拼错），要么它在这批日志里一条有值的都没有（空壳）——'
+      + '这次查询没校验过 by 是不是真字段，两种可能都排除不掉。自己验两步：'
+      + '① 用 loglens_fields 对拼写（它列出的就是索引里真有的字段名，逐字一致才算有）；'
+      + '② 用 loglens_search 看行里的级别带不带 `?`（形如 `error?`）——ES 上 log.level 这类字段常常整列是空的、'
+      + '级别其实长在正文里，带 `?` 就说明那一行的级别是从正文推断出来的，不是字段值'
+  }
+  return '这个窗口里没有任何命中（共 ' + String(totalHits.value) + ' 条' + bound + '），所以按 ' + byField + ' 也没有桶：'
+    + '这次是窗口或查询串的问题，**不是这个字段的问题**——把时间窗放大，或检查查询串 / filters 是不是筛太紧了'
+}
+
 export async function runFacets(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FacetsOutcome> {
   const picked = resolveTarget(deps.config(), input.target)
   if (!picked.ok) throw new Error(picked.error)
@@ -292,6 +351,15 @@ export async function runFacets(deps: ExecuteDeps, input: Record<string, unknown
   if (result.countErrorUpperBound !== undefined) {
     warnings.push('桶计数是**近似值**（误差上界 ' + String(result.countErrorUpperBound) + ' 条，terms 聚合在多分片上本来就是这个精度）')
   }
+  /* 0 桶的解释见 explainEmptyFacets：判据与措辞的理由都在那一段里。 */
+  if (by !== '') {
+    const emptyFacets = explainEmptyFacets(by, result.buckets, result.totalHits)
+    if (emptyFacets !== undefined) warnings.push(emptyFacets)
+  }
+  /*
+   * 这个返回值**只挑明写出来的键**：`result.totalHits` 是执行层内部判据（上面已经换成措辞了），
+   * 它出现在这里就是一次 schema 崩溃（facets 的 output schema 是 additionalProperties: false）。
+   */
   return {
     target: describeTarget(picked.target),
     window: { from: normalized.query.from, to: normalized.query.to },

@@ -214,8 +214,16 @@ function label(prefix, value) {
 const REFERENCE_EXT = /\.(md|markdown|ts|mts|cts|mjs|cjs|js|jsx|tsx|json|yml|yaml)$/
 /** 扫引用时整目录跳过的名字（依赖 / 构建产物 / 覆盖率报告）。 */
 const REFERENCE_SKIP_DIRS = new Set(['node_modules', 'lib', 'dist', 'build', 'out', 'coverage'])
-/** `<包名> <前缀><号>`：跨包引用（`docker D119` / `codegraph CG68` / `kit D11` / `tty D61`）。 */
-const CROSS_REF_SOURCE = String.raw`\b(docker|tty|codegraph|kit)\s+([A-Z]{1,4})(\d{1,4})\b`
+/**
+ * `<包名> <前缀><号>`：跨包引用（`docker D119` / `codegraph CG68` / `kit D11` / `tty D61` / `loglens D05`）。
+ *
+ * **这份名单必须与 `LEDGER_SPECS` 对齐**：2026-10-18 发现 `loglens` 已经登记进台账（台账自洽那一组
+ * 判据都覆盖它），却漏在这个正则里——于是任何人写一个越界号（形如 `loglens Dxx`）都不会被拦，
+ * 而这条判据的全部意义
+ * 就是拦这个。新增包时两处一起加；反例钉在 `scripts/test/defects-table.test.ts` 的
+ * 「loglens 的悬空引用也要报」那一条。
+ */
+const CROSS_REF_SOURCE = String.raw`\b(docker|tty|codegraph|kit|loglens)\s+([A-Z]{1,4})(\d{1,4})\b`
 
 /**
  * 刻意写出的「不存在的号」的**豁免表**：只允许出现在守卫自己的夹具里（造 A 类反例用）。
