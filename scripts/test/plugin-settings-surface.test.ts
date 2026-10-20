@@ -190,3 +190,54 @@ describe('客户端设置面的注册契约（跨包一致）', () => {
     expect(hardcoded.includes('...new Set(ROW_CONFIG_KEYS.map')).toBe(false)
   })
 })
+
+/**
+ * 「插件配置」页导语里那份插件清单（`@hyzyn/dsh-kit-settings` 的 `section.intro`）。
+ *
+ * 为什么单独守：导语是**手抄的第二份清单**——卡片集合由各包自己注册进 `settings.kit.item`
+ * 决定，而这句话是人写死的。`loglens` 2026-10-11 建包当天就注册了卡片，导语却到 2026-10-20
+ * 仍只列八个名字（用户看到的是「日志查询卡片在，导语里没有它」）。这类漂移没有任何用例会红
+ * ——正是本仓那句「没有守卫的规矩会在下一次改动里漂掉」。
+ *
+ * 判据只取**能静态算的部分：条数**。刻意不比名字：导语用的是短名（`环境变量` / `MCP` /
+ * `Docker`），卡片用的是全名（`环境变量 / 密钥管理` / `Docker 容器面板`），两种语言还各有一套
+ * 措辞——按名字比会变成「为了过闸门而改文案」，而且一改文案就误报。条数则刚好对应真正的
+ * 缺陷形态：**加了插件、忘了导语**（或删了插件、导语还留着）。
+ */
+describe('「插件配置」页导语与已注册卡片条数一致（`section.intro`）', () => {
+  const settingsPagePath = join(packagesDir, 'kit-settings', 'client.js')
+
+  /** 导语里列出的条目（zh / en 各一份目录）。 */
+  function introItems(): { zh: string[]; en: string[] } {
+    const source = readFileSync(settingsPagePath, 'utf8')
+    const lines = [...source.matchAll(/'section\.intro':\s*'([^']+)'/g)].map((m) => m[1])
+    expect(lines.length, 'kit-settings 的 section.intro 应有 zh + en 两条').toBe(2)
+    // 只看冒号/句号之后的清单部分；条目分隔符 zh 用「、」，en 用「,」与「 and 」
+    const zhList = lines[0].split('：')[1] ?? ''
+    const enList = lines[1].split(': ')[1] ?? ''
+    const split = (text: string, pattern: RegExp) => text
+      .replace(/[。.]$/, '')
+      .split(pattern)
+      .map((item) => item.trim())
+      .filter((item) => item !== '')
+    return { zh: split(zhList, /、/), en: split(enList, /,\s*|\s+and\s+/) }
+  }
+
+  it('条数 = 已注册卡片的包数（加插件忘了改导语会在这里露出来）', () => {
+    const { zh, en } = introItems()
+    const expected = packagesWithSettingsCard().length
+    expect(zh.length, `导语（zh）列了 ${zh.length} 项，已注册卡片 ${expected} 张：${zh.join('、')}`).toBe(expected)
+    expect(en.length, `导语（en）列了 ${en.length} 项，已注册卡片 ${expected} 张：${en.join(', ')}`).toBe(expected)
+  })
+
+  it('反例：从导语里删掉任意一项，条数判据必须变红', () => {
+    const { zh } = introItems()
+    const expected = packagesWithSettingsCard().length
+    // 缺陷形态就是「加了插件、导语没跟上」——等价于导语少一项
+    for (let i = 0; i < zh.length; i += 1) {
+      const downgraded = zh.filter((_item, index) => index !== i)
+      expect(downgraded.length, `删掉第 ${i + 1} 项（${zh[i]}）后条数应当变少`).toBe(expected - 1)
+      expect(downgraded.length).not.toBe(expected)
+    }
+  })
+})

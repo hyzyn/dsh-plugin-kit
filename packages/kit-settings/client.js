@@ -50,13 +50,13 @@ window.__ModuleLoader__.load({
     const I18N_NS = 'kit-settings'
     const I18N_ZH = {
       'section.title': '插件配置',
-      'section.intro': 'dsh-plugin-kit 插件族的配置入口：环境变量、MCP、Prompt、Profile、RSS、Codegraph、Docker、终端面板。',
+      'section.intro': 'dsh-plugin-kit 插件族的配置入口：环境变量、日志查询、MCP、Prompt、Profile、RSS、Codegraph、Docker、终端面板。',
       'list.empty': '暂无可用配置项：请先安装至少一个 kit 插件。',
       'error.render': '配置项渲染失败：',
     }
     const I18N_EN = {
       'section.title': 'Plugin configuration',
-      'section.intro': 'Configuration entries for the dsh-plugin-kit family: env, MCP, Prompt, Profile, RSS, Codegraph, Docker and the terminal panel.',
+      'section.intro': 'Configuration entries for the dsh-plugin-kit family: env, log query, MCP, Prompt, Profile, RSS, Codegraph, Docker and the terminal panel.',
       'list.empty': 'No configuration entries available — install at least one kit plugin first.',
       'error.render': 'Failed to render the configuration entry: ',
     }
