@@ -24,7 +24,7 @@ importers:
         specifier: 0.3.11
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.2.6
+        specifier: 0.2.7
         version: link:packages/kit-settings
       '@hyzyn/dsh-loglens':
         specifier: 0.1.3
@@ -42,7 +42,7 @@ importers:
         specifier: 0.4.10
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.11
+        specifier: 0.4.12
         version: link:packages/search
       '@hyzyn/dsh-tty':
         specifier: 0.32.4
@@ -76,7 +76,7 @@ importers:
         specifier: 0.3.11
         version: link:../env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.2.6
+        specifier: 0.2.7
         version: link:../kit-settings
       '@hyzyn/dsh-loglens':
         specifier: 0.1.3
@@ -94,7 +94,7 @@ importers:
         specifier: 0.4.10
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.11
+        specifier: 0.4.12
         version: link:../search
       '@hyzyn/dsh-tty':
         specifier: 0.32.4
