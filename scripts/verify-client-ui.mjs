@@ -492,13 +492,58 @@ try {
           }
           return false
         }
-        // ⚠️ 设置按钮是**开关式**的：只点一次再等，反复点会把自己点关（踩过）。
-        window.__dshUi.clickText('设置')
-        let ready = await waitForSettings()
-        if (!ready) {
+        /*
+         * 开设置窗：入口形态随宿主版本变过三代（与 packages/search/client.js 的
+         * findSettingsDialogTrigger / findAccountMenuTrigger 同一条判据，2026-10-20 实测）：
+         *   · ≤0.2.0：侧边栏底部是设置自己的触发器 button[aria-haspopup="dialog"]；
+         *   · ≥0.2.1：那个单值槽被 ui-settings-account 的账号菜单占住，按钮变成
+         *     aria-haspopup="menu"（可访问名「账号菜单」），设置窗是菜单里的第一项
+         *     [role=menuitem]「设置 ⌥⌘,」。只查 button / [role=button] 的 clickText
+         *     在这一代一个都命中不了 —— UI12 就是这么恒红的（2026-10-20 实测：
+         *     导航=[] 卡片 0 张，而手工点账号菜单 →「设置」后 9 张卡片全在）。
+         * 所以这里三代都试：直连触发器 → 账号菜单里的「设置」项 → 纯文本兜底。
+         */
+        const findMenuItem = (texts) => [...document.querySelectorAll('[role=menuitem], [role=menuitemradio]')]
+          .find((el) => {
+            const text = (el.textContent ?? '').replace(/\\s+/g, ' ').trim()
+            return text !== '' && texts.some((label) => text.startsWith(label) || text.includes(label))
+          }) ?? null
+        const openSettings = async () => {
+          if (readNav().length > 0) return true
+          // ① 老宿主：直连触发器（也可能是菜单按钮，点开后再找菜单项）
+          const direct = document.querySelector('button[aria-haspopup="dialog"]')
+          if (direct !== null) {
+            direct.click()
+            if (await waitForSettings()) return true
+          }
+          // ② 新宿主（≥0.2.1）：账号菜单 →「设置」。⚠️ 菜单是**开关式**的，点两次会收起来。
+          const trigger = [...document.querySelectorAll('button[aria-haspopup="menu"]')]
+            .find((btn) => ['账号菜单', 'Account menu', '账户菜单'].includes((btn.getAttribute('aria-label') ?? '').trim()))
+            ?? null
+          if (trigger !== null) {
+            const wasOpen = trigger.getAttribute('aria-expanded') === 'true'
+            if (!wasOpen) trigger.click()
+            const entry = await (async () => {
+              for (let i = 0; i < 12; i += 1) {
+                const hit = findMenuItem(['设置', 'Settings'])
+                if (hit !== null) return hit
+                await sleep(300)
+              }
+              return null
+            })()
+            if (entry !== null) {
+              entry.click()
+              if (await waitForSettings()) return true
+            } else if (!wasOpen) {
+              try { trigger.click() } catch { /* 收不起来不阻塞 */ }
+            }
+          }
+          // ③ 纯文本兜底（≤0.1.5 的「设置」按钮就是普通 button）
           window.__dshUi.clickText('设置')
-          ready = await waitForSettings()
+          return waitForSettings()
         }
+        let ready = await openSettings()
+        if (!ready) ready = await openSettings()
         const nav = readNav()
         const clicked = window.__dshUi.clickText('插件配置')
         await sleep(1800)

@@ -207,20 +207,27 @@ describe('客户端设置面的注册契约（跨包一致）', () => {
 describe('「插件配置」页导语与已注册卡片条数一致（`section.intro`）', () => {
   const settingsPagePath = join(packagesDir, 'kit-settings', 'client.js')
 
+  /**
+   * 从一条导语里拆出条目清单（**纯函数**：输入是文案，不是文件）。
+   *
+   * 单独抽出来是为了让反例用例自带夹具：反例若依赖真实文件，一旦导语真的漂了，
+   * 「条数不符」与「反例不成立」会**同时变红**，两个信号混在一起——假红会训练人忽略红。
+   */
+  function splitIntroItems(text: string, lang: 'zh' | 'en'): string[] {
+    const body = lang === 'zh' ? (text.split('：')[1] ?? '') : (text.split(': ')[1] ?? '')
+    return body
+      .replace(/[。.]$/, '')
+      .split(lang === 'zh' ? /、/ : /,\s*|\s+and\s+/)
+      .map((item) => item.trim())
+      .filter((item) => item !== '')
+  }
+
   /** 导语里列出的条目（zh / en 各一份目录）。 */
   function introItems(): { zh: string[]; en: string[] } {
     const source = readFileSync(settingsPagePath, 'utf8')
     const lines = [...source.matchAll(/'section\.intro':\s*'([^']+)'/g)].map((m) => m[1])
     expect(lines.length, 'kit-settings 的 section.intro 应有 zh + en 两条').toBe(2)
-    // 只看冒号/句号之后的清单部分；条目分隔符 zh 用「、」，en 用「,」与「 and 」
-    const zhList = lines[0].split('：')[1] ?? ''
-    const enList = lines[1].split(': ')[1] ?? ''
-    const split = (text: string, pattern: RegExp) => text
-      .replace(/[。.]$/, '')
-      .split(pattern)
-      .map((item) => item.trim())
-      .filter((item) => item !== '')
-    return { zh: split(zhList, /、/), en: split(enList, /,\s*|\s+and\s+/) }
+    return { zh: splitIntroItems(lines[0], 'zh'), en: splitIntroItems(lines[1], 'en') }
   }
 
   it('条数 = 已注册卡片的包数（加插件忘了改导语会在这里露出来）', () => {
@@ -230,14 +237,14 @@ describe('「插件配置」页导语与已注册卡片条数一致（`section.i
     expect(en.length, `导语（en）列了 ${en.length} 项，已注册卡片 ${expected} 张：${en.join(', ')}`).toBe(expected)
   })
 
-  it('反例：从导语里删掉任意一项，条数判据必须变红', () => {
-    const { zh } = introItems()
+  it('反例（自带夹具，不依赖真实文件）：漏一项的导语必须算得比卡片少', () => {
     const expected = packagesWithSettingsCard().length
-    // 缺陷形态就是「加了插件、导语没跟上」——等价于导语少一项
-    for (let i = 0; i < zh.length; i += 1) {
-      const downgraded = zh.filter((_item, index) => index !== i)
-      expect(downgraded.length, `删掉第 ${i + 1} 项（${zh[i]}）后条数应当变少`).toBe(expected - 1)
-      expect(downgraded.length).not.toBe(expected)
-    }
+    // 真机看到过的那一版原文：九张卡片，导语只有八项（缺「日志查询」）
+    const staleZh = 'dsh-plugin-kit 插件族的配置入口：环境变量、MCP、Prompt、Profile、RSS、Codegraph、Docker、终端面板。'
+    const staleEn = 'Configuration entries for the dsh-plugin-kit family: env, MCP, Prompt, Profile, RSS, Codegraph, Docker and the terminal panel.'
+    expect(splitIntroItems(staleZh, 'zh')).toHaveLength(expected - 1)
+    expect(splitIntroItems(staleEn, 'en')).toHaveLength(expected - 1)
+    // 反过来：修好之后的那一版必须正好相等（否则「相等」这条判据本身就不可满足）
+    expect(splitIntroItems(`${staleZh.replace('环境变量、', '环境变量、日志查询、')}`, 'zh')).toHaveLength(expected)
   })
 })
