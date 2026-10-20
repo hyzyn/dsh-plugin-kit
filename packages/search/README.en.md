@@ -18,7 +18,7 @@
 
 **Content on open** (no request, zero latency):
 
-- **Recent**: the recent sessions in the browser-side `ctx.sessions.list` snapshot (empty sessions and subagent sessions are filtered out), with a relative time on the right;
+- **Recent**: the recent sessions in the browser-side `ctx.sessions.list` snapshot (empty sessions and subagent sessions are filtered out), with a relative time on the right; up to 8 rows (`RECENT_SESSION_LIMIT`), the same limit for the empty query and for searching, with `⌥/Alt + digit` shortcuts on the first 9;
 - **Quick actions**: new session / open folder / open settings — the row does not appear when the target is missing (for example, when the directory picker plugin is not installed);
 - **Settings**: the top-level settings categories are taken **live** from the `settings.section` slot of the client slots registry — categories registered by third-party plugins such as Skins / Pets / Sidebar cards / Web plugins / Creative workshop / Usage stats / Session archive management also appear, in the same order as the settings window navigation; the in-row keywords and descriptions are filled in by the host's `/api/dsh-search/catalog` directory. When the host does not have that route (the host itself is an older build), or the slots service is unavailable, it falls back to the directory, and then to the client-side fallback list of the four built-in official categories.
 
@@ -28,6 +28,16 @@
 - **Prompts**: reads the managed block of `~/.dsh/prompts.yml`; clicking jumps to the “Prompt Management” settings card (when it cannot jump there, it falls back to copying the snippet);
 - **MCP tools**: tools with the `mcp__` prefix, showing the owning server on the right; clicking jumps to the “MCP Server Configuration” card;
 - **Settings**: matched locally by title / keyword / description (including plugin cards).
+
+**How a jump finds the settings window** (two host generations; pinned by `packages/search/test/settings-entry.test.ts`):
+
+| Host | The settings entry at the sidebar foot | The route this plugin takes |
+| --- | --- | --- |
+| ≤0.2.0 | `button[aria-haspopup="dialog"]`, one click opens the window | Click it |
+| ≥0.2.1 | The account menu (`aria-haspopup="menu"`, accessible name “账号菜单”), with **the settings window as its first item** | Open the menu → click “Settings” |
+| any | The host provides a `shortcuts` service (with `settings.open`) | `invoke` the command directly, independent of DOM shape |
+
+When the settings window is already open, `settings.open` is not invoked again — with `modal === "settings"` that command means “close the topmost modal”, so repeating it would close the window the user just opened. The window itself is identified by `data-shortcut-modal="settings"`, not by “any `role="dialog"` on the page” (approval prompts and attachment previews are dialogs too).
 
 ## Keyboard
 

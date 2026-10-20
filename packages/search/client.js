@@ -610,13 +610,12 @@ window.__ModuleLoader__.load({
       button.click()
     }
 
-    function runOpenSettings() {
-      const trigger = findSettingsTrigger()
-      if (trigger === null) {
+    async function runOpenSettings() {
+      if (!settingsEntryAvailable()) {
         toast(t('error.openSettingsUnavailable'), 'error')
         return
       }
-      if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
+      if (await openSettingsDialog() === null) toast(t('error.openSettingsUnavailable'), 'error')
     }
 
     /** 快捷操作：可用性在渲染时判定，不可用的行不出现（宁缺毋滥）。 */
@@ -648,7 +647,7 @@ window.__ModuleLoader__.load({
         code: 'Comma',
         chip: ',',
         keywords: ['settings', 'preference', 'config', '设置', '偏好', '配置'],
-        available: () => findSettingsTrigger() !== null,
+        available: () => settingsEntryAvailable(),
         run: () => runOpenSettings(),
       },
     ]
@@ -857,6 +856,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 「最近」分组最多列几条。
+     *
+     * 早先空查询只放 4 条（怕「设置」大类被挤出首屏），真机反馈是**太少**——侧边栏里
+     * 明明有一屏会话，面板打开却只看到 4 条，还得再搜一次。列表本来就能滚（`.gs_list`
+     * 是 `overflow-y:auto`），所以这里放到 8 条：首屏仍是「最近 + 快捷操作」，
+     * 「设置」大类往下滚一格就到，换来的是打开面板就能看见一周内的会话。
+     *
+     * 上界与快捷键胶囊对齐：`⌥/Alt + 1…9` 只有 9 个数字键，再多也编不出快捷键。
+     */
+    const RECENT_SESSION_LIMIT = 8
+
+    /**
      * 组装分组。空查询 = 「打开即有内容」的落地页（最近会话 + 快捷操作 + 设置）；
      * 有查询 = 本地即时候选在前，宿主全文命中在后。
      */
@@ -869,8 +880,7 @@ window.__ModuleLoader__.load({
       const recents = readSessionSummaries()
         .filter((row) => !serverSessionIds.has(row.id))
         .filter((row) => !searching || String(row.title).toLowerCase().includes(query))
-        // 空查询下少放几条：设置大类要能在首屏看到（列表本来也能滚）
-        .slice(0, searching ? 5 : 4)
+        .slice(0, RECENT_SESSION_LIMIT)
 
       if (recents.length > 0) {
         groups.push({
@@ -1415,10 +1425,134 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function findSettingsTrigger() {
-      const sidebar = document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]')
-      const scope = sidebar || document
+    /**
+     * 设置入口有两代形态，**0.2.1 换了**（真机实测，2026-10-20）。
+     *
+     * - DSH ≤0.2.0：侧边栏底部是设置 shell 自己的触发器 `button[aria-haspopup="dialog"]`，
+     *   点一下直接开设置窗。
+     * - DSH ≥0.2.1：`settings.launcher` 这个单值槽被账号菜单占住（`ui-settings-account` 的
+     *   AccountMenu），于是侧边栏底部那个按钮变成 `aria-haspopup="menu"`、可访问名「账号菜单」，
+     *   **设置窗是菜单里的第一项**（「设置 ⌥⌘,」）。这时整页 `button[aria-haspopup="dialog"]`
+     *   的个数是 **0**——旧实现据此判「当前环境无法打开设置」，所有设置跳转于是全部退化成
+     *   「把条目名复制到剪贴板」，用户看到的就是「点了没反应」。
+     *
+     * 所以入口判定必须是三档：宿主命令（不依赖 DOM 形态）→ dialog 触发器（老宿主）→
+     * 账号菜单里的「设置」项（新宿主）。
+     */
+    const SETTINGS_MENU_LABELS = ['设置', 'Settings']
+    const ACCOUNT_MENU_LABELS = ['账号菜单', 'Account menu', '账户菜单']
+
+    /** 设置窗本体。宿主给它标了 `data-shortcut-modal="settings"`（快捷键模态判定用的同一标记）。 */
+    function settingsDialogEl() {
+      return document.querySelector('[role="dialog"][data-shortcut-modal="settings"]')
+        || document.querySelector('[data-shortcut-modal="settings"]')
+    }
+
+    function sidebarScope() {
+      return document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]') || document
+    }
+
+    /** 老宿主（≤0.2.0）的直连触发器。 */
+    function findSettingsDialogTrigger() {
+      const scope = sidebarScope()
       return scope.querySelector('button[aria-haspopup="dialog"]') || document.querySelector('button[aria-haspopup="dialog"]')
+    }
+
+    /** 新宿主（≥0.2.1）的账号菜单按钮：侧边栏底部、`aria-haspopup="menu"`、可访问名「账号菜单」。 */
+    function findAccountMenuTrigger() {
+      const candidates = [...sidebarScope().querySelectorAll('button[aria-haspopup="menu"]')]
+      for (const label of ACCOUNT_MENU_LABELS) {
+        const hit = candidates.find((btn) => (btn.getAttribute('aria-label') || '').trim() === label)
+        if (hit !== undefined) return hit
+      }
+      // 宿主换了可访问名时按位置兜底：侧边栏里最后一个菜单按钮就是底部那一行（账号菜单在 footArea）。
+      return candidates.length > 0 ? candidates[candidates.length - 1] : null
+    }
+
+    /** 菜单项按文本找（菜单是 portal 到 body 的，所以整页找）。 */
+    function findMenuItem(texts, scope) {
+      const root = scope || document
+      for (const item of root.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')) {
+        const text = (item.textContent || '').replace(/\s+/g, ' ').trim()
+        if (text !== '' && texts.some((label) => text.startsWith(label) || text.includes(label))) return item
+      }
+      return null
+    }
+
+    /** 宿主注册的 `shortcuts` 服务（0.2.1 起官方有 `settings.open` 命令，最稳的一条路）。 */
+    function shortcutsService() {
+      try {
+        const ctx = activeCtx
+        if (!ctx) return undefined
+        const service = typeof ctx.get === 'function' ? ctx.get('shortcuts') : ctx.shortcuts
+        return service !== undefined && service !== null ? service : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * 走宿主的 `settings.open` 命令开设置窗。
+     * 设置窗已开时**不能**调用：那条命令的 resolve 在 `modal === "settings"` 时是「关掉最上层模态」。
+     */
+    function invokeSettingsCommand() {
+      const service = shortcutsService()
+      const registry = service === undefined ? undefined : service.registry
+      if (registry === undefined || registry === null || typeof registry.invoke !== 'function') return false
+      if (settingsDialogEl() !== null) return false
+      try {
+        registry.invoke('settings.open', { modal: null, region: 'page', target: document.body })
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    /** 新宿主：点开账号菜单 → 点「设置」。开错了菜单就原样收起，不把别人的菜单留在屏幕上。 */
+    async function openSettingsViaAccountMenu() {
+      const trigger = findAccountMenuTrigger()
+      if (trigger === null) return false
+      const wasOpen = trigger.getAttribute('aria-expanded') === 'true'
+      if (!wasOpen) trigger.click()
+      const entry = await waitFor(() => findMenuItem(SETTINGS_MENU_LABELS))
+      if (entry === null) {
+        if (!wasOpen) {
+          try {
+            trigger.click()
+          } catch {
+            /* 收不起来也不阻塞：下一次打开设置会重试 */
+          }
+        }
+        return false
+      }
+      entry.click()
+      return (await waitFor(() => settingsDialogEl())) !== null
+    }
+
+    /** 打开设置窗并返回它（已经开着就直接返回）。三档入口见上面的注释。 */
+    async function openSettingsDialog() {
+      const existing = settingsDialogEl()
+      if (existing !== null) return existing
+      if (invokeSettingsCommand()) {
+        const opened = await waitFor(() => settingsDialogEl())
+        if (opened !== null) return opened
+      }
+      const trigger = findSettingsDialogTrigger()
+      if (trigger !== null) {
+        if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
+        const opened = await waitFor(() => settingsDialogEl())
+        if (opened !== null) return opened
+      }
+      if (await openSettingsViaAccountMenu()) return settingsDialogEl()
+      return null
+    }
+
+    /** 「打开设置」这条快捷操作是否可用（入口形态与语言无关，只看有没有一条能走的路）。 */
+    function settingsEntryAvailable() {
+      return settingsDialogEl() !== null
+        || findSettingsDialogTrigger() !== null
+        || findAccountMenuTrigger() !== null
+        || shortcutsService() !== undefined
     }
 
     function findButtonByText(selector, texts, scope) {
@@ -1470,15 +1604,7 @@ window.__ModuleLoader__.load({
 
     /** 打开设置对话框并导航到指定一级大类（侧边栏 nav 按钮）。 */
     async function openSettingsSection(titleTexts, index) {
-      const trigger = findSettingsTrigger()
-      if (trigger === null) {
-        console.warn('[dsh-global-search] openSettingsSection: settings trigger not found')
-        return false
-      }
-      if (trigger.getAttribute('aria-expanded') !== 'true') {
-        trigger.click()
-      }
-      const panel = await waitFor(() => document.querySelector('[role="dialog"]'))
+      const panel = await openSettingsDialog()
       if (panel === null) {
         console.warn('[dsh-global-search] openSettingsSection: settings dialog not found')
         return false
@@ -1575,15 +1701,7 @@ window.__ModuleLoader__.load({
     async function openSettingsCard(titleTexts) {
       if (await openPluginManagerCard(titleTexts)) return true
 
-      const trigger = findSettingsTrigger()
-      if (trigger === null) {
-        console.warn('[dsh-global-search] openSettingsCard: settings trigger not found')
-        return false
-      }
-      if (trigger.getAttribute('aria-expanded') !== 'true') {
-        trigger.click()
-      }
-      const panel = await waitFor(() => document.querySelector('[role="dialog"]'))
+      const panel = await openSettingsDialog()
       if (panel === null) {
         console.warn('[dsh-global-search] openSettingsCard: settings dialog not found')
         return false
