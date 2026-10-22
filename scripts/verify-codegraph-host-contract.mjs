@@ -155,28 +155,40 @@ console.log(`# 临时项目：${projectDir}\n`)
  * 行里的 cwd 指向一个不存在的目录：managed 下插件会把它对齐到 projectDir，正好也验了
  * 「复用 MCP 卡片区块里的行并只改 cwd」这条既有路径没被 P0 改坏。
  */
-writeFileSync(join(isolatedHome, 'cordis.patch.yml'), [
-  '# --- dsh-mcp-config managed (auto-generated; do not edit) ---',
-  '- insert:',
-  '    - id: mcp-codegraph-managed',
-  "      name: '@deepseek-ai/dsh-mcp-client'",
-  '      config:',
-  '        serverName: codegraph',
-  '        transport: stdio',
-  '        command: codegraph',
-  '        args:',
-  '          - serve',
-  "          - '--mcp'",
-  '        cwd: /nonexistent/preseeded-project',
-  '# --- end dsh-mcp-config managed ---',
-  '',
-].join('\n'))
+/**
+ * CG70：托管行现在写在**本 profile 的层**（`profiles/<name>/cordis.patch.yml`），
+ * 所以预置也必须落在那里——预置到 home 层的话，插件启动时会把旧块当遗留行**迁移清掉**，
+ * 于是「挂起 dsh-mcp 区块里的行」那条分支永远走不到（实测就是 `disabled=false`）。
+ *
+ * 预置时机也变了：必须在 `syncProfile()` **之后**写，否则拷贝会把它覆盖掉。
+ */
+const seedPreseededMcpRow = () => {
+  const profilePatch = join(isolatedHome, 'profiles', profile, 'cordis.patch.yml')
+  const existing = existsSync(profilePatch) ? readFileSync(profilePatch, 'utf8') : ''
+  writeFileSync(profilePatch, existing + [
+    '# --- dsh-mcp-config managed (auto-generated; do not edit) ---',
+    '- insert:',
+    '    - id: mcp-codegraph-managed',
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    '      config:',
+    '        serverName: codegraph',
+    '        transport: stdio',
+    '        command: codegraph',
+    '        args:',
+    '          - serve',
+    "          - '--mcp'",
+    '        cwd: /nonexistent/preseeded-project',
+    '# --- end dsh-mcp-config managed ---',
+    '',
+  ].join('\n'))
+}
 
 let child
 let stderr = ''
 try {
   // 整份拷入被测 profile：插件/配置照旧，但组装产物与 home 级写入都落在隔离目录
   harness.syncProfile()
+  seedPreseededMcpRow()
   if (runtimeStore !== undefined) {
     const runtimeDir = resolve(runtimeStore)
     if (!existsSync(runtimeDir)) throw new Error(`--runtime-store 不存在：${runtimeDir}`)
@@ -287,8 +299,14 @@ try {
   // 这是 P0 的真机契约：模式开关要真的改到「盘上的托管行」与「宿主报的生效模式」，
   // 而且**来回都要可逆**。单测只能覆盖纯函数与行手术，覆盖不到「宿主认不认 disabled」
   // 这件事（loader 的 disabled 判定在运行时里）。
-  /** 隔离 home 的补丁路径：per-agent 的挂起 / 恢复都读它（真实那份由收尾断言守着）。 */
-  const isolatedPatch = join(isolatedHome, 'cordis.patch.yml')
+  /**
+   * 托管行所在的补丁路径。
+   *
+   * CG70 之后插件写的是**本 profile 自己的层**（`profiles/<name>/cordis.patch.yml`），
+   * 不是 home 层——设定与效果同层，同机多 profile 才不会互改。所以这里必须读 profile 层；
+   * 读 home 层会永远看到预置的那条旧行（它已被迁移清掉），断言变成假的。
+   */
+  const isolatedPatch = join(isolatedHome, 'profiles', profile, 'cordis.patch.yml')
   const agents = await request('/api/dsh-codegraph/agents')
   record('/agents 形状（默认 managed）',
     agents.status === 200 && agents.json?.mode === 'managed' && typeof agents.json?.mounted === 'number',

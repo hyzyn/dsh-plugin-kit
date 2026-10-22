@@ -13,6 +13,7 @@
 - **写入纪律**：对 `~/.dsh/cordis.patch.yml` 的每次写都带 mtime+size 盖章复核（dsh-mcp 同款 CAS，≤3 次重读）；复用 dsh-mcp 区块时只定点改 codegraph 行自己的 `cwd:` 一行，区块里的注释、其它服务器行、loader 合法的 override 条目逐字节保留；区块损坏时拒绝追加第二个区块（serverName 撞名会让 codegraph MCP 整体加载失败），把原因报给卡片。
 - **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。会话上报失败会退避重试，不再一次抖动就永久失效。
 - **可选的 per-agent MCP 隔离**（`mcpScope: 'per-agent'`，默认 `'managed'`）：默认模式下**一台** MCP 服务器按时分复用服务所有项目（靠 `projectPath` 与跟随会话）。开启 per-agent 后，每个 agent 在**自己的 Cordis scope** 里挂一份独立的 `dsh-mcp-client`，`cwd` 固定为它自己会话目录解析出的索引根——多项目并行时不再共享一个全局 cwd，也不再需要「写盘 → 热加载 → 重建连接」那条链；全局托管行会被**挂起**（`disabled: true`，切回 managed 自动恢复）。代价是每个 agent 一个子进程（实测空 Node 基线约 40MB）。**会话目录没有可用索引时该 agent 不挂**（而不是回落到默认项目）——否则它会拿到别的项目的上下文，这正是「宣称避免、实现却没做到」的那类错误。机制实测与取舍见 [docs/p0-plan.md](./docs/p0-plan.md)。
+  挂载模式以**持续生效**为准，不是启动时的一次判断：宿主 loader 会并发创建插件入口，`agents` 服务可能比本插件晚就绪，所以插件在服务到货时会重新裁决并补挂（codegraph CG69）——不会因为一次启动时序就永久停在 managed。
 - **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过，此前这是唯一还要把用户赶回终端的一步。
 - **systemPrompt 分两段，开关与门禁各自独立**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
 
@@ -200,7 +201,7 @@ node scripts/link-dsh-runtime.mjs     # 把 packages/* 的 @deepseek-ai/* 与 @h
 
 规划与缺陷记录（都不随包分发，只在仓库里，因此用绝对链接）：
 
-- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md)：缺陷编号字典——`CG01`–`CG63` 的索引（症状 + 修复/设计意图）；逐条原文、验收记录与原始待办冻结在 git 历史里（见其 §4）。
+- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md)：缺陷编号字典——`CG01`–`CG71` 的索引（症状 + 修复/设计意图）；逐条原文、验收记录与原始待办冻结在 git 历史里（见其 §4）。
 - [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：增强路线图——P0–P3 分档、代价、架构项（per-agent 挂载 / 采纳率仪表 / 诊断包）与开工顺序。
 - [docs/p0-plan.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/docs/p0-plan.md)：per-agent scoped MCP 挂载的完整方案与实测（已完成项的设计文档，**移入包内 `docs/`**）。
 - [docs/adoption-audit.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/docs/adoption-audit.md)：采纳率实测——从 177 个真实历史会话算出的数字、两个口径的取舍、以及对路线图的影响（**移入包内 `docs/`**）。

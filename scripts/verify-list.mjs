@@ -53,6 +53,13 @@ export const VERIFY_SCRIPTS = [
     needs: '无需宿主 / 浏览器（最小 Cordis 根 + 真插件）',
   },
   {
+    file: 'verify-cg69-real-cordis.mjs',
+    pkg: 'codegraph',
+    entry: 'cg69-real-cordis-smoke',
+    needs: '无需宿主 / 浏览器（真 cordis + 真 agent 服务，隔离临时目录）',
+    note: 'CG69：把「agents 服务迟到」在真 cordis 上真实演一遍——单测用的是假 ctx，测不到 strict-get 语义',
+  },
+  {
     file: 'verify-codegraph-indexforce.mjs',
     pkg: 'codegraph',
     entry: 'indexforce-smoke',

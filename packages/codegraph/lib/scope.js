@@ -67,6 +67,11 @@ export function resolveScopeMode(input) {
         };
     }
     if (!input.agentEvents) {
+        // CG69：这条分支的输入必须是**已确认**的事实，而不是 apply 期的一次抽样。
+        // 宿主 loader 并发创建 entry，`ctx.get('agents')` 有真实的 LOADING 窗口；把它当成
+        // 「宿主没有 agent 事件面」会让 per-agent 永久退回 managed（而 managed 的托管行在
+        // 没有已索引默认项目时是空的，两条路一起断）。让这个值可复用是调用方的责任：
+        // 服务迟到时要重跑裁决，见 index.ts 的 `ctx.inject(['agents'])`。
         return {
             mode: 'managed',
             reason: '要 per-agent 但宿主没有 agent 事件面（拿不到 agent/created），已退回 managed',

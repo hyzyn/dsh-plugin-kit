@@ -518,7 +518,12 @@ describe('P0：per-agent 与全局托管行互斥（suspendGlobal）', () => {
     // 切回 managed 能重新托管
     const back = syncManagedMcpRow(out.lines, decision(indexedDir))
     expect(back.changed).toBe(true)
-    expect(back.lines.join('\n')).toContain('serverName: codegraph')
+    const restored = back.lines.join('\n')
+    expect(restored).toContain('serverName: codegraph')
+    // CG71：挂起留下的空占位必须被清掉，否则文件回不到原样（每切一次多一条空 insert）
+    expect(restored).not.toContain('- insert: []')
+    // 清干净之后再同步一次必须零改动（别引入「写盘 → 热重载 → 再 sync」的自激）
+    expect(syncManagedMcpRow(back.lines, decision(indexedDir)).changed).toBe(false)
   })
 
   it('dryRun 快照如实回报「已挂起」，不落盘', () => {

@@ -268,8 +268,13 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
-  it('codegraph 的「已修」被写错（66 + 3 ≠ 68）→ ledger.status.fixed 差异', () => {
-    const fixture = mutate(real.ledgers.codegraph, '**已修 65 / 已关闭 3 / 待修 0**', '**已修 66 / 已关闭 3 / 待修 0**')
+  it('codegraph 的「已修」被写错（68 + 3 ≠ 71）→ ledger.status.fixed 差异', () => {
+    /*
+     * 反例里的两个数字必须**跟着台账走**：写死「65 → 66」那次，等台账真的修到 66 之后，
+     * 这个 fixture 就变成了「把对的值改成对的值」——变异没生效，用例反而成了恒绿。
+     * 现在按「现状行写对的值」→「改成少 1 的错值」造，每次加缺陷只需改右边那半句。
+     */
+    const fixture = mutate(real.ledgers.codegraph, '**已修 68 / 已关闭 3 / 待修 0**', '**已修 67 / 已关闭 3 / 待修 0**')
     expect(kinds(checkWithLedger('codegraph', fixture))).toContain('ledger.status.fixed')
   })
 

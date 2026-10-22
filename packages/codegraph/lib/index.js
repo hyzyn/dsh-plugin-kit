@@ -253,7 +253,83 @@ const OWN_BLOCK_END = '# --- end dsh-codegraph mcp managed ---';
 /** @hyzyn/dsh-mcp 托管区块的识别子串（与其源码的 findIndex 逻辑一致）。 */
 const DSH_MCP_BLOCK_KEY = 'dsh-mcp-config managed';
 const DSH_MCP_BLOCK_END_KEY = 'end dsh-mcp-config managed';
-const homePatchPath = () => join(dshHome(), 'cordis.patch.yml');
+/**
+ * 本实例该往**哪个** patch 文件写托管行（CG70）。
+ *
+ * 历史：一直写 `$DSH_HOME/cordis.patch.yml`。而那是**机器级**层——DSH 对每个 profile
+ * 都加载它、且它**压过** profile 自己的层（`profile-boot`：home 层 "applies to every
+ * profile, so it outranks the per-profile layer"）。于是同一台机器上开两个宿主
+ * （web + desktop 是最常见的组合）时，两个插件实例抢同一份文件、互相把对方的行改掉，
+ * 而且**完全静默**——表现成「我明明设了 managed，托管行却是 `insert: []`」。
+ *
+ * 现在优先写**本 profile 自己的层**（`profileContext.patchPath`），让设定与效果同层：
+ * 每个 profile 各写各的，物理上不可能互改。
+ *
+ * 拿不到 `profileContext` 时回落 home 层——最小宿主 / 单测 / 老版本没有这个服务，
+ * 那时行为的与改之前一致（不因为一个可选服务缺席就丢掉托管能力）。
+ */
+const patchPath = (ctx) => {
+    // 默认参数刻意不用 `ctx`：这个函数在模块级也被调用（快照 / 诊断包），那些路径
+    // 拿不到 ctx，回落 home 层是唯一合理答案。
+    const context = ctx;
+    try {
+        const profile = context?.get?.('profileContext');
+        const candidate = profile?.patchPath;
+        if (typeof candidate === 'string' && candidate.trim() !== '')
+            return candidate;
+    }
+    catch {
+        /* 服务形状不符：回落 home 层 */
+    }
+    return join(dshHome(), 'cordis.patch.yml');
+};
+/**
+ * CG70 的**迁移**：把 home 层里本插件的旧托管块读出来并抹掉。
+ *
+ * 为什么必须做：同 id 的 entry 出现在两层时，**loader 不去重、后加载者覆盖前者**
+ * （实测：`--dump-config` 两条都在，实际只挂一条，home 层在后 → home 层赢）。所以只把
+ * 写入点改到 profile 层、不清理旧块，结果是**旧值静默盖住新值**——比不改还糟。
+ *
+ * 返回 `{ text, changed }`：`changed` 为 false 时调用方**不写盘**（幂等，跑多少遍都一样）。
+ * 只认本插件自己的标记，别人的块与手工行一个字节都不碰。
+ */
+function stripOwnBlockFromHomeLayer(ctx) {
+    const home = join(dshHome(), 'cordis.patch.yml');
+    // 目标就是 home 层时什么都不做：那说明 profileContext 不可用，写入点本来就在那儿
+    if (patchPath(ctx) === home)
+        return { changed: false };
+    try {
+        if (!existsSync(home))
+            return { changed: false };
+        const before = statSync(home);
+        const text = readFileSync(home, 'utf8');
+        const lines = text.split('\n');
+        const start = lines.findIndex((line) => line.trim() === OWN_BLOCK_START);
+        if (start === -1)
+            return { changed: false };
+        const end = lines.findIndex((line, index) => index > start && line.trim() === OWN_BLOCK_END);
+        if (end === -1)
+            return { changed: false };
+        // 连标记一起删（含标记之间的一切）；块后若留下一串空行，收敛成一个换行
+        const kept = [...lines.slice(0, start), ...lines.slice(end + 1)];
+        while (kept.length > 0 && kept[kept.length - 1].trim() === '')
+            kept.pop();
+        const next = kept.length === 0 ? '\n' : kept.join('\n') + '\n';
+        if (next === text)
+            return { changed: false };
+        // 与前一处写入同样的写前复核：别把别人正好在这一瞬写的东西抹掉
+        const after = existsSync(home) ? statSync(home) : undefined;
+        if (shouldRecheckPatchWrite(patchStamp(before), patchStamp(after), 0))
+            return { changed: false };
+        writeFileAtomic(home, next, before.mode & 0o777);
+        return { changed: true };
+    }
+    catch (error) {
+        // 迁移失败不是挂载失败：托管行仍会写进 profile 层，只是 home 层留下一条旧行。
+        // 如实回报，由调用方打一行日志（卡片上也能从「两条同 id」看出来）。
+        return { changed: false, error: error instanceof Error ? error.message : String(error) };
+    }
+}
 /** codegraph 的索引目录名（与其 CLI 约定一致）。 */
 const INDEX_DIR = '.codegraph';
 /**
@@ -393,8 +469,7 @@ function readTail(path, maxBytes) {
  * 为什么保留原始行而不是 dump YAML：排查要看「有没有两个 serverName 行、标记行
  * 是否被手改过、缩进对不对」，重新 dump 会把这些痕迹洗掉。
  */
-function renderPatchExcerpt() {
-    const file = homePatchPath();
+function renderPatchExcerpt(file = patchPath()) {
     const probe = probePath(file);
     if (!probe.exists)
         return ['(文件不存在)'];
@@ -650,9 +725,8 @@ function detectExternalCodegraphRow(lines) {
  * 读 home 补丁文本并判断有没有区块外手工 codegraph 行（供 P0 模式裁决用，只读不写）。
  * 文件不存在 / 读不动时按「没有」处理——那种情况下托管还没建立，谈不上冲突。
  */
-function hasExternalCodegraphRow() {
+function hasExternalCodegraphRow(patchFile) {
     try {
-        const patchFile = homePatchPath();
         if (!existsSync(patchFile))
             return false;
         return detectExternalCodegraphRow(readFileSync(patchFile, 'utf8').split('\n')) !== null;
@@ -1146,15 +1220,60 @@ export function syncManagedMcpRow(lines, decision) {
                 status = { mode: 'none', indexed, indexState: state, note: '本插件区块里还没有托管行（下次同步会写入）' };
             }
             else {
-                // 插入点：区块体最后一行之后（结束标记之前）；空体则紧跟开始标记
-                const bodyEnd = ownRange.end === ownRange.start + 1 && ownRange.markerEnd === '' ? ownRange.start + 1 : ownRange.end - 1;
-                const insertAfter = Math.max(bodyEnd - 1, ownRange.start);
+                /*
+                 * CG71：插入前先清掉上一步挂起留下的空占位 `- insert: []`（及其后的空行）。
+                 *
+                 * 这条分支的历史：它只做「插入新行」，从不清理区块体——而挂起分支
+                 * （`renderBlockBody([])`）留下的正是 `- insert: []` 这个占位。于是
+                 * per-agent → managed 一个来回，区块里就多一条空 insert：
+                 *
+                 *     - insert: []
+                 *
+                 *     - insert:            ← 新插进来的真行
+                 *         - id: mcp-codegraph-managed
+                 *
+                 * 功能不受影响（空 insert 是合法的空操作、loader 也照常挂真行），但文件
+                 * **回不到原样**，而且这是「用户点一下卡片就会产生」的脏写。占位不累积
+                 * （再挂起时挂起分支整块重写会清掉），所以严重度低——但它不该存在。
+                 *
+                 * 只删**瘦身到完全等价的空 occupation**：区块体内 `trim() === '- insert: []'`
+                 * 的行，加上紧随其后的空行。用户手写的注释 / override 一律不动（本分支刻意
+                 * 保留「定点手术」的初衷，不整块重写——那会抹掉区块内的注释）。
+                 */
+                /*
+                 * CG71：先算出「清理占位之后」区块体的真实内容，再整块重写。
+                 *
+                 * 为什么不用行编辑：占位的删除会让后续行号前移，而插入点算的是原文件位置，
+                 * 两者混在一个 replacement 里必然错位（实测把行插到了结束标记之外）。拆成两个
+                 * replacement 也一样——它们共享同一个 `range.start`，谁先应用由排序决定，
+                 * 结果不稳定。整块重写没有这个问题，且能**保留区块内的其它行**（下面只滤掉
+                 * 占位行与紧随的空行，用户的注释 / override 原样带回来）。
+                 */
+                const rawBody = lines.slice(ownRange.start + 1, ownRange.end - 1);
+                // 占位行本身直接滤掉
+                const withoutPlaceholder = rawBody.filter((line) => line.trim() !== '- insert: []');
+                /*
+                 * 占位后面那个空行也收掉——但**只在区块体里没有别的内容时**才连带收空行：
+                 * 若用户手写了注释 / 其它 override，那些空行可能是他有意留的分段，不替他做主。
+                 * （真机上看到的形态就是「占位行 + 一个空行」，只剩这两行时整段清空即可。）
+                 */
+                const placeholderOnly = withoutPlaceholder.every((line) => line.trim() === '');
+                const keptBody = placeholderOnly ? [] : withoutPlaceholder;
                 const suffix = carriageReturn ? '\r' : '';
                 const rowLines = renderBlockBody([row]).split('\n').filter((line, index, all) => !(index === all.length - 1 && line === ''));
+                const markerStart = ownRange.markerStart.replace(/\r$/, '');
+                const markerEnd = ownRange.markerEnd.replace(/\r$/, '');
+                const withEol = (line) => (line === '' ? '' : line + suffix);
                 replacements.push({
-                    kind: 'lines',
+                    kind: 'block',
                     range: ownRange,
-                    edits: rowLines.map((line, offset) => ({ index: insertAfter + offset, text: line + suffix, insertAfter: true })),
+                    text: [
+                        withEol(markerStart),
+                        ...keptBody,
+                        ...rowLines.map(withEol),
+                        withEol(markerEnd),
+                        ...(ownRange.end >= lines.length ? [''] : []),
+                    ],
                 });
                 status = { mode: 'own', id: MCP_ROW_ID, cwd: decision.targetCwd, indexed, indexState: state, note: '已自动托管 codegraph MCP 服务器' };
             }
@@ -1214,16 +1333,34 @@ function applyReplacements(lines, replacements, dryRun, status, original = lines
     if (replacements.length === 0)
         return { lines, changed: false, status };
     const next = [...lines];
-    for (const replacement of [...replacements].sort((a, b) => b.range.start - a.range.start)) {
+    /*
+     * CG71：同一个 `range.start` 上可能有多条 replacement（清理占位 + 插入新行）。
+     * 排序必须**稳定**，且组内也要按行号从大到小——否则「删除先于插入」会让插入点错位
+     * （实测把整块内容打乱并挪到结束标记之外）。这里按组内最大编辑行号二次排序。
+     */
+    const maxEditIndex = (r) => r.kind === 'lines' && r.edits.length > 0 ? Math.max(...r.edits.map((e) => e.index)) : -1;
+    const ordered = [...replacements].sort((a, b) => b.range.start - a.range.start || maxEditIndex(b) - maxEditIndex(a));
+    for (const replacement of ordered) {
         if (replacement.kind === 'block') {
             next.splice(replacement.range.start, replacement.range.end - replacement.range.start, ...replacement.text);
         }
         else {
-            for (const edit of replacement.edits) {
-                if (edit.insertAfter === true)
-                    next.splice(edit.index + 1, 0, edit.text);
-                else
+            /*
+             * 编辑按行号**从大到小**应用（CG71）：`remove` 会改变数组长度，若从小到大删，
+             * 后续编辑的行号就全部错位了。插入 / 覆写不受此影响，但统一排序能保证两者混用
+             * 时也正确。
+             */
+            for (const edit of [...replacement.edits].sort((a, b) => b.index - a.index)) {
+                if (edit.remove === true) {
+                    next.splice(edit.index, 1);
+                }
+                else if (edit.insertAfter === true) {
+                    // text 可能是一整段（多行）——按行拆开再一次性插入，别当成单行文本塞进去
+                    next.splice(edit.index + 1, 0, ...(edit.text.includes('\n') ? edit.text.split('\n') : [edit.text]));
+                }
+                else {
                     next[edit.index] = edit.text;
+                }
             }
         }
     }
@@ -1282,8 +1419,7 @@ export function shouldRecheckPatchWrite(beforeStamp, afterStamp, attempt) {
     return beforeStamp !== afterStamp && attempt < PATCH_RECHECK_LIMIT;
 }
 /** 读 home 补丁 → 纯函数同步 → 有变化才原子写回（同目录 tmp + rename，走 kit）。 */
-function syncMcpRowOnDisk(decision) {
-    const patchFile = homePatchPath();
+function syncMcpRowOnDisk(decision, patchFile) {
     try {
         for (let attempt = 0;; attempt++) {
             const existed = existsSync(patchFile);
@@ -1926,7 +2062,12 @@ projects,
  * P0：per-agent 挂载状态访问口（`/agents` 读它）。与 runtime / metrics 同理走闭包：
  * 挂载器在 apply 里创建，而路由注册可能早于/晚于它。
  */
-agentScope) {
+agentScope, 
+/**
+ * CG70：本实例写托管行的那个 patch 文件（走闭包的理由同 runtime / metrics——
+ * 它是 `patchPath(ctx)` 的结果，路由注册期拿不到 ctx）。
+ */
+mcpPatchFile) {
     const guard = (req, res, method) => {
         if (!isLoopbackRequest(req)) {
             writeJson(res, 403, { error: 'forbidden: loopback-only' });
@@ -2649,7 +2790,9 @@ agentScope) {
                         command: cli.command,
                         indexed: state === 'indexed',
                         indexState: state,
-                        mcp: snapshotMcpStatus(cli.command, rt),
+                        // CG70：快照必须读**本实例写的那份**文件，否则换层之后卡片会答
+                        // 「文件中还没有托管行」——而实际上行就在 profile 层里、MCP 也挂了。
+                        mcp: snapshotMcpStatus(cli.command, rt, mcpPatchFile()),
                     });
                     return;
                 }
@@ -2904,7 +3047,10 @@ agentScope) {
                     await cliProbe.reprobe();
                 const probe = cliProbe.get();
                 const found = locateIndex(target);
-                const mcp = snapshotMcpStatus(cli.command, rt);
+                // CG70：本实例写的是**本 profile** 的 patch；诊断包必须报同一份文件，
+                // 否则用户按「托管行」那一行去 home 层找，找不到任何东西。
+                const mcpFile = mcpPatchFile();
+                const mcp = snapshotMcpStatus(cli.command, rt, mcpFile);
                 const indexedDir = join(target, INDEX_DIR);
                 const indexedProbe = probePath(indexedDir);
                 const indexedEntries = indexedProbe.exists ? listEntries(indexedDir) : undefined;
@@ -2935,7 +3081,7 @@ agentScope) {
                     `默认项目路径：${rt?.current.defaultPath ?? currentDefaultPath()}`,
                     `跟随会话：${rt?.current.follow === true ? '开' : '关'} · MCP 联动：${rt?.current.manage === true ? '开' : '关'}`,
                     '',
-                    `--- 托管行（${homePatchPath()}）---`,
+                    `--- 托管行（${mcpFile}）---`,
                     `mode=${mcp.mode} cwd=${mcp.cwd ?? '(未托管)'} indexed=${String(mcp.indexed)}`
                         + (mcp.cwdExists === false ? ' ⚠ cwd 目录已不存在' : '')
                         + (mcp.note !== undefined ? ` note=${mcp.note}` : ''),
@@ -3114,9 +3260,8 @@ agentScope) {
     ];
 }
 /** 不落盘的快照：读盘上真实内容，回答「现在是什么状态」（不推测下次写入的结果）。 */
-function snapshotMcpStatus(command, rt) {
+function snapshotMcpStatus(command, rt, patchFile) {
     const current = rt?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true, follow: true, mcpScope: DEFAULT_MCP_SCOPE };
-    const patchFile = homePatchPath();
     const text = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '';
     return syncManagedMcpRow(text.split('\n'), {
         serverName: MCP_SERVER_NAME,
@@ -3176,7 +3321,7 @@ const plugin = definePlugin({
                 command: resolveCliConfig(config).command,
                 targetCwd: process.cwd(),
                 manageEnabled: false,
-            });
+            }, patchPath(ctx));
             if (changed)
                 console.log('[dsh-codegraph] disabled: 已撤销托管行 — ' + (status.note ?? ''));
             return;
@@ -3196,6 +3341,14 @@ const plugin = definePlugin({
          */
         let runtimeRef;
         const getRuntime = () => runtimeRef;
+        /**
+         * CG69：最近一次 sync 用的 settings 快照。
+         *
+         * agent 服务迟到时要**用同一份设置**重跑一次 sync（只让「事件面可用」这一项变），
+         * 否则重跑会退回安装级默认值——那等于把用户在卡片里调过的 defaultPath / 开关
+         * 一次性抹掉。两条 sync 实现（settings 分支与 config 兜底）都会在入口写它。
+         */
+        let lastStored;
         /**
          * 采纳率收集器（ROADMAP P1）：每实例一份，挂在 ctx 上订阅 session/event。
          *
@@ -3239,20 +3392,39 @@ const plugin = definePlugin({
          *   2. 把 agent/created、agent/disposed 接到挂载器上；
          *   3. 模式切换时做互斥（per-agent 生效 → 挂起全局行；切回 managed → 恢复）。
          *
-         * 为什么用 `ctx.get('agents')` 而不是 `ctx.inject(['agents'], …)`：本包 `inject: []`
-         * 是刻意的（插件在 agent 服务缺席的宿主里也要能挂），用 inject 会把「宿主没有 agents」
-         * 变成「整插件不加载」。get 拿不到就只是不启用 per-agent。
+         * 为什么**不**在插件定义里声明 `inject: ['agents']`：本包 `inject: []` 是刻意的
+         * （插件在 agent 服务缺席的宿主里也要能挂），声明上去会把「宿主没有 agents」变成
+         * 「整插件不加载」。所以用 `ctx.get('agents')` 探测、再用一节 `ctx.inject(['agents'])`
+         * 兜住服务迟到（CG69）；两者都拿不到就只是不启用 per-agent。
          */
         let mounter;
         const getMounter = () => mounter;
-        let agentEventsAvailable = false;
-        try {
-            const agents = ctx.get?.('agents');
-            agentEventsAvailable = agents !== undefined && typeof agents.list === 'function';
-        }
-        catch {
-            /* 拿不到服务：保持 false，退 managed */
-        }
+        /**
+         * 读 agent 服务；拿不到（含「提供者还没 ACTIVE」）一律返回 undefined，不抛。
+         *
+         * CG69：`ctx.get(name)` 是 **strict** 的——只认提供者 fiber 已 ACTIVE（cordis 4 的
+         * `_getImpl`：`strict && impl.fiber.state !== 2` 时返回 undefined）。而 loader 用
+         * `Promise.all` **并发**创建全部 entry、行序不构成加载顺序，所以 apply 期这一次抽样
+         * 完全可能落在「agents 已 provide、但提供者仍是 LOADING」的窗口里。把它当成
+         * 「宿主没有 agent 事件面」是错的：`resolveScopeMode` 会据此把 per-agent 静默退回
+         * managed，而 managed 的托管行在没有已索引默认项目时是空的（`insert: []`）→
+         * `mcp__codegraph__*` 一个工具都不注册（真机事故，见 DEFECTS CG69）。
+         *
+         * 所以这个函数只回答「**此刻**能不能用」，答案由下面的 `ctx.inject(['agents'])`
+         * 在服务迟到时更新并补挂。
+         */
+        const readAgentSurface = (from) => {
+            const context = (from ?? ctx);
+            try {
+                const agents = context.get?.('agents');
+                return agents !== undefined && typeof agents.list === 'function' ? agents : undefined;
+            }
+            catch {
+                /* 拿不到服务（形状不符 / 宿主没有它）：按不可用处理 */
+                return undefined;
+            }
+        };
+        let agentEventsAvailable = readAgentSurface() !== undefined;
         mounter = createAgentMounter({
             // 可选依赖：宿主没装 dsh-mcp-client 时 undefined（走 managed 的宿主本来也就没有它）。
             // 用变量式 specifier 而不是字面量 import()，让打包器别把它内联进产物——
@@ -3317,6 +3489,36 @@ const plugin = definePlugin({
                 + (error instanceof Error ? error.message : String(error)));
         }
         /**
+         * CG69：**agent 服务迟到**时补一次裁决（上面那次 apply 期探测的兜底）。
+         *
+         * 为什么要它：apply 期 `ctx.get('agents')` 只回答「此刻 ACTIVE 没有」，而 loader
+         * 用 `Promise.all` **并发**创建 entry、行序不构成加载顺序——抽样落到 LOADING 窗口里
+         * 就会得到 `agentEventsAvailable = false`，被 `resolveScopeMode` 永久退回 managed。
+         * 真机事故（2026-10-21，桌面端 0.2.1-rc.1）：插件重载后同一进程里**新建**的会话
+         * 全部没有 `mcp__codegraph__*`，`/agents` 台账 count=0，而几小时前同样的会话是好的。
+         * 所以 `agentEventsAvailable` 必须是**可复用**的事实，不是一次性快照。
+         *
+         * 用一节 `ctx.inject(['agents'])` 而不是订 `internal/service`：inject 是 cordis 官方的
+         * 可重入机制（`registry.ts` → `plugin({ inject })`，依赖齐了才跑、`_refresh()` 重跑），
+         * 语义与「宿主真有这个服务」严格同级，也不必依赖 `internal/*` 的内部形状。插件顶层的
+         * `inject: []` **保持不变**：这个包在 agent 服务缺席的宿主里照样要能挂，写进顶层就
+         * 变成「整插件不加载」——那正是当初选 `ctx.get` 的理由，不是要推翻它。
+         *
+         * 顺序刻意不假设：inject 回调既可能**同步**跑（服务早就 ACTIVE），也可能**晚于**上面的
+         * 事件接线。所以补挂不内联，而是统一走 `refreshAgentSurface()` 重跑一次 sync，由
+         * `applyScopeMode` 的「模式变了才动手」判据兜住幂等——谁先谁后都收敛到同一结果。
+         */
+        let refreshAgentSurface = () => { };
+        ctx.inject(['agents'], (agentsCtx) => {
+            if (agentEventsAvailable)
+                return;
+            if (readAgentSurface(agentsCtx) === undefined)
+                return;
+            agentEventsAvailable = true;
+            console.log('[dsh-codegraph] agent 服务已就绪（apply 期探测未命中，退回 managed 的裁决已重新计算）');
+            refreshAgentSurface();
+        });
+        /**
          * 模式切换的副作用：per-agent 生效时**已经活着**的 agent 也要补挂（不是只对之后
          * 创建的 agent 生效），切回 managed 时立刻回收全部 scope 挂载。
          *
@@ -3336,11 +3538,10 @@ const plugin = definePlugin({
             if (active === undefined)
                 return;
             if (effective === 'per-agent') {
-                // 补挂已存在的 agent。用 ctx.get('agents')（而不是 sessions）：per-agent 要的是
+                // 补挂已存在的 agent。用 agent 服务（而不是 sessions）：per-agent 要的是
                 // **活的 agent**（agent.ctx 才有 scope），会话列表里可能含没有 agent 的会话。
                 try {
-                    const agents = ctx.get?.('agents');
-                    for (const agent of agents?.list?.() ?? [])
+                    for (const agent of readAgentSurface()?.list?.() ?? [])
                         active.attach(agent, wanted);
                 }
                 catch (error) {
@@ -3355,6 +3556,19 @@ const plugin = definePlugin({
                     console.log('[dsh-codegraph] 已切回 managed，per-agent 挂载已全部回收');
                 }
             }
+        };
+        /**
+         * CG69：按**最近一次的设置**重跑 sync（只让迟到的 agent 服务参与重新裁决）。
+         *
+         * 没有 runtime 时什么都不做：settings 分支与兜底 effect 至少有一条会先把它建好，
+         * 两条都没跑起来时也谈不上补挂。传 `lastStored` 而不是不传，是为了别在重算时退回
+         * 安装级默认值——那会把用户在卡片里调过的 defaultPath / 开关一次性抹掉。
+         */
+        refreshAgentSurface = () => {
+            const runtime = runtimeRef;
+            if (runtime === undefined)
+                return;
+            runtime.sync(lastStored);
         };
         /**
          * 自动重建（ROADMAP P1「索引生命周期」，默认关）。
@@ -3564,7 +3778,7 @@ const plugin = definePlugin({
         }, getRuntime, () => metricsCollector.access, projectRegistry, () => {
             const rt = runtimeRef;
             return { mounter: rt?.mounter, decision: rt?.scopeDecision };
-        });
+        }, () => patchPath(ctx));
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
                 const server = webCtx.webServer;
@@ -3581,6 +3795,22 @@ const plugin = definePlugin({
                 };
             }, 'dsh-codegraph: routes');
         });
+        /**
+         * CG70：把 home 层里本插件的旧托管块清掉（旧写入位置）。
+         *
+         * 不做这一步，同 id 的两条会同时存在，而 loader **后加载者胜**——home 层在后，
+         * 于是旧值静默盖住刚写进 profile 层的新值（实测：`--dump-config` 两条都在、
+         * 实际只挂一条，用的是 home 层那份 cwd）。这比不改还糟，所以迁移是 A 的前置条件。
+         *
+         * 幂等：没有旧块时 `changed=false` 且不写盘，跑多少遍都一样。
+         */
+        const migrateLegacyHomeBlock = () => {
+            const migrated = stripOwnBlockFromHomeLayer(ctx);
+            if (migrated.error !== undefined) {
+                // 迁移失败不阻塞挂载：托管行照样写进本 profile 的层，只是 home 层多留一条旧行
+                console.warn('[dsh-codegraph] 清理旧位置（home 层）的托管块失败（本 profile 的托管不受影响）：' + migrated.error);
+            }
+        };
         // settings：DSH ≥0.1.7 起存储就是本插件 entry 的 Config（见导出的 `Config`，可写
         // 字段标了 volatile）。scope.get() 给 resolved 值，scope.onChanged 订阅 loader 的
         // volatile 更新（含卡片自己写与外部改 profile patch），随即重写 MCP 托管行。
@@ -3608,6 +3838,9 @@ const plugin = definePlugin({
                     console.log(`[dsh-codegraph] mcp integration: mode=${status.mode}, cwd=${status.cwd ?? '(未托管)'}${changed ? ' (patch updated)' : ''}${status.note ? ' — ' + status.note : ''}`);
                 };
                 const sync = (stored) => {
+                    // CG69：迟到的 agent 服务要按同一份设置重跑裁决，别退回安装级默认值
+                    lastStored = stored;
+                    migrateLegacyHomeBlock();
                     const resolved = resolveStored(stored);
                     // 先更新解析值再算生效路径（跟随判定读的就是它们）
                     runtime.current = resolved;
@@ -3618,7 +3851,7 @@ const plugin = definePlugin({
                         stored: stored?.mcpScope,
                         manageEnabled: resolved.manage,
                         agentEvents: agentEventsAvailable,
-                        externalRow: hasExternalCodegraphRow(),
+                        externalRow: hasExternalCodegraphRow(patchPath(ctx)),
                     });
                     runtime.scopeDecision = decision;
                     applyScopeMode(runtime, resolved.mcpScope, decision);
@@ -3629,7 +3862,7 @@ const plugin = definePlugin({
                         targetCwd: effectivePath,
                         manageEnabled: resolved.manage,
                         suspendGlobal: decision.mode === 'per-agent',
-                    });
+                    }, patchPath(ctx));
                     logOutcome(changed, status);
                     // 提示词开关也随这次解析值走：卡片里改完即生效，不用重启宿主。
                     refreshGuidance();
@@ -3667,6 +3900,9 @@ const plugin = definePlugin({
                 current: resolved,
                 mounter: getMounter(),
                 sync: (stored) => {
+                    // CG69：同 settings 分支，记下设置快照供迟到的 agent 服务重跑裁决
+                    lastStored = stored;
+                    migrateLegacyHomeBlock();
                     const next = {
                         defaultPath: typeof stored?.defaultPath === 'string' && stored.defaultPath.trim() !== '' ? stored.defaultPath.trim() : resolved.defaultPath,
                         manage: typeof stored?.mcpIntegration === 'boolean' ? stored.mcpIntegration : resolved.manage,
@@ -3681,7 +3917,7 @@ const plugin = definePlugin({
                         stored: stored?.mcpScope,
                         manageEnabled: next.manage,
                         agentEvents: agentEventsAvailable,
-                        externalRow: hasExternalCodegraphRow(),
+                        externalRow: hasExternalCodegraphRow(patchPath(ctx)),
                     });
                     runtime.scopeDecision = decision;
                     applyScopeMode(runtime, next.mcpScope, decision);
@@ -3692,17 +3928,21 @@ const plugin = definePlugin({
                         targetCwd: effectivePath,
                         manageEnabled: next.manage,
                         suspendGlobal: decision.mode === 'per-agent',
-                    });
+                    }, patchPath(ctx));
                     refreshGuidance();
                     return { defaultPath: next.defaultPath, effectivePath, status: result.status, current: next };
                 },
             };
             runtimeRef = runtime;
+            // CG70：兜底路径**不经过** runtime.sync（它直接调 syncMcpRowOnDisk），所以迁移
+            // 必须在这里单独跑一次——否则「没有 settings 服务的宿主」永远等不到清理，
+            // 而 home 层的旧块会在那里静默盖住本 profile 的新值。
+            migrateLegacyHomeBlock();
             const fallbackDecision = resolveScopeMode({
                 config: config?.mcpScope,
                 manageEnabled: resolved.manage,
                 agentEvents: agentEventsAvailable,
-                externalRow: hasExternalCodegraphRow(),
+                externalRow: hasExternalCodegraphRow(patchPath(ctx)),
             });
             runtime.scopeDecision = fallbackDecision;
             applyScopeMode(runtime, resolved.mcpScope, fallbackDecision);
@@ -3712,7 +3952,7 @@ const plugin = definePlugin({
                 targetCwd: resolved.defaultPath,
                 manageEnabled: resolved.manage,
                 suspendGlobal: fallbackDecision.mode === 'per-agent',
-            });
+            }, patchPath(ctx));
             console.log(`[dsh-codegraph] mcp integration (config fallback): mode=${status.mode}, cwd=${status.cwd ?? '(未托管)'}${changed ? ' (patch updated)' : ''}${status.note ? ' — ' + status.note : ''}`);
             return () => {
                 if (runtimeRef === runtime)

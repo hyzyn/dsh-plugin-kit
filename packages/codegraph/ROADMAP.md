@@ -128,6 +128,88 @@
 
 **真机实测**（本机 `codegraph 1.6.0`）立即抓到一个真实形态：`~/.codegraph/daemon.pid` 记着 pid 76609 / version **1.5.0**，而该进程早已 ESRCH、`current -> versions/v1.6.0`——diagnose 会把这行原文摆出来。
 
+### CG71：挂起留下的空占位在恢复时被清掉，文件回到原样 ✅
+
+**问题**：`per-agent → managed` 切回来之后，自有区块里残留一条 `- insert: []`（真机上还跟一个空行）。
+挂起分支用 `renderBlockBody([])` 写出这个占位，而恢复分支只「插入新行」、从不清理区块体——两条路径的
+「写什么」与「读什么」不对称。功能不受影响（空 insert 是合法空操作，`mode=own`、工具与调用都正常），
+也不累积（再挂起时整块重写会清掉），但它是**用户点一下卡片就产生**的脏写，文件回不到挂起前的样子。
+
+**为什么现有用例抓不到**：`agent-scope.test.ts` 那条只断言 `serverName: codegraph` 回来了；
+`verify-codegraph-host-contract.mjs` 42/42 预置的是 **dsh-mcp 区块**（走 `disabled: true`，可逆、无占位），
+根本走不到这条分支。
+
+**做法**：恢复分支改成「先算清掉占位后的区块体真实内容，再整块重写」。**不用行编辑**是实测出来的：
+删 + 插混在一个 replacement 里必然错位（删除让行号前移，插入点算的是原文件位置），拆成两个也不行
+（共享同一个 `range.start`，排序不稳定）——两版都把整块内容打乱并挪到了结束标记之外。整块重写没有这个问题，
+且能保留用户注释（只滤占位行；只有区块里没有别的内容时才连带收掉紧随的空行）。
+顺带给 `LineEdit` 加 `remove`、给 `applyReplacements` 加稳定排序（组内按最大编辑行号降序）。
+
+**用例**：`agent-scope.test.ts` 那条补「不留占位 + 二次 sync 零改动」；`profile-layer-patch.test.ts` 新增
+「往返后 profile 层逐行回到挂起前」。**变异**：退回「只插入不替换块体」→ **恰好这 2 条红**、其余 41 条绿。
+第一版变异打在 `.filter()` 上时用例没红 → 查出来整块重写本身就清掉了占位、那段 filter 冗余，已简化。
+
+**真机（2026-10-22，test 3082 + test-logs 3085 同时起，只切 test）**：挂起后只剩占位 → 切回 managed 后
+**sha 回到基线 `66b24ed75acf17ab`**；`test-logs` 与 home 层全程逐字节未变；新建真实会话首轮
+`nTools=153` 含 `mcp__codegraph__codegraph_explore`，模型真调用成功（返回 69 个符号）。
+
+### CG70：托管行写本 profile 的层，不再跨 profile 互改 ✅
+
+**问题**：托管行一直写 `$DSH_HOME/cordis.patch.yml`（**机器级** home 层，DSH 对每个 profile 都加载、
+且**压过** profile 自己的层）。同一台机器开两个宿主（web + desktop 是典型组合）时，两个插件实例抢同一份
+文件：desktop 是 per-agent → 写 `insert: []`，web 是 managed → 写启用行，**谁后写谁赢**，而且三处可观测面
+都在骗人——`/default-path` 报的是本实例内存里的 `mcpScope`、托管行快照读的是 home 层并报「本插件区块里还
+没有托管行（下次同步会写入）」这句**假话**。用户只能归因成玄学。
+
+**做法**：设定与效果**同层**。新增 `patchPath(ctx)` 优先用 `profileContext.patchPath`（宿主本来就
+`provide` 了它），拿不到回落 home 层（最小宿主 / 单测 / 老版本不能丢托管能力）。**迁移是前置条件**：
+实测同 id 出现在两层时 loader **不去重**、实际只挂一条且**后加载者胜 = home 层**，所以不清旧块会让旧值
+静默盖住新值。新增 `stripOwnBlockFromHomeLayer()`：只认自己的标记、整段摘除、别人的内容一个字节不碰、幂等、
+沿用写前复核；三条 sync 路径都跑一次。顺带把三个读写函数的 `patchFile` **去掉默认值**——现场踩到的正是
+「默认值静默回落到 home 层」（快照没传参 → MCP 挂上了却报「还没有托管行」）。
+
+**用例（5 条，`test/profile-layer-patch.test.ts`）**：写进 profileContext.patchPath 而不是 home 层；
+home 层的旧块被整段清掉而**别人的块与用户注释原样保留**；迁移幂等（第二次内容与 mtime 都不变）；
+拿不到 profileContext 时回落 home 层；per-agent 下两层都不存在启用中的托管行。
+**变异验证**：禁用迁移 → 3 条红；把 `patchPath` 改回永远返回 home → 4 条红。
+
+**真机（2026-10-21，隔离 home + 真宿主）**：造「home 层有旧块、profile 层没有」的升级形态 →
+home 层本插件块 0、旧 cwd 0、**别人的块 2 条原样保留**；profile 层新块 1 条、cwd 为新值；
+`/default-path` 报 `mode=own`（不再误报「还没有托管行」）；该宿主挂的 MCP 子进程 1 个；
+启动日志 0 条 duplicate / fatal / did not activate。**不崩、不报错**——两条同 id 的后果是「后加载者胜」，
+不是启动失败（这一点也实测确认过）。
+
+### CG69：agent 服务迟到时不再永久退回 managed ✅
+
+**问题**：`apply()` 里 `ctx.get('agents')` **只抽样一次**，而 cordis 4 的 `ctx.get` 是 strict 的（只认提供者
+fiber 已 ACTIVE），loader 又用 `Promise.all` 并发创建 entry、行序不构成加载顺序。抽样落到 LOADING 窗口就得到
+`agentEventsAvailable = false` → `resolveScopeMode` 把 per-agent 永久退回 managed；而 managed 的托管行在没有
+已索引默认项目时是空的（`insert: []`），**两条挂载路径同时不存在**。真机事故（2026-10-21，桌面端 0.2.1-rc.1）：
+插件重载后同一进程里新建的会话全都没有 `mcp__codegraph__codegraph_explore`，`/agents` 台账 `mounted:0/live:0`。
+根因与修法见 [DEFECTS.md](./DEFECTS.md) 的 CG69 行。
+
+**做法**：探测降级成「此刻能不能用」（`readAgentSurface()`，三处共用），服务迟到由一节
+`ctx.inject(['agents'])` 兜住——到货置 `agentEventsAvailable = true` 并跑 `refreshAgentSurface()`，按最近一次
+settings 快照（`lastStored`）重跑 sync，由 `applyScopeMode` 的「模式变了才动手」判据收敛。**顶层
+`inject: []` 不变**：本包在 agent 服务缺席的宿主里照样要能挂。顺带把当年那段「为什么不用 inject」的注释
+改写成「顶层为什么仍是 `[]` + 迟到为什么用 inject 兜」，避免下一个人照旧注释把兜底删掉。
+
+**用例（4 条，`test/agent-late-service.test.ts`）**：apply 期读不到服务 → 退回 managed（这是正确行为，对照组）；
+服务到货后同一实例重新裁决成 per-agent 且之后新建的 agent 真挂上；重算沿用卡片设置、不退回安装级默认值；
+迟到重跑**只变一次并稳定下来**（补丁是热重载面：切 per-agent 时删成 `insert: []` 那一次是必须的，
+之后同值重算必须零改动，否则会形成「写盘 → 热重载 → 再 sync」的自激回环）。
+夹具与 `agent-created-mode.test.ts` 的关键差异：那份的 `get('agents')` **恒返回服务**，竞态窗口根本不存在——
+这正是 CG69 长期没被盖住的原因。
+
+**真机（2026-10-21，test profile @3082）**：per-agent 下新建真实会话，首轮 `request/header` 即含 `mcp__codegraph__codegraph_explore`（`nTools=167`），模型实际调用成功。另有 `scripts/verify-cg69-real-cordis.mjs` 在**真 cordis** 上把「服务迟到」真实演一遍（先不装 AgentRegistry → apply 期严格读不到 → 后装真服务 → inject 回调触发 → 裁决自己翻回 per-agent → 新建 agent 拿到工具），摘掉修复即红。
+
+**变异验证**（三个方向，各自只打到它该打的那条）：摘掉那节 `inject(['agents'])` → 第 2、3 条红；
+只把 `sync(lastStored)` 改成 `sync(undefined)` → 第 3 条红、前两条仍绿；把 `syncMcpRowOnDisk` 的
+`if (!outcome.changed) return` 短路掉（无变化也落盘）→ 第 4 条红（mtime 变了）。
+第四条最初写成「任何情况下都不该写」，被变异跑出来是**空断言**——`deliverAgents()` 第二次会撞上
+`if (agentEventsAvailable) return`，根本走不到 sync；改成「先等它变一次、再用同值设置写触发真正的
+重算、断言零改动」才有牙齿。
+
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
 一次性能解决五个问题，是唯一改到「上限」的项：
