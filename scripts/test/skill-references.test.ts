@@ -28,7 +28,7 @@ const skillDir = join(repoRoot, '.dsh', 'skills', 'dsh-plugin-kit')
  */
 const skillPresent = existsSync(skillDir)
 const references = ['SKILL.md', 'references/package-change.md', 'references/real-test.md',
-  'references/release.md', 'references/dsh-upgrade.md']
+  'references/release.md', 'references/dsh-upgrade.md', 'references/fix-verification.md']
 
 /** 从一段文本里抽出所有 `verify-xxx.mjs` 名字（去重）。 */
 const referencedScripts = (text) => [...new Set(text.match(/verify-[a-z0-9-]+\.mjs/g) ?? [])].sort()
