@@ -128,6 +128,55 @@
 
 **真机实测**（本机 `codegraph 1.6.0`）立即抓到一个真实形态：`~/.codegraph/daemon.pid` 记着 pid 76609 / version **1.5.0**，而该进程早已 ESRCH、`current -> versions/v1.6.0`——diagnose 会把这行原文摆出来。
 
+### CG72：没有可写条目时不写盘，别把合法的 `[]` 摘成纯注释 ✅
+
+**问题**：CG67 的「只摘空根也算变化」（`repaired = !dryRun && strippedRoot && !outcome.changed`）
+没有区分「摘完还剩条目」与「摘完什么都不剩」。后者写出的是**纯注释**文件——宿主 `parsePatchList`
+要求顶层是数组，而纯注释连 `yaml.load` 都只返回 `undefined`（**不抛**），于是整层补丁加载失败。
+`[]` 本身就是合法的空数组根，这一步等于把合法文件改成非法文件。
+
+**触发面是「每个全新 profile 的第一次」**：宿主模板就是「三行注释 + `[]`」。首次同步若默认项目
+未索引（没有可写区块）、或 `manageEnabled=false`、或 per-agent 且没有区块可挂，三条路径都只摘根
+不写别的 → 写盘 → 下次启动 `dsh: ... must be a top-level YAML array of loader patch entries`、
+退出码 1。0.6.9–0.6.14 全部携带；0.6.8 及以前是另一种坏法（把托管块追加在 `[]` 之后）。
+
+**复测自身的教训**：第一轮复测从仓库目录起宿主，`process.cwd()` 恰好已索引、当场写了托管块，
+于是绕开了空路径。「干净环境」之外还得控制**启动 cwd**——换成非索引目录才必现。
+
+**做法**：只在真有东西可写时才声明变化——`strippedHasEntry` 判「摘根后还存在至少一条非空、
+非注释行」，`repaired` 追加该条件；无可写内容时把**原数组**原样返回（`changed=false`，`[]`
+保持不动）。顺带收口 `applyReplacements` 在无 replacement 时返回「摘过根的行数组」的问题：
+那与文档承诺的「无变化时返回原数组引用」不符，且会被下游当成修好后的内容写出去。
+
+**用例（7 条）**：模板+未索引 / 只有 `[]` / per-agent 无区块 / `manageEnabled=false` 四种「不写盘」，
+索引对照（证明不是把功能关掉），CG67 自愈不退化，以及一条矩阵不变量「只要 `changed=true`，
+写回内容必须能被宿主当顶层数组读回」——断言用 `Array.isArray(yaml.load(...))` 而不是「不抛」，
+因为纯注释文件 `yaml.load` 不抛。**变异**：撤掉 `strippedHasEntry` → **恰好 5 条红**、其余 48 条绿。
+
+**真机（2026-10-22，发布级）**：干净 `DSH_HOME` + `--from-default-profile` 官方模板 profile +
+`dsh plugin add @hyzyn/dsh-codegraph` 从 npm 装，从**非索引目录**启动——修复前补丁 217→214 字节
+只剩注释、重启 exit=1；修复后不写盘、补丁保持 217 字节、重启正常。
+
+### CG73：验收脚本预置托管块时重踩「追加到 `[]` 之后」✅
+
+**问题**：`verify-codegraph-host-contract.mjs` 的 `seedPreseededMcpRow()` 是 `existing + [区块]`。
+它只在 `test` / `desktop` 这类**早已有真实条目**的 profile 上跑过；换成全新 profile 时，
+模板末尾正是 `[]`，追加后整份文件非法，宿主在 `loadProfileDirectory` 就抛、exit=1。
+脚本只报「宿主没在端口上就绪」，看不出根因——**验证工具复现了它要验的 CG67**。
+
+**影响**：`--profile` 的「换模板」能力实际只剩「换一个已有条目的成熟 profile」，
+「干净 profile 验收」这一档静默缺失。
+
+**做法**：`appendManagedBlock(existing, block)`（`scripts/lib/live-harness.mjs`）——
+追加前复用 kit 的 `stripEmptyFlowSequenceRoot` 摘掉根位置的 `[]`，注释与已有条目逐字节保留；
+预置改用它。
+
+**用例（4 条）**：全新模板 + 块 / 已有条目 / 空文件与纯注释 / **反例**（旧写法必须写出
+`document separator`）。**变异**：把先摘空根去掉 → 恰好 2 条红，还原后全绿。
+**真机**：全新 `DSH_HOME` + 官方模板 profile（patch 原样 `[]`）+ 工作区构建，契约脚本 **42/42**；
+修前同场景 1/2。
+
+
 ### CG71：挂起留下的空占位在恢复时被清掉，文件回到原样 ✅
 
 **问题**：`per-agent → managed` 切回来之后，自有区块里残留一条 `- insert: []`（真机上还跟一个空行）。

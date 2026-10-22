@@ -199,7 +199,7 @@ node scripts/link-dsh-runtime.mjs     # link packages/*'s @deepseek-ai/* and @hy
 
 Planning and defect records (neither ships with the package; both are Chinese-only and live in the repository, hence absolute links):
 
-- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md): the defect number dictionary — an index of `CG01`–`CG71` (symptom + fix / design intent); the full write-ups, acceptance records and the raw backlog are frozen in git history (see its §4).
+- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md): the defect number dictionary — an index of `CG01`–`CG73` (symptom + fix / design intent); the full write-ups, acceptance records and the raw backlog are frozen in git history (see its §4).
 - [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md): enhancement roadmap — P0–P3 tiers, cost, architectural items (per-agent mount / adoption metrics / diagnostics bundle) and the suggested order of work.
 - [docs/p0-plan.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/docs/p0-plan.md): the full plan and measurements for per-agent scoped MCP mounting (the design doc of a shipped item, **moved into the package's `docs/`**).
 - [docs/adoption-audit.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/docs/adoption-audit.md): adoption measurements — the numbers computed from 177 real historical sessions, the tradeoffs between the two denominators, and what they imply for the roadmap (**moved into the package's `docs/`**).

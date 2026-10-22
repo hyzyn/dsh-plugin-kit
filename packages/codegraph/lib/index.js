@@ -1303,10 +1303,32 @@ export function syncManagedMcpRow(lines, decision) {
     // CG12：托管行现有 cwd 是否还落在盘上（项目被删 / uninit 后坏行长期留着——
     // 没有 fs.watch，至少让卡片每次刷新都看得见）。
     const outcome = applyReplacements(lines, replacements, dryRun, status, originalLines);
-    // CG67：只摘空根、没有别的改动时也要算「有变化」，否则坏根永远等不到写盘。
-    const repaired = !dryRun && strippedRoot && !outcome.changed;
-    const repairedOutcome = repaired ? { ...outcome, changed: true } : outcome;
-    return { ...repairedOutcome, status: withCwdHealth(repairedOutcome.status) };
+    /*
+     * CG67：只摘空根、没有别的改动时也要算「有变化」，否则坏根永远等不到写盘。
+     *
+     * CG72：但「摘完还有条目」才算修好。`[]` 本身是**合法**文档（空列表根）——当文件里
+     * 除它以外没有任何顶层条目（只剩注释 / 空行）时，摘掉它得到的是「纯注释」文件，
+     * 对宿主同样非法（`parsePatchList` 要求顶层数组），而且这是**首启即写坏**：
+     *
+     *   全新 profile 的模板是「三行注释 + `[]`」；首次同步时若默认项目未索引（没有可写
+     *   区块）→ 摘根后什么都不剩 → 写盘 → 下次启动 `failed to parse patches` 直接退出。
+     *
+     * 所以只在「自己真有东西可写」时才声明变化；否则把原数组原样返回（文档承诺的
+     * 「无变化时返回原数组引用」），`[]` 保持不动即可。
+     */
+    const strippedHasEntry = lines.some((line) => {
+        const trimmed = line.trim();
+        return trimmed !== '' && !trimmed.startsWith('#');
+    });
+    const repaired = !dryRun && strippedRoot && !outcome.changed && strippedHasEntry;
+    // 没内容可写时连「摘过根的行数组」都不该外泄：那会被当成修好后的内容写出去。
+    const discarded = strippedRoot && !outcome.changed && !repaired;
+    return {
+        ...outcome,
+        lines: discarded ? originalLines : outcome.lines,
+        changed: repaired || outcome.changed,
+        status: withCwdHealth(outcome.status),
+    };
 }
 /** 给 status 补上 cwdExists（cwd 缺省时不加字段；探测失败按 false 处理）。 */
 function withCwdHealth(status) {

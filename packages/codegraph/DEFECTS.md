@@ -9,8 +9,8 @@
 > 没有 docker 那样的独立「修复记录摘要」节可拆；且原表没有「涉及文件」列（补一列就得靠猜，
 > 会发明事实）。所以 **§1 的「修复 / 设计意图」列就是意图字典**。理由与时点见 §4。
 >
-> **编号是硬契约**：`CG01–CG71` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
-> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG71` 之后，
+> **编号是硬契约**：`CG01–CG73` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
+> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG73` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem 的完整原文、独立验收复跑记录、原批次计划。
@@ -43,9 +43,9 @@
 
 ## 现状
 
-**已修 68 / 已关闭 3 / 待修 0**，编号至 `CG71`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
+**已修 70 / 已关闭 3 / 待修 0**，编号至 `CG73`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
 
-**已修 68 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
+**已修 70 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
 CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）修于上一轮；CG64（客户端字面星号）修于上一轮；
 CG65（探测超时被判死 + 启动争抢打穿单次超时，外部 issue）修于上一轮；CG66（采纳率监听器把工具名读在事件**顶层**，
 真机零计数）修于本轮；CG67（`[]` 空根被当成可追加前缀，写出非法 cordis.patch.yml）修于本轮；
@@ -53,13 +53,15 @@ CG68（测试未隔离 `DSH_HOME`，`pnpm test` 改写用户真实补丁）修�
 CG69（apply 期一次抽样就把 per-agent 永久退回 managed，重载后新建会话全都没有 `mcp__codegraph__*`）修于本轮；
 CG70（托管行写机器级共享层，同机多 profile 互改且静默）修于本轮；
 CG71（挂起留下的 `- insert: []` 占位在恢复时不清，文件回不到原样）修于本轮；
+CG72（CG67 在「除 `[]` 外没有条目」时把合法文件写成纯注释，首启即写坏）修于本轮；
+CG73（验收脚本往全新 profile 的模板 `[]` 后面追加托管块，干净 profile 的契约验收起不来）修于本轮；
 CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
 
 > **数字口径（原文照录）**：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
-> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 71 − 3 = **68**。
+> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 73 − 3 = **70**。
 > 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格里多一行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
 
@@ -157,6 +159,8 @@ CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的�
 | CG70 | **托管行写机器级共享层，同机多 profile 互改且完全静默**：`homePatchPath()` 一直返回 `$DSH_HOME/cordis.patch.yml`，而那是 **home 层**——DSH 对**每个** profile 都加载它、且它**压过** profile 自己的层（`profile-boot`：home 层 "applies to every profile, so it outranks the per-profile layer"）。于是同一台机器同时开两个宿主（**web + desktop 是最常见的组合**，本机实测 58497 desktop / 3080 web 两个都在跑）时，两个插件实例抢同一份文件：desktop 是 per-agent → 写 `insert: []`（挂起），web 是 managed → 写启用行，**谁后写谁赢**，而三方可观测面全在骗人——`/default-path` 报的是**本实例内存里的** `mcpScope`（`managed`，与盘上无关）、托管行快照读的又是 home 层（`note: 本插件区块里还没有托管行（下次同步会写入）`，**这句是假的**：不是「下次写」，是「被另一个实例覆盖了，永远写不进去」）、启动日志只在写盘成功时打一行 `patch updated`。用户照着那句话等，等不到；换个 profile 又「好了」，于是归因成玄学。**且设定与效果不同层**是根因：`mcpScope` 是 profile 级设定（每人一份、答得清清楚楚），效果却写在机器级共享文件里 | 设定与效果**同层**：新增 `patchPath(ctx)`，优先用 `profileContext.patchPath`（宿主 `hostCtx.provide("profileContext", …)` 本来就给了 `dir`/`patchPath`），拿不到才回落 home 层（最小宿主 / 单测 / 老版本不能因为一个可选服务缺席就丢掉托管能力）。**迁移是前置条件而不是可选项**：实测（隔离 home、真 `dsh --dump-config` 与真启动）同 id 的 entry 出现在两层时，loader **不去重**、`--dump-config` 两条都在，实际只挂一条且**后加载者胜** = home 层（它排在 profile 层之后）——所以只改写入点不清旧块，结果是**旧值静默盖住新值**，比不改更糟。新增 `stripOwnBlockFromHomeLayer()`：只认本插件自己的标记、整段摘除、别人的块与用户注释一个字节不碰、**幂等**（没旧块时 `changed=false` 且不写盘）、沿用 `shouldRecheckPatchWrite` 的写前复核；三条 sync 路径（settings 分支 / 兜底 effect / 迟到的 agent 服务）都跑一次。顺带把三个读写函数的 `patchFile` 参数**去掉默认值**——现场踩到的正是「默认值静默回落到 home 层」：`/default-path` 的快照没传参，于是 MCP 明明挂上了、卡片却报「文件中还没有托管行」 |
 
 | CG71 | **per-agent → managed 切回后，自有区块里残留 `- insert: []` 占位，文件回不到原样**：挂起分支（`suspendGlobal` + 自有区块）用 `renderBlockLines(ownRange, ownRows.filter(不是 codegraph 的行))` 重写区块体，rows 为空时 `renderBlockBody([])` 产出 `- insert: []`；而**恢复分支**（区块在、但里面没有 codegraph 行）只做「插入新行」的行编辑——`bodyEnd`/`insertAfter` 往后 splice 12 行，**区块原有的 `- insert: []`（真机上还跟着一个空行）原样留着**。即两条路径的「写什么」与「读什么」不对称。后果是**用户点一下卡片就产生的脏写**：功能不受影响（空 insert 是合法空操作、loader 照常挂真行，`mode=own`、新会话工具与调用全部正常），但不累积（再挂起时挂起分支整块重写会清掉），所以严重度低——可文件确实回不到挂起前的样子。**现有用例抓不到**：`agent-scope.test.ts` 那条只断言 `serverName: codegraph` 回来了，没断言占位被清；`verify-codegraph-host-contract.mjs` 预置的是 **dsh-mcp 区块**（走 `disabled: true`，可逆、无占位），所以 42/42 全绿也碰不到这条分支 | 恢复分支改成**先算出「清掉占位之后」的区块体真实内容，再整块重写**：只滤掉 `trim() === '- insert: []'` 的行，且**只在区块里没有别的内容时**才连带收掉紧随的空行（用户手写的注释 / override / 分段空行一律不做主，原样带回）。**为什么不用行编辑**（报告建议的方案 B 原形）：占位删除会让后续行号前移，而插入点算的是原文件位置，删 + 插混在一个 replacement 里必然错位；拆成两个 replacement 也不行——它们共享同一个 `range.start`，谁先应用由排序决定、结果不稳定。实测两版都把整块内容打乱并挪到了结束标记之外。整块重写没有这个问题。顺带给 `LineEdit` 加 `remove` 语义、给 `applyReplacements` 加**稳定排序**（组内按最大编辑行号降序），让「同 range 上的多条编辑」在任何组合下都可预测。回归：`agent-scope.test.ts` 那条补 `not.toContain('- insert: []')` + 二次 sync `changed=false`；`profile-layer-patch.test.ts` 新增「per-agent → managed 往返后 profile 层逐行回到挂起前」。**变异验证**：退回「只插入、不替换块体」→ **恰好这 2 条红**（报告要求只红这两条），其余 41 条绿。第一版变异打在 `.filter()` 上时用例**没红**，查出来是整块重写本身就清掉了占位、那段 filter 是冗余的——重打变异才命中，冗余逻辑已顺手简化。三种形状（只有占位 / 占位+空行 / 占位+用户注释）占位全清、注释保留、二次 sync 全部 `changed=false` |
+| CG72 | **CG67 的空根修复在「除 `[]` 外没有条目」时把合法文件写成纯注释文件——首启即写坏，下次启动直接退出**：`syncManagedMcpRow` 末尾 `repaired = !dryRun && strippedRoot && !outcome.changed` 的本意是「只摘空根也要算变化，否则坏文件永远等不到写盘」，但它没区分「摘完还剩条目」与「摘完什么都不剩」。后者的产物是**纯注释**文件：宿主 `parsePatchList` 要求顶层是数组，而纯注释连 `yaml.load` 都只返回 `undefined`（**不抛**），于是整层补丁加载失败。`[]` 本身是合法文档（空列表根），这等于把合法文件改成非法文件。触发面是**每个全新 profile 的第一次**：宿主模板就是「三行注释 + `[]`」，首次同步若默认项目未索引（无可写区块）、或 `manageEnabled=false`、或 per-agent 且没有区块可挂，三条路径都只摘根不写别的 → 写盘 → 下次启动 `dsh: ... must be a top-level YAML array of loader patch entries`、退出码 1。0.6.9–0.6.14 全部携带（0.6.8 及以前是另一种坏法：把托管块追加在 `[]` 之后）；npm 上没有 0.6.12/0.6.13，所以 0.6.11 用户报的「仍有这个问题」与这条同源。**三处可观测面照旧全在骗人**：`POST /default-path` 返回 `ok:true`、systemPrompt 照常注入使用指引、`/agents` 在 managed 下 `mounted/live` 本来就是 0。**复测自身的教训**：从仓库目录起宿主时 `process.cwd()` 恰好已索引、当场写了托管块，于是绕开空路径——换成非索引目录才必现，说明「干净环境」之外还得控制**启动 cwd** | 只在自己**真有东西可写**时才声明变化：`strippedHasEntry` 判「摘根后还存在至少一条非空、非注释行」，`repaired` 追加该条件；无可写内容时**把原数组原样返回**（`changed=false`，`[]` 保持不动——它本来就合法），并且连「摘过根的行数组」都不外泄，免得被 `syncMcpRowOnDisk` 之外的下游当成修好后的内容写出去（`applyReplacements` 在无 replacement 时返回的是摘过根的 `lines`，与文档承诺的「无变化时返回原数组引用」不符，一并收口）。CG67 的自愈路径不受影响：那种输入有区块，`outcome.changed` 本来就 true。回归 `managed-mcp.test.ts` 新增 7 条：模板+未索引 / 只有 `[]` / per-agent 无区块 / `manageEnabled=false` 四种「不写盘」，索引对照（证明不是把功能关掉），CG67 自愈不退化，以及一条矩阵不变量「只要 `changed=true`，写回内容必须能被宿主当顶层数组读回」——断言用 `Array.isArray(yaml.load(...))` 而不是「不抛」，因为纯注释文件 `yaml.load` 不抛。**变异验证**：撤掉 `strippedHasEntry` → 恰好 5 条红、其余 48 条绿；还原后 53 条全绿。真机（发布级）：干净 `DSH_HOME` + `--from-default-profile` 官方模板 profile + `dsh plugin add @hyzyn/dsh-codegraph` 从 npm 装、从**非索引目录**启动 → 修复前补丁 217→214 字节只剩注释、重启 exit=1；修复后不写盘、补丁保持 217 字节、重启正常 |
+| CG73 | **验收脚本自己重踩 CG67 的坑：往全新 profile 的模板 `[]` 后面追加托管块，宿主直接起不来，「干净 profile」这一档验收静默失效**：`scripts/verify-codegraph-host-contract.mjs` 的 `seedPreseededMcpRow()` 一直是 `existing + [区块]`，而它只在 `test` / `desktop` 这类**早已有真实条目**的 profile 上跑过；换成 `--profile <全新 profile>` 时，patch 模板末尾正是 `[]`（完整 YAML 文档），追加后整份文件非法，宿主在 `loadProfileDirectory → loadOverlayPatches → parsePatchList` 抛 `end of the stream or a document separator is expected`、exit=1。脚本只报「宿主没在 <port> 上就绪」，看不出根因——**与被验的 CG67 是同一类写法：验证工具复现了它要验的缺陷**。2026-10-22 用工作区构建做干净环境全面复测时撞到：不预先手工删 `[]` 的话，这条脚本对任何新 profile 都跑不起来，`--profile` 的「换模板」能力实际只剩「换一个已有条目的成熟 profile」 | 追加前**先摘根位置的 `[]`**：新增 `appendManagedBlock(existing, block)`（`scripts/lib/live-harness.mjs`），复用 kit 的 `stripEmptyFlowSequenceRoot`（与 CG67 同一份判据，不另造），注释 / 已有条目逐字节保留；`seedPreseededMcpRow()` 改用该函数。回归 `scripts/test/patch-seeding.test.ts` 4 条：全新模板 + 块 → 合法顶层数组且无裸 `[]`；已有条目 → 原有行一条不少；空文件 / 纯注释 / 无尾换行的 `[]` → 都合法；**反例**用旧写法（`existing + block`）造，断言它会写出 `document separator` 错误——先证明判据能红。判据用 `Array.isArray(yaml.load(...))`（与宿主 `parsePatchList` 同形），不是「不抛」。**变异**：把 `const base = stripEmptyFlowSequenceRoot(existing) ?? existing` 改回 `existing` → 恰好 2 条红（模板 / 空文件那两条），对照 2 条仍绿；还原后 4 条全绿。**真机**：全新 `DSH_HOME` + 官方模板 profile（patch 原样 `[]`，不预先摘根）+ 工作区构建，脚本 **42/42**；修前同场景 1/2（宿主 exit=1） |
 
 
 ## 2. 台账纪律与长期结论

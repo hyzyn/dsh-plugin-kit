@@ -35,7 +35,7 @@ import http from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createLiveHarness, verifyRealPatchUnchanged } from './lib/live-harness.mjs'
+import { appendManagedBlock, createLiveHarness, verifyRealPatchUnchanged } from './lib/live-harness.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -161,11 +161,15 @@ console.log(`# 临时项目：${projectDir}\n`)
  * 于是「挂起 dsh-mcp 区块里的行」那条分支永远走不到（实测就是 `disabled=false`）。
  *
  * 预置时机也变了：必须在 `syncProfile()` **之后**写，否则拷贝会把它覆盖掉。
+ *
+ * CG73：追加必须走 `appendManagedBlock()`（**先摘空根**）：全新 profile 的模板末尾是 `[]`，
+ * 直接 `existing + block` 会写出非法 YAML，宿主在 `loadProfileDirectory` 就抛——实测
+ * `--profile <全新 profile>` 必然起不来，验收因此静默少了「干净 profile」这一档。
  */
 const seedPreseededMcpRow = () => {
   const profilePatch = join(isolatedHome, 'profiles', profile, 'cordis.patch.yml')
   const existing = existsSync(profilePatch) ? readFileSync(profilePatch, 'utf8') : ''
-  writeFileSync(profilePatch, existing + [
+  writeFileSync(profilePatch, appendManagedBlock(existing, [
     '# --- dsh-mcp-config managed (auto-generated; do not edit) ---',
     '- insert:',
     '    - id: mcp-codegraph-managed',
@@ -180,7 +184,7 @@ const seedPreseededMcpRow = () => {
     '        cwd: /nonexistent/preseeded-project',
     '# --- end dsh-mcp-config managed ---',
     '',
-  ].join('\n'))
+  ].join('\n')))
 }
 
 let child

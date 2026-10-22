@@ -638,3 +638,73 @@ describe('CG67：`[]` 根不得被当成可追加的前缀', () => {
     expect(out.lines).toEqual(lines)
   })
 })
+
+describe('CG72：无可写条目时不得把 `[]` 摘成空文件', () => {
+  /*
+   * 宿主的判据是「顶层必须是数组」（`dsh-app-boot` 的 `parsePatchList`），**不是**
+   * 「YAML 能解析」——纯注释文件 `yaml.load()` 返回 undefined 而不抛，所以这里必须
+   * 断言 `Array.isArray`，否则测试会在真正的坏文件上保持绿色。
+   *
+   * 缺陷现场：CG67 的「只摘空根也算变化」在**没有其它条目**时把合法文件写成了非法文件。
+   * 全新 profile 的模板正是「三行注释 + `[]`」，首次同步若默认项目未索引就没有可写区块，
+   * 于是下次启动 `failed to parse patches` 直接退出（0.6.9–0.6.14 均复现）。
+   */
+  const hostReadable = (lines: string[]): boolean => Array.isArray(yaml.load(lines.join('\n')))
+  const template = ['# Your patch layer', '# a top-level YAML array', '[]']
+
+  it('全新 profile 模板 + 默认项目未索引 → 不写盘，`[]` 保持原样', () => {
+    const out = syncManagedMcpRow(template, decision(plainDir))
+    expect(out.changed).toBe(false)
+    expect(out.lines).toEqual(template)
+    expect(hostReadable(out.lines)).toBe(true)
+  })
+
+  it('只有 `[]` + 未索引 → 不写盘（写 0 字节会把宿主打死）', () => {
+    const out = syncManagedMcpRow(['[]'], decision(plainDir))
+    expect(out.changed).toBe(false)
+    expect(out.lines.join('\n')).toBe('[]')
+  })
+
+  it('per-agent（挂起）且没有区块可挂 → 同样不写盘', () => {
+    const out = syncManagedMcpRow(template, { ...decision(plainDir), suspendGlobal: true })
+    expect(out.changed).toBe(false)
+    expect(out.lines).toEqual(template)
+    expect(hostReadable(out.lines)).toBe(true)
+  })
+
+  it('MCP 联动关闭（manageEnabled=false）→ 同样不写盘', () => {
+    const out = syncManagedMcpRow(template, decision(plainDir, false))
+    expect(out.changed).toBe(false)
+    expect(out.lines).toEqual(template)
+  })
+
+  it('对照：同一份模板、默认项目已索引 → 正常托管（上面「不写」不是把功能关掉）', () => {
+    const out = syncManagedMcpRow(template, decision(indexedDir))
+    expect(out.changed).toBe(true)
+    expect(hostReadable(out.lines)).toBe(true)
+    expect(out.lines.some((line) => line.includes('mcp-codegraph-managed'))).toBe(true)
+  })
+
+  it('CG67 自愈不退化：`[]` + 旧区块、目标未索引 → 仍摘根并写出合法列表', () => {
+    const broken = ['[]', OWN_MARK_START, '- insert:', '    - id: mcp-codegraph-managed', '      name: x', '      config:', '        serverName: codegraph', '        cwd: /tmp/old', OWN_MARK_END, '']
+    const out = syncManagedMcpRow(broken, decision(plainDir))
+    expect(out.changed).toBe(true)
+    expect(hostReadable(out.lines)).toBe(true)
+    expect(out.lines.some((line) => line.trim() === '[]')).toBe(false)
+  })
+
+  it('不变量：只要 changed=true，写出去的内容必须能被宿主当顶层数组读回', () => {
+    const inputs = [['[]'], ['# c', '[]'], ['# c', '[]', ''], ['- insert:', '    - id: keep', '      name: x', '']]
+    for (const lines of inputs) {
+      for (const target of [indexedDir, plainDir]) {
+        for (const suspendGlobal of [false, true]) {
+          for (const manageEnabled of [true, false]) {
+            const out = syncManagedMcpRow(lines, { ...decision(target, manageEnabled), suspendGlobal })
+            if (!out.changed) continue
+            expect(hostReadable(out.lines), `输入 ${JSON.stringify(lines)} 写回成 ${JSON.stringify(out.lines)}`).toBe(true)
+          }
+        }
+      }
+    }
+  })
+})

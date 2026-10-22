@@ -36,6 +36,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { stripEmptyFlowSequenceRoot } from '../../packages/kit/lib/managed-block.js'
+
 /** 真实 DSH home：`DSH_HOME` 优先，否则 `$HOME/.dsh`（抽取前五个脚本里逐字相同的那两行）。 */
 export function realDshHome() {
   return process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
@@ -136,6 +138,30 @@ export function createLiveHarness({ prefix, profile } = {}) {
     },
     cleanup,
   }
+}
+
+/**
+ * 把一段托管块拼进**已有的 profile 补丁文本**，返回新文本。
+ *
+ * CG73：为什么不能直接 `existing + block`（2026-10-22 实测）：DSH 给新 profile 的模板末尾是
+ * `[]`——它是**完整的 YAML 文档**（flow 序列根），后面再接块序列会让整份文件非法
+ * （`expected '<document start>', but found '<block sequence start>'`），宿主在
+ * `loadProfileDirectory → loadOverlayPatches → parsePatchList` 直接抛、**exit=1**。
+ * 这正是 codegraph CG67 修的那个坑，而 `verify-codegraph-host-contract.mjs` 的预置代码
+ * 自己又踩了一遍：对 `test` / `desktop` 这类早已有真实条目的 profile 一直没事，
+ * 换成 `--profile <全新 profile>` 就必然起不来（验收因此静默失去「干净 profile」这一档）。
+ *
+ * 判据与 CG67 同源：**追加前先摘掉根位置的 `[]`**，其余内容（注释 / 已有条目）逐字节保留。
+ *
+ * @param existing - 现有补丁全文（文件不存在时传 `''`）。
+ * @param block - 要追加的托管块全文（通常以换行结尾）。
+ * @returns 追加后的全文；保证末尾有且只有一个换行。
+ */
+export function appendManagedBlock(existing, block) {
+  const base = stripEmptyFlowSequenceRoot(existing) ?? existing
+  const head = base === '' || base.endsWith('\n') ? base : base + '\n'
+  const tail = block.endsWith('\n') ? block : block + '\n'
+  return head + tail
 }
 
 /**
