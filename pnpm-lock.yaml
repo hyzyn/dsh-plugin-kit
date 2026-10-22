@@ -15,7 +15,7 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.11
+        specifier: 0.6.14
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.13.3
@@ -67,7 +67,7 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.11
+        specifier: 0.6.14
         version: link:../codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.13.3
