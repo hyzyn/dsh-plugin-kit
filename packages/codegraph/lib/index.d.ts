@@ -5,8 +5,10 @@
  * 调用链、影响面等能力暴露成 /api/dsh-codegraph/* 路由；浏览器半体
  * （./client）把这些路由渲染成插件配置里的「Codegraph」卡片。
  *
- * 与 MCP 的关系：MCP 让模型直接调用 codegraph_explore / codegraph_node；
- * 本插件补上 Web GUI、人工操作（sync/index）和 systemPrompt 自动提示。
+ * 与 MCP 的关系：MCP 让模型直接调用 codegraph_explore（**本机 codegraph 1.6.0 实测
+ * `tools/list` 只返回这一个工具**——历史注释里写的 `codegraph_node` 并不存在，见
+ * `mcp__codegraph__codegraph_explore` 的工具表）；本插件补上 Web GUI、人工操作
+ * （sync/index）和 systemPrompt 自动提示。
  * 此外本插件托管 codegraph MCP 服务器行（~/.dsh/cordis.patch.yml）：把
  * `codegraph serve --mcp` 子进程的 cwd 与默认项目路径对齐——dsh-mcp-client
  * 不声明 MCP roots 能力，服务器只能从 cwd 向上找 .codegraph/，宿主从家
@@ -46,20 +48,21 @@ export interface Config {
      */
     followSession?: boolean;
     /**
-     * MCP 挂载模式（ROADMAP P0，默认 `'managed'`）。
+     * MCP 挂载模式（ROADMAP P0，**默认 `'per-agent'`**）。
      *
-     * - `'managed'`（默认，现状）：在 `~/.dsh/cordis.patch.yml` 里维护**一行**托管，
-     *   cwd 按会话热切换。时分复用：一台 MCP 服务器同一时刻只服务一个项目。
-     * - `'per-agent'`：在每个 agent **自己的 scope** 里挂一份 `dsh-mcp-client`
+     * - `'managed'`：在 `~/.dsh/cordis.patch.yml` 里维护**一行**托管，cwd 按会话热切换。
+     *   时分复用：一台 MCP 服务器同一时刻只服务一个项目，且这行建在**根 scope** 上——
+     *   家目录 / 没有 `.codegraph/` 的仓库里开的会话也会继承它（工具名相同、语义随全局
+     *   cwd 漂移，见 src/scope.ts 文件头）。
+     * - `'per-agent'`（默认）：在每个 agent **自己的 scope** 里挂一份 `dsh-mcp-client`
      *   （`cwd` = 该 agent 会话目录解析出的索引根），并用 `agent/disposed` 回收。
-     *   语义不再随全局 cwd 漂移、也不再写盘热重载；代价是每 agent 一个子进程
-     *   （实测空 Node 基线 ~40MB，见 docs/p0-plan.md 的性能实测）。
+     *   语义不再随全局 cwd 漂移、也不再写盘热重载；且**会话目录没有可用索引时该 agent
+     *   不挂**（不回落）——于是「没有索引的会话拿不到 codegraph 工具」成了默认行为。
+     *   代价是每个已索引会话一个子进程（实测空 Node 基线 ~40MB，见 docs/p0-plan.md）。
      *
-     * **默认保持现状**：这是行为变更，且按本机实测只覆盖「多项目并发」这一窄场景
-     * （时间占比 3.1%），所以由用户显式开启，而不是自动切换。
-     *
-     * 前提不成立时（宿主没有 agent 事件面 / 存在区块外手工 codegraph 行 / 宿主没有
-     * dsh-mcp-client）会**退回 managed 并在卡片上说明原因**，不会静默降级。
+     * 前提不成立时（宿主没有 agent 事件面 / 存在区块外手工 codegraph 行 / MCP 总开关关闭）
+     * 会**退回 managed 并在卡片上说明原因**，不会静默降级——退回后行为与旧版一致（全局
+     * 那行照常服务所有会话）。回滚就是显式写 `'managed'`。
      */
     mcpScope?: McpScopeMode;
     /**
@@ -102,7 +105,8 @@ export interface Config {
  * 它们只在挂载时生效，改动应走一次正常重挂。
  *
  * `mcpScope` 用 `z.string()` 而不是 `z.union([...])`：合法性由 `normalizeMcpScope`
- * 在读取处收口（非法值回落 managed），与「配置面不让插件起不来」的约定一致。
+ * 在读取处收口（非法值回落到默认模式，见 `DEFAULT_MCP_SCOPE`），与「配置面不让插件
+ * 起不来」的约定一致。
  */
 export declare const Config: z;
 /** 一次 tool/call 的归类结果：codegraph / 文件探索 / 其它（不计入分母）。 */
@@ -509,4 +513,63 @@ export interface MetricsAccess {
         since: number;
     };
 }
+/**
+ * 空态自证：托管行为空时，把「为什么空 / 下一步」写进 `note`（2026-10-24）。
+ *
+ * 为什么要这一层：`syncManagedMcpRow` 的 note 答的是「文件里是什么」（未索引 / 联动关闭 /
+ * 区块解析失败…），而托管行为空的两种**已知空态**还会被读成「这插件坏了」：
+ *
+ *   1. 本插件托管区块渲染出来是空占位 `- insert: []`（没有可写的真行）：默认项目没有索引，
+ *      写不出真行。空占位是**合法状态**、不是坏文件（见 `renderBlockBody`），卡片上那句
+ *      「未托管」要配上「下一步点哪个按钮」才可执行；
+ *   2. per-agent 生效：全局托管行被挂起（自有区块直接撤销 / MCP 卡片里的行 `disabled: true`），
+ *      工具是按 agent 挂的——「没有托管行」**不等于**没有工具，这句得由状态面自己说清，
+ *      否则用户会照着「未托管」去修一条本来就不该存在的行。
+ *
+ * 不写 note 的三种情况（都是有意的，别按「能补就补」改回去）：
+ *
+ *   - `mode` 不是 `none`：真有行在托管，卡片上的 cwd / disabled 已经把状态说全了，
+ *     这里再补一句就是每次刷新都重复一遍的噪声；
+ *   - 联动关闭 / 区块解析失败：同步侧那句是**具体诊断**，盖掉会让卡片给出错误的下一步
+ *     （例如把一个坏区块解释成「去设默认项目」）；
+ *   - 已索引却还空着：那不是「没有已索引的默认项目」，同步侧那句「下次同步会写入」才是实话。
+ */
+export declare function withEmptyStateNote(status: McpSyncStatus, input: {
+    perAgent: boolean;
+    manageEnabled: boolean;
+    lines: readonly string[];
+}): McpSyncStatus;
+/**
+ * 「这个会话到底有没有 codegraph 工具」的**如实回答**（CG69 现场 / 披露面收口）。
+ *
+ * 为什么要单独一件：托管行的状态（`McpSyncStatus`）只回答「文件里有什么」，而用户 /
+ * 模型关心的是「我有没有 `mcp__codegraph__*`」。两者会合法地分叉——最典型的就是
+ * CG69 事故：per-agent 模式下托管行是**空占位**（`- insert: []`），于是快照如实报
+ * `mode=none`，卡片却仍可能显示成「已托管」，而工具表里一个 `mcp__codegraph__*` 都没有。
+ * 「文件里有行」≠「工具注册上了」，这一句必须由状态接口自己说清，不能让用户从两份
+ * 各自正确的字段里去推。
+ *
+ * 判据刻意保守（只说**确定**的结论）：
+ *   - managed：行不存在 / 被停用（`disabled: true`）→ 确定 0 个工具；
+ *   - per-agent：工具是**按 agent** 挂的，所以只报「当前挂了几份 + 没有索引的会话
+ *     按设计没有」；挂载数为 0 时给下一步，而不是说「已托管」。
+ *
+ * 工具数按本机实测写死 1（codegraph 1.6.0 的 `tools/list` 只有 `codegraph_explore`）；
+ * 真变多时这个数字要跟着改——它是**对外承诺**，不是估算。
+ */
+export interface McpToolState {
+    /** 一个会话能拿到的 `mcp__codegraph__*` 工具数（0 或 1）。 */
+    tools: number;
+    /** 一句话解释为什么是这个数（卡片直接渲染，不用再拼）。 */
+    reason: string;
+    /** 拿不到工具时的下一步（有工具时缺省）。 */
+    nextStep?: string;
+}
+export declare function describeMcpToolState(input: {
+    status: McpSyncStatus;
+    /** **生效**的挂载模式（`scopeDecision.mode`，不是用户想要的那个）。 */
+    mode: McpScopeMode;
+    /** per-agent 已挂载的 agent 数。 */
+    mounts: number;
+}): McpToolState;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

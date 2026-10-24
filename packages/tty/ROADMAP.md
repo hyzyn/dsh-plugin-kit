@@ -318,6 +318,77 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 > 标记都统一到 `0.30.0`（`0.28` / `0.29` 在 npm 上不存在，留着会指向没发生过的版本）。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
 
+### 2026-10-24：agent 工具按配置条件注册（隧道三件 / SFTP 七件不再常驻）
+
+**为什么做**：`registerAll()` 原先无条件注册全部工具，于是两种「配了才有意义」的工具常驻却只有报错一条路——
+一条隧道都没配时 `tunnel_start` / `tunnel_stop` 只改**既有**配置（`TunnelManager.setEnabled` 找不到名字就报错）；
+连接簿为空时七个 `sftp_*` 的 `sftpBookSpec` 必然抛「连接簿中不存在」（它每次都走 `live.findSshHost`）。
+工具描述每轮请求都要占位置，而它们此刻只能报错。
+**量级（2026-10-24 实测）**：把 `lib/index.js` 真正注册到的工具定义（name / description / parameters /
+output.schema）序列化求和——空配置 9 个共 9341 字符，两者都配齐 19 个共 16539 字符，即**什么都没配时
+每轮请求少** 7198 字符（口径可复算：同一份假宿主分别用 `{}` 与带 `sshHosts` + `tunnels` 的配置挂载）。
+
+**落点**（都在 `src/index.ts` 的 `registerAll()` 里，只缩进不改内容）：
+`if (live.tunnels.length > 0)` 包住 `tunnel_list` 与 `tunnel_start` / `tunnel_stop` 的循环；
+`if (live.sshHosts.length > 0)` 包住 `sftpBookSpec` 与七个 sftp 工具。基础 `tty_*` 工具仍无条件注册
+（本地终端是插件的本体，没有「配了才可用」这一说）。热应用**不需要额外接线**：`applyPatch` 每次都无条件调
+`refreshToolsHook()`（= `registerAll`），配置一变就重算注册集。
+
+启动日志拆成两行：`agent tools registered (…)` 仍是**能力全集**（档位闸的分类对账从它取数，
+`tier-gate.test.ts` 用正则抠这份名单，逐字保留）；新增的 `agent tools active (…)` 打**本次真注册集**——
+名字由 `registerTool` 统一记账（绕过它 = 日志少一个名字，日志就成了撒谎）。`active` 永远是 `registered`
+的子集；档位闸的分类表（`TTY_TIER_CLASS`）仍按 `registered` 对账——分类是**全集**的属性，与这次配没配无关。
+
+**门槛**：`test/tool-gating.test.ts` 走**真 `apply()`**（夹具 `test/mount-plugin.ts` 的最小假宿主，不碰网络、
+隧道一律 `enabled: false`），按启动配置与热应用两条路径断言注册集：
+空配置只有基础工具、只配连接簿多七个 `sftp_*`、只配隧道多三件、两者都配 = 能力全集；
+热应用链「空 → 配连接簿 → 加隧道 → 清空连接簿 → 清空隧道」每一步都跟到位，重注册不留重复名字；
+active 日志行在启动与热应用后都等于**这次真的注册了**的那份名单。
+`test/tool-concurrency.test.ts` 改为在两者都配齐的前提下挂载（它逐条检查并发性声明）。
+变异验证过四种漂移都会红：判据改成恒真 / 某个工具挪出守卫 / active 行换成死名单 / 删掉 `applyPatch`
+里那句 `refreshToolsHook()`。
+
+**真机验收（本轮未跑，步骤记在这里，别当成已验证）**：
+1. 起 test profile（走 [docs/agent-real-test.md](../../docs/agent-real-test.md) 的车道），**连接簿与隧道都空**
+   → 启动日志的 `active` 行只有基础工具，agent 侧工具表里没有 `sftp_*` / `tunnel_*`；
+2. 在面板卡片上加一条连接簿条目 → **不重启宿主**，`active` 行多出七个 `sftp_*`，agent 侧拿得到 `sftp_list`；
+3. 再存一条隧道（保持**停用**）→ `active` 行多出三件；把它们删回空 → 两边都收回基础工具。
+
+**刻意不做的边界**：判据只看**有没有配**，不看隧道是否启用——停用的隧道在 `tunnel_list` 里仍要显示
+`enabled: false`（否则「为什么没转发」连查的地方都没有）；SFTP 也不按条目可用性细分（条目改坏由
+`sftpBookSpec` 报原话）。启动路径的 `config` 是宿主按 schema 校验过的，**不在启动路径重复 sanitize**
+（清洗只在 settings 热应用那条路），所以判据是「数组长度 > 0」。
+
+### ✅ Windows 宿主（0.18.1）：从「一条都开不起来」到 best-effort
+
+**为什么做**：0.18.1 之前，Windows 宿主上的本地终端一条都开不起来——两处都在同一条启动路径上，且都在
+**Windows 11 ARM（24H2）+ Node 22 ARM64** 上实测复现：
+
+1. `$SHELL` 在 Windows 上**根本不存在**，默认 shell 无条件回落 `/bin/zsh` → `spawn` 直接 ENOENT
+   （实测原文 `spawn /bin/zsh -> ENOENT`，而 `%COMSPEC%` 可用）；
+2. 启动计划是 POSIX 形状的 `-c 'export TERM=…; export COLORTERM=…; exec "$shell"'` —— cmd.exe 不认 `-c`
+   （忽略整行、空跑一场就退出，标签开了就消失），PowerShell 认 `-c` 但把 `export` 当不存在的 cmdlet 报错。
+
+**落点**：默认 shell 改 `%COMSPEC%`；Windows 上不做包装层（直接 `[shell]`，PowerShell 家族补 `-NoLogo`、
+不补 `-NoProfile`）；「跑一条命令」的标签走 `cmd /c` / `PowerShell -Command`；输入行尾归一化（D74）；
+shell 集成按家族分（PowerShell 支持、cmd 不支持）。面向用户的边界见
+[README § Windows 宿主](./README.md#windows-宿主best-effort)。
+
+**验证到什么程度**：Windows 11 ARM 上跑过完整安装（`dsh plugin add @hyzyn/dsh-all`）、九个插件装载、
+`dsh web` 起服务与浏览器半体交付（与 macOS 上服务的是同一份产物，构建后比对大小与内容标记一致；
+不写死字节数——每次重建都会变）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；
+x64 Windows 由 CI 的三平台矩阵覆盖（build / typecheck / test，见「开发」）。
+
+**端到端覆盖（0.19.0）**：`scripts/windows-smoke.mjs` 在 CI 的 windows-latest 上跑真实 `cmd.exe` 的
+spawn → 输入回显 → kill → 重开，外加两条只在真机上成立的链路（W6：`tty_send` 的裸 LF 经归一化后 conhost
+真的执行了命令，D74；W7：`command` 型会话跑完退出后转只读保留、`tty_capture` 仍读得到退出前的输出，D77）。
+**W8（PowerShell 的 OSC 133/7 档）在 CI 上照常跑**（2026-10-13 起）：它此前只在真机车道守，是因为「杀一个
+ConPTY 会话」会踩 `0xC0000374`——根因（同一个 PTY 被原生 `kill()` 两次）已定位并修好，见
+[DEFECTS.md](./DEFECTS.md) 的 **D100** 与本文的 2026-10-13 一节；本机找不到 PowerShell 时它会如实进 `SKIP`
+一档（分母扣掉、汇总行点名，不许装成 `12/12`）。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
+出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到 socket 回调里抛出，
+调用方的 try/catch 拦不住。
+
 ### 2026-10-13：pwsh 真机验收（5.1 ↔ 7 对照），并修掉它挖出的「回显当命中」（→ [D101](./DEFECTS.md)，0.32.1）
 
 **为什么做**：README 里 PowerShell 的话是零散写下的，而 `windows-smoke` 的 W8 在**装了 pwsh 的机器上只跑 pwsh**、CI 的 windows-latest 又恰好预装 pwsh 7 —— 「5.1 与 7 的行为差异」这一整类事实此前从没被并排对照过。D100 定位完之后用户问「tty 对 pwsh 的支持度如何」，于是给 VM（Win11 ARM64）装上自包含 zip 版 **PowerShell 7.6.6**（解到 `C:\Program Files\PowerShell\7`，正好是 `resolvePowerShell()` 的首选路径），新建工作树 `C:\dsh-pwsh` 做真机对照。
@@ -1465,3 +1536,24 @@ Command Code 四组）。我一度保留手填，理由是 dsh-llm 明写「目�
 浮层后重开 → 请求数不变」。**反向验证三条**（先红后还原、src / 客户端 sha256 比对）：拆掉在途去重 → 红
 「重复请求不许再花一次模型调用: expected 2 to be 1」；拆掉构造清单里的 assist 三件套 → 红「配置文件写着
 开着，路由就不该 403」；拆掉客户端那两道闸 → 红「重开浮层又发了 1 次请求（同一条失败只该问一次）」。
+
+### 2026-10-24：受限档裁掉用不到的 agent 工具（`tools.restrict` 试点）
+
+**起因**：档位闸只看**调用**——受限档里 `tty_open` / `tty_run` / `sftp_write` 这九个仍然躺在模型的工具表里，
+每次调用被拒之后模型往往换个工具再试一遍。省下来的不是安全，是**来回**。
+
+**落点**：`src/tier-restrict.ts`（新）+ `src/index.ts` 接线。判据三条：① deny = 宿主 `schemas()` 的真实注册名
+∩ 分类表里 `write` / `exec` 的两类（宿主对**未知名字整体抛错**，而 tty 的工具是条件注册的——直接传分类表全量
+会在「只配了基础工具」的会话上把整次裁剪炸掉）；② 必须从 `agent.ctx.tools` 调 `restrict`（插件 ctx 没有
+scope，宿主第一句就抛）；③ 完全权限 / Auto review / 宿主未组合档位服务**不裁**（与闸的 allow 分支同一口径）。
+下发时机：`agent/created`；工具集热变化（配置加了连接簿 / 隧道）按新注册集合并成一次重算；`agent/disposed`
+与插件卸载撤销。挂在工具的 `ctx.effect` 里、**不放进 `registerAll`**——热重注册不能把老 agent 的裁剪一起撤掉。
+
+**门槛**：`test/restrict-probe.test.ts`（16 条：三条机制事实 + 「全量传进去必抛」与求交推论 + 三条不裁判据）、
+`test/tier-restrict.test.ts`（13 条：19→10 / 全在 / 服务缺失 / 作用域隔离 / 条件注册集 / 热应用重算 /
+enabled 开关 / agent 销毁 / 卸载撤销）。夹具新增 `test/fake-tools.ts`（宿主 `ToolRuntime` 的 restrict 语义逐条
+标注源码行号）与 `test/mount-plugin.ts` 的 agent / 档位 / 卸载三个面。
+
+**现状边界**：① 会话中途切档不重算工具面（下一次 `agent/created` 或工具集变化才对上；执行期闸逐调用读实时
+档位，安全不受影响）；② 三条 inject 服务快照在 tty 里自建了一份（kit 的 `attachTierGate` 私有），二期上收
+到 `@hyzyn/dsh-kit` 并让 docker 复用——那一步要 bump kit 版本并按发布门槛走。

@@ -221,6 +221,7 @@ describe('密钥条目的内联空串 ≡ 缺 value 字段', () => {
         if (names.includes('credentials')) callback({ credentials: seam })
       },
       effect: () => {},
+      provide: () => () => {},
     }
     const previous = process.env.TOKEN
     try {

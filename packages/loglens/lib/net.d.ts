@@ -12,7 +12,35 @@
  *     `instanceof` 照样成立）。
  *
  * 判据与分寸的正文在 kit 那份文件头里，**不要在这里再抄一遍**。
+ *
+ * 本文件里**本包自己的**只有错误面的人话层（渐进披露 T8）：`httpFailureHint`（HTTP 状态 →
+ * 下一步）与 `requestJsonWithHint`（连接面失败 → 下一步）。kit 的文案不动——它是共享层，
+ * loglens 特有的措辞落在 loglens 的地盘上。
  */
 export { NET_DEFAULT_TIMEOUT_MS, NET_LOOKUP_TIMEOUT_MS, NET_MAX_RESPONSE_BYTES, assertReachable, classifyAddress, defaultLookup, isHardBlockedTier, isIpLiteral, requestJson, resolveHost, sanitizeErrorMessage, sanitizeUrl, tierText, } from '@hyzyn/dsh-kit';
 export type { AddressTier, FenceOptions, FenceVerdict, LookupFn, NetErrorCode, NetRequestOptions, NetResponse, } from '@hyzyn/dsh-kit';
+import { requestJson as requestJsonImpl } from '@hyzyn/dsh-kit';
+import type { NetResponse } from '@hyzyn/dsh-kit';
 export { FenceError as LoglensNetError } from '@hyzyn/dsh-kit';
+/**
+ * HTTP 状态 → 一句可执行的下一步（渐进披露 T8，2026-10-24）。
+ *
+ * 两个适配器抛「HTTP <status>：<正文>」时把这句缀在后面：状态码本身不告诉模型该改哪里，
+ * 而 401 / 403 / 404 的下一步是稳定的（凭据或权限 / 索引或路径）。其余状态**不加**——
+ * 5xx 是后端自己的故障，硬指一个「检查配置」的方向等于把锅甩给配置（ES 侧 404 里的
+ * 游标过期由 looksLikeExpiredCursor 在上层转成 truncation，不会被这句污染）。
+ */
+export declare function httpFailureHint(status: number): string;
+/**
+ * 连接面失败（transport / dns_failed）→ 缀一句「地址与网络是否可达」（渐进披露 T8）。
+ *
+ * kit 的 FenceError 文案不动（那是共享层）：两个适配器的 callJson 在 fetchJson 外接这一层，
+ * 把「请求失败：<原始错误>」补上模型能照着做的下一步。其余 code 的文案自己已带方向
+ * （redirect 回显地址、timeout 报了时长、too_large 报了上限、blocked_address 说明了档位），不缀。
+ */
+export declare function withConnectionHint(error: unknown): unknown;
+/**
+ * 「fetch 一次 + 连接面补下一步」合起来，两个适配器的 callJson 共用（渐进披露 T8）。
+ * 收一层的理由与全仓其他判据一样：两处各写一遍 try/catch 就会漂。
+ */
+export declare function requestJsonWithHint(options: Parameters<typeof requestJsonImpl>[0]): Promise<NetResponse>;

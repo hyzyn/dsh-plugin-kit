@@ -121,6 +121,13 @@ interface Harness {
   toolNames(): string[]
 }
 
+/**
+ * 有目标的基线：破坏档工具要注册就得有一个可寻址目标——零目标时只有
+ * `docker_targets` / `docker_connect_local` 两条（见 tool-registration.test.ts）。
+ * 本文件关心的是提权与注册面，不需要真的连目标，因此只给一条 local 目标。
+ */
+const LOCAL_TARGET = { name: '本机', kind: 'local' }
+
 function mount(config: Record<string, unknown> = {}, options: { requireRoutes?: boolean } = {}): Harness {
   const state = {
     routes: [] as FakeRoute[],
@@ -293,7 +300,7 @@ describe('/elevate：提权全流程', () => {
 
   it('配置**早就**是 true：授权到达后由宿主重算成有效，不依赖客户端再 patch 一次', async () => {
     // 这正是 config-route 里那条「配置写着 true 但没授权 → 有效值 false」的另一半
-    const h = mount({ allowMutations: true })
+    const h = mount({ allowMutations: true, targets: [LOCAL_TARGET] })
     const before = await configOf(h)
     expect(before.allowMutationsConfigured).toBe(true)
     expect(before.allowMutations).toBe(false)
@@ -363,7 +370,7 @@ describe('/elevate：提权全流程', () => {
 
 describe('/elevate：撤销与禁用态', () => {
   it('撤销：记录清掉、有效值回落、破坏档工具注销、**配置一个字节都没改**', async () => {
-    const h = mount({ allowMutations: true })
+    const h = mount({ allowMutations: true, targets: [LOCAL_TARGET] })
     const begun = await h.call('/api/dsh-docker/elevate', 'POST', { capability: 'allowMutations' })
     const command = String(begun.json.command)
     writeFileSync(command.slice(command.indexOf("'") + 1, command.lastIndexOf("'")), '')
@@ -417,7 +424,7 @@ describe('/elevate：盘上已有的授权在启动期被审计', () => {
       grantFile,
       JSON.stringify({ version: 1, grants: { DSH_DOCKER_ALLOW_MUTATIONS: { grantedAt: 1750000000, via: 'file' } } }),
     )
-    const h = mount({ allowMutations: true })
+    const h = mount({ allowMutations: true, targets: [LOCAL_TARGET] })
 
     // 审计行**不含 nonce 与路径**（日志会落盘），只说明「哪条能力、哪条通道、什么时候」
     const load = h.logs.filter((line) => line.includes('elevation: load'))

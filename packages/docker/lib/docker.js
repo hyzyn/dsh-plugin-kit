@@ -883,6 +883,16 @@ export function parseInspectPorts(value) {
     }
     return out;
 }
+/**
+ * logsGrep 的**返回侧行闸**（与扫描侧的 8~32MB 字节预算是两件事）。
+ *
+ * 扫描预算管「能从多少原文里筛」，这个常量管「筛出来的能塞回多少给模型」：
+ * limit 上限 500 × context 上限 20 ⇒ 最多约 20500 行，一次性返回会把模型上下文撑爆
+ * （命中多的时候返回的是真有用的行，不是噪音，但超长的结果是另一种不可用）。
+ * 超了截到本上限，并给 `truncatedForSize` 与 `notes`——**不给**一个静默截断。
+ * `matched` 不受此闸影响：全量命中数仍如实上报，那是缩小窗口时最有用的信号。
+ */
+export const MAX_RESULT_LINES = 4000;
 /** 单个目标上的 Docker 操作集合。 */
 export class DockerApi {
     runner;
@@ -1168,7 +1178,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertComplete(result, '列出镜像', 'agent 侧没有分页参数，这是该目标的全量镜像列表');
+        this.assertComplete(result, '列出镜像', '改用 `limit` + `offset` 分页（默认每页 100），或先缩小目标范围');
         return parseImagesJson(result.stdout);
     }
     /**
@@ -1263,7 +1273,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertComplete(result, '列出网络', 'agent 侧没有分页参数，这是该目标的全量网络列表');
+        this.assertComplete(result, '列出网络', '改用 `limit` + `offset` 分页（默认每页 100），或先缩小目标范围');
         return parseNetworksJson(result.stdout);
     }
     /**
@@ -1319,7 +1329,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertComplete(result, '列出卷', 'agent 侧没有分页参数，这是该目标的全量卷列表');
+        this.assertComplete(result, '列出卷', '改用 `limit` + `offset` 分页（默认每页 100），或先缩小目标范围');
         return parseVolumesJson(result.stdout);
     }
     /** 卷详情（`docker volume inspect <name>`）。 */
@@ -1428,8 +1438,10 @@ export class DockerApi {
      * 与 logs() 的分工（写进工具描述，供模型选择）：「报错在最近尾部」→ docker_logs；
      * 「埋在深处 / 特定时间窗 / 找关键词」→ docker_logs_grep。扫描与返回的预算是**分开**
      * 的：扫描侧给到 8~32MB（maxOutputKb 只是单命令返回闸，grep 的意义就是从大量原文里
-     * 筛出少量命中），返回侧由 limit × context 夹住；两侧截断各有独立信号位
-     * （truncated = 扫描侧溢出丢最旧、limited = 命中超过 limit），都不静默。扫描窗口
+     * 筛出少量命中），返回侧由 limit × context 夹住，且另有**返回侧行闸**
+     * MAX_RESULT_LINES（limit 上限 500 × context 上限 20 能凑出两万行，一次返回会撑爆
+     * 上下文）；三处截断各有独立信号位（truncated = 扫描侧溢出丢最旧、limited = 命中超过
+     * limit、truncatedForSize = 返回行数超上限），都不静默。扫描窗口
      * **对齐到行边界**（`lineAlign`）：切口处的半行不当作一行返回，否则它会以没有时间戳的
      * 噪音形式进模型上下文，看起来像「检索结果里有脏行」。
      *
@@ -1527,15 +1539,29 @@ export class DockerApi {
                 highlight: hitSet.has(j) ? testLine(row.text) : null,
             };
         });
+        /*
+         * 返回侧行闸：命中多的时候 window 合并出来的行数可以到两万（limit 500 × context 20），
+         * 一次性回给模型就是把上下文撑爆——所以按 MAX_RESULT_LINES 截断，并**显式**给出
+         * truncatedForSize + 可执行提示（缩小 limit / 减小 context / 圈时间窗），不静默截。
+         * matched 仍报全量：模型靠它判断「是命中太多还是日志就只有这些」。
+         */
+        const exceeded = lines.length > MAX_RESULT_LINES;
+        const returnedLines = exceeded ? lines.slice(0, MAX_RESULT_LINES) : lines;
         return {
             id: safe,
             matched: hitIndexes.length,
             scanned: rows.length,
-            returned: lines.length,
+            returned: returnedLines.length,
             limited,
             truncated: result.truncated,
+            ...(exceeded
+                ? {
+                    truncatedForSize: true,
+                    notes: ['命中过多已截断返回：缩小 `limit`、减小 `context`，或加 `since`/`until` 圈时间窗'],
+                }
+                : {}),
             contextLines,
-            lines,
+            lines: returnedLines,
         };
     }
     /**

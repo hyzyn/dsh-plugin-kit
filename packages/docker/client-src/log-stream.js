@@ -26,13 +26,20 @@ export function reconnectTail(initialTail, isReconnect) {
  *   buildUrl: (tail: number) => string,
  *   tail: number,
  *   onOpen?: () => void,
- *   onLine?: (text: string) => void,
+ *   onLine?: (text: string, payload: Record<string, unknown>) => void,
  *   onSkip?: (payload: { frames?: number, bytes?: number } | null) => void,
+ *   onSourceEnd?: (payload: Record<string, unknown>) => void,
+ *   onSourceError?: (payload: Record<string, unknown>) => void,
  *   onEnd?: (payload: Record<string, unknown> | null, controls: { reconnect: () => void }) => void,
  *   onError?: (message: string, controls: { close: () => void, reconnect: () => void }) => void,
  *   onStatus?: (status: 'connecting' | 'open' | 'reconnecting' | 'closed') => void,
  *   t?: (key: string) => string,
  * }} options
+ *
+ * 多容器单连接（宿主 `streamProtocol ≥ 3`）：一条 `/logs/stream?ids=…` 里混着多个容器的
+ * 分片，`line` 帧因此带 `id`。`onLine` 的第二个参数就是解析后的整帧（老宿主没有 `id`，
+ * 调用方按「只有一个容器」处理即可）；`source-end` / `source-error` 是**单个容器**的
+ * 收尾，与整条连接的 `end` / `error` 分开——一个容器停了，不代表其余容器没日志了。
  * @returns {{ close: () => void, reconnect: () => void }}
  */
 export function subscribeLogStream(options) {
@@ -117,8 +124,46 @@ export function subscribeLogStream(options) {
       }
       if (payload === null || typeof payload !== 'object') return
       markOpen()
-      if (typeof payload.d === 'string') options.onLine?.(payload.d)
-      else if (typeof payload.e === 'string') options.onLine?.(payload.e)
+      /*
+       * 第二个参数是整帧：多容器单连接时调用方要按 `payload.id` 把分片派回对应容器
+       * （单容器调用方忽略它，行为与旧版一致）。
+       */
+      if (typeof payload.d === 'string') options.onLine?.(payload.d, payload)
+      else if (typeof payload.e === 'string') options.onLine?.(payload.e, payload)
+    })
+    /*
+     * 单个容器的收尾（多容器单连接专有，`streamProtocol ≥ 3` 才有）。
+     *
+     * 与 `end` 的区别是**作用域**：`end` 是整条连接结束（所有容器都到头了），
+     * 而这里只是某一个容器停了——其余容器的日志还得继续收。所以不 close、不
+     * 改连接状态，只把「谁结束了」交给调用方计数。
+     */
+    next.addEventListener('source-end', (event) => {
+      if (source !== next) return
+      let payload = null
+      try {
+        payload = JSON.parse(event.data)
+      } catch {
+        return
+      }
+      if (payload === null || typeof payload !== 'object') return
+      options.onSourceEnd?.(payload)
+    })
+    /*
+     * 单个容器**这一条**失败（spawn 错 / 远端通道被拒）：同样不影响其余容器。
+     * 注意它是独立的 SSE 事件名，不走 `error`——`error` 在 EventSource 里还兼着
+     * 连接层错误的语义，混在一起会让「一个容器失败」被当成「整条流断了」。
+     */
+    next.addEventListener('source-error', (event) => {
+      if (source !== next) return
+      let payload = null
+      try {
+        payload = JSON.parse(event.data)
+      } catch {
+        return
+      }
+      if (payload === null || typeof payload !== 'object') return
+      options.onSourceError?.(payload)
     })
     next.addEventListener('skip', (event) => {
       if (source !== next) return

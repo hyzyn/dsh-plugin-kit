@@ -423,18 +423,47 @@ async function migrateSecretsToStore(seam: CredentialSeam): Promise<{ migrated: 
 /**
  * 把 ref 托管的密钥解析进 process.env。**启动期不再是这条链的第一手**——值已由
  * applyStoreRefsToProcessEnv 同步放好（那才是 mcp 认证头赶得上的那一次），这里负责
- * resolve 之后的**对账**（含「存储里已删」→ 删除变量）与迁移后的收敛；正常路径下
- * 它对已是同值的键是幂等的 no-op。
+ * resolve 之后的**对账**与迁移后的收敛；正常路径下它对已是同值的键是幂等的 no-op。
+ *
+ * **「resolve 不到」不等于「值已经被删」**（2026-10-22 修）。旧实现在 `hit === undefined`
+ * 时直接 `delete process.env[key]`，理由写的是「存储里已删 → 删除变量」；但 resolve 返回
+ * undefined 至少有三种成因，其中两种都不该删：
+ *
+ *   1. **seam 此刻不可用 / 还没就绪**（resolve 抛错被 catch、或提供者尚未 ACTIVE）——
+ *      这一条最要命：启动期同步注入刚把值放好（applyStoreRefsToProcessEnv），这条异步
+ *      对账随后跑一遍却把它删掉，mcp 的认证头于是拿到 undefined，症状就是
+ *      「今天为什么又丢了」；
+ *   2. **refs 文件里有值、而 seam 答不出来**（模板版本差异、`describe` 与 `resolve` 答不同、
+ *      上游改了 ref 解析规则）；
+ *   3. 存储里确实没有这个键了（唯一真正该删的一条）。
+ *
+ * 判据因此改成**先查文件**：`readStoreRefs()` 里还有这个键（非空串）时，把文件里的值
+ * 写进 process.env（以文件为准，与启动期同步注入同源），**绝不 delete**；只有文件里也
+ * 没有了，才认定「存储确实已删」并删除变量。这样「删不掉」的代价只是多留一个变量，
+ * 而误删的代价是整条 MCP 服务器认证失效。
  */
 async function applyStoreEntriesToProcessEnv(seam: CredentialSeam, entries: EnvEntry[]): Promise<void> {
+  // 文件只读一次（readStoreRefs 每次都真读盘）：这个函数在启动与每次保存后都会跑。
+  const fileRefs = readStoreRefs()
   for (const entry of entries) {
     if (entry.secret !== true || entry.value !== undefined) continue
+    const entryName = entry.key
+    const fileValue = fileRefs[entryName]
     try {
-      const hit = await seam.resolve(entry.key)
-      if (hit === undefined || hit.value === '') delete process.env[entry.key]
-      else process.env[entry.key] = hit.value
+      const hit = await seam.resolve(entryName)
+      if (hit !== undefined && hit.value !== '') {
+        process.env[entryName] = hit.value
+        continue
+      }
+      // seam 答「没有」：以文件为准复核一次再决定删不删（见上面的三种成因）。
+      if (fileValue !== undefined) {
+        process.env[entryName] = fileValue
+        continue
+      }
+      delete process.env[entryName]
     } catch {
-      /* 单条失败不阻塞其余条目 */
+      /* 单条失败不阻塞其余条目；**同样不删**——报错不是「已删除」的证据 */
+      if (fileValue !== undefined) process.env[entryName] = fileValue
     }
   }
 }
@@ -635,10 +664,36 @@ function makeRoutes(ctx: Context, applyOnSave: boolean, store: SeamHolder): Arra
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 插件配置里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml），env 文件只保留清单不落密钥明文。保存后默认写入当前进程的 process.env；启动时也会把凭据存储里的密钥**同步**预注入 process.env（早于其它插件条目的 !!js 求值），所以 MCP 认证头这类 js:process.env.XXX 引用在冷启动时就能取到值。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。'
+const ENV_GUIDANCE = '本机装有 dsh-env-manager 插件（环境变量 / 密钥管理）：用户提到「环境变量 / 密钥 / env / secret」时，引导他打开 设置 → 插件配置 → 环境变量 / 密钥管理 卡片，别手改托管区块。'
+
+/**
+ * 就绪服务名（**跨包契约**）：env 在 apply() 里 provide 它，消费者用
+ * `ctx.inject([ENV_READY_SERVICE], …)` 等到它出现再读 env 注入进 `process.env` 的值。
+ *
+ * 为什么需要它：插件按加载器的并发 create 挂载（`Promise.all` + 动态 import），
+ * **配置行序不保证 apply 顺序**；而本插件的同步预注入与消费者的动作之间只能靠
+ * 「服务就绪」表达先后（cordis 的服务在提供者 fiber active 之后才对依赖者可见）。
+ * 形状与语义见 `docs/architecture.md` 的跨插件协作一节（**写成行内代码**：本注释会被
+ * `tsc` 搬进 `lib/index.d.ts` 随包发布，那儿的 markdown 相对链接在用户侧必然落空）。
+ */
+export const ENV_READY_SERVICE = 'dshEnvReady'
+
+/** `dshEnvReady` 的值：只描述「注入做完了没有」，不携带任何密钥值。 */
+export interface EnvReadyInfo {
+  /** false = 插件被配置禁用，没有做注入（消费者据此直接放行）。 */
+  enabled: boolean
+  /** 本次同步注入的键名（**不含值**，仅用于诊断）。 */
+  keys: string[]
+  /** 提供时刻（毫秒时间戳）。 */
+  at: number
+}
 
 export function apply(ctx: Context, config?: Config): void {
-  if (config?.enabled === false) return
+  if (config?.enabled === false) {
+    // 禁用也必须 provide：否则等它出现的消费者会永远等下去。
+    ctx.provide(ENV_READY_SERVICE, { enabled: false, keys: [], at: Date.now() } satisfies EnvReadyInfo)
+    return
+  }
   const applyOnSave = config?.applyToProcessEnv !== false
   const useStore = config?.secretsInCredentials !== false
   const store: SeamHolder = { current: null }
@@ -646,10 +701,12 @@ export function apply(ctx: Context, config?: Config): void {
   const announce = config?.announceToAgent !== false
 
   // 启动时也把已有条目应用一次，保证宿主进程内立即可用。
+  let injectedKeys: string[] = []
   if (applyOnSave) {
     try {
       const entries = readManagedEntries().entries
       applyToProcessEnv(entries)
+      injectedKeys = entries.map((entry) => entry.key)
       // ref 托管条目必须**同步**补齐：apply() 一旦返回，后面那些条目的 `!!js` 就可能已经
       // 求值完了（desktop profile 里只隔十几条）。见 applyStoreRefsToProcessEnv。
       // secretsInCredentials === false 时凭据存储不是真源，跳过。
@@ -658,6 +715,10 @@ export function apply(ctx: Context, config?: Config): void {
       /* 启动时应用失败不阻塞插件 */
     }
   }
+
+  // 同步注入到此为止：服务在 fiber active（apply 返回）之后才对依赖者可见，
+  // 所以「能注入到 dshEnvReady」本身就等价于「process.env 已经写好」。
+  ctx.provide(ENV_READY_SERVICE, { enabled: true, keys: injectedKeys, at: Date.now() } satisfies EnvReadyInfo)
 
   if (useStore) {
     // 凭据 seam 由 base 组合提供（ctx.inject 动态回调与 webServer 同款模式）；

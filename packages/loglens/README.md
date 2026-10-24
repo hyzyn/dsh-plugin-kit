@@ -136,8 +136,8 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
   「柱高只表示相对高低，不是与条数成正比」；全一样时不裁剪、也不写那句说明。
   判据与代价在 [pure.js](./client-src/pure.js) 的 `histogramScale` 头注释里。
 - **分组字段由用户给**（面板**没有默认字段**——各家索引的字段名不一样，猜一个等于替用户伪造范围）。
-  点开那一格看当前来源的字段名候选：**不传 `limit` = 不截断**，摆出来的就是这个来源的全部字段
-  （与 Kibana 的 `_field_caps` 同口径；同来源不重复拉，页脚报「共 N 个字段」并有「刷新」）。
+  点开那一格看当前来源的字段名候选：宿主默认只列前 **200** 个（超出时 `truncated: true` + 那句
+  「默认只列前 200 个（共 N 个）：要更多就分段传 limit…」照抄在页脚；同来源不重复拉）。
   候选里只有「能用的名字」：`object` / `nested` 这类没有自己值的容器行不列；同名在不同索引里
   **类型不一致**的字段在行尾标「类型冲突」（悬停列出两种类型）。
 - **榜不写合计**：列出来的桶加起来不是命中总数，没列出来的由宿主的警告原话回报
@@ -212,13 +212,16 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 
 配好来源之后，agent 用这几个工具查（**名单以 [src/tools.ts](./src/tools.ts) 的注册处为准**）。
 它们**全部**归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
+注册面随配置收窄（2026-10-24 起）：**零来源时只注册 `loglens_sources`**（它是「去设置里配来源」的
+唯一入口，其余四个此刻调用必然报错）；配的全是 Loki / Docker 来源时再少一个 `loglens_facets`。
+来源清单一变（面板增删、settings 热更新），注册面跟着重建。
 
 | 工具 | 作用 |
 |---|---|
 | `loglens_sources` | 列来源（含**解析后的索引表达式**与探测条数）；其他 `loglens_*` 的 `target` 取自这里 |
 | `loglens_search` | 查：支持 `filters` 结构化过滤与 `level`（**及以上**语义）、`from` / `to` / `limit` / `direction` / `cursor` |
-| `loglens_fields` | 看有哪些字段。ES / OpenSearch 侧**不列 `object` / `nested` 容器行**；同名在不同索引里**类型不一致**的标 `conflict: true` 并带 `esTypes` / `conflictDescriptions` |
-| `loglens_facets` | 按字段分组 / 按时间分桶（「哪个服务在报错」）；目前只有 ES / OpenSearch 有。**0 桶时会说清是哪种成因**——按「这个窗口里有多少条日志」区分「这个字段是空壳」与「这段时间没有命中」，两种情形给的下一步相反 |
+| `loglens_fields` | 看有哪些字段。**默认只列前 200 个**（总数在 `total`，截断时 `truncated: true` + 警告给下一步；要更多分段传 `limit`）。ES / OpenSearch 侧**不列 `object` / `nested` 容器行**；同名在不同索引里**类型不一致**的标 `conflict: true` 并带 `esTypes` / `conflictDescriptions` |
+| `loglens_facets` | 按字段分组 / 按时间分桶（「哪个服务在报错」）；目前只有 ES / OpenSearch 有——**配的全是 Loki / Docker 来源时这个工具根本不注册**。**0 桶时会说清是哪种成因**——按「这个窗口里有多少条日志」区分「这个字段是空壳」与「这段时间没有命中」，两种情形给的下一步相反 |
 | `loglens_context` | 取某一行前后的上下文（**两侧分段取**：早段从锚点往回、晚段从锚点往后，各按 `before`/`after` 取满，所以高密度窗口里也一定包含锚点本身）。锚点按**优先级**匹配：id 精确 → 剥一个前导 `#` 的变体 → 正文严格相等 → 规范化空白后相等 → 规范化空白后单向包含 → 只按 `ts`（兜底档，**不看**有没有给正文；高档位一律压过低档位，同档取离 `ts` 最近的、并列按 id 与正文的字典序定）。渲染文本里紧跟在正文之后的 `#id` 就是那个精确坐标（同一行更后面可能还有 labels）；非 id 档命中时会在 warnings 里说明用的是哪一档 |
 
 **渲染文本的形态**（`loglens_search` / `loglens_context` 两条路共用）：一行是「时间 · 级别 · 正文 ·
@@ -229,10 +232,20 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
   （机器可用），人眼看到的也与正文一致。时区取**宿主进程**的本地时区。
 - **多行正文（堆栈）保留层次**：`log.flags=multiline` 的堆栈在采集侧是一个文档、`message` 里本就带
   换行，原样吐出是「行内嵌换行」的扁平文本。现在续行加 `    | ` 前缀（正文内容一个字不改），
-  超过 20 行截断并**报出**总行数与未显示行数。
+  超过 20 行截断并**报出**总行数与未显示行数，且带上可执行的下一步（「把 expand 传 true 重查一次」
+  ——两条路的入参里都有 `expand`，它只影响渲染，返回值里的 message 一直是全文）。
+- **翻页有指引**：适配器给了 `nextCursor` 时（ES 的 PIT / Loki 的完整 ts 组），返回值与渲染文本都
+  会带一句「把 nextCursor 原样传回 cursor（同一时间窗、同一 direction）」，不再只写「（截断：hit_limit）」
+  让模型自己猜下一页怎么取。
 - **标签只平铺身份键**（`src/line.ts` 的 `LABEL_PRIORITY` 前 3 条：容器 → 主机 → 流），其余折叠成
   `+N labels`——一条 filebeat 文档能摊出 20 条标签，全铺开会把正文淹掉。**折叠不是丢弃**：完整的
   labels 在返回值的 `lines[].labels` 里。
+
+**面向模型的公告**（2026-10-24 起）：插件挂载时向 systemPrompt 注入一段具名 section
+（`plugin:dsh-loglens`，order 151，≤300 字符），只写查日志的推荐链路（sources → search → context →
+facets）、facets 的能力门与零来源时的去处；`announce` 开关同时管它与启动日志（关掉 = 本插件不向
+任何一面自报家门）。五个工具的 schema 描述同期瘦身（每条 ≤120 字符），细节归位到返回值 warnings
+与这段 section——模型可见面不再复述实现手册，也不出现仓内文档引用。
 
 ## HTTP 面（回环）
 
@@ -244,7 +257,7 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 | 改来源 | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | id 不可改（它是浏览器侧唯一的引用方式） |
 | 删来源 | `POST {"action":"targets.remove","id":"<id>"}` | |
 | 查一次 | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | 面板用；返回行 + 计数 + 截断信号，**形状与 `loglens_search` 一致**（同一个执行层）。可带 `filters`（`{"字段":"值"}`）——面板点榜上下钻时就是这么带的，`/facets` 也会带上同一份 |
-| 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>"}`（可带 `"limit":80` 收窄） | 分组字段那一格点开时自动拉（面板**不传 `limit`** → 宿主不截断、全列）；真被 `limit` 截了才返回 `truncated: true` 与那句警告，界面照抄 |
+| 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>"}`（可带 `"limit":80` 收窄） | 分组字段那一格点开时自动拉（面板**不传 `limit`** → 宿主按默认上限截到前 **200** 个）；真被截了就返回 `truncated: true` 与那句「默认只列前 200 个（共 N 个）」的警告，界面照抄 |
 | 聚合 | `POST /api/dsh-loglens/facets` `{"target":"<id>","by":"container.name","interval":"5m"}` | 按字段分组 / 按时间分桶（目前只有 ES / OpenSearch 有；面板用 `interval` 画时间分布、用 `by` 画分组榜，工具面是 `loglens_facets`） |
 
 围栏（[docs/design.md §4](./docs/design.md)）：整条路由走**加固档** `isLoopbackRequestStrict`；

@@ -1,6 +1,6 @@
 import { decodeSearchAfterCursor, encodeSearchAfterCursor } from '../cursor.js';
 import { flattenLabels, withLevel } from '../line.js';
-import { requestJson as fetchJson } from '../net.js';
+import { httpFailureHint, requestJsonWithHint as fetchJson } from '../net.js';
 import { countsOf, pageLimitFlags, truncationOf } from '../query.js';
 /** 单页上限的默认声明（深分页靠 search_after，所以这只是「一页多少行」）。 */
 export const ES_DEFAULT_MAX_PAGE_SIZE = 500;
@@ -436,7 +436,9 @@ export function createElasticBackend(options) {
             ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
         });
         if (!response.ok) {
-            throw new ElasticHttpError(prefix + 'HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text), {
+            // 正文仍由 detailOf 截在 200 字；末尾缀一句按状态给的下一步（渐进披露 T8；5xx 不缀）
+            throw new ElasticHttpError(prefix + 'HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text)
+                + httpFailureHint(response.status), {
                 status: response.status,
                 text: response.text,
                 body: response.body,

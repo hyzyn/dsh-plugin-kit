@@ -8,7 +8,7 @@
 
 - **Hot-loaded on save**: rewrites the managed block of `~/.dsh/cordis.patch.yml`; DSH’s HMR watcher reloads it automatically, and tools are registered to the model as `mcp__<server>__<tool>`.
 - **stdio and streamable-http transports**: stdio (command / args / env / cwd) and streamable-http (url / headers, including SSE and session headers); values can be written as `js:` expressions, so secrets never land in the patch file.
-- **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time.
+- **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time. The probe also has a verdict for **errors**: a 401/403 on POST or GET is reported at once as `认证失败(HTTP 401)` (with `WWW-Authenticate`), other 4xx/5xx carry their status code — an auth failure is no longer swept into “SSE stream ended”; when a `js:` header or a stdio `env` value evaluates to `undefined` (including the shape hidden inside `Basic …` base64) it names the missing environment variables before sending any request or spawning the process.
 - **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading). Name clashes come in two distinct tiers, never conflated (issue #5): `conflicts` holds only rows that **actually reuse** an external serverName — both instances would claim the same `mcp__<serverName>__*` tool names, so the warning banner appears only then; the inventory of instances outside this card travels in `externalServers` and is shown as a neutral info banner (“these names are already taken elsewhere — don’t reuse them here”). Servers can be enabled / disabled (`disabled: true`) / edited / deleted. **“Mounted” is not the same as “connected”**: fiber liveness comes from the loader, while a server that cannot be reached still resolves its `mcp-client` apply (`failOnStartupError` defaults to `false`, so nothing throws) — an unreachable address therefore keeps showing a green “running”. Each managed row now carries a `toolCount` (the number of `mcp__<serverName>__*` tools in the registry): when the row is `active` and `toolCount === 0`, the badge reads **“Not connected”** instead (overriding the green “running”), and a line underneath spells out the cost (every boot waits once for that connection attempt) with a “disable” button right there. When the tool registry cannot be read, `toolCount` is **absent** (not 0) and the UI draws no conclusion — “cannot read” must never be rendered as “not connected”.
 - **Capability notice injected into systemPrompt**: injects a capability notice (systemPrompt section) so that when “MCP config / MCP server” comes up, the model knows it refers to this plugin.
 
@@ -102,3 +102,38 @@ is present), or you can first clear the server list in the panel and then manual
   as “not connected”. Note this does **not** change startup cost: an unreachable address still costs one
   connection attempt per boot (about 10s; up to 60s when reachable but unresponsive) — disable the row to skip it
 - The browser half is hand-written ESM (the React shell is resolved through `__ModuleLoader__`’s `require`, and the panel itself is pure DOM), so no tsdown is needed; the host half emits ESM straight from tsc
+
+## Troubleshooting: triaging `server is disconnected`
+
+**The symptom looks the same, but there are four different causes, and the fixes are nothing alike.**
+Do not start by guessing at credentials — locate the row below first, then act (in one real incident on
+2026-10-24 **three causes coexisted**: missing injection + no VPN + exhausted reconnect budget; each layer on
+its own looked like "authentication failure", which is what made it expensive to diagnose).
+
+| Criterion (one pasteable command / piece of evidence) | Conclusion | Fix |
+|---|---|---|
+| `nc -z <host> <port>` fails (for an intranet address, first check whether `ping` is 100% packet loss) | **Network unreachable** — nothing to do with the plugin or the credentials | Connect the VPN / move to a network that can reach that host |
+| The port is open, but the host log ends with `giving up after N consecutive failed reconnect attempts` | **Reconnect budget exhausted**: once `reconnect.maxAttempts`, which defaults to 10 (`RECONNECT_DEFAULT_MAX_ATTEMPTS`), is used up, the client gives up and unregisters that server's tools — it will **not** retry later even after the network recovers | **Restart the host** (or HMR-reload the plugin) |
+| Port open, no give-up record in the log, still not connected | The connection is still being established, or just failed and is awaiting a retry (about 10s for a first attempt; up to 60s when reachable but unresponsive) | Wait one reconnect cycle; if it keeps failing, treat it as the row above |
+| 401 / tool count is 0 | **Credentials not injected**: `!!js process.env.X` evaluates to `undefined` and builds `Basic base64("undefined:undefined")` — a **legal but wrong** string, so the server can only answer 401 | Install and enable `@hyzyn/dsh-env`, and confirm those keys **really reached the host process** (`env` provides `dshEnvReady` only after its synchronous pre-injection) |
+
+The other two reconnect defaults work the same way — the backoff doubles from the initial value and is capped:
+
+- `reconnect.initialDelayMs` defaults to 500 ms (`RECONNECT_DEFAULT_INITIAL_DELAY_MS`);
+- `reconnect.maxDelayMs` defaults to 30000 ms (`RECONNECT_DEFAULT_MAX_DELAY_MS`), which is also the backoff ceiling.
+- All three numbers above are named constants: changing one **breaks nothing at build time**, but the numbers in this
+  section are recomputed by `scripts/check-readme-facts.mjs` — **come back and edit this section when you change them**.
+- `maxAttempts` is a budget of **consecutive** failures: it resets once a connection has stayed up longer than
+  `maxDelayMs`, so "it dropped once" does not mean "it gives up next time".
+
+Three supporting criteria:
+
+- **Whether the auth header is already correct**: `!!js` is evaluated by the loader when it activates the
+  `mcp-client` entry (its `process` is the host process), not by this plugin — this plugin's `evalValue()` only
+  serves the Connection Test button. So "the card looks fine but the agent side cannot connect" is usually not
+  this plugin's problem; work through the table above.
+- **The Connection Test can produce the verdict for the credential row**: it reports "the environment variable X
+  referenced here has no value in the current host process (not injected)" instead of a vague 401. **But that
+  check only runs when you press Connection Test**; it does not cover the connection made at startup.
+- **A restart is the only way out once the reconnect budget is spent**: `enabled: true` means "it will retry after
+  a failure", not "it will retry forever".

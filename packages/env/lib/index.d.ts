@@ -51,5 +51,25 @@ export declare function validateEntries(rawEntries: unknown, previous: EnvEntry[
  * 跳过（上游对同样的输入是直接拒绝整个文档）。
  */
 export declare function readStoreRefs(): Record<string, string>;
+/**
+ * 就绪服务名（**跨包契约**）：env 在 apply() 里 provide 它，消费者用
+ * `ctx.inject([ENV_READY_SERVICE], …)` 等到它出现再读 env 注入进 `process.env` 的值。
+ *
+ * 为什么需要它：插件按加载器的并发 create 挂载（`Promise.all` + 动态 import），
+ * **配置行序不保证 apply 顺序**；而本插件的同步预注入与消费者的动作之间只能靠
+ * 「服务就绪」表达先后（cordis 的服务在提供者 fiber active 之后才对依赖者可见）。
+ * 形状与语义见 `docs/architecture.md` 的跨插件协作一节（**写成行内代码**：本注释会被
+ * `tsc` 搬进 `lib/index.d.ts` 随包发布，那儿的 markdown 相对链接在用户侧必然落空）。
+ */
+export declare const ENV_READY_SERVICE = "dshEnvReady";
+/** `dshEnvReady` 的值：只描述「注入做完了没有」，不携带任何密钥值。 */
+export interface EnvReadyInfo {
+    /** false = 插件被配置禁用，没有做注入（消费者据此直接放行）。 */
+    enabled: boolean;
+    /** 本次同步注入的键名（**不含值**，仅用于诊断）。 */
+    keys: string[];
+    /** 提供时刻（毫秒时间戳）。 */
+    at: number;
+}
 export declare function apply(ctx: Context, config?: Config): void;
 export {};

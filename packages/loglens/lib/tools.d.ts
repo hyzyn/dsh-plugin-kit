@@ -3,7 +3,7 @@ import type { LogBackend, LogLine } from './backends/types.js';
 import type { LoglensConfig, SourceKind } from './config.js';
 export { adapterHint, describeTarget, hintFor, resolveTarget } from './execute.js';
 export { backendFor } from './backends/registry.js';
-/** 分类表：四个工具全是只读（查日志不改任何东西，也不在目标机上执行命令）。 */
+/** 分类表：五个工具全是只读（查日志不改任何东西，也不在目标机上执行命令）。 */
 export declare const LOGLENS_TIER_CLASS: Record<string, TierClass>;
 /** 档位闸只认这些前缀（名单外一个都不碰）。 */
 export declare const LOGLENS_TIER_PREFIXES: readonly string[];
@@ -13,8 +13,20 @@ export interface ToolDeps {
     backendFor: (kind: SourceKind) => LogBackend | undefined;
     /** Docker 容器面板装没装（判据见 src/execute.ts 的 hintFor 与 index.ts 的接线）。 */
     dockerLoaded?: () => boolean;
-    /** 注册漏斗：与 docker 的 add 同款（单个工具注册失败不该把一整批带下去）。 */
+    /**
+     * 注册漏斗：与 docker 的 add 同款（单个工具注册失败不该把一整批带下去）。
+     */
     add: (name: string, definition: unknown) => void;
+    /**
+     * 注册面收窄（渐进披露 T2/T7）：只放行判真名字面量的工具，其余的 add **整支跳过**。
+     *
+     * 什么时候用：零来源时只放行 `loglens_sources`（它是「去配置来源」的唯一入口，
+     * 其余四个此刻调用必然在 resolveTarget 上抛错，注册了就是四个必然报错的工具）；
+     * 来源全都不支持聚合时再跳过 `loglens_facets`（Loki / Docker 来源下它只会抛 facetsHint）。
+     * 名单由 index.ts 按当前配置现算；清单一变，persist → refreshTools 重建时自然跟上。
+     * 可选：不传 = 五个全注册（既有行为）。
+     */
+    include?: (name: string) => boolean;
 }
 /**
  * 时间戳的渲染形态：**本地时间 + 显式偏移**，如 `2026-10-18T22:01:43.123+08:00`（真机反馈第 5 条）。

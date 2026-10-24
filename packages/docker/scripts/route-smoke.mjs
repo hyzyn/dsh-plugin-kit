@@ -423,9 +423,10 @@ await test('GET /config：凭证脱敏 + 只读默认 + 复用 tty 连接簿名'
   assert.equal(config.dockerBin, fakeBin)
   assert.deepEqual(config.ttyBooks, ['prod-a'])
   assert.equal(config.ttyAvailable, true)
-  // SSE 帧协议版本：客户端据此决定「怎样才算已就绪」（2 = 管道起来先发 ready）——
+  // SSE 帧协议版本：客户端据此决定「怎样才算已就绪」（≥2 = 管道起来先发 ready），
+  // 以及「日志流怎么连」（3 = /logs/stream 支持 ids= 多容器单连接 + 分源帧）——
   // 旧宿主没有这个字段，开发档错位时新客户端靠它退回旧判据
-  assert.equal(config.streamProtocol, 2)
+  assert.equal(config.streamProtocol, 3)
   assert.equal(JSON.stringify(config).includes('FAKE_PW'), false)
   for (const target of config.targets) {
     assert.equal(Object.hasOwn(target, 'password'), false)
@@ -509,6 +510,39 @@ await test('GET /logs/stream：SSE 事件序列（line stdout/stderr → end）'
   assert.match(text, /event: line\ndata: \{"e":"stderr line 1\\n"\}\n\n/)
   assert.match(text, /event: end\ndata: \{"reason":"container-exit","code":0\}\n\n/)
   assert.equal(res.ended, true)
+})
+
+await test('GET /logs/stream?ids=…：一条连接装多个容器（D168）', async () => {
+  const res = await call('GET', '/logs/stream?target=本机&ids=shop-web-1,shop-db-1&tail=20')
+  assert.equal(res.status, 200)
+  assert.equal(res.flushed, true)
+  const text = res.frames.join('')
+  // ready 只发一帧：两个源（两个真的 docker logs 子进程）也只算一次握手
+  assert.equal(text.split('event: ready').length - 1, 1)
+  // 每帧带 id，两个容器各自的 line 都在（到达序不保证，按集合断言）
+  assert.match(text, /event: line\ndata: \{"id":"shop-web-1","d":"stdout line 1\\n"\}\n\n/)
+  assert.match(text, /event: line\ndata: \{"id":"shop-db-1","d":"stdout line 1\\n"\}\n\n/)
+  assert.match(text, /event: line\ndata: \{"id":"shop-web-1","e":"stderr line 1\\n"\}\n\n/)
+  assert.match(text, /event: line\ndata: \{"id":"shop-db-1","e":"stderr line 1\\n"\}\n\n/)
+  // 每个源各一条 source-end，全部结束之后才是整条连接的 end
+  assert.match(text, /event: source-end\ndata: \{"id":"shop-web-1","code":0\}\n\n/)
+  assert.match(text, /event: source-end\ndata: \{"id":"shop-db-1","code":0\}\n\n/)
+  assert.match(text, /event: end\ndata: \{"reason":"container-exit","code":0\}\n\n/)
+  assert.equal(res.ended, true)
+})
+
+await test('GET /logs/stream?ids=…：校验矩阵（空 / 超上限 / 非法条目都不建流）', async () => {
+  const empty = await call('GET', '/logs/stream?target=本机&ids=,')
+  assert.equal(empty.status, 400)
+  assert.match(empty.body.error, /id 必填/)
+
+  const tooMany = await call('GET', '/logs/stream?target=本机&ids=' + Array.from({ length: 33 }, (_, index) => 'c' + String(index)).join(','))
+  assert.equal(tooMany.status, 400)
+  assert.match(tooMany.body.error, /32/)
+
+  const badId = await call('GET', '/logs/stream?target=本机&ids=' + encodeURIComponent('shop-web-1; rm -rf /'))
+  assert.equal(badId.status, 400)
+  assert.match(badId.body.error, /container 含非法字符/)
 })
 
 await test('GET /logs/stream：缺 id 400 / 非法 id 400 / 非 GET 405 / 非 loopback 403', async () => {

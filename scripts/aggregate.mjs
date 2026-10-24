@@ -10,6 +10,7 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { MOUNT_PRIORITY, missingPriority, orderPlugins } from './aggregate-order.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packagesDir = join(root, 'packages')
@@ -39,7 +40,7 @@ function extractRows(yaml) {
   return rows
 }
 
-const plugins = []
+const discovered = []
 for (const dir of readdirSync(packagesDir).sort()) {
   if (!/^[a-z0-9-]+$/.test(dir)) continue
   const pkgPath = join(packagesDir, dir, 'package.json')
@@ -62,7 +63,20 @@ for (const dir of readdirSync(packagesDir).sort()) {
     console.warn(`[aggregate] 跳过 ${pkg.name}：cordis.patch.yml 中没有可提取的行`)
     continue
   }
-  plugins.push({ dir, name: pkg.name, rows, version: pkg.version })
+  discovered.push({ dir, name: pkg.name, rows, version: pkg.version })
+}
+
+// 挂载顺序：显式优先级（env 必须最先，见 aggregate-order.mjs 文件头）→ 其余字母序。
+// 优先级清单写错包名时**中止**，否则顺序会悄悄退回字母序而没人发现。
+const missing = missingPriority(discovered)
+if (missing.length > 0) {
+  console.error(`[aggregate] 挂载优先级清单（MOUNT_PRIORITY）里的包没有匹配到任何插件：${missing.join(', ')}`)
+  console.error('  写错包名会让顺序悄悄退回字母序——修 scripts/aggregate-order.mjs 的清单，或删掉过期项。')
+  process.exit(1)
+}
+const plugins = orderPlugins(discovered)
+if (MOUNT_PRIORITY.length > 0) {
+  console.log(`[aggregate] 挂载优先级：${MOUNT_PRIORITY.join(' → ')} → 其余按目录名字母序`)
 }
 
 // 1) 重写 packages/all/cordis.patch.yml

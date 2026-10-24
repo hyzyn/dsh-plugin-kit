@@ -110,78 +110,52 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
 
 ![Terminal panel settings card: shell / TERM / concurrency limit and so on take effect on save](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
-## Windows hosts (0.18.1, best-effort)
+## Windows hosts (best-effort)
 
-**Before 0.18.1 a Windows host could not open a single local terminal**, for two reasons on the same path:
+Windows support is **best-effort**: the default shell is `%COMSPEC%` (guaranteed to exist); for PowerShell,
+put the full path to `powershell.exe` / `pwsh.exe` in the settings card’s “Shell path” (the candidate list
+offers `%COMSPEC%` + Windows PowerShell 5.1 + PowerShell 7 when installed, default first). **There is no
+POSIX wrapper layer on Windows**: plain `[shell]`; the PowerShell family gets `-NoLogo` but deliberately
+**not `-NoProfile`** (the user’s profile is where aliases and functions come from); TERM / COLORTERM are
+meaningless for ConPTY and are no longer injected.
 
-1. `$SHELL` **does not exist on Windows**, and the default shell fell back to `/bin/zsh` unconditionally →
-   `spawn` fails with ENOENT (measured: `spawn /bin/zsh -> ENOENT`, while `%COMSPEC%` works);
-2. the spawn plan was POSIX-shaped (`-c 'export TERM=…; export COLORTERM=…; exec "$shell"'`) — cmd.exe does
-   not understand `-c` (it ignores the whole line, runs an empty session and exits, so the tab appears and
-   vanishes), and PowerShell understands `-c` but rejects `export` as an unknown cmdlet.
-
-Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
-
-- **Default shell is `%COMSPEC%`** (guaranteed to exist); for PowerShell put the full path to
-  `powershell.exe` / `pwsh.exe` in the settings card’s “Shell path”. On Windows the candidate list offers
-  `%COMSPEC%` + Windows PowerShell 5.1 + PowerShell 7 (when installed), with the default first;
-- **No wrapper layer on Windows**: plain `[shell]`; the PowerShell family gets `-NoLogo` (drops the copyright
-  banner) but deliberately **not `-NoProfile`** — the user’s profile is where aliases and functions come from.
-  TERM / COLORTERM are meaningless for ConPTY and are no longer injected;
 - **“Run one command” tabs** (docker exec, command tabs opened by the agent) use `cmd /c` or
-  `PowerShell -Command`; **PowerShell’s `-Command` collapses a non-zero last command into process exit code
-  1** (`cmd /c exit 5` → 1, both versions), so to get a concrete code let the command `exit 5` itself (POSIX
-  `sh -c` does not behave this way);
-- **Input line-ending normalisation (D74, reported on real hardware 2026-09-27)**: conhost treats Enter as
-  **CR**, so a bare LF only moves the cursor down and **does not submit the command line** — `tty_send`
-  writing `echo X\n` as the tool description says leaves the command sitting on the input line (no output,
-  no new prompt, looking like “it was sent but never ran”). For **local sessions on win32** the plugin now
-  turns a bare LF into CRLF (an existing CRLF is not doubled; non-Windows and SSH sessions pass through
-  untouched), so the documented `\n` path just works;
+  `PowerShell -Command`. **PowerShell’s `-Command` collapses a non-zero last command into process exit
+  code 1** (`cmd /c exit 5` → 1, both versions), so let the command `exit 5` itself to get a concrete code
+  (POSIX `sh -c` does not behave this way).
+- **Input line-ending normalisation (D74)**: conhost treats Enter as **CR**, so a bare LF only moves the
+  cursor down and **does not submit the command line**. For **local sessions on win32** the plugin turns a
+  bare LF into CRLF (an existing CRLF is not doubled; non-Windows and SSH sessions pass through untouched),
+  so the documented `\n` path just works.
 - **Shell integration (OSC 133/7) depends on the shell family**: the **PowerShell family is supported**
   (`powershell.exe` / `pwsh.exe`) through a stable `-File` stub that hooks `prompt` and
-  `PSConsoleHostReadLine` — this yields cwd tracking (`tty_list.cwd` following `cd`), exit codes, the
-  `running` state and command-granular `tty_expect`. **cmd is not** (it has no command-boundary hooks), so
-  the settings card greys the switch out and points at “switch the shell path to PowerShell”. **The two
-  versions differ, and the syntax hint is branched by version**: `&&` / `||` are **PowerShell 7** only —
-  on 5.1 `&&` is a parse error and not a single command runs. **Known limit (not reproduced)**: it was
-  recorded that on PowerShell 7 the command output reaches ConPTY *after* the D marker, so
-  `tty_capture{last}` may come back empty; on 2026-10-13 this was re-measured on pwsh **7.6.6** (Win11
-  ARM64) across three output shapes (20 small outputs / a 2000-line burst / 20 writes over 2s) with
-  **0/20 empty windows** — not reproduced. If you do hit one, read the tail with `tty_capture` and report
-  the pwsh version. One more **exit-code rule**: in the PowerShell family a **parse error** (`&&` on 5.1,
-  `echo (1` on both) runs nothing at all yet the D marker reports **0** — never judge success by the exit
-  code alone; the error text is in the output. The stub only loads through `-ExecutionPolicy Bypass` (process-scoped); two boundaries
-  are recorded as they are: when **Group Policy** locks the execution policy to Restricted / AllSigned that
-  parameter does **not** override GPO, so the stub fails to load and the tab opens with integration silently
-  absent (the same degradation as “the user turned PSReadLine off”); the parameter also writes the value into
-  `$Env:PSExecutionPolicyPreference`, which PowerShell processes started from that session inherit. One more
-  known side effect: wrapping `prompt` makes **the user’s original prompt see its own `$?`** as the result of
-  our writes (always true), so failure indicators that rely on `$?` stop working;
+  `PSConsoleHostReadLine` — yielding cwd tracking, exit codes, the `running` state and command-granular
+  `tty_expect`. **cmd is not** (no command-boundary hooks), so the settings card greys the switch out and
+  points at “switch the shell path to PowerShell”. **The two versions differ**: `&&` / `||` are
+  **PowerShell 7** only — on 5.1 `&&` is a parse error and not a single command runs.
+  - **Exit-code rule**: in the PowerShell family a **parse error** (`&&` on 5.1, `echo (1` on both) runs
+    nothing yet the D marker reports **0** — never judge success by the exit code alone; the error text is
+    in the output.
+  - **Two boundaries of the stub**: it only loads through `-ExecutionPolicy Bypass` (process-scoped) — when
+    **Group Policy** locks the execution policy to Restricted / AllSigned that parameter does **not**
+    override GPO, so the stub fails to load and the tab opens with integration silently absent (the same
+    degradation as “the user turned PSReadLine off”); the parameter also writes the value into
+    `$Env:PSExecutionPolicyPreference`, which PowerShell processes started from that session inherit.
+  - **Known side effect**: wrapping `prompt` makes the user’s original prompt see its own `$?` as the result
+    of our writes (always true), so failure indicators that rely on `$?` stop working.
+  - **A record not reproduced**: it was once reported that on PowerShell 7 command output reaches ConPTY
+    after the D marker and `tty_capture{last}` may come back empty; on 2026-10-13 this was re-measured on
+    pwsh **7.6.6** (Win11 ARM64) across three output shapes with **0/20 empty windows** — not reproduced.
+    If you do hit one, read the tail with `tty_capture` and report the pwsh version.
 - **Two things are not supported** (the host turns them off and the settings card explains why):
-  - **tmux persistence**: there is no tmux on Windows, so local tabs open normally but are not managed
-    (SSH into a Linux host still works);
-  - **Server status bar**: locally only CPU / memory / uptime are available (`node:os`); disk / TCP / network
-    throughput / temperature show “无” (remote **Windows** hosts go through the PowerShell hop — see the
-    status-bar section);
-- **How far this was verified**: on Windows 11 ARM a full install (`dsh plugin add @hyzyn/dsh-all`), all nine
-  plugins mounting, `dsh web` serving, and the browser half being delivered (the same artifact macOS serves;
-  size and new-code markers compared after a build rather than pinning a byte count, which changes on every
-  rebuild), plus `[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`.
-  x64 Windows is covered by the CI matrix (build / typecheck / test, see Development).
-- **End-to-end coverage (0.19.0)**: `scripts/windows-smoke.mjs` drives a real `cmd.exe` through
-  spawn → input echo → kill → respawn on the CI windows-latest runner, plus two links that only hold on
-  a real machine (W6: after normalisation a bare LF really does submit in conhost, D74; W7: a `command`
-  session that exits turns into read-only retention and `tty_capture` still reads its pre-exit output, D77).
-  **W8 (the PowerShell OSC 133/7 stage) runs on CI** (since 2026-10-13): it used to be guarded by the
-  **real-machine lane** only, because killing a ConPTY session there tripped `0xC0000374` — the root cause
-  (the same PTY being natively `kill()`ed twice) is now located and fixed, see **D100** in
-  [DEFECTS.md](./DEFECTS.md) and the 2026-10-13 section of [ROADMAP.md](./ROADMAP.md). Where no PowerShell
-  exists the stage honestly reports its own `SKIP` row (excluded from the denominator, never dressed up as
-  `12/12`). It caught and now pins a
-  Windows-only failure class: force-killing a local PTY crashed the host — node-pty rejects signals
-  on Windows, and its `_deferNoArgs` re-throws that error from a socket callback, where the caller’s
-  try/catch cannot see it.
+  **tmux persistence** (there is no tmux on Windows; local tabs open normally but are not managed — SSH into
+  a Linux host still works) and the **server status bar** (locally only CPU / memory / uptime are available
+  via `node:os`; disk / TCP / network throughput / temperature show “无”; remote **Windows** hosts go
+  through the PowerShell hop, see the status-bar section).
+
+Why no local terminal worked before 0.18.1, the landing points, how far it was verified on real hardware,
+and the W6–W8 coverage of `windows-smoke` are in the [ROADMAP § completed](./ROADMAP.md#已完成落点--门槛)
+section “Windows 宿主（0.18.1）” (Chinese).
 
 ## Agent tools
 
@@ -195,7 +169,7 @@ The plugin injects nineteen tools into the agent (operations show up live in the
 | `tty_run` | **One-shot command** (0.23.0): open a session, run `command`, wait for it to finish and return the tail output + exit code directly — collapsing “`tty_open` → wait → `tty_capture{last}` → `tty_close`” into a single call. It **closes the session once the command finishes** by default (the result is already in this call); `keep:true` leaves it in read-only retention instead. If it is still running at `timeoutSec` (1~600, default 120) it returns `running:true` and **does not kill the session** (whether to keep waiting or close it is the caller’s call). When to use this instead of the bash tool: when the user should **see** the command, or when it must run inside a terminal session; for purely non-interactive commands bash is more direct |
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0). **A command-type session (`tty_open command=` / `tty_run`) has no “previous command”** (it injects no shell-integration hooks), so `last:true` on one errors explicitly and points at `lines` (0.23.0, D87) |
-| `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
+| `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus. The text is tail-capped at 32KB: beyond that it returns `truncated:true` and the rendered text ends with a hint to use `tty_capture` for the full scrollback (only large screens full of text reach the cap) |
 | `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; **the echo of the command just sent never counts as a hit** (via the OSC 133 A..B boundary, or via the send record where there are no markers — see the next section; when only the echo ever matched, the timeout result carries `echoOnly:true`); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72; echo exclusion, see D75) |
 | `tty_send` | Send text and/or keys to a given session (such as `q` to a dev server, a menu selection, or `:wq` in vim). **Use the named `keys` for control and arrow keys** (`["C-c"]`, `["Down","Down","Enter"]` — a whitelisted lookup: an unknown name errors out instead of being silently sent as a literal), and **never hand-build escape sequences inside `data`** — `"\\x1b[B"` / `"^[[B"` get printed into the terminal as ordinary characters while the `sent` count looks identical (0.23.0); give at least one of `data`/`keys`, and when both are present `data` goes first followed by `keys` in order. End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched. On an **exited** session it fails explicitly (such sessions are read-only) |
 | `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
@@ -227,6 +201,18 @@ gate is **off** (behaviour identical to before the gate), and the startup log sa
 `tier-gate: services absent (…), per-call gate disabled`. The mechanism (decision matrix / the two-layer
 relationship with the static `allowProxyCommand` switch) lives in
 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
+
+**A confined session does not even see the tools it cannot use** (pilot, the host’s `tools.restrict`): when the
+tier is Read Only / Workspace Write, the plugin drops the Write and Execute classes above from that session’s
+**agent-scoped** tool table — the agent sees 10 tty tools instead of 19 (only the Read row remains). **The
+per-call matrix above is still the security boundary**: trimming merely removes, up front, the tools that cannot
+succeed under the current tier, saving the “try → denied → switch tool → try again” round trips; a missing name,
+or a tool registered after the session started, only affects what the model can see, not what it may do (the gate
+still denies those calls). **Full access / Auto review**, and a host that has not composed the tier services,
+**are not trimmed** (the same allow branches as the gate). The log carries
+`tier-restrict: agent <id> mode=… → tty tools 19 → 10 (denied N write/exec: …)`.
+**Current limitation**: switching tiers mid-session does not recompute the tool surface immediately (it catches up
+on the next `agent/created` or tool-set change); the per-call gate reads the live tier on every call.
 
 Typical agent flow (recommended): for a command that simply runs to completion, use `tty_run` to get its
 output + exit code in one call; for a **long-lived** session, `tty_open` opens one (pass `persistName` for tmux

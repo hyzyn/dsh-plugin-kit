@@ -189,6 +189,16 @@ export interface LlmRuntimeLike {
         signal?: AbortSignal;
     }): AsyncIterable<LlmStreamChunk>;
 }
+/**
+ * systemPrompt 段落里**实际列出**的条数上限（按 `digest.items` 的原序取前 N 条）。
+ *
+ * 注入段落的预算是「每一轮请求都发」的固定开销，而条目数是**外部可控**的（多订阅
+ * 几个源、对方一天发几十条）。按字符收口（`PROMPT_SECTION_LIMIT`）会让截断位置随
+ * 标题长度漂移：有时刚好截在一条条目中间，模型看到的是一段断头文字。所以主口径改成
+ * **按条数**：前 N 条完整列出（分类标题保留），其余在段尾指向当天的 digest 文件。
+ * `PROMPT_SECTION_LIMIT` 降级为**安全网**——只防「每条都极长」这种异常形态。
+ */
+export declare const PROMPT_ITEM_LIMIT = 8;
 export declare function digestDir(config?: Config): string;
 /** 可编辑 store（~/.dsh/rss.json）的形状；GET/POST /config 交换的就是它。 */
 export interface RssStore {
@@ -303,7 +313,10 @@ export declare function readLatestDigest(config?: Config): DigestResult | null;
  * 单独导出是为了能断言「全源失败」与「确实没有新条目」这两条**必须分开**：
  * 前者说「本次未能生成（N 个源全部抓取失败）」，后者才说「暂无新条目」——
  * 把网络故障说成「今天没有新闻」，模型会照着回答用户。
+ *
+ * `config` 只用来现算 digest 文件的路径（段尾「全文见 …」那句）：路径必须跟
+ * `digestDir` 的解析结果一致（插件配置 / `DSH_RSS_DIGEST_DIR`），不写死。
  */
-export declare function buildSystemPromptText(digest: DigestResult | null): string;
+export declare function buildSystemPromptText(digest: DigestResult | null, config?: Config): string;
 export declare function apply(ctx: Context, config?: Config): void;
 export declare const pluginName: string, pluginInject: string[] | undefined, pluginApply: (ctx: Context, config?: Config | undefined) => void;

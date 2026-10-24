@@ -9,7 +9,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyConfig } from '../src/config.js'
 import type { LoglensConfig } from '../src/config.js'
-import { CONFIG_ACTIONS, ROUTE_PREFIX, apply, inject, makeRoutes, name } from '../src/index.js'
+import { CONFIG_ACTIONS, LOGLENS_GUIDANCE, ROUTE_PREFIX, apply, inject, makeRoutes, name } from '../src/index.js'
+import { LOGLENS_TIER_CLASS } from '../src/tools.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -65,7 +66,7 @@ function makeResponse() {
   }
 }
 
-function fakeContext(options: { webServer?: boolean; settings?: Record<string, unknown> } = {}) {
+function fakeContext(options: { webServer?: boolean; settings?: Record<string, unknown>; tools?: boolean; systemPrompt?: boolean } = {}) {
   const routes: FakeRoute[] = []
   const webServer = {
     register(route: FakeRoute) {
@@ -77,16 +78,45 @@ function fakeContext(options: { webServer?: boolean; settings?: Record<string, u
     },
   }
   const webCtx = { effect: (run: () => unknown) => { run(); return () => undefined }, webServer }
+  const registeredTools: string[] = []
+  const toolsApi = {
+    register(definition: { name: string }): () => void {
+      registeredTools.push(definition.name)
+      return () => {
+        const at = registeredTools.indexOf(definition.name)
+        if (at >= 0) registeredTools.splice(at, 1)
+      }
+    },
+  }
+  const toolsCtx = { effect: (run: () => unknown) => { run(); return () => undefined }, tools: toolsApi }
+  const sections: Array<{ name: string; order?: number; text: string }> = []
+  const systemPrompt = {
+    section(options: { name: string; order?: number; text: string }): () => void {
+      sections.push(options)
+      return () => {
+        const at = sections.findIndex((item) => item.name === options.name)
+        if (at >= 0) sections.splice(at, 1)
+      }
+    },
+  }
+  const promptCtx = { effect: (run: () => unknown) => { run(); return () => undefined }, systemPrompt }
   const ctx = {
     get: (service: string) => (service === 'settings' ? options.settings : undefined),
     inject: (names: string[], callback: (value: unknown) => void) => {
       if (options.webServer === true && names.includes('webServer')) callback(webCtx)
+      if (options.tools === true && names.includes('tools')) callback(toolsCtx)
+      if (options.systemPrompt === true && names.includes('systemPrompt')) callback(promptCtx)
       return () => undefined
     },
     effect: (run: () => unknown) => { run(); return () => undefined },
     on: () => () => undefined,
   }
-  return { ctx: ctx as unknown as Context, routes }
+  return {
+    ctx: ctx as unknown as Context,
+    routes,
+    registeredTools,
+    sections,
+  }
 }
 
 /** 直接用 makeRoutes 起一条路由（read / write 由用例自己掌账，于是断言能看见落盘值）。 */
@@ -149,6 +179,88 @@ describe('插件形状与挂载日志', () => {
 
   it('动作白名单是写死的四条（别把它扩成「照单全收」）', () => {
     expect([...CONFIG_ACTIONS]).toEqual(['enabled', 'targets.add', 'targets.update', 'targets.remove'])
+  })
+})
+
+describe('注册面收窄（渐进披露 T2/T7）：工具名单随配置现算', () => {
+  it('零来源：注册表里只有 loglens_sources（其余四个调用期必然抛错，注册了就是必然报错的工具）', () => {
+    const harness = fakeContext({ tools: true })
+    apply(harness.ctx, { announce: false })
+    expect(harness.registeredTools).toEqual(['loglens_sources'])
+  })
+
+  it('有来源：五个都在（既有行为）', () => {
+    const harness = fakeContext({ tools: true })
+    apply(harness.ctx, { announce: false, targets: [{ id: 'es', kind: 'elasticsearch', label: '本地', url: 'http://127.0.0.1:9200' }] })
+    expect([...harness.registeredTools].sort()).toEqual([
+      'loglens_context', 'loglens_facets', 'loglens_fields', 'loglens_search', 'loglens_sources',
+    ])
+  })
+
+  it('只有 Loki / Docker 来源时不注册 loglens_facets（它对所有现役来源都只会抛 facetsHint）', () => {
+    const lokiOnly = fakeContext({ tools: true })
+    apply(lokiOnly.ctx, { announce: false, targets: [{ id: 'loki', kind: 'loki', label: 'L', url: 'http://127.0.0.1:3100' }] })
+    expect([...lokiOnly.registeredTools].sort()).toEqual(['loglens_context', 'loglens_fields', 'loglens_search', 'loglens_sources'])
+
+    const dockerOnly = fakeContext({ tools: true })
+    apply(dockerOnly.ctx, { announce: false, targets: [{ id: 'd', kind: 'docker', label: 'D', url: '' }] })
+    expect(dockerOnly.registeredTools).not.toContain('loglens_facets')
+  })
+
+  it('混着来：Loki + ES 时 facets 回来了（有一个可聚合来源就够）', () => {
+    const harness = fakeContext({ tools: true })
+    apply(harness.ctx, {
+      announce: false,
+      targets: [
+        { id: 'loki', kind: 'loki', label: 'L', url: 'http://127.0.0.1:3100' },
+        { id: 'es', kind: 'elasticsearch', label: 'E', url: 'http://127.0.0.1:9200' },
+      ],
+    })
+    expect(harness.registeredTools).toContain('loglens_facets')
+  })
+
+  it('分类对账不受收窄影响：LOGLENS_TIER_CLASS 仍是五项全量（闸门要能分类任何一个前缀内工具）', () => {
+    expect(Object.keys(LOGLENS_TIER_CLASS).sort()).toEqual([
+      'loglens_context', 'loglens_facets', 'loglens_fields', 'loglens_search', 'loglens_sources',
+    ])
+  })
+})
+
+describe('面向模型的公告（渐进披露 T5）：plugin:dsh-loglens section', () => {
+  it('announce 缺省（true）时注册 section：名字、顺序、文本都在', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)   // mounted 那条日志与本用例无关
+    const harness = fakeContext({ systemPrompt: true })
+    apply(harness.ctx)
+    expect(harness.sections).toHaveLength(1)
+    const section = harness.sections[0]
+    expect(section.name).toBe('plugin:dsh-loglens')
+    expect(section.order).toBe(151)
+    // 文本 ≤300 字符：section 是给每一步请求都要带的常驻面，长文案是税
+    expect(section.text.length).toBeLessThanOrEqual(300)
+  })
+
+  it('announce=false 时不注册 section（启动日志与模型公告同一颗开关）', () => {
+    const harness = fakeContext({ systemPrompt: true })
+    apply(harness.ctx, { announce: false })
+    expect(harness.sections).toHaveLength(0)
+  })
+
+  it('宿主没有 systemPrompt 服务时不抛错（老宿主）', () => {
+    const harness = fakeContext()
+    expect(() => { apply(harness.ctx) }).not.toThrow()
+  })
+
+  it('section 文本的禁区：流程与门禁可以有，内部 API 名 / 仓内文档引用 / 配置文件路径不许有', () => {
+    const text = LOGLENS_GUIDANCE
+    expect(text).not.toContain('design §')
+    expect(text).not.toContain('设计 §')
+    expect(text).not.toContain('_field_caps')
+    expect(text).not.toContain('cordis.patch.yml')
+    expect(text).not.toContain('PIT')
+    // 门禁的两句话要在：facets 的能力门、零来源时的去处
+    expect(text).toContain('loglens_sources')
+    expect(text).toContain('Elasticsearch')
+    expect(text).toContain('设置 → 插件配置 → 日志查询')
   })
 })
 

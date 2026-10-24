@@ -13,7 +13,7 @@
  * 「argv 逐字 + 结构化结果」，不需要真 docker。
  */
 import { describe, expect, it } from 'vitest'
-import { DockerApi } from '../src/docker.js'
+import { DockerApi, MAX_RESULT_LINES } from '../src/docker.js'
 import type { Runner } from '../src/docker.js'
 import type { ExecResult } from '../src/ssh-exec.js'
 
@@ -164,6 +164,52 @@ describe('logsGrep — 返回契约', () => {
   it('docker 报错走 assertOk：非零码抛「检索容器日志失败」', async () => {
     const { api } = fakeRunner('', 'No such container: gone', { code: 1 })
     await expect(api.logsGrep('app', { pattern: 'x' })).rejects.toThrow(/检索容器日志失败.*No such container/)
+  })
+})
+
+describe('logsGrep — 返回侧行闸（MAX_RESULT_LINES）', () => {
+  /** 造一份「命中多、相邻窗口互不重叠」的日志：每条命中之后隔 gap 行填充。 */
+  function manyHits(hits: number, gap: number): string {
+    const lines: string[] = []
+    for (let i = 0; i < hits; i++) {
+      lines.push(`FAIL-${String(i)}`)
+      for (let j = 0; j < gap; j++) lines.push(`fill-${String(i)}-${String(j)}`)
+    }
+    return lines.join('\n') + '\n'
+  }
+
+  /*
+   * 场景就是这道闸存在的理由：limit 上限 500 × context 上限 20 能凑出两万行——
+   * 不截，模型上下文直接被撑爆；截了又不报，模型会把「只看到前 4000 行」当成全部命中。
+   * 所以同时钉住三件事：行数截到上限、matched 仍报全量、returned 是**实际**返回行数。
+   */
+  it('limit=500 & context=20 命中 500 条：行数截到上限，matched 仍报全量', async () => {
+    const { api } = fakeRunner(manyHits(500, 40))
+    const res = await api.logsGrep('app', { pattern: 'FAIL', context: 20, limit: 500 })
+    // 窗口合并后是 20480 行（500 组 ±20 上下文的并集），远超返回侧上限
+    expect(res.scanned).toBe(20500)
+    expect(res.matched).toBe(500)
+    expect(res.lines.length).toBe(MAX_RESULT_LINES)
+    expect(res.returned).toBe(res.lines.length)
+    expect(res.truncatedForSize).toBe(true)
+    // 返回侧闸与「命中超过 limit」是两回事：命中数正好到 limit，limited 不成立
+    expect(res.limited).toBe(false)
+  })
+
+  it('小规模命中：不触发返回侧闸（truncatedForSize 为 undefined，不凭空报截断）', async () => {
+    const { api } = fakeRunner(manyHits(3, 1))
+    const res = await api.logsGrep('app', { pattern: 'FAIL', context: 1, limit: 500 })
+    expect(res.lines.length).toBeLessThan(MAX_RESULT_LINES)
+    expect(res.truncatedForSize).toBeUndefined()
+    expect(res.notes).toBeUndefined()
+  })
+
+  it('notes 给的是可执行方向：limit / context / since 三个收窄动作都在', async () => {
+    const { api } = fakeRunner(manyHits(500, 40))
+    const res = await api.logsGrep('app', { pattern: 'FAIL', context: 20, limit: 500 })
+    expect(res.notes).toBeDefined()
+    const notes = (res.notes ?? []).join('\n')
+    for (const hint of ['limit', 'context', 'since']) expect(notes, `notes 缺 ${hint} 的收窄建议`).toContain(hint)
   })
 })
 

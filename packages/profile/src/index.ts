@@ -586,7 +586,7 @@ function makeRoutes(): Array<{ kind: 'exact'; path: string; handler: RouteHandle
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const PROFILE_GUIDANCE = '本机已安装 dsh-profile-manager 插件（Profile 管理）：Web GUI 的 插件配置里有「Profile 管理」卡片，提供 DSH profile 的图形化管理（查看、创建、复制、重命名、删除、端口配置）。Profile 是 $DSH_HOME/profiles 下的独立目录，每个 profile 拥有自己的 bundle 层与补丁文件；用户提到「profile / 配置文件 / 多环境」时即指本插件，请引导用户打开设置里的 Profile 卡片操作，而不是直接修改 ~/.dsh/profiles 目录。'
+const PROFILE_GUIDANCE = '本机装有 dsh-profile-manager 插件（profile 管理）：用户提到「profile / 配置文件 / 多环境」时，引导他打开 设置 → 插件配置 → Profile 管理 卡片，别手改托管区块。'
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return

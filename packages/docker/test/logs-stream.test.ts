@@ -939,6 +939,180 @@ describe('GET /logs/stream（SSE 路由）', () => {
 })
 
 /* ------------------------------------------------------------------ *
+ * 5b. 多源单连接（`ids=a,b,c` + 分源帧）
+ *
+ * 为什么要有这一组：聚合视图从前是「每个容器一条 EventSource」，而宿主是 HTTP/1.1、
+ * 浏览器对同一源只有 6 条连接且 EventSource 永不释放——4 个服务就吃掉大半配额。
+ * 现在一条连接带多个容器，帧里靠 `id` 归位，源的收尾（source-end / source-error）
+ * 与连接的收尾（end）分开。**最大的风险面不是 happy path，而是「一个源坏了」与
+ * 「客户端走了」**：前者不许拖垮整条连接，后者不许留下孤儿 docker logs -f。
+ * ------------------------------------------------------------------ */
+
+/** `ids=web,db`：与 STREAM_PATH 同一批参数，只把 id 换成 ids。 */
+const MULTI_STREAM_PATH = '/api/dsh-docker/logs/stream?target=本机&ids=web,db&tail=50&timestamps=1'
+
+describe('GET /logs/stream?ids=…（多源单连接）', () => {
+  it('两个源各起一条 docker logs -f（argv 各自正确、tail/timestamps 一致），合帧后的帧带各自 id', async () => {
+    vi.useFakeTimers()
+    const { route } = mountPlugin()
+    const web = makeChild()
+    const db = makeChild()
+    spawnMock.mockReturnValueOnce(web).mockReturnValueOnce(db)
+    const res = makeRes()
+    const pending = route.handler(makeReq(MULTI_STREAM_PATH), res)
+
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual(['logs', '--follow', '--tail', '50', '--timestamps', 'web'])
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual(['logs', '--follow', '--tail', '50', '--timestamps', 'db'])
+
+    web.stdout.emit('data', Buffer.from('web out\n'))
+    db.stdout.emit('data', Buffer.from('db out\n'))
+    web.stderr.emit('data', Buffer.from('web err\n'))
+    // 窗口（50ms）没到：一帧都不推——两个源各攒各的窗口，合帧没有被「多源」取消
+    expect(res.frames).toEqual([])
+    await vi.advanceTimersByTimeAsync(50)
+    // stdout / stderr 两条通道各自成帧，帧里带的是**所属容器**的 id
+    expect(res.frames).toEqual([
+      sseFrame('line', { id: 'web', d: 'web out\n' }),
+      sseFrame('line', { id: 'web', e: 'web err\n' }),
+      sseFrame('line', { id: 'db', d: 'db out\n' }),
+    ])
+
+    web.emit('close', 0)
+    db.emit('close', 0)
+    await pending
+  })
+
+  it('两源自然结束：各自一条 source-end（带 id/code），之后才是 end；顺序 line → source-end → end', async () => {
+    const { route } = mountPlugin()
+    const web = makeChild()
+    const db = makeChild()
+    spawnMock.mockReturnValueOnce(web).mockReturnValueOnce(db)
+    const res = makeRes()
+    const pending = route.handler(makeReq(MULTI_STREAM_PATH), res)
+
+    web.stdout.emit('data', Buffer.from('web\n'))
+    db.stdout.emit('data', Buffer.from('db\n'))
+    web.emit('close', 0)
+    db.emit('close', 3)
+    await pending
+
+    expect(res.frames).toEqual([
+      sseFrame('line', { id: 'web', d: 'web\n' }),
+      sseFrame('source-end', { id: 'web', code: 0 }),
+      sseFrame('line', { id: 'db', d: 'db\n' }),
+      sseFrame('source-end', { id: 'db', code: 3 }),
+      // 全部源结束后才轮到整条连接的 end：code 取「最后一个非 null 的退出码」
+      sseFrame('end', { reason: 'container-exit', code: 3 }),
+    ])
+    expect(res.ended).toBe(true)
+  })
+
+  it('两源都以 null 退出：end.code 也是 null（都 null 就是 null）', async () => {
+    const { route } = mountPlugin()
+    const web = makeChild()
+    const db = makeChild()
+    spawnMock.mockReturnValueOnce(web).mockReturnValueOnce(db)
+    const res = makeRes()
+    const pending = route.handler(makeReq(MULTI_STREAM_PATH), res)
+
+    web.emit('close', null)
+    db.emit('close', null)
+    await pending
+    expect(res.frames.at(-1)).toBe(sseFrame('end', { reason: 'container-exit', code: null }))
+  })
+
+  it('一个源起不来：只发 source-error，连接不结束，另一源日志照常到达', async () => {
+    vi.useFakeTimers()
+    const { route } = mountPlugin()
+    const web = makeChild()
+    const db = makeChild()
+    spawnMock.mockReturnValueOnce(web).mockReturnValueOnce(db)
+    const res = makeRes()
+    const pending = route.handler(makeReq(MULTI_STREAM_PATH), res)
+
+    web.emit('spawn')
+    // 第二个源在 spawn 阶段就失败（docker CLI 不在 PATH / 远端拒绝）：runLocalStream 走 reject
+    db.emit('error', new Error('spawn docker ENOENT'))
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(res.frames).toEqual([
+      sseFrame('ready', {}),
+      sseFrame('source-error', { id: 'db', message: '无法执行 docker：spawn docker ENOENT' }),
+    ])
+    // 关键：坏的只是那一个源，连接**没有**被 openSseStream 收掉
+    expect(res.ended).toBe(false)
+
+    web.stdout.emit('data', Buffer.from('web still here\n'))
+    await vi.advanceTimersByTimeAsync(60)
+    expect(res.frames).toContainEqual(sseFrame('line', { id: 'web', d: 'web still here\n' }))
+
+    web.emit('close', 0)
+    await pending
+    // 报错的源 code 记 null，end 的 code 由还活着的那个源给出
+    expect(res.frames.at(-1)).toBe(sseFrame('end', { reason: 'container-exit', code: 0 }))
+    expect(res.ended).toBe(true)
+  })
+
+  it('ready 只发一帧：两源都起来也只一帧（后到的源不重发）', async () => {
+    const { route } = mountPlugin()
+    const web = makeChild()
+    const db = makeChild()
+    spawnMock.mockReturnValueOnce(web).mockReturnValueOnce(db)
+    const res = makeRes()
+    const pending = route.handler(makeReq(MULTI_STREAM_PATH), res)
+
+    // 后一个源先起来：ready 由「第一个 onStart」发，与 ids 顺序无关
+    db.emit('spawn')
+    web.emit('spawn')
+    expect(res.frames.filter((frame) => frame.startsWith('event: ready'))).toEqual([sseFrame('ready', {})])
+
+    web.emit('close', 0)
+    db.emit('close', 0)
+    await pending
+  })
+
+  it('客户端断开：两个子进程都收到 SIGTERM（不留孤儿 docker logs -f）', async () => {
+    const { route } = mountPlugin()
+    const web = makeChild()
+    const db = makeChild()
+    spawnMock.mockReturnValueOnce(web).mockReturnValueOnce(db)
+    const res = makeRes()
+    const pending = route.handler(makeReq(MULTI_STREAM_PATH), res)
+
+    res.emitClose()
+    expect(web.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(db.kill).toHaveBeenCalledWith('SIGTERM')
+
+    web.emit('close', null)
+    db.emit('close', null)
+    await pending
+    // 静默清理：不写 end / error 帧（客户端已经不在了，写了也没人收）
+    expect(res.frames).toEqual([])
+    expect(res.ended).toBe(false)
+  })
+
+  it('多源参数校验：ids= 空 → id 必填 / 33 个 → 400 且文案点明 32 / 非法条目沿用 assertRef 原文', async () => {
+    const { route } = mountPlugin()
+    const many = Array.from({ length: 33 }, (_, index) => 'c' + String(index)).join(',')
+    const cases: Array<{ url: string; pattern: RegExp }> = [
+      { url: '/api/dsh-docker/logs/stream?target=本机&ids=', pattern: /id 必填/ },
+      { url: '/api/dsh-docker/logs/stream?target=本机&ids=,,', pattern: /id 必填/ },
+      { url: '/api/dsh-docker/logs/stream?target=本机&ids=' + many, pattern: /32/ },
+      { url: '/api/dsh-docker/logs/stream?target=本机&ids=web,' + encodeURIComponent('db; rm -rf /'), pattern: /含非法字符/ },
+    ]
+    for (const item of cases) {
+      const res = makeRes()
+      await route.handler(makeReq(item.url), res)
+      expect(res.status, item.url).toBe(400)
+      expect(String(res.endBody), item.url).toMatch(item.pattern)
+      // 校验失败一律不建流：一个子进程都不许起来
+      expect(spawnMock).not.toHaveBeenCalled()
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ *
  * 5. 同源证明的桌面版分支（D32 收紧 + D139 例外）
  * ------------------------------------------------------------------ */
 

@@ -409,6 +409,51 @@ state，活动条据此显示「上次重连被拒绝：<原文>」（i18n `hint
 全断全连的风暴下仍 26ms）——卡的是**数量**，用户感觉「重连时卡」是因为那一刻已经开了
 足够多的流。
 
+### ✅ 聚合日志改成单连接多容器，docker 常驻流 4 → 1（2026-10-24 完成）
+
+**触发**：一份用户缺陷报告说 `@hyzyn/dsh-docker` 用 4 条 `EventSource` 占满浏览器
+HTTP/1.1 配额，打开「容器」面板后整页请求永久 pending。**逐条核对 0.13.3 源码后，报告
+的复现不成立**：打开面板只建 **1** 条（活动条 `/events/stream`），日志 / 统计 FOLLOW
+默认关、拉取流只在拉取时存在。但报告指向的放大器是真的：多选聚合与 Compose 项目日志
+对**每个容器各开一条** `/logs/stream`（Compose 项目页甚至没有数量上限），3 个容器 +
+事件流 = **4 条**，正好落在 D165 实测的悬崖边上；再叠上宿主自己的 SSE（`dsh-client-hmr`
+等），一条新请求就会让整页排队。报告把「重连 + 详情 + 聚合」的瞬时组合当成了稳态，
+但「4 条 docker 常驻流」确实可达。
+
+**修法（[DEFECTS.md](./DEFECTS.md) 的 D168）**：宿主 `/logs/stream` 新增 `ids=`——
+一条 SSE 里跑 N 个 `docker logs -f`，帧带 `id`，单源失败只发 `source-error`、不拖垮
+整条连接；客户端聚合 / Compose 日志改走这一条；事件流只在**列表真的在屏幕上**时建
+（详情 / 聚合 / 拉取视图断流，回来重连并补一次全量刷新）。结果：docker 面板在任何
+视图下的常驻流都是 **1 条**（列表 = 事件流；详情 = 日志或统计；聚合 / Compose = 一条
+多源流；拉取 = 一条进度流）。`streamProtocol` 升 **3**，老宿主退回「每容器一条」。
+
+**刻意不做**：不把统计 / 事件流也塞进同一条连接（它们的分帧与去重都按「一条流一个源」
+写死）；不把 `PICK_MAX` 重新绑回浏览器预算（它现在是「可读性 + SSH 8 条通道额度」的
+上限）；**多标签页那一层不在本包**——宿主自身每标签就有 2 条常驻 SSE，3 个标签页 = 6 条
+已经到悬崖，真要治本得让宿主换 WebSocket / h2 或共用一条多路复用连接。
+
+**真机复核**（2026-10-24，隔离 `DSH_HOME` + 拷 `test` profile + 假 docker CLI，真 Chrome
+与真宿主；本机 docker daemon 未运行，所以用假 CLI 供容器列表 / 事件 / 日志）。页内活动
+`EventSource` 由注入的 `EventSource` 包装器现算：
+
+| 状态 | 页内活动 EventSource | 其中属于 docker |
+|---|---|---|
+| 页面打开、面板关闭 | 2（宿主 `plugins/events` + `/api/our-free-model/events`） | 0 |
+| 打开「容器」列表 | 3 | **1**（`events/stream`） |
+| 聚合 2 个容器日志 | 3 | **1**（`logs/stream?...ids=<web>,<db>...`） |
+| 关掉面板 | 2 | 0 |
+
+聚合视图下页内 20 次 `fetch('/')`：**中位 1ms / 最大 3ms**（全部成功）。同一个连接下
+确有两个 `docker logs -f` 子进程在跑，界面按 `[web]` / `[db]` 前缀分别落行（帧里的 `id`
+派回正确）。收尾自证真实 `~/.dsh/cordis.patch.yml` 逐字节未变（`true`）。
+
+**门槛**：`test/logs-stream.test.ts` §5b 七例（多源帧带 id / `line → source-end → end`
+顺序 / 单源失败不关连接 / `ids` 校验矩阵 / 两源只发一帧 ready / 断开杀全部子进程）；
+`scripts/client-smoke.mjs` 两例（`streamProtocol` 协商 + 列表可见性判据 + 源码级接线）；
+`scripts/route-smoke.mjs` 的 `streamProtocol === 3`。**判别性已实测**：把多源分支退成
+单源（`multiSource` 恒 false）→ §5b 七例红；把事件流判据退回 `!active` 判断 → client
+smoke 的列表可见性断言红。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

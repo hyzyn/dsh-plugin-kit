@@ -31,6 +31,20 @@ const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 const PROBE_TIMEOUT_MS = 25_000;
 const MAX_JSON_BODY_BYTES = 512 * 1024;
 const MAX_TOOLS_REPORTED = 200;
+/**
+ * `reconnect` 的默认值——**具名常量而不是散在 validateReconnect 里的字面量**。
+ *
+ * 为什么单独提出来：这三个数在 README 的排障表里是**判据的一部分**（「`maxAttempts`
+ * 用完就放弃、必须重启」正是最常见的误判点），而 README 里的数字由
+ * `scripts/check-readme-facts.mjs` 现算校验。
+ *
+ * **必须 `export`**：那个闸门只收集 `export const`（`collectConstants` 的判据是
+ * 「非导出常量不是对外承诺的一部分」）。第一版写成模块内私有常量，抽不到 →
+ * 比对不到 → 闸门恒绿，改错数字也不会红（实测：把 10 改成 99 仍然「通过」）。
+ */
+export const RECONNECT_DEFAULT_INITIAL_DELAY_MS = 500;
+export const RECONNECT_DEFAULT_MAX_DELAY_MS = 30_000;
+export const RECONNECT_DEFAULT_MAX_ATTEMPTS = 10;
 /* ------------------------------------------------------------------ *
  * 公开工具名：核心 mcp-client 的命名规则（用于数「这行到底连上没有」）
  * ------------------------------------------------------------------ */
@@ -292,9 +306,9 @@ function validateReconnect(value, errors) {
     const enabled = raw.enabled === undefined ? true : raw.enabled;
     if (typeof enabled !== 'boolean')
         errors.push('reconnect.enabled 必须是布尔值');
-    const initialDelayMs = raw.initialDelayMs === undefined ? 500 : Number(raw.initialDelayMs);
-    const maxDelayMs = raw.maxDelayMs === undefined ? 30_000 : Number(raw.maxDelayMs);
-    const maxAttempts = raw.maxAttempts === undefined ? 10 : Number(raw.maxAttempts);
+    const initialDelayMs = raw.initialDelayMs === undefined ? RECONNECT_DEFAULT_INITIAL_DELAY_MS : Number(raw.initialDelayMs);
+    const maxDelayMs = raw.maxDelayMs === undefined ? RECONNECT_DEFAULT_MAX_DELAY_MS : Number(raw.maxDelayMs);
+    const maxAttempts = raw.maxAttempts === undefined ? RECONNECT_DEFAULT_MAX_ATTEMPTS : Number(raw.maxAttempts);
     if (!Number.isFinite(initialDelayMs) || initialDelayMs <= 0 || initialDelayMs > MAX_TIMER_DELAY_MS)
         errors.push('reconnect.initialDelayMs 必须是 1~' + MAX_TIMER_DELAY_MS + ' 的正数');
     if (!Number.isFinite(maxDelayMs) || maxDelayMs <= 0 || maxDelayMs > MAX_TIMER_DELAY_MS)
@@ -605,6 +619,88 @@ function evalValue(value) {
     const result = fn(process);
     return typeof result === 'string' ? result : String(result ?? '');
 }
+/* ------------------------------------------------------------------ *
+ * 求值结果的自检：别让「凭据没注入」伪装成别的错
+ * ------------------------------------------------------------------ */
+/**
+ * `!!js` 表达式里的 `process.env` 引用（点式与 `["KEY"]` 两种写法都认），带「是否被兜底」。
+ *
+ * `guarded` 判的是**引用之后紧跟的运算符**：`process.env.X ?? 'x'` / `X || 'x'` /
+ * `X ? a : b` / `X?.length` 都在缺失时给得出合法值，不该算故障；而
+ * `'Basic ' + process.env.X` 会把 undefined 直接拼进结果，才是要抓的那一类。
+ */
+const ENV_REF_PATTERN = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)|process\.env\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g;
+/** 引用之后允许的兜底运算符（`?.` 与三元 `?` 都算）。 */
+const FALLBACK_OPERATOR = /^(?:\|\||&&|\?\??)/;
+function envRefsOf(expression) {
+    const refs = [];
+    for (const match of expression.matchAll(ENV_REF_PATTERN)) {
+        const key = match[1] ?? match[2];
+        if (key === undefined)
+            continue;
+        const rest = expression.slice((match.index ?? 0) + match[0].length).trimStart();
+        refs.push({ key, guarded: FALLBACK_OPERATOR.test(rest) });
+    }
+    return refs;
+}
+/**
+ * 值里有没有「undefined 漏进来了」的证据。
+ *
+ * **只查字面量是不够的**——真机上凭据头长这样：
+ * `Basic ` + `Buffer.from('undefined' + ':' + 'undefined').toString('base64')`
+ * = `Basic dW5kZWZpbmVkOnVuZGVmaW5lZA==`，`includes('undefined')` 是 **false**（复核实测）。
+ * 所以对「方案 + base64」形态的 token 再解码看一次；裸引用求值成空串则由调用方按
+ * header 的语义补一条（空认证头同样是废的）。
+ */
+function undefinedEvidence(value, kind) {
+    if (value.includes('undefined'))
+        return true;
+    for (const token of value.split(/\s+/)) {
+        if (!/^[A-Za-z0-9+/]{8,}={0,2}$/.test(token))
+            continue;
+        if (Buffer.from(token, 'base64').toString('utf8').includes('undefined'))
+            return true;
+    }
+    return kind === 'header' && value === '';
+}
+/**
+ * 「凭据没注入」的求值自检（否则返回 undefined）。
+ *
+ * 现场（2026-10-22，真机）：桌面版 profile 里 `JENKINS_USER` / `JENKINS_AUTH` 没有注入，
+ * 拼接求值成 `Basic base64("undefined:undefined")`；服务器回 **401**，而探针当时把 401 当成
+ * 「POST 没给响应 → 回去读 SSE」，最后报一句「SSE 流已结束」——查了四轮才定位。
+ * 字符串拼接这种形态**不会抛错**，只会产出一个语法上合法的包头，所以必须在这里自检。
+ *
+ * 判据是「**未被兜底的缺失引用 + 结果里有 undefined 的证据**」两件同时成立：
+ * 只看结果会漏掉 base64 那种，只看引用会误报 `process.env.X ?? 'default'` 这类合法写法。
+ * 点名环境变量是刻意的：只报「值是 undefined」用户还得自己反推是哪几个 key。
+ */
+function unresolvedCredentialRejection(kind, label, value, expression) {
+    // 非 !!js 的静态值：只有字面量 undefined 一种可能，属于配置笔误。
+    if (expression === undefined) {
+        return value.includes('undefined') ? label + ' 的值含字面量 undefined（请检查该字段的配置）' : undefined;
+    }
+    const missing = [];
+    for (const ref of envRefsOf(expression)) {
+        if (ref.guarded)
+            continue;
+        const current = process.env[ref.key];
+        if ((current === undefined || current === '') && !missing.includes(ref.key))
+            missing.push(ref.key);
+    }
+    // 证据的来源按「有没有缺失引用」分两档：有缺失才值得解 base64 / 把空串当证据
+    // （真机那种 `Basic base64("undefined:undefined")` 只有这一档能抓到）；引用都有值时
+    // 只认字面量，避免把随机 base64 令牌恰好解码出 `undefined` 的极小概率当成故障。
+    const evidence = missing.length > 0 ? undefinedEvidence(value, kind) : value.includes('undefined');
+    if (!evidence)
+        return undefined;
+    if (missing.length > 0) {
+        return (label + ' 引用的环境变量 ' + missing.join('、') + ' 在当前宿主进程里没有值（未注入）' +
+            '——求值结果里因此出现了 undefined，服务器通常回 401。' +
+            '请在「环境变量 / 密钥管理」里确认这些键已配置，并确认它们真的写进了本 profile 的宿主进程');
+    }
+    return label + ' 的 !!js 表达式求值结果含 undefined（它引用的环境变量都有值，是表达式自身拼出来的；请检查表达式）';
+}
 /** 从累积缓冲区中切出完整 JSON-RPC 消息（支持换行分隔与 Content-Length 帧）。 */
 function pullMessages(buffer) {
     let rest = buffer;
@@ -643,8 +739,22 @@ function pullMessages(buffer) {
     return { messages, rest };
 }
 function probeStdio(config, timeoutMs) {
+    const startedAt = Date.now();
+    const env = {};
+    for (const [key, value] of Object.entries(config.env ?? {}))
+        env[key] = evalValue(value);
+    // 求值自检必须放在**创建 Promise 之前**：`finish()` 会 `clearTimeout(timer)`，而 `timer`
+    // 要到 spawn 之后才声明（`const`）。在 executor 里提前调 finish 会踩 TDZ——
+    // 复核实测：`ReferenceError: Cannot access 'timer' before initialization`，
+    // Promise 变成 reject（而不是 `{ ok: false }`），最后冒泡成路由 500。
+    for (const [key, value] of Object.entries(env)) {
+        const raw = config.env?.[key];
+        const rejection = unresolvedCredentialRejection('env', 'env.' + key, value, isJsExpr(raw) ? raw.__jsExpr : undefined);
+        if (rejection !== undefined) {
+            return Promise.resolve({ ok: false, transport: 'stdio', durationMs: Date.now() - startedAt, toolsCount: 0, error: rejection });
+        }
+    }
     return new Promise((resolve) => {
-        const startedAt = Date.now();
         let settled = false;
         let buffer = '';
         let stderrTail = '';
@@ -675,9 +785,6 @@ function probeStdio(config, timeoutMs) {
             void terminateChild(child).catch(() => { });
             resolve({ ...result, transport: 'stdio', durationMs: Date.now() - startedAt });
         };
-        const env = {};
-        for (const [key, value] of Object.entries(config.env ?? {}))
-            env[key] = evalValue(value);
         // 不能裸 spawn：Windows 上 MCP 服务器常是 `.cmd` shim（codegraph 就是），裸 spawn 会
         // 直接 `spawn … EINVAL`（Node 对 .cmd 的加固），连接测试于是永远失败并误导用户。
         // 注意与**真正的**工具加载路径的区别：那条走 DSH 核心的
@@ -819,12 +926,38 @@ async function probeHttp(config, timeoutMs) {
             accept: 'application/json, text/event-stream',
             'content-type': 'application/json',
         };
-        for (const [key, value] of Object.entries(config.headers ?? {}))
-            baseHeaders[key] = evalValue(value);
+        for (const [key, value] of Object.entries(config.headers ?? {})) {
+            const evaluated = evalValue(value);
+            // 与 probeStdio 的 env 同一道防呆：拼接出的 `Basic base64("undefined:undefined")`
+            // 是**合法**字符串，服务器只会回 401，用户看不出是自己这边没注入。
+            const undefinedInValue = unresolvedCredentialRejection('header', 'headers.' + key, evaluated, isJsExpr(value) ? value.__jsExpr : undefined);
+            if (undefinedInValue !== undefined)
+                return finish({ ok: false, toolsCount: 0, error: undefinedInValue });
+            baseHeaders[key] = evaluated;
+        }
         const withSession = (extra) => ({
             ...extra,
             ...(sessionId !== undefined ? { 'mcp-session-id': sessionId } : {}),
         });
+        /**
+         * 401 / 403 是**权威结论**，必须当场报出来。
+         *
+         * 现场（2026-10-22，真机）：凭据没注入 → `Authorization: Basic base64("undefined:undefined")`
+         * → Jenkins 回 401。旧代码把 401 当成「POST 没直接给响应」，转去开 GET SSE 流；
+         * Jenkins 对那条 GET 同样回 401（空 body），于是 `ensureSse` 拿到一个立刻结束的流，
+         * 最后抛出 **「SSE 流已结束」**——真实原因是认证失败，报出来的却是一句与认证无关的
+         * 传输层噪声，查了四轮才定位。
+         */
+        const unauthorizedError = (response) => {
+            // 直接 return 会把这条响应挂在「未读」状态：探针本身是一次性的，但反复点
+            // 「连接测试」时未消费的 body 会占着 undici 的连接，显式 cancel 掉。
+            if (response.body !== null)
+                void response.body.cancel().catch(() => { });
+            const header = response.headers.get('www-authenticate');
+            return new Error('认证失败(HTTP ' + String(response.status) + ')' +
+                (header === null ? '' : '：' + header) +
+                '；请检查该服务器的认证头配置（如 Authorization）与环境变量是否已注入');
+        };
         const ensureSse = async () => {
             if (sseReader !== undefined)
                 return;
@@ -836,6 +969,13 @@ async function probeHttp(config, timeoutMs) {
             const sid = response.headers.get('mcp-session-id');
             if (sid !== null)
                 sessionId = sid;
+            // 同上：认证失败在 GET 这条路上同样要当场报，不能等流结束。
+            if (response.status === 401 || response.status === 403)
+                throw unauthorizedError(response);
+            // GET 的 4xx/5xx 也不该被当成「流结束了」：405 在这里等价于「服务器不提供 SSE」，
+            // 继续读只会读到一段错误 body 然后报「SSE 流已结束」。
+            if (response.status >= 400)
+                throw new Error('服务器未提供 SSE 流（GET HTTP ' + response.status + '）');
             if (response.body === null)
                 throw new Error('服务器未返回 SSE 流');
             sseReader = response.body.getReader();
@@ -861,6 +1001,10 @@ async function probeHttp(config, timeoutMs) {
             const sid = response.headers.get('mcp-session-id');
             if (sid !== null)
                 sessionId = sid;
+            // 401/403 必须先于「读 body 再决定走不走 SSE」：否则这个响应会被当成
+            // 「POST 没给响应」，一路兜底到 GET SSE，最后报一句与认证无关的「SSE 流已结束」。
+            if (response.status === 401 || response.status === 403)
+                throw unauthorizedError(response);
             const contentType = response.headers.get('content-type') ?? '';
             const text = await response.text();
             if (contentType.includes('text/event-stream')) {
@@ -875,6 +1019,13 @@ async function probeHttp(config, timeoutMs) {
                 catch {
                     /* 非 JSON body，走 SSE */
                 }
+            }
+            // 仍然没拿到 JSON-RPC 响应、而状态是错误码：这是**服务器明确拒绝**，不是
+            // 「POST 没给响应」。不在这里收口就会一路兜底到 GET SSE，最后报一句与真实原因
+            // 无关的「SSE 流已结束」（404 / 500 都实测复现过，和 401 是同一个谎）。
+            if (response.status >= 400 && response.status !== 405) {
+                const detail = text.trim().replace(/\s+/g, ' ').slice(0, 160);
+                throw new Error('服务器返回 HTTP ' + response.status + (detail === '' ? '' : '：' + detail));
             }
             for (;;) {
                 const message = shiftSseMessage(sseBuffer);
@@ -931,7 +1082,13 @@ async function probeHttp(config, timeoutMs) {
         return finish({ ok: false, toolsCount: 0, error: cause === undefined || cause === '' || base.includes(cause) ? base : base + '：' + cause });
     }
 }
-async function testServer(rawConfig) {
+/**
+ * 连接测试入口（`POST /api/dsh-mcp/test` 走这里）。
+ *
+ * 导出只为单测：探测的两条关键判据（401/403 定性、凭据未注入自检）都在**网络之前**，
+ * 用用例钉住比真机截图稳定。运行期它只被路由调用。
+ */
+export async function testServer(rawConfig) {
     const validated = validateConfig(rawConfig);
     if (validated.error !== undefined) {
         const transport = rawConfig?.transport === 'streamable-http' ? 'streamable-http' : 'stdio';
@@ -1123,7 +1280,7 @@ function makeRoutes(ctx) {
 /* ------------------------------------------------------------------ *
  * 插件本体
  * ------------------------------------------------------------------ */
-const MCP_GUIDANCE = '本机已安装 dsh-mcp-config 插件（MCP 服务器配置中心）：Web GUI 的 插件配置里有「MCP 服务器配置」卡片，提供图形化管理。服务器配置保存在 ~/.dsh/cordis.patch.yml 的托管区块（auto-generated，勿手改），保存后经 HMR 热加载为 mcp__<serverName>__<tool> 工具，无需重启；支持 stdio（command/args/env/cwd）与 streamable-http（url/headers）传输、js: 前缀的环境变量/请求头表达式、连接测试、启用/停用与删除。用户提到「MCP 配置 / MCP 服务器」时即指本插件，请引导用户打开设置里的 MCP 卡片操作，而不是直接修改配置文件。';
+const MCP_GUIDANCE = '本机装有 dsh-mcp-config 插件（MCP 服务器配置）：用户提到「MCP 配置 / MCP 服务器」时，引导他打开 设置 → 插件配置 → MCP 服务器配置 卡片，别手改托管区块。';
 export function apply(ctx, config) {
     if (config?.enabled === false)
         return;

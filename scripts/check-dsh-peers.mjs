@@ -132,8 +132,32 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    包集合**只多两个**（`dsh-client-ui-deepseek-model-label-1017` / `dsh-web-deepseek-api`），
  *    均为宿主自带、不改变本仓 import 的任何包。
  *    真机复核：`live-smoke` 18/18、`verify-issue-13-14`（logs-test）16/16，均无回归。
+ *  - 0.2.1-rc.3 vs 0.2.1-rc.2（2026-10-24）：**仍是纯显式声明**——`^0.2.1-rc.2` 展开是
+ *    `>=0.2.1-rc.2 <0.3.0-0`，`semver.satisfies('0.2.1-rc.3', …, { includePrerelease: true })`
+ *    为 **true**，官方判定器实测放行；**不改任何插件运行代码**。
+ *    逐文件比对（rc.2 用 `npm install` 装一份完整依赖树，306 个宿主包逐个 `lib/`）：
+ *    **有差异的 17 个包，逐个查清后没有一处落在本仓引用面内**——
+ *      · **本仓 import 的 22 个宿主包 `lib/` 全部逐字节相同**：`cordis` / `cordis-plugin-loader` /
+ *        `cosmokit` / `dsh-agent` / `dsh-app-boot`（判定器）/ `dsh-base` / `dsh-client-locale` /
+ *        `dsh-client-ui-theme` / `dsh-credentials` / `dsh-credentials-local` / `dsh-headless` /
+ *        `dsh-launch-environment` / `dsh-mcp-client` / `dsh-sandbox` / `dsh-scope` /
+ *        `dsh-session-query` / `dsh-settings` / `dsh-system-prompt` / `dsh-tools` /
+ *        `dsh-user-approval` / `dsh-web-app` / `schemastery`；
+ *      · 有差异的 17 个包全是**本仓零引用**的：`dsh-api-remotes`（`lib/client.js`）、
+ *        `dsh-api-session-controller`（`.d.ts`）、`dsh-client-modules`（`lib/index.js`）、
+ *        `dsh-client-product-analytics`（新增 `typert.*` 与 events `.d.ts`）、
+ *        `dsh-client-ui-agent-preset` / `-conversation` / `-plugin-manager` /
+ *        `-settings-account` / `-settings-general` / `-sidebar` / `-sidebar-right` / `-workspace`
+ *        （客户端产物与槽 `.d.ts`）、`dsh-cordis-client-runner`（`client.js`）、
+ *        `dsh-llm-deepseek` / `-account` / `-api-key`（LLM 目录：新增
+ *        `listed-catalog` / `listing-cache` / `resolve-catalog` 等 `.d.ts`）、
+ *        `dsh-tool-cordis`（`api-catalog.js`）。
+ *    `cordis` / `schemastery` 仍是 **4.0.5 / 3.18.5**（与第六~八档同一对）。
+ *    包集合 306 → 306：只多一个 `dsh-client-ui-entry-customization`（宿主自带、本仓不引用），
+ *    同时少掉的 `dsh` 是打包形状差异（rc.2 那份带 CLI 包、rc.3 的不带），不是删除。
+ *    ⇒ 结论：这一档对宿主行为**零影响**，加档只是把「适配到哪一档就写到哪一档」落全。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

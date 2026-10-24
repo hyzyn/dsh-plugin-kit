@@ -344,11 +344,49 @@ describe('游标路径（pagination=cursor）', () => {
 })
 
 describe('错误与超时', () => {
-  it('非 2xx 把状态码与 Loki 的 error 文案一起报出来', async () => {
+  it('非 2xx 把状态码与 Loki 的 error 文案一起报出来；5xx 不缀配置方向的下一步（渐进披露 T8）', async () => {
     const fake = await startFakeLoki(() => ({ status: 500, body: { error: 'boom' } }))
     const backend = createLokiBackend()
-    await expect(backend.query(normalized(backend, { targetId: 'loki', from: FROM, to: NOW }), fake.target))
-      .rejects.toThrow('[loki] HTTP 500：boom')
+    const message = await backend.query(normalized(backend, { targetId: 'loki', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('[loki] HTTP 500：boom')
+    // 5xx 是后端自己的故障：别把「凭据 / 权限 / 索引」这类配置方向说成原因
+    expect(message).not.toContain('凭据')
+    expect(message).not.toContain('权限')
+    expect(message).not.toContain('索引或路径')
+  })
+
+  it('401 补「凭据」的下一步（渐进披露 T8）', async () => {
+    const fake = await startFakeLoki(() => ({ status: 401, body: { error: 'unauthorized' } }))
+    const backend = createLokiBackend()
+    const message = await backend.query(normalized(backend, { targetId: 'loki', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('HTTP 401')
+    expect(message).toContain('凭据')
+  })
+
+  it('正文仍截在 200 字（下一步缀在正文之后，不放宽既有上限）', async () => {
+    // 同 elastic 侧：提示是追加在正文后面的，正文那一刀的 200 字上限原样保留
+    const fake = await startFakeLoki(() => ({ status: 401, raw: 'x'.repeat(500) }))
+    const backend = createLokiBackend()
+    const message = await backend.query(normalized(backend, { targetId: 'loki', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('x'.repeat(200) + '…')
+    expect(message).not.toContain('x'.repeat(201))
+    expect(message).toContain('凭据')
+  })
+
+  it('连接失败补「地址与网络是否可达」的下一步（渐进披露 T8）', async () => {
+    // 起一个服务器再关掉：拿一个**确定没人监听**的回环端口（比挑死端口可靠）
+    const dead = createServer()
+    await new Promise<void>((resolve) => { dead.listen(0, '127.0.0.1', () => { resolve() }) })
+    const port = (dead.address() as AddressInfo).port
+    await new Promise<void>((resolve) => { dead.close(() => { resolve() }) })
+    const backend = createLokiBackend()
+    await expect(backend.query(
+      normalized(backend, { targetId: 'loki', from: FROM, to: NOW }),
+      { id: 'loki', kind: 'loki', label: '死端口', url: 'http://127.0.0.1:' + String(port) },
+    )).rejects.toThrow('地址与网络是否可达')
   })
 
   it('响应不是 JSON 时说清楚', async () => {

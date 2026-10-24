@@ -6,7 +6,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { auditCapabilityUse, audited } from './audit.js';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
-import { auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGranted, capabilityGrantVia, capabilityPaths, createElevationManager, dshHome, sharedGrantStore, } from '@hyzyn/dsh-kit';
+import { auditLoadedGrants, attachTierGate, attachTierRestrict, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGranted, capabilityGrantVia, capabilityPaths, createElevationManager, dshHome, sharedGrantStore, } from '@hyzyn/dsh-kit';
 /*
  * 档位闸的分类表（docs/permission-tier-plan.md §2.1）：`read` 纯读 / 固定二进制探测
  * （docker_connect_local 不在能力开关里，见 connectLocal 的注释）；`write` 容器与镜像的变更
@@ -101,6 +101,86 @@ const KNOWN_CONFIG_KEYS = new Set([
     'hostKeysRemove',
 ]);
 /* ------------------------------------------------------------------ *
+ * 列表分页（docker_ps / docker_images / docker_networks / docker_volumes 共用口径）
+ * ------------------------------------------------------------------ */
+/**
+ * 一页的默认条数与上限。与 `docker_attention` 的 `limit` **同口径**（1~500 / 默认 100）：
+ * 「一页多少条」跨工具必须是同一个数，否则模型每换一个列表工具都要重新试一遍。
+ *
+ * 为什么在**插件侧**切而不是交给 docker CLI 的 `-n` / `--filter`：`listContainers` /
+ * `images` / `networks` / `volumes` 的返回契约是「该目标的完整列表」（面板、详情页、公告
+ * 都依赖它），在这里切不改那条契约。也**不解决**单条命令 512KB（`maxOutputKb`）的物理
+ * 上限——超了照旧抛错（见 `assertComplete`）；分页解决的是「结果长到模型读不下去」。
+ */
+const PAGE_DEFAULT_LIMIT = 100;
+const PAGE_MAX_LIMIT = 500;
+/**
+ * 分页参数的**唯一**归一化点：缺省 / 非整数落到默认值，越界**夹紧**而不是报错
+ * （参数 DSL 没有 minimum/maximum，夹紧是这里唯一能保证的语义）。
+ */
+function pageWindow(input) {
+    const limit = typeof input.limit === 'number' && Number.isInteger(input.limit)
+        ? Math.min(Math.max(input.limit, 1), PAGE_MAX_LIMIT)
+        : PAGE_DEFAULT_LIMIT;
+    const offset = typeof input.offset === 'number' && Number.isInteger(input.offset) && input.offset > 0
+        ? input.offset
+        : 0;
+    return { limit, offset };
+}
+/** 切页的**唯一**实现：`total > offset + limit` 就是「还有下一页」（与 render 的提示同源）。 */
+function paginate(rows, window) {
+    const total = rows.length;
+    return {
+        rows: rows.slice(window.offset, window.offset + window.limit),
+        total,
+        truncated: total > window.offset + window.limit,
+    };
+}
+/** 分页参数的注册表（四条列表共用；与 `docker_attention` 的 limit 描述同款口径）。 */
+const pageParams = {
+    limit: { type: 'number', description: '本页最多返回多少条（1~500，默认 100）' },
+    offset: { type: 'number', description: '跳过前多少条（默认 0）；翻页时传上一页提示里给出的 offset' },
+};
+/**
+ * 由返回值 + **入参**拼出 render 用的分页上下文。
+ *
+ * offset 读的是入参（`execute` 已经用同一个 `pageWindow` 归一化过一遍）——这里只读不写，
+ * 也不新增第二个「当前页从哪开始」的真相源。
+ */
+function listPage(args, total, truncated) {
+    if (total === undefined)
+        return undefined;
+    const { offset } = pageWindow((args ?? {}));
+    return { total, offset, truncated };
+}
+/**
+ * 「怎么拿更多」的**唯一**话术（四条列表 render 共用）：只在真的还有下一页时出现。
+ *
+ * 给的是调用方**下一次调用就能用**的参数。不要写成「请调大 maxOutputKb」——agent 改不了
+ * 插件设置，这种话术等于把问题丢回给它自己（D105 的判据在这里同样成立）。
+ */
+function pagingNote(page, shown) {
+    if (page === undefined || page.truncated !== true || page.total <= shown)
+        return '';
+    return `\n\n共 ${String(page.total)} 条，本页显示 ${String(shown)} 条：继续用 \`offset=${String(page.offset + shown)}\`，或加 \`limit\`（上限 ${String(PAGE_MAX_LIMIT)}）`;
+}
+/** 列表头：分页时同时给「共 N 个」与「本页 M 个」——只报一页的条数会被当成全部。 */
+function listHead(noun, target, page, shown) {
+    return page !== undefined && page.total !== shown
+        ? `目标 ${target} 的${noun}（共 ${String(page.total)} 个，本页 ${String(shown)} 个）：`
+        : `目标 ${target} 的${noun}（${String(shown)} 个）：`;
+}
+/**
+ * 空页的两种成因必须分得开：真的没有条目，还是 `offset` 越过了末页。
+ * 后者不说清楚，模型会把「翻过头了」当成「这台机器上没有镜像」——D12/D42 那类假阴性。
+ */
+function emptyListText(noun, target, page) {
+    if (page !== undefined && page.total > 0 && page.offset > 0) {
+        return `目标 ${target} 的${noun}共 ${String(page.total)} 个，offset=${String(page.offset)} 已越过末页（改用更小的 offset 重试）。`;
+    }
+    return `目标 ${target}：没有${noun}。`;
+}
+/* ------------------------------------------------------------------ *
  * 常量
  * ------------------------------------------------------------------ */
 const ROUTE_PREFIX = '/api/dsh-docker';
@@ -182,8 +262,14 @@ function isTargetFailure(error) {
  * 一旦退回「…docker exec，都需要…才有对应工具与按钮」的笼统说法，就是在**声称一条不成立的
  * 安全性质**（2026-10-07 用户正是照着旧措辞问「这算是漏洞吗」）。守卫：
  * `scripts/test/exec-terminal-scope.test.ts`（含「退回旧措辞必须变红」的反例）。
+ *
+ * ⚠️ **零目标时注册面只剩两条工具**（`ZERO_TARGET_TOOLS`），公告必须给出那条出路：
+ * 否则 `docker_targets` 描述里「其他 docker_* 工具的 target 参数取自这里」指向的是一批
+ * **此刻并不存在**的工具，模型只能原地打转。那句话放在「target 传 `*`…」**之前**——
+ * 先解决空态，再讲通配（通配对空态毫无用处）。守卫：`test/announcement.test.ts`
+ * （含「删掉那句必须变红」的反例）。
  */
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、**一次性** docker exec（docker_exec 工具与容器详情抽屉「概览」页签的一次性命令框），都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮；「允许 exec」**只管这条一次性通道**——卡片上的「终端」按钮跑的是 `docker exec -it` 交互式 shell，由 tty 终端面板承载、**不受它门控**（只读模式下也能用），别把它当成被关着。agent 侧配套只读工具 docker_targets（列目标；没有任何目标时先调 docker_connect_local 一键加上本机目标）、docker_connect_local（把宿主所在机器加成本机目标并选中，复用已有的本机目标、不重复创建；顺带探测 daemon，失败会说明是 daemon 未启动 / CLI 缺失 / socket 无权访问）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照，支持 since/until 时间窗）、docker_logs_grep（**日志服务端检索**：在全量历史里找关键词/异常码/请求 ID，可配 since/until 圈时间窗，返回命中行 + 上下文并如实报告 matched/scanned——「报错不在最近尾部」时用它，别拿 docker_logs 的 5000 行硬赌）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs（报错通常在尾部；尾部看不到成因就用 docker_logs_grep 带 pattern/since/until 检索深处）→ docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件：Web GUI 侧边栏「容器」入口即其面板，目标含本机 / SSH 主机。**默认只读**：启动/停止/重启/删除容器、删除镜像/清理 dangling/拉取镜像、**一次性** docker exec（docker_exec 工具与面板命令框），都需要用户在设置里打开「允许变更操作」「允许 exec」才有对应工具；「允许 exec」只管这条一次性通道——卡片「终端」按钮的 docker exec -it 由 tty 承载、**不受它门控**，只读模式下也能用；网络/卷的增删只在面板。**一个目标都没有时先 `docker_connect_local` 加上本机目标**。target 传 `*` 只有 docker_ps / docker_attention 支持，其余必须给具体目标。排障：不确定从哪看先 docker_attention（可 `*`）→ docker_ps → docker_logs（报错在尾部）→ 尾部看不到成因再用 docker_logs_grep（pattern + since/until 检索深处）→ docker_inspect / docker_stats。docker socket 等价目标主机 root 权限，用户没明确要求别做变更。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
@@ -197,6 +283,15 @@ const SSE_HEARTBEAT_MS = 15_000;
 const SSE_COALESCE_MS = 50;
 /** 单个通道攒到这个字节数就立刻推一帧：不让一个大 chunk 在窗口里多等一个周期。 */
 const SSE_COALESCE_MAX_BYTES = 256 * 1024;
+/**
+ * 一条日志流最多能带多少个源（`ids=` 的**防御性上限**）。
+ *
+ * 每个源都是**一条真的 `docker logs -f`**：本机一个子进程、SSH 一条 channel，外加
+ * 各自的合帧缓冲。而 `ids` 来自 URL，是客户端可控的量——不设上限时拼一千个条目就能
+ * 让宿主一口气起一千个进程（这条流是只读能力，不该成为放大攻击的入口）。32 远高于
+ * 「一个 Compose 项目全选」的实际需要，正常视图碰不到它。
+ */
+const MAX_LOGS_SOURCES = 32;
 /**
  * SSE 分片合帧器（D151）：把「一个 stdout chunk 一帧」压成「一个窗口一帧」。
  *
@@ -574,6 +669,16 @@ const CAPABILITIES = new Map([
     ['allowMutations', CAP_MUTATIONS],
     ['allowExec', CAP_EXEC],
 ]);
+/**
+ * 零目标时仍然注册的工具——**空态的唯一出路**。
+ *
+ * 其余每个工具都必须寻址到一个目标（省略 `target` 时回落「唯一目标」，多目标则必填），
+ * 一条目标都没有时它们注册了也只会让模型白试一次、拿到「尚未配置任何 Docker 目标」再
+ * 回头调 `docker_targets`；而这两条正是让空态可解释、可自救的入口：一条看有哪些目标，
+ * 一条一键加本机。名单之外的 `add()` 在 `live.targets` 为空时直接跳过（见 refreshTools），
+ * 配好目标后由 applySection 按目标变化**补注册**，不需要重启。
+ */
+const ZERO_TARGET_TOOLS = new Set(['docker_targets', 'docker_connect_local']);
 /** 未启用时的文案：没授权要说清「怎么授权」，授权了只是没开就说「去开开关」。 */
 function mutationsOffMessage() {
     return capabilityGranted(CAP_MUTATIONS)
@@ -1320,8 +1425,14 @@ const plugin = definePlugin({
                  * 所以把版本放在这里：客户端读到 <2 就退回旧判据（响应头就算连上），读到 2 才只认
                  * `ready`。字段缺失（更老的宿主）由客户端按「发 ready」以外的规则兜底，见
                  * client-src/index.js 的 hostSendsReadyFrame。
+                 *
+                 * 3 = `/logs/stream` 支持多容器单连接（`ids=` + 带 `id` 的分源帧 + source-end /
+                 * source-error）。为什么必须再升一版：聚合视图要据此决定「一条连接带全部容器」还是
+                 * 「每个容器各开一条 EventSource」——判定错了，新客户端会去解析老宿主永远不发的事件，
+                 * 而老客户端拿到多源帧也认不出 `id`（它只读 `d` / `e`，会把几个容器的行混成一本账）。
+                 * **≥2 的 ready 语义不变**，新增的是同一条流里的源维度。
                  */
-                streamProtocol: 2,
+                streamProtocol: 3,
             };
         };
         /* ---------- 活跃 SSE 长流清点 ---------- */
@@ -1637,14 +1748,17 @@ const plugin = definePlugin({
             if (before.enabled !== live.enabled || before.dockerBin !== live.dockerBin || !sameTargets(before.targets, live.targets) || mutationsRevoked) {
                 closeAllStreams();
             }
-            // 工具注册面只受启用态 / 能力开关影响；dockerBin 不改变工具清单但影响执行，
+            // 工具注册面受启用态 / 能力开关 / **目标列表**影响；dockerBin 不改变工具清单但影响执行，
             // 一起重注册是幂等的，保守带上。forceRefreshTools 给「保存路径」用：上一次注册
             // 可能只成功了一部分，重存同一份配置也要能重试（D107）。
+            // 目标列表必须算进来：零目标时只注册两条空态工具（见 ZERO_TARGET_TOOLS），配好目标后
+            // 不在这里补注册，就得等重启——那正是「配了目标、工具却没有」的那个半吊子状态。
             if (options?.forceRefreshTools === true
                 || before.enabled !== live.enabled
                 || before.dockerBin !== live.dockerBin
                 || before.allowMutations !== live.allowMutations
-                || before.allowExec !== live.allowExec) {
+                || before.allowExec !== live.allowExec
+                || !sameTargets(before.targets, live.targets)) {
                 refreshTools();
             }
             if (before.enabled !== live.enabled || before.announceToAgent !== live.announceToAgent) {
@@ -1704,17 +1818,27 @@ const plugin = definePlugin({
             return `\n- ${row.name} [${row.state}]${health} image=${row.image}${ports}${compose} id=${row.id}`;
         };
         /** 跨目标容器渲染：按目标分组，失败的目标单独一行说明（部分成功也要可读）。 */
-        const renderAggregatedContainers = (groups) => {
+        const renderAggregatedContainers = (groups, args) => {
             if (groups.length === 0)
                 return '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板）。';
-            const total = groups.reduce((sum, group) => sum + (group.containers?.length ?? 0), 0);
+            // 「共 N 个容器」要说总数而不是本页条数：分页后两者不是一回事，混用会把一页当全部
+            const total = groups.reduce((sum, group) => sum + (group.total ?? group.containers?.length ?? 0), 0);
             const failed = groups.filter((group) => !group.ok);
             const head = `所有目标共 ${String(total)} 个容器（${String(groups.length)} 个目标${failed.length > 0 ? `，${String(failed.length)} 个不可达` : ''}）：`;
             return head + groups.map((group) => {
                 if (!group.ok)
                     return `\n\n■ ${group.target}（${group.label}）— 不可用：${group.error ?? '未知错误'}`;
                 const rows = group.containers ?? [];
-                return `\n\n■ ${group.target}（${group.label}）— ${String(rows.length)} 个容器` + rows.map(renderPsRow).join('');
+                /*
+                 * 空页的两种成因同样要分开（与单目标的 `emptyListText` 同口径）：offset 翻过头时
+                 * 若照抄「— 0 个容器」，模型会当成「这台主机上没有容器」——正是 D12/D42 那类假阴性。
+                 */
+                if (rows.length === 0 && (group.total ?? 0) > 0) {
+                    return `\n\n■ ${group.target}（${group.label}）— 本页没有条目（共 ${String(group.total)} 个，offset 已越过末页，改用更小的 offset 重试）`;
+                }
+                // 每组的截断信号单独给（组数不变、组内切页）：某台主机还有下一页时要说出来
+                const note = pagingNote(listPage(args, group.total, group.truncated === true), rows.length);
+                return `\n\n■ ${group.target}（${group.label}）— ${String(rows.length)} 个容器${note}` + rows.map(renderPsRow).join('');
             }).join('');
         };
         const ATTENTION_LABEL = {
@@ -1759,10 +1883,10 @@ const plugin = definePlugin({
                 }).join('');
             }).join('');
         };
-        const renderContainers = (target, rows) => {
+        const renderContainers = (target, rows, page) => {
             if (rows.length === 0)
-                return `目标 ${target}：没有容器。`;
-            return `目标 ${target} 的容器（${String(rows.length)} 个）：` + rows.map(renderPsRow).join('');
+                return emptyListText('容器', target, page);
+            return listHead('容器', target, page, rows.length) + rows.map(renderPsRow).join('') + pagingNote(page, rows.length);
         };
         const renderStats = (target, rows) => {
             if (rows.length === 0)
@@ -1795,29 +1919,29 @@ const plugin = definePlugin({
                 lines.push(`- 最近健康检查：${detail.healthLogTail}`);
             return lines.join('\n');
         };
-        const renderNetworks = (target, rows) => {
+        const renderNetworks = (target, rows, page) => {
             if (rows.length === 0)
-                return `目标 ${target}：没有网络。`;
-            return `目标 ${target} 的网络（${String(rows.length)} 个）：` + rows.map((row) => {
+                return emptyListText('网络', target, page);
+            return listHead('网络', target, page, rows.length) + rows.map((row) => {
                 const internal = row.internal === true ? ' internal=true' : '';
                 return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${internal} id=${row.id}`;
-            }).join('');
+            }).join('') + pagingNote(page, rows.length);
         };
-        const renderVolumes = (target, rows) => {
+        const renderVolumes = (target, rows, page) => {
             if (rows.length === 0)
-                return `目标 ${target}：没有卷。`;
-            return `目标 ${target} 的卷（${String(rows.length)} 个）：` + rows.map((row) => {
+                return emptyListText('卷', target, page);
+            return listHead('卷', target, page, rows.length) + rows.map((row) => {
                 const mount = row.mountpoint === undefined || row.mountpoint === '' ? '' : ` mount=${row.mountpoint}`;
                 return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${mount}`;
-            }).join('');
+            }).join('') + pagingNote(page, rows.length);
         };
-        const renderImages = (target, rows) => {
+        const renderImages = (target, rows, page) => {
             if (rows.length === 0)
-                return `目标 ${target}：没有镜像。`;
-            return `目标 ${target} 的镜像（${String(rows.length)} 个）：` + rows.map((row) => {
+                return emptyListText('镜像', target, page);
+            return listHead('镜像', target, page, rows.length) + rows.map((row) => {
                 const created = row.createdSince === undefined || row.createdSince === '' ? '' : ' (' + row.createdSince + ')';
                 return `\n- ${row.reference} ${row.sizeText}${created} id=${row.id}`;
-            }).join('');
+            }).join('') + pagingNote(page, rows.length);
         };
         /** 镜像详情 + 构建历史（agent 工具 docker_image_inspect 的可读渲染）。 */
         const renderImageDetail = (payload) => {
@@ -1877,6 +2001,13 @@ const plugin = definePlugin({
              */
             const failures = [];
             const add = (toolName, definition) => {
+                /*
+                 * 零目标闸（见 ZERO_TARGET_TOOLS）：其余工具没有可寻址的目标，注册了只会让模型
+                 * 白试一次；放在 add 里过滤，是为了保住注册顺序、失败汇总与 registeredNames 的
+                 * 实况语义（它们仍然是「这次真正注册了什么」的如实记录）。
+                 */
+                if (live.targets.length === 0 && !ZERO_TARGET_TOOLS.has(toolName))
+                    return;
                 try {
                     toolDisposers.push(tools.register(definition));
                     registeredNames.push(toolName);
@@ -1996,6 +2127,8 @@ const plugin = definePlugin({
                 parameters: {
                     target: { type: 'string', description: '目标名；传 `*` 或省略（仅一个目标时）表示当前目标/全部目标（docker_targets 列出）' },
                     all: { type: 'boolean', description: 'true 时包含已停止容器（默认 false）' },
+                    limit: pageParams.limit,
+                    offset: pageParams.offset,
                 },
                 output: {
                     schema: {
@@ -2003,6 +2136,8 @@ const plugin = definePlugin({
                         additionalProperties: false,
                         properties: {
                             target: { type: 'string' },
+                            total: { type: 'number' },
+                            truncated: { type: 'boolean' },
                             containers: {
                                 type: 'array',
                                 items: {
@@ -2032,6 +2167,9 @@ const plugin = definePlugin({
                                         label: { type: 'string', required: true },
                                         ok: { type: 'boolean', required: true },
                                         error: { type: 'string' },
+                                        // 组内分页（T1）：组数不变、每组各自切，所以 total / truncated 也在组上
+                                        total: { type: 'number' },
+                                        truncated: { type: 'boolean' },
                                         containers: {
                                             type: 'array',
                                             items: {
@@ -2056,15 +2194,16 @@ const plugin = definePlugin({
                             },
                         },
                     },
-                    render: (_args, value) => {
+                    render: (args, value) => {
                         const v = value;
                         if (Array.isArray(v.groups))
-                            return [{ type: 'text', text: renderAggregatedContainers(v.groups) }];
-                        return [{ type: 'text', text: renderContainers(v.target ?? '?', v.containers ?? []) }];
+                            return [{ type: 'text', text: renderAggregatedContainers(v.groups, args) }];
+                        return [{ type: 'text', text: renderContainers(v.target ?? '?', v.containers ?? [], listPage(args, v.total, v.truncated === true)) }];
                     },
                 },
                 async execute(args) {
                     const input = (args ?? {});
+                    const window = pageWindow(input);
                     const isAll = typeof input.target === 'string' && input.target.trim() === '*';
                     const toRow = (row) => ({
                         // 短 ID（D47）：docker_attention 已是 shortId，同一字段跨工具宽度要一致
@@ -2085,14 +2224,23 @@ const plugin = definePlugin({
                     if (isAll || (input.target === undefined && targetsNow().length > 1)) {
                         const names = targetsFor('*');
                         const collected = await aggregateAcrossTargets(names, (targetApi) => targetApi.listContainers(input.all === true));
+                        // 跨目标分页在**组内**切（T1）：组数与「哪些目标不可达」都保持不变，
+                        // 每组带自己的 total / truncated —— 否则一个目标 150 个容器会把别组挤没
                         return {
-                            groups: collected.map((group) => ({
-                                target: group.target,
-                                label: group.label,
-                                ok: group.ok,
-                                ...(group.error === undefined ? {} : { error: group.error }),
-                                ...(group.data === undefined ? {} : { containers: group.data.map(toRow) }),
-                            })),
+                            groups: collected.map((group) => {
+                                const paged = group.data === undefined ? undefined : paginate(group.data, window);
+                                return {
+                                    target: group.target,
+                                    label: group.label,
+                                    ok: group.ok,
+                                    ...(group.error === undefined ? {} : { error: group.error }),
+                                    ...(paged === undefined ? {} : {
+                                        containers: paged.rows.map(toRow),
+                                        total: paged.total,
+                                        truncated: paged.truncated,
+                                    }),
+                                };
+                            }),
                         };
                     }
                     const picked = pickTarget(input.target);
@@ -2102,7 +2250,8 @@ const plugin = definePlugin({
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                     const containers = await api.listContainers(input.all === true);
-                    return { target: picked.name, containers: containers.map(toRow) };
+                    const paged = paginate(containers, window);
+                    return { target: picked.name, containers: paged.rows.map(toRow), total: paged.total, truncated: paged.truncated };
                 },
             }));
             add('docker_attention', defineTool({
@@ -2331,7 +2480,15 @@ const plugin = definePlugin({
                     },
                     render: (_args, value) => {
                         const v = value;
-                        const head = `容器 ${v.id ?? '?'}（目标 ${v.target ?? '?'}）日志${v.truncated === true ? '（输出已截断）' : ''}：\n\n`;
+                        /*
+                         * 截断时要给出**下一步**（D105 的判据）：只说「已截断」等于告诉模型「没有别的办法」。
+                         * 三种可执行做法按代价排序：更小的 tail（最省）→ since/until 圈窗 → 换用
+                         * docker_logs_grep 到深处检索（它扫全历史、只有返回侧才截）。
+                         */
+                        const cut = v.truncated === true
+                            ? '（输出已截断，已丢弃最旧的行：可传更小的 `tail`、加 `since`/`until` 圈时间窗，或改用 `docker_logs_grep` 带 pattern 检索深处）'
+                            : '';
+                        const head = `容器 ${v.id ?? '?'}（目标 ${v.target ?? '?'}）日志${cut}：\n\n`;
                         return [{ type: 'text', text: head + (v.text === undefined || v.text === '' ? '(无日志)' : v.text) }];
                     },
                 },
@@ -2362,7 +2519,7 @@ const plugin = definePlugin({
                 name: 'docker_logs_grep',
                 // 只读工具：与同轮其它工具并发执行（同 docker_logs）
                 isConcurrencySafe: () => true,
-                description: '在容器日志里做**服务端检索**：扫全部历史（可用 since/until 圈时间窗），返回命中行及其前后 context 行。与 docker_logs 的分工：报错就在最近尾部 → docker_logs（更便宜）；埋在大量日志深处 / 找关键词、异常码、请求 ID / 特定时间段 → 本工具。默认字面子串匹配（grep -F 语义，零 ReDoS）；regexp=true 才按 JS 正则解释。返回如实报告 matched（总命中数，即使没返回）/ scanned（扫描行数）/ limited / truncated——「只扫到这些」与「扫完了没更多」是可区分的。',
+                description: '在容器日志里做**服务端检索**：扫全部历史（可用 since/until 圈时间窗），返回命中行及其前后 context 行。与 docker_logs 的分工：报错就在最近尾部 → docker_logs（更便宜）；埋在大量日志深处 / 找关键词、异常码、请求 ID / 特定时间段 → 本工具。默认字面子串匹配（grep -F 语义，零 ReDoS）；regexp=true 才按 JS 正则解释。返回如实报告 matched（总命中数，即使没返回）/ scanned（扫描行数）/ limited / truncated——「只扫到这些」与「扫完了没更多」是可区分的。返回行数另有上限（4000）：超了截到上限并给 truncatedForSize 与 notes（缩小 limit / 减小 context / 加 since·until），matched 仍报全量。',
                 parameters: {
                     target: targetParam,
                     id: { type: 'string', required: true, description: '容器名或 ID' },
@@ -2388,6 +2545,10 @@ const plugin = definePlugin({
                             returned: { type: 'number', required: true },
                             limited: { type: 'boolean' },
                             truncated: { type: 'boolean' },
+                            // 返回侧行闸的两位：与后端 LogGrepResult 同步声明（additionalProperties:false，
+                            // 漏声明会被宿主校验挡掉整条结果）——见 src/docker.ts 的 MAX_RESULT_LINES。
+                            truncatedForSize: { type: 'boolean' },
+                            notes: { type: 'array', items: { type: 'string' } },
                             contextLines: { type: 'number', required: true },
                             lines: {
                                 type: 'array',
@@ -2413,6 +2574,9 @@ const plugin = definePlugin({
                             notes.push(`命中超过上限，只返回前几组窗口（总命中 ${String(v.matched ?? 0)}，可加大 limit 或缩小时间窗）`);
                         if (v.truncated === true)
                             notes.push('扫描输出超过字节上限，最旧部分未参与检索（窗口偏新；请缩小 since/until）');
+                        // 返回侧行闸：收窄建议由后端（notes）给出，这里只负责展示，免得两处各写一份
+                        if (v.truncatedForSize === true)
+                            notes.push(...(v.notes ?? ['返回行数超过上限，已截断']));
                         const head = `容器 ${v.id ?? '?'}（目标 ${v.target ?? '?'}）日志检索：扫描 ${String(v.scanned ?? 0)} 行，命中 ${String(v.matched ?? 0)} 行，返回 ${String(v.returned ?? 0)} 行（含 ±${String(v.contextLines ?? 0)} 行上下文）${notes.length > 0 ? `——${notes.join('；')}` : ''}：\n\n`;
                         const body = (v.lines ?? []).map((line) => `${String(line.seq ?? '?').padStart(6, ' ')} ${line.hit === true ? '>' : ' '} [${line.stream ?? 'out'}] ${line.text ?? ''}`).join('\n');
                         return [{ type: 'text', text: head + (body === '' ? '(无命中)' : body) }];
@@ -2450,6 +2614,8 @@ const plugin = definePlugin({
                         returned: result.returned,
                         ...(result.limited ? { limited: true } : {}),
                         ...(result.truncated ? { truncated: true } : {}),
+                        ...(result.truncatedForSize ? { truncatedForSize: true } : {}),
+                        ...(result.notes === undefined ? {} : { notes: result.notes }),
                         contextLines: result.contextLines,
                         lines: result.lines.map((line) => ({
                             seq: line.seq,
@@ -2603,13 +2769,21 @@ const plugin = definePlugin({
                 // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                 isConcurrencySafe: () => true,
                 description: '列出某个目标上的镜像（仓库:标签、大小、创建时间、短 ID）。',
-                parameters: { target: targetParam },
+                parameters: {
+                    target: targetParam,
+                    limit: pageParams.limit,
+                    offset: pageParams.offset,
+                },
                 output: {
                     schema: {
                         type: 'object',
                         additionalProperties: false,
                         properties: {
                             target: { type: 'string', required: true },
+                            // total / truncated 必须在这里声明（additionalProperties: false）：
+                            // 返回值里有、schema 里没有，宿主校验会挡掉整个结果（ToolOutputError）
+                            total: { type: 'number' },
+                            truncated: { type: 'boolean' },
                             images: {
                                 type: 'array',
                                 required: true,
@@ -2626,9 +2800,9 @@ const plugin = definePlugin({
                             },
                         },
                     },
-                    render: (_args, value) => {
+                    render: (args, value) => {
                         const v = value;
-                        return [{ type: 'text', text: renderImages(v.target ?? '?', v.images ?? []) }];
+                        return [{ type: 'text', text: renderImages(v.target ?? '?', v.images ?? [], listPage(args, v.total, v.truncated === true)) }];
                     },
                 },
                 async execute(args) {
@@ -2640,14 +2814,18 @@ const plugin = definePlugin({
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                     const images = await api.images();
+                    // 全量拿到之后才切（T1）：后端 `images()` 的返回契约不变（面板要完整列表）
+                    const paged = paginate(images, pageWindow(input));
                     return {
                         target: picked.name,
-                        images: images.map((row) => ({
+                        images: paged.rows.map((row) => ({
                             reference: row.reference,
                             sizeText: row.sizeText,
                             ...(row.createdSince === '' ? {} : { createdSince: row.createdSince }),
                             id: row.shortId,
                         })),
+                        total: paged.total,
+                        truncated: paged.truncated,
                     };
                 },
             }));
@@ -2694,13 +2872,20 @@ const plugin = definePlugin({
                 // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                 isConcurrencySafe: () => true,
                 description: '列出某个目标上的 docker 网络（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表要进详情页看，不在列表里逐条 inspect。',
-                parameters: { target: targetParam },
+                parameters: {
+                    target: targetParam,
+                    limit: pageParams.limit,
+                    offset: pageParams.offset,
+                },
                 output: {
                     schema: {
                         type: 'object',
                         additionalProperties: false,
                         properties: {
                             target: { type: 'string', required: true },
+                            // 同 docker_images：additionalProperties: false 下必须声明，否则整个结果被挡
+                            total: { type: 'number' },
+                            truncated: { type: 'boolean' },
                             networks: {
                                 type: 'array',
                                 required: true,
@@ -2718,9 +2903,9 @@ const plugin = definePlugin({
                             },
                         },
                     },
-                    render: (_args, value) => {
+                    render: (args, value) => {
                         const v = value;
-                        return [{ type: 'text', text: renderNetworks(v.target ?? '?', v.networks ?? []) }];
+                        return [{ type: 'text', text: renderNetworks(v.target ?? '?', v.networks ?? [], listPage(args, v.total, v.truncated === true)) }];
                     },
                 },
                 async execute(args) {
@@ -2732,15 +2917,18 @@ const plugin = definePlugin({
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                     const rows = await api.networks();
+                    const paged = paginate(rows, pageWindow(input));
                     return {
                         target: picked.name,
-                        networks: rows.map((row) => ({
+                        networks: paged.rows.map((row) => ({
                             name: row.name,
                             driver: row.driver,
                             scope: row.scope,
                             ...(row.internal ? { internal: true } : {}),
                             id: row.shortId,
                         })),
+                        total: paged.total,
+                        truncated: paged.truncated,
                     };
                 },
             }));
@@ -2749,13 +2937,20 @@ const plugin = definePlugin({
                 // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                 isConcurrencySafe: () => true,
                 description: '列出某个目标上的 docker 卷（名称 / 驱动 / 范围 / 挂载点）。',
-                parameters: { target: targetParam },
+                parameters: {
+                    target: targetParam,
+                    limit: pageParams.limit,
+                    offset: pageParams.offset,
+                },
                 output: {
                     schema: {
                         type: 'object',
                         additionalProperties: false,
                         properties: {
                             target: { type: 'string', required: true },
+                            // 同 docker_images：additionalProperties: false 下必须声明，否则整个结果被挡
+                            total: { type: 'number' },
+                            truncated: { type: 'boolean' },
                             volumes: {
                                 type: 'array',
                                 required: true,
@@ -2772,9 +2967,9 @@ const plugin = definePlugin({
                             },
                         },
                     },
-                    render: (_args, value) => {
+                    render: (args, value) => {
                         const v = value;
-                        return [{ type: 'text', text: renderVolumes(v.target ?? '?', v.volumes ?? []) }];
+                        return [{ type: 'text', text: renderVolumes(v.target ?? '?', v.volumes ?? [], listPage(args, v.total, v.truncated === true)) }];
                     },
                 },
                 async execute(args) {
@@ -2786,14 +2981,17 @@ const plugin = definePlugin({
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                     const rows = await api.volumes();
+                    const paged = paginate(rows, pageWindow(input));
                     return {
                         target: picked.name,
-                        volumes: rows.map((row) => ({
+                        volumes: paged.rows.map((row) => ({
                             name: row.name,
                             driver: row.driver,
                             scope: row.scope,
                             ...(row.mountpoint === '' ? {} : { mountpoint: row.mountpoint }),
                         })),
+                        total: paged.total,
+                        truncated: paged.truncated,
                     };
                 },
             }));
@@ -3063,8 +3261,36 @@ const plugin = definePlugin({
                 toolsApi = toolsCtx.tools;
                 refreshTools();
                 console.log('[dsh-docker] agent tools ' + (live.enabled ? 'registered (' + registeredNames.join(', ') + ')' : 'skipped (disabled)'));
+                /*
+                 * 按会话档位在 **agent 作用域**上裁掉用不到的 write / exec 工具（与 tty 试点同一份实现，
+                 * 2026-10 上收到 kit 的 tier-restrict.ts）。
+                 *
+                 * 位置是这一层的**关键**：刻意放在 effect 体里、**不放进 refreshTools**。能力开关变化会走
+                 * refreshTools 重注册工具（先撤后挂），而重注册不该把已有 agent 的裁剪一并撤掉——
+                 * `agent/created` 不会为老 agent 再发一次，撤了就再也裁不回来。与工具同生命周期的是
+                 * **这一层订阅**，随插件卸载 / tools 服务撤离一起撤。
+                 *
+                 * 传 `toolsCtx` 而不是插件 `ctx`：本插件的 tools 是**动态 inject** 拿到的（插件对象没有
+                 * 声明式 `inject: ['tools']`），在插件 ctx 上读 `tools` 会撞 cordis 的 inject 守卫——而
+                 * `attachTierRestrict` 要用 tools 的全局 `schemas()` 现算 deny 名单，拿不到就**静默退化
+                 * 成不裁剪**（不报错，比抛错更难发现）。`toolsCtx` 是这条 inject 回调里绑定了 tools 的
+                 * 上下文，正好是它需要的取法。
+                 *
+                 * 实测（cordis 4.0.5：服务由**兄弟 fiber** 提供，与真宿主的 dsh-tools 同形）：
+                 *   - 无声明式 inject 的插件 ctx：`ctx.tools` 抛 `cannot get property "tools" without
+                 *     inject`，`ctx.get('tools')` 是 `undefined`；
+                 *   - 同一条 `ctx.inject(['tools'], cb)` 的 `cb` 里：`toolsCtx.tools` 正常，
+                 *     `toolsCtx.on('agent/created')` 收得到事件（本层两个依赖都在这里成立）。
+                 */
+                const disposeTierRestrict = attachTierRestrict(toolsCtx, {
+                    pkg: 'docker',
+                    prefixes: DOCKER_TIER_PREFIXES,
+                    classify: (tool) => DOCKER_TIER_CLASS[tool],
+                });
                 return () => {
                     toolsApi = undefined;
+                    // 先撤裁剪、再撤工具：撤销走的是 agent scope 上的 disposer，工具还挂着时撤最干净。
+                    disposeTierRestrict();
                     for (const dispose of toolDisposers) {
                         try {
                             dispose();
@@ -3103,12 +3329,19 @@ const plugin = definePlugin({
         /**
          * GET /logs/stream — 容器日志实时流（`docker logs --follow` → SSE）。
          *
-         * 参数：`tail`（0~5000，缺省取配置；**0 = 不补历史只跟随**，客户端断线重连用，
-         * 见 D133）、`timestamps`、`since`。
+         * 参数：`id`（单容器，老参数）或 `ids=a,b,c`（多容器，一条连接带多个源；聚合视图 /
+         * Compose 项目日志走这条），`tail`（0~5000，缺省取配置；**0 = 不补历史只跟随**，
+         * 客户端断线重连用，见 D133）、`timestamps`、`since`。
          *
          * 事件协议（每帧 `event:` + 单行 JSON `data:`）：
+         *   - `ready` `{}` 执行管道真的起来了（多源时只有第一个源起来的那一次，见 readyOnStart）
          *   - `line`  `{"d":"..."}` stdout 分片 / `{"e":"..."}` stderr 分片
-         *   - `end`   `{"reason":"container-exit","code":N}` 容器停止、docker logs -f 自然退出
+         *   - `line`  `{"id":"<容器 id>","d"|"e":"..."}` —— **仅多源**：这段字节属于哪个容器
+         *   - `source-end`   `{"id":"<id>","code":<N|null>}` 该容器的 logs -f 自然退出（仅多源）
+         *   - `source-error` `{"id":"<id>","message":"..."}` 该容器**这一条子流**失败（仅多源，
+         *     spawn 错 / 远端通道被拒）：其余源继续跟着，整条连接不关
+         *   - `end`   `{"reason":"container-exit","code":N}` 全部源结束（多源时 code 取最后一个
+         *     非 null 的退出码，都 null 就是 null）
          *   - `end`   `{"reason":"output-limit"}` 宿主侧背压队列溢出（客户端消费跟不上，D133）
          *   - `error` `{"message":"..."}` 后关闭（参数 / 执行失败）
          * 心跳：每 15s 一帧 `: ping` 注释；客户端断开则静默中止执行器（SIGTERM 阶梯 /
@@ -3121,17 +3354,49 @@ const plugin = definePlugin({
                 writeJson(res, 400, { error: picked.error ?? '无效的 target' });
                 return;
             }
+            /*
+             * 参数归一：`ids` 非空就按多源走，`id` 是单源的老参数。
+             *
+             * 为什么 `ids` 优先：它只会来自**按 ≥3 协议协商过的**新客户端，那里一条连接就代表
+             * 整个聚合视图；而 `id` 是老客户端一次一个容器的路径。两者同时出现没有合理场景
+             * （客户端两处代码各拼各的参数），按更强的那个解释比报 400 更宽容。
+             */
+            const rawIds = params.get('ids');
+            const idsParam = rawIds === null ? [] : rawIds.split(',').map((id) => id.trim()).filter((id) => id !== '');
+            const multiSource = idsParam.length > 0;
             const idParam = params.get('id');
-            if (idParam === null || idParam.trim() === '') {
+            let safeIds = [];
+            let safeId = '';
+            if (multiSource) {
+                /*
+                 * 先判数量、再逐条校验：两者同时不成立时（33 条里还夹着非法条目），先报出的
+                 * 原因不该取决于那条非法条目排在第几位——数量是一次比较，天然稳定。
+                 */
+                if (idsParam.length > MAX_LOGS_SOURCES) {
+                    writeJson(res, 400, { error: `ids 最多 ${String(MAX_LOGS_SOURCES)} 个容器（收到 ${String(idsParam.length)} 个）` });
+                    return;
+                }
+                try {
+                    // 逐条过同一道白名单：多源只是把「一个 id」重复 N 次，校验口径一个字都不能松
+                    safeIds = idsParam.map((id) => assertRef(id, 'container'));
+                }
+                catch (error) {
+                    writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                    return;
+                }
+            }
+            else if (idParam !== null && idParam.trim() !== '') {
+                try {
+                    safeId = assertRef(idParam, 'container');
+                }
+                catch (error) {
+                    writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                    return;
+                }
+            }
+            else {
+                // `ids=` 全空（像 `ids=,,`）与「一个参数都没给」是同一件事：没有源可跟
                 writeJson(res, 400, { error: 'id 必填' });
-                return;
-            }
-            let safeId;
-            try {
-                safeId = assertRef(idParam, 'container');
-            }
-            catch (error) {
-                writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
                 return;
             }
             const built = apiFor(picked.name);
@@ -3160,42 +3425,124 @@ const plugin = definePlugin({
                     return;
                 }
             }
+            // 单源 / 多源共用同一份取值规则（非法/越界交给 DockerApi 内的夹紧），抽出来
+            // 只为了不让两个分支各写一遍再各自漂掉
+            const logOptions = {
+                tail: Number.isInteger(tail) ? tail : live.logTailDefault,
+                timestamps: timestampsParam === '1' || timestampsParam === 'true',
+                ...(since !== undefined ? { since } : {}),
+            };
             await openSseStream(res, {
                 reason: 'container-exit',
                 // 文本尾部流：积压时丢最旧的帧继续跟随，不掐流（D153）
                 overflow: 'drop',
                 run: async (sendEvent, signal) => {
                     /*
-                     * 事件协议与快照 /logs 完全一致，只多一个 end.reason——**只多一层合帧**
-                     * （D151）：docker 的分片边界与「一行日志」无关，逐 chunk 一帧时话痨容器
-                     * 每秒能推几千个事件，客户端的每事件固定开销（SSE 派发 + JSON.parse +
-                     * 拼残行）全砸在主线程上。合帧后客户端收到的仍是同一串字节，只是按窗口
-                     * 合并成了更少的帧。
+                     * 单源老路径：帧仍是 `{d}` / `{e}`，不发 source-end / source-error。
+                     * 这条分支必须**逐字节不变**——老客户端（streamProtocol < 3）仍在用，
+                     * 多出的帧名它不认识，多出的字段则会破坏它对 `d` / `e` 的解析。
                      */
-                    const coalescer = createSseCoalescer({
-                        emit: (channel, text) => sendEvent('line', channel === 'd' ? { d: text } : { e: text }),
-                    });
-                    try {
-                        const result = await api.logsStream(safeId, {
-                            // 与 POST /logs 同一条取值规则：非法/越界交给 DockerApi 内的夹紧
-                            tail: Number.isInteger(tail) ? tail : live.logTailDefault,
-                            timestamps: timestampsParam === '1' || timestampsParam === 'true',
-                            ...(since !== undefined ? { since } : {}),
-                        }, {
-                            onStdout: (chunk) => coalescer.push('d', chunk),
-                            onStderr: (chunk) => coalescer.push('e', chunk),
-                            onStart: readyOnStart(sendEvent),
-                        }, signal);
-                        return result.code;
-                    }
-                    finally {
+                    if (!multiSource) {
                         /*
-                         * 收尾前把窗口里剩下的行推出去：`end` 帧必须排在它们之后——客户端按到达
-                         * 序落行，先收到 end 会当场切回快照，窗口里那批行就再也显示不出来了。
+                         * 事件协议与快照 /logs 完全一致，只多一个 end.reason——**只多一层合帧**
+                         * （D151）：docker 的分片边界与「一行日志」无关，逐 chunk 一帧时话痨容器
+                         * 每秒能推几千个事件，客户端的每事件固定开销（SSE 派发 + JSON.parse +
+                         * 拼残行）全砸在主线程上。合帧后客户端收到的仍是同一串字节，只是按窗口
+                         * 合并成了更少的帧。
                          */
-                        coalescer.flush();
-                        coalescer.dispose();
+                        const coalescer = createSseCoalescer({
+                            emit: (channel, text) => sendEvent('line', channel === 'd' ? { d: text } : { e: text }),
+                        });
+                        try {
+                            const result = await api.logsStream(safeId, logOptions, {
+                                onStdout: (chunk) => coalescer.push('d', chunk),
+                                onStderr: (chunk) => coalescer.push('e', chunk),
+                                onStart: readyOnStart(sendEvent),
+                            }, signal);
+                            return result.code;
+                        }
+                        finally {
+                            /*
+                             * 收尾前把窗口里剩下的行推出去：`end` 帧必须排在它们之后——客户端按到达
+                             * 序落行，先收到 end 会当场切回快照，窗口里那批行就再也显示不出来了。
+                             */
+                            coalescer.flush();
+                            coalescer.dispose();
+                        }
                     }
+                    /*
+                     * 多源：一条 SSE 带多个容器。
+                     *
+                     * 为什么不是「每个容器一条 EventSource」：宿主是 HTTP/1.1，浏览器对同一源只有
+                     * 6 条连接，而 EventSource 每条独占且**永不释放**——聚合视图一开，4 个服务就吃掉
+                     * 大半配额，其余请求开始排队（D165 / README「已知限制」）。一条连接带多源把占用
+                     * 压到 1 条，帧里补 `id` 让客户端把分片归位。别顺手把统计 / 事件流也改成这样：
+                     * 它们的分帧与去重都按「一条流一个源」写死了，是另一摊事。
+                     *
+                     * 两个必须守住的语义：
+                     *   - **单个源失败不许拖垮整条连接**：一个容器 spawn 不起来（或 SSH 配额已满，
+                     *     MAX_STREAMS_PER_TARGET 是 8）时，其余容器的日志必须照常跟着——否则一个
+                     *     坏容器就把整个聚合视图变成空白，还得用户手动重连才能看别的容器。所以每个
+                     *     源各自 try/catch，失败落一帧 `source-error`，`run` 整体永远正常 resolve。
+                     *   - **客户端断开只有一个 signal**（openSseStream 的 controller）：必须传给每一个
+                     *     源，否则用户关掉面板后没人认领的 `docker logs -f` 子进程 / SSH channel 会
+                     *     一直跑下去。
+                     */
+                    const sendReady = readyOnStart(sendEvent);
+                    let readySent = false;
+                    /** ready 只发一帧：第一个源起来已足以证明「这条连接真有管道在跑」，每个源各发一遍是噪音。 */
+                    const sendReadyOnce = () => {
+                        if (readySent)
+                            return;
+                        readySent = true;
+                        sendReady();
+                    };
+                    // 按 ids 顺序记退出码（失败的源保持 null）：end 帧的 code 要从这里挑最后一个非 null
+                    const codes = safeIds.map(() => null);
+                    await Promise.all(safeIds.map(async (containerId, index) => {
+                        // 每个源一个合帧器：窗口是「这个容器」的，混用会让一个话痨容器把别人的行拖到
+                        // 它自己的窗口边界上（帧里虽然带 id，但同窗口内两源的字节顺序将不再是各自的到达序）
+                        const coalescer = createSseCoalescer({
+                            emit: (channel, text) => sendEvent('line', channel === 'd' ? { id: containerId, d: text } : { id: containerId, e: text }),
+                        });
+                        try {
+                            const result = await api.logsStream(containerId, logOptions, {
+                                onStdout: (chunk) => coalescer.push('d', chunk),
+                                onStderr: (chunk) => coalescer.push('e', chunk),
+                                onStart: sendReadyOnce,
+                            }, signal);
+                            /*
+                             * 该源的收尾顺序：先 flush 再发 source-end。
+                             *
+                             * flush 是**同步**的（emit 直接写帧），所以「窗口里最后一批 line」一定排在
+                             * 这一帧 source-end 之前——反过来客户端会提前把这个容器判成已结束，最后
+                             * 那批行要么丢归属、要么被当成下一条流的行。
+                             */
+                            coalescer.flush();
+                            sendEvent('source-end', { id: containerId, code: result.code });
+                            codes[index] = result.code;
+                        }
+                        catch (error) {
+                            coalescer.flush();
+                            sendEvent('source-error', { id: containerId, message: error instanceof Error ? error.message : String(error) });
+                        }
+                        finally {
+                            coalescer.dispose();
+                        }
+                    }));
+                    /*
+                     * 全部源都结束了（正常退出或已各自报错）→ 正常返回，由 openSseStream 发既有的
+                     * `end{reason:'container-exit', code}`。
+                     *
+                     * code 的口径：**按 ids 顺序最后一个非 null 的退出码**，都 null 就是 null。多源时
+                     * 「整条连接的退出码」只有摘要意义（每个容器的真实退出码在各自的 source-end 里），
+                     * 取最后一个是有确定性的那一种，避免让「谁先退出」这种并发时序决定帧内容。
+                     */
+                    let finalCode = null;
+                    for (const code of codes)
+                        if (code !== null)
+                            finalCode = code;
+                    return finalCode;
                 },
             });
         };

@@ -117,16 +117,31 @@ const RESPONSES = {
           effectivePath: '/Users/zz',
         }
       : {}),
-    // P0：默认 managed（保持原行为）。--per-agent 时改成「per-agent 生效」的形态，
-    // 好把那条状态文案与勾选态也看一遍（卡片上新增的 UI 必须有办法离线看）。
+    // 默认档画的是**显式回滚到 managed** 的形态（本插件默认已是 per-agent，见 src/scope.ts
+    // 的 DEFAULT_MCP_SCOPE）；--per-agent / --fallback 各画一档，好把状态文案与勾选态都看一遍
+    // （卡片上新增的 UI 必须有办法离线看）。
     mcpScope: perAgent || fallback ? 'per-agent' : 'managed',
     effectiveMcpScope: perAgent ? 'per-agent' : 'managed',
     mcpScopeReason: fallback
       ? '要 per-agent 但宿主没有 agent 事件面（拿不到 agent/created），已退回 managed'
       : perAgent
         ? 'per-agent（每个 agent 一个 scoped MCP 进程）'
-        : 'managed（默认：托管行 + 按会话热切换）',
+        : 'managed（托管行 + 按会话热切换）',
     agentMounts: perAgent ? 2 : 0,
+    // T6：卡片要能离线看到「托管行在 ≠ 工具在」那句话。--fallback 画 0 工具那档
+    // （reason + nextStep 都渲染），其余两档画有工具那档（卡片上不出这一行）。
+    mcpTools: fallback
+      ? {
+          tools: 0,
+          reason: '没有已启用的托管行，mcp__codegraph__* 不会注册：目标路径不是有效索引，未托管',
+          nextStep: '先把一个项目设为默认项目（需已有 .codegraph/ 索引），托管行才会写出来',
+        }
+      : {
+          tools: 1,
+          reason: perAgent
+            ? 'per-agent 生效中：已为 2 个会话各挂一个 MCP 进程（没有 .codegraph/ 索引的会话按设计不挂）'
+            : '托管行已启用（own，cwd=/Users/zz/code/my-app），mcp__codegraph__codegraph_explore 可用',
+        },
   },
   // --result 用：点「文件」后结果区要有真实内容，否则只能看到「（无输出）」，
   // 而这一档正是要验证「结果看得见」。

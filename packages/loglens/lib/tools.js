@@ -1,7 +1,7 @@
 /**
  * @hyzyn/dsh-loglens — agent 工具（P3）。
  *
- * 四个工具，**全部归 read 档**（名单在 LOGLENS_TIER_CLASS，闸门接线在 src/index.ts；对账守卫在
+ * 五个工具，**全部归 read 档**（名单在 LOGLENS_TIER_CLASS，闸门接线在 src/index.ts；对账守卫在
  * test/tier-gate.test.ts，从本文件注册处的 add() 调用（字面量工具名）现算名单——漏分类会红；注释里别写那种字面量）。
  *
  * 三条贯穿全文件的规矩：
@@ -28,7 +28,7 @@ import { normalizeQuery } from './query.js';
  */
 export { adapterHint, describeTarget, hintFor, resolveTarget } from './execute.js';
 export { backendFor } from './backends/registry.js';
-/** 分类表：四个工具全是只读（查日志不改任何东西，也不在目标机上执行命令）。 */
+/** 分类表：五个工具全是只读（查日志不改任何东西，也不在目标机上执行命令）。 */
 export const LOGLENS_TIER_CLASS = {
     loglens_sources: 'read',
     loglens_search: 'read',
@@ -101,7 +101,14 @@ export function renderMessage(message, options = {}) {
     const dropped = lines.length - shown.length;
     return dropped === 0
         ? body
-        : body + '\n' + CONTINUATION_PREFIX + '…（还有 ' + String(dropped) + ' 行未显示，共 ' + String(lines.length) + ' 行）';
+        /*
+         * 截断句必须带**可执行的下一步**（渐进披露 T3）：只报「还有 N 行未显示」的话，模型拿不到
+         * 「怎么拿到全文」。这句话要同时适用于 loglens_search 与 loglens_context——两者都有
+         * expand 参数（expand 只影响渲染、返回值 message 一直是全文），所以「expand 传 true 重查」
+         * 在两边都是真话。
+         */
+        : body + '\n' + CONTINUATION_PREFIX + '…（还有 ' + String(dropped) + ' 行未显示，共 ' + String(lines.length)
+            + ' 行；要全文就把 expand 传 true 重查一次）';
 }
 /**
  * labels 的渲染：**只平铺身份键，其余折叠成一个计数**（真机反馈第 4 条）。
@@ -267,7 +274,16 @@ const COUNT_SCHEMA = {
     },
 };
 export function registerLoglensTools(deps) {
-    const add = deps.add;
+    /*
+     * add 保持**字面量调用**的形态（五个注册调用一个不少）：tier-gate 对账守卫从这些调用处
+     * 现算名单（它认的是 add 后紧跟字面量名字的写法，所以这条注释里不能出现那种形态），
+     * include 只是漏斗里的一道闸，不是把注册名单改成动态拼出来的。
+     */
+    const add = (name, definition) => {
+        if (deps.include !== undefined && !deps.include(name))
+            return;
+        deps.add(name, definition);
+    };
     add('loglens_sources', defineTool({
         name: 'loglens_sources',
         // 只读：与其他只读工具并发执行（宿主默认把未声明的工具当独占）
@@ -375,14 +391,8 @@ export function registerLoglensTools(deps) {
             target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
             q: {
                 type: 'string',
-                description: '查询串（Loki 是 LogQL，ES / OpenSearch 是各自的方言）；留空即全量。'
-                    + '**ES / OpenSearch 侧原样交给 `query_string`，有三个写法会静默改变口径（不报错、只是数字不对）**：'
-                    + '① 方括号是**区间语法**，`[ERROR]` 不是「含 ERROR 这个词」，要精确匹配请写 `"ERROR"`（短语）或 `message:ERROR`；'
-                    + '② `=` 没有特殊含义，`level=error` 不是「字段等于值」，多半被当成两个普通词（默认 OR），'
-                    + '真字段筛选用 `字段:值` 或 filters；'
-                    + '③ 只有**大写** `AND` / `OR` / `NOT` 是运算符，小写是普通词。'
-                    + '同一个窗口里 `[ERROR]` 与 `level=error` 命中数差一倍，通常就是这三条之一造成的——'
-                    + '要一个可复现的口径，用 `"ERROR"`。',
+                description: '查询串：Loki 是 LogQL，ES / OpenSearch 是 Lucene 方言；留空即全量。'
+                    + '精确匹配用 "词"（短语）——方括号、= 与小写 and/or 都是静默陷阱（写错不报错、只是数字不对）',
             },
             from: {
                 description: '起始时间：epoch 毫秒整数、ISO 8601（不带时区按本机时区）或相对时间；缺省 = to 前面 15 分钟',
@@ -416,10 +426,8 @@ export function registerLoglensTools(deps) {
             },
             level: {
                 type: 'string',
-                description: '只要这个级别**及以上**的行（trace / debug / info / warn / error / fatal）。'
-                    + '注意：级别可能是从正文推断的（lines[].levelInferred），且来源侧没有统一的级别字段——'
-                    + '所以这是在**返回的这一页**上筛的，counts 仍是整页。要按级别看全量，后端得真有级别字段'
-                    + '（ES 上 log.level 常为空、级别是从正文推断的，按它分组也是空桶）；没有时只能在查询串里搜级别关键字',
+                description: '只要这个级别及以上的行（如 warn 含 error、fatal）。'
+                    + '这是在返回的这一页上筛，counts 仍是整页；级别认不出会直接报错',
             },
         },
         output: {
@@ -466,19 +474,11 @@ export function registerLoglensTools(deps) {
     add('loglens_fields', defineTool({
         name: 'loglens_fields',
         isConcurrencySafe: () => true,
-        description: '列出一个日志来源可用的字段 / 标签（Loki 走 /loki/api/v1/labels；ES / OpenSearch 走 _field_caps）。'
-            + '常用筛选项（container.name / host.name / log.level 这类）排在最前面，**默认不截断、列全部**'
-            + '（与 Kibana 的 _field_caps 同口径：长度在那边交给界面，在这边交给调用方自己权衡）——'
-            + '一台通配全集群的来源可能有上千个字段、响应几十 KB，只想确认某几个字段在不在就先传 limit 收窄，'
-            + '或用 loglens_facets 看哪些字段真有数据。'
-            + '传了 limit 才可能截断，那时返回值里的 total / truncated 与 warnings 会说明。'
-            + '容器行（`object` / `nested`，如 `container` / `host` 这类没有自己值的父级）不列；'
-            + '同名在不同索引里落到不同宽类型族的标 `conflict: true`（带 esTypes 与 conflictDescriptions）——'
-            + '那种字段拿去分组或筛值可能只覆盖一部分索引。'
-            + '字段名**不用带 .keyword**（子字段行也不列）：适配器会自己按 _field_caps 决定怎么打。',
+        description: '列出一个日志来源可用的字段，常用筛选项排在前面。'
+            + '默认只列前 200 个（总数见 total）；同名在不同索引里类型冲突的字段标 conflict；字段名不用带 .keyword。',
         parameters: {
             target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
-            limit: { type: 'number', description: '最多列几个字段（不传 = 全部；传了就只列前这么多，正整数，无硬上限）' },
+            limit: { type: 'number', description: '最多列几个字段（默认 200；正整数，要更多可分段取）' },
         },
         output: {
             schema: {
@@ -517,6 +517,13 @@ export function registerLoglensTools(deps) {
     add('loglens_facets', defineTool({
         name: 'loglens_facets',
         isConcurrencySafe: () => true,
+        /*
+         * deferLoading（渐进披露 T6，小步试点）：请求宿主把 facets 挪出首屏工具表、用到再加载。
+         * 它是五个工具里最「按需」的一个（回答「谁在报错 / 时间分布」才用），而 dsh-tools 0.1.2-rc.1
+         * 已在 schema 投影里保留该标记。宿主是否真的执行（首屏不出现、激活路径可达）以真机验证为准——
+         * 验证不过就撤掉这一行（README.zh 明说这只是**请求**，提供方执行语义有上限）。
+         */
+        deferLoading: true,
         description: '聚合：按字段分组（terms）看「谁在报错」/  按时间分桶（date_histogram）看趋势。'
             + '这是回答「某个服务健不健康」的正确工具——拉一页行到本地数既慢又错。'
             + '返回里的 otherCount（没列出来的桶还有多少条）与 countErrorUpperBound（计数误差上界）是**截断与近似信号**，别当成精确值。'
@@ -616,6 +623,12 @@ export function registerLoglensTools(deps) {
             before: { type: 'number', description: '要几行更早的（默认 5，上限 50）' },
             after: { type: 'number', description: '要几行更晚的（默认 5，上限 50）' },
             spanMs: { type: 'number', description: '重查的时间窗半径（默认 60000，即锚点前后各一分钟）' },
+            expand: {
+                type: 'boolean',
+                description: 'true = 正文**整段展开**（多行堆栈默认只渲染 20 行，超出会报「还有 N 行未显示」）。'
+                    + '只影响**渲染文本**，返回值里 anchor / before / after 的 message 一直是全文。'
+                    + '排查长堆栈时先用默认、确认是你要的那条再用 expand 重查（省 token）。',
+            },
         },
         output: {
             schema: {
@@ -629,7 +642,9 @@ export function registerLoglensTools(deps) {
                     warnings: { type: 'array', required: true, items: { type: 'string' } },
                 },
             },
-            render: (_args, value) => {
+            render: (args, value) => {
+                // expand 只影响渲染（与 loglens_search 同一口径）：返回值 message 一直是全文
+                const expanded = args?.expand === true;
                 const result = value;
                 const anchor = result.anchor;
                 if (anchor === undefined)
@@ -638,9 +653,9 @@ export function registerLoglensTools(deps) {
                         type: 'text',
                         text: [
                             '…更早 ' + String((result.before ?? []).length) + ' 行',
-                            renderLines(result.before ?? []),
-                            '→ ' + formatLine(anchor),
-                            renderLines(result.after ?? []),
+                            renderLines(result.before ?? [], undefined, { expand: expanded }),
+                            '→ ' + formatLine(anchor, { expand: expanded }),
+                            renderLines(result.after ?? [], undefined, { expand: expanded }),
                             '…更晚 ' + String((result.after ?? []).length) + ' 行',
                             ...(result.warnings ?? []),
                         ].join('\n'),

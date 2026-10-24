@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import yaml from 'js-yaml';
 import { DEFAULT_MCP_SCOPE, MCP_SCOPE_MODES, createAgentMounter, normalizeMcpScope, resolveScopeMode, } from './scope.js';
+import { whenEnvReady } from './env-gate.js';
 /* ------------------------------------------------------------------ *
  * 常量与类型
  * ------------------------------------------------------------------ */
@@ -55,7 +56,8 @@ const PROBE_RETRY_DELAYS_MS = [10_000, 30_000];
  * 它们只在挂载时生效，改动应走一次正常重挂。
  *
  * `mcpScope` 用 `z.string()` 而不是 `z.union([...])`：合法性由 `normalizeMcpScope`
- * 在读取处收口（非法值回落 managed），与「配置面不让插件起不来」的约定一致。
+ * 在读取处收口（非法值回落到默认模式，见 `DEFAULT_MCP_SCOPE`），与「配置面不让插件
+ * 起不来」的约定一致。
  */
 export const Config = z.object({
     /** 关闭整个插件（不注册路由、不发布提示）。默认开。 */
@@ -70,7 +72,7 @@ export const Config = z.object({
     mcpIntegration: z.boolean().default(true).volatile(),
     /** 托管行 cwd 是否跟随活动会话。默认开。 */
     followSession: z.boolean().default(true).volatile(),
-    /** MCP 挂载模式（`managed` / `per-agent`）。默认 `managed`。 */
+    /** MCP 挂载模式（`managed` / `per-agent`）。默认 `per-agent`（见 DEFAULT_MCP_SCOPE）。 */
     mcpScope: z.string().default(DEFAULT_MCP_SCOPE).volatile(),
     /** codegraph CLI 命令，默认 `codegraph`。 */
     command: z.string().default('codegraph'),
@@ -780,6 +782,18 @@ function parseBlockRows(lines, range) {
         return { rows: [], error: 'YAML 解析失败: ' + (error instanceof Error ? error.message : String(error)) };
     }
 }
+/**
+ * 区块体渲染：有行时逐条 `insert`，**没有行时写出空占位 `- insert: []`**。
+ *
+ * 空占位是**已知空态**，不是写坏的文件：per-agent 生效时托管行被挂起（`suspendGlobal`），
+ * 没有已索引的默认项目时也写不出真行——这两种情况下区块里本来就只能是一条空 insert。
+ * 它必须保持**合法的 YAML 顶层数组**（`- insert: []`），不能退化成 0 字节或纯注释：
+ * 宿主 `loadOptionalPatches` 要求顶层是数组，CG67 的现场就是「空根被摘掉后写出纯注释，
+ * 宿主下次启动 exit=1」。
+ *
+ * 所以这里刻意保留这一行，而不是把它当异常删掉；「为什么是空的 / 下一步做什么」由状态
+ * DTO（`describeMcpToolState`）对外说清，不让用户从文件内容去猜。
+ */
 function renderBlockBody(rows) {
     if (rows.length === 0)
         return '- insert: []\n';
@@ -2779,6 +2793,11 @@ mcpPatchFile) {
                     // defaultPath 只是跟随关闭/会话目录无索引时的回落值。
                     const effectivePath = effectiveProjectPath(rt);
                     const state = indexState(effectivePath);
+                    // T6：托管行状态只答「文件里有什么」，「有没有工具」要另算一句（见
+                    // describeMcpToolState 的注释——CG69 现场两份各自正确的字段被读成「已托管」）。
+                    const mcp = snapshotMcpStatus(cli.command, rt, mcpPatchFile());
+                    const effectiveScope = rt?.scopeDecision?.mode ?? current.mcpScope;
+                    const mounts = rt?.mounter?.liveCount() ?? 0;
                     writeJson(res, 200, {
                         ok: true,
                         defaultPath: current.defaultPath,
@@ -2794,11 +2813,11 @@ mcpPatchFile) {
                          * 而静默退回等于骗用户）。
                          */
                         mcpScope: current.mcpScope,
-                        effectiveMcpScope: rt?.scopeDecision?.mode ?? current.mcpScope,
+                        effectiveMcpScope: effectiveScope,
                         mcpScopeReason: rt?.scopeDecision?.reason,
                         /** per-agent 已挂载的 agent 数（仅 per-agent 模式有意义，卡片显示进度/台账）。 */
-                        agentMounts: rt?.mounter?.liveCount() ?? 0,
-                        /** CLI 探测结果：false 时两段 systemPrompt 都不会注入；undefined = 还没探测完。 */
+                        agentMounts: mounts,
+                        /** CLI 探测结果：usage 段没注入时它是原因之一；undefined = 还没探测完。 */
                         cliAvailable: cliProbe.get().available,
                         /**
                          * 探测失败的**实测原因**（ENOENT / 非零退出 / 超时原文），卡片直接显示。
@@ -2814,7 +2833,13 @@ mcpPatchFile) {
                         indexState: state,
                         // CG70：快照必须读**本实例写的那份**文件，否则换层之后卡片会答
                         // 「文件中还没有托管行」——而实际上行就在 profile 层里、MCP 也挂了。
-                        mcp: snapshotMcpStatus(cli.command, rt, mcpPatchFile()),
+                        mcp,
+                        /**
+                         * T6：「这个会话到底有没有工具」的确定答案（含原因与下一步）。工具是
+                         * 按会话挂的（per-agent）或全局共享的（managed），但**两种情况下它都可能
+                         * 是 0**，而「托管行看起来在」是最容易让人以为工具也在的那种状态。
+                         */
+                        mcpTools: describeMcpToolState({ status: mcp, mode: effectiveScope, mounts }),
                     });
                     return;
                 }
@@ -2886,6 +2911,13 @@ mcpPatchFile) {
                     followSession: outcome.current.follow,
                     persisted,
                     mcp: outcome.status,
+                    // 与 GET 同口径：卡片切完项目立刻要判断「现在有没有工具」，不该等到下一次
+                    // 全量刷新（中间那一帧会让 T6 的警告先消失再出现）。
+                    mcpTools: describeMcpToolState({
+                        status: outcome.status,
+                        mode: rt.scopeDecision?.mode ?? outcome.current.mcpScope,
+                        mounts: rt.mounter?.liveCount() ?? 0,
+                    }),
                 });
             },
         },
@@ -3008,6 +3040,12 @@ mcpPatchFile) {
                     cliProbeAt: cliProbe.get().at,
                     command: cli.command,
                     mcp: outcome.status,
+                    // 同 GET /default-path（T6）：开关改完卡片立即拿到「有没有工具」的确定答案。
+                    mcpTools: describeMcpToolState({
+                        status: outcome.status,
+                        mode: decision?.mode ?? outcome.current.mcpScope,
+                        mounts: rt.mounter?.liveCount() ?? 0,
+                    }),
                 });
             },
         },
@@ -3285,47 +3323,145 @@ mcpPatchFile) {
 function snapshotMcpStatus(command, rt, patchFile) {
     const current = rt?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true, follow: true, mcpScope: DEFAULT_MCP_SCOPE };
     const text = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '';
-    return syncManagedMcpRow(text.split('\n'), {
+    const lines = text.split('\n');
+    // P0：per-agent 生效时盘上就是「已挂起」，快照必须报同一件事，否则卡片会显示
+    // 「已在托管」而实际服务器没挂（诊断包也会给出错误的下一步）。
+    const perAgent = rt?.scopeDecision?.mode === 'per-agent';
+    const status = syncManagedMcpRow(lines, {
         serverName: MCP_SERVER_NAME,
         command,
         targetCwd: effectiveProjectPath(rt),
         manageEnabled: current.manage,
-        // P0：per-agent 生效时盘上就是「已挂起」，快照必须报同一件事，否则卡片会显示
-        // 「已在托管」而实际服务器没挂（诊断包也会给出错误的下一步）。
-        suspendGlobal: rt?.scopeDecision?.mode === 'per-agent',
+        suspendGlobal: perAgent,
         dryRun: true,
     }).status;
+    // 空态自证：托管行为空时 note 要说清「为什么空 / 下一步」（见 withEmptyStateNote）。
+    return withEmptyStateNote(status, { perAgent, manageEnabled: current.manage, lines });
+}
+/**
+ * 空态自证：托管行为空时，把「为什么空 / 下一步」写进 `note`（2026-10-24）。
+ *
+ * 为什么要这一层：`syncManagedMcpRow` 的 note 答的是「文件里是什么」（未索引 / 联动关闭 /
+ * 区块解析失败…），而托管行为空的两种**已知空态**还会被读成「这插件坏了」：
+ *
+ *   1. 本插件托管区块渲染出来是空占位 `- insert: []`（没有可写的真行）：默认项目没有索引，
+ *      写不出真行。空占位是**合法状态**、不是坏文件（见 `renderBlockBody`），卡片上那句
+ *      「未托管」要配上「下一步点哪个按钮」才可执行；
+ *   2. per-agent 生效：全局托管行被挂起（自有区块直接撤销 / MCP 卡片里的行 `disabled: true`），
+ *      工具是按 agent 挂的——「没有托管行」**不等于**没有工具，这句得由状态面自己说清，
+ *      否则用户会照着「未托管」去修一条本来就不该存在的行。
+ *
+ * 不写 note 的三种情况（都是有意的，别按「能补就补」改回去）：
+ *
+ *   - `mode` 不是 `none`：真有行在托管，卡片上的 cwd / disabled 已经把状态说全了，
+ *     这里再补一句就是每次刷新都重复一遍的噪声；
+ *   - 联动关闭 / 区块解析失败：同步侧那句是**具体诊断**，盖掉会让卡片给出错误的下一步
+ *     （例如把一个坏区块解释成「去设默认项目」）；
+ *   - 已索引却还空着：那不是「没有已索引的默认项目」，同步侧那句「下次同步会写入」才是实话。
+ */
+export function withEmptyStateNote(status, input) {
+    if (status.mode !== 'none')
+        return status;
+    if (!input.manageEnabled)
+        return status;
+    const lines = [...input.lines];
+    const ownRange = findBlock(lines, 'dsh-codegraph mcp managed', 'end dsh-codegraph mcp managed');
+    const ownParsed = ownRange === null ? undefined : parseBlockRows(lines, ownRange);
+    // 区块体读不动（YAML 解析失败 / 不是数组）：那是**坏区块**，同步侧已经点名叫人修，别盖掉。
+    if (ownParsed?.error !== undefined)
+        return status;
+    if (input.perAgent) {
+        return { ...status, note: 'per-agent 模式生效中，托管行已挂起（工具按 agent 挂载）' };
+    }
+    if (ownParsed !== undefined && ownParsed.rows.length === 0 && !status.indexed) {
+        return { ...status, note: '没有已索引的默认项目，托管行为空——把当前项目设为默认项目后会自动写入' };
+    }
+    return status;
+}
+export function describeMcpToolState(input) {
+    const { status, mode, mounts } = input;
+    if (mode === 'per-agent') {
+        if (mounts > 0) {
+            return {
+                tools: 1,
+                reason: `per-agent 生效中：已为 ${mounts} 个会话各挂一个 MCP 进程（没有 .codegraph/ 索引的会话按设计不挂）`,
+            };
+        }
+        return {
+            tools: 0,
+            reason: 'per-agent 生效中，但当前没有任何会话挂上 MCP 进程（还没有已索引的会话，或会话尚未创建）'
+                + '；刚切换模式时补挂是异步的，稍后再刷新一次',
+            nextStep: '在已索引的项目里开一个会话；或在该项目上点「设为默认项目」再开新会话',
+        };
+    }
+    if (status.disabled === true) {
+        return {
+            tools: 0,
+            reason: `托管行处于停用状态（disabled: true），MCP 服务器不会被加载${status.note === undefined ? '' : '：' + status.note}`,
+            nextStep: '在卡片上切回 managed（或重新启用该行）后工具才会注册',
+        };
+    }
+    if (status.mode === 'none') {
+        return {
+            tools: 0,
+            reason: `没有已启用的托管行，mcp__codegraph__* 不会注册${status.note === undefined ? '' : '：' + status.note}`,
+            nextStep: status.indexed
+                ? '把当前项目设为默认项目（卡片上的一键操作），或在该项目里新开一个已索引的会话'
+                : '先把一个项目设为默认项目（需已有 .codegraph/ 索引），托管行才会写出来',
+        };
+    }
+    // 行在、但**生效路径**未索引时，工具确实可用，服务的却是行里那个 cwd（同步不会把
+    // 好 cwd 改写成未索引目录）。两个字段各自正确，并排读容易误读，所以这里把话说全。
+    const scopeNote = status.indexed
+        ? ''
+        : `；注意：生效路径没有可用索引，这行仍指向 ${status.cwd ?? '原来的 cwd'}（工具可用，但服务的是那个项目）`;
+    return {
+        tools: 1,
+        reason: `托管行已启用（${status.mode}${status.cwd === undefined ? '' : '，cwd=' + status.cwd}），mcp__codegraph__codegraph_explore 可用${scopeNote}`,
+    };
 }
 /* ------------------------------------------------------------------ *
  * 插件本体
  * ------------------------------------------------------------------ */
 /**
- * 公告段（order 150）：只留模型用得上的部分——知道卡片存在、能引导用户。
- * 卡片内部有哪些按钮是 UI 细节，模型不需要背（旧版把 6 个功能都列了一遍，
- * 327 字），MCP 工具则交给使用指引段。同档 order 的 section 由
- * dsh-system-prompt 按名字排序（comparePromptSections），所以不依赖注册顺序。
+ * 公告段（order 150）：**一句话**——让模型知道「本机有这个插件、用户提到这些词就把人
+ * 引到卡片」。≤70 字符（`test/cli-route.test.ts` 有长度守卫）。
+ *
+ * 为什么只留一句：卡片有哪些按钮是 UI 细节，模型不执行它们、也不该替用户点（旧版把
+ * 索引状态 / 搜索符号 / sync·重建 / 设为默认项目 四个功能列了一遍，327 字；上一版砍到
+ * 157 字后仍然只是在背按钮名）。真正的可执行信息只有「引导用户打开 设置 → 插件配置 →
+ * Codegraph 卡片」，功能清单留给卡片本身。
+ *
+ * 与 usage 段的分工：本段讲**卡片**（与索引无关），usage 段讲**工具**（只在已索引时
+ * 才有意义）。所以两段的门禁刻意不对等，见 `refreshGuidance` 的注释。
  */
-const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 插件配置里有「Codegraph」卡片，可看索引状态、搜索符号、sync / 重建索引，并把当前项目一键设为默认项目。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开该卡片。';
+const CODEGRAPH_GUIDANCE = '本机装有 dsh-codegraph；用户提到代码图谱/索引/调用链时，引导他打开 设置 → 插件配置 → Codegraph 卡片';
 /**
- * 使用指引段（order 151）：只保留「何时用它 + 失败了怎么办」。
+ * 使用指引段（order 151）：只保留**模型真要执行**的三条，≤600 字符（`test/cli-route.test.ts`
+ * 有长度守卫）。
  *
- * 工具自述（返回什么、一次调用搞定、不要重复 Read）已经在 MCP 工具描述里，
- * 这里不再复述；三条独有信息是 shell 兜底、projectPath 自愈、没索引就跳过。
+ *  1. 何时用它：仓库根有 `.codegraph/` 索引库才算（CLI 自己的 `~/.codegraph` 安装目录
+ *     不算——只看目录存在会把家目录判成已索引项目，于是模型去调一个必然报
+ *     "No CodeGraph project is loaded" 的工具）；
+ *  2. 两个入口：MCP 工具（`projectPath` 自愈）+ shell 兜底（`--path` 换项目）；
+ *  3. 失败怎么办：没有索引就用常规搜索，**别替用户跑 `codegraph init`**（索引是用户的决定）。
  *
- * 两点与宿主实现对齐：
- *   - 触发条件必须与 indexState 同口径：`.codegraph/` **里要有索引库**。
- *     只看目录存在会把家目录也算成已索引项目（`~/.codegraph` 是 CLI 安装目录），
- *     于是模型被诱导去调一个必然报 "No CodeGraph project is loaded" 的工具。
- *   - shell 兜底里的命令名按 `command` 配置渲染，不写死 `codegraph`（安装级旋钮）。
+ * 工具自述（返回什么、一次调用搞定、不要重复 Read）已经在 MCP 工具描述里，这里不复述。
+ * shell 兜底里的命令名按 `command` 配置渲染，不写死 `codegraph`（安装级旋钮）；`init`
+ * 那句刻意保留字面 `codegraph init`——它指的是「上游那个动作」，与用户配的路径无关。
+ *
+ * 长度口径：正文（默认命令名下）**522 字符**，留出 78 个字符的余量给「`command` 被配成
+ * 绝对路径」那一档（实测：82 字符的命令名组装出来 595，仍 ≤600），所以守卫可以直接断言
+ * **组装后**的真实文本，而不是「归一掉命令名之后」的估算值。
  */
 const codegraphUsageGuidance = (command) => `<!-- CODEGRAPH_START -->
 ## CodeGraph
 
-In repositories indexed by CodeGraph — a \`.codegraph/\` directory with an index database at the repo root (the CLI's own \`~/.codegraph\` install dir does not count) — reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+In a repo with a \`.codegraph/\` index database at its root (the CLI's \`~/.codegraph\` install dir does not count), use it before grep/read to find or understand code:
 
-- **MCP tool**: \`mcp__codegraph__codegraph_explore\`; name a file or symbol in the query to also read its current line-numbered source. If it asks for \`projectPath\` (no default project loaded), pass the project's absolute path — one server answers for any number of projects.
-- **Shell** (no MCP needed): \`${command} explore "<symbol names or question>"\` prints the same output, and \`--path <dir>\` targets another project.
-- If a project has no \`.codegraph/\`, use your normal search tools there; don't run \`codegraph init\` — indexing is the user's decision.
+- **MCP**: \`mcp__codegraph__codegraph_explore\`; if asked for \`projectPath\`, pass the absolute path.
+- **Shell**: \`${command} explore "<symbols or question>"\`, \`--path <dir>\` for another project.
+- No \`.codegraph/\`? use normal search; don't run \`codegraph init\` — indexing is the user's decision.
 <!-- CODEGRAPH_END -->`;
 const plugin = definePlugin({
     name: 'codegraph',
@@ -3496,7 +3632,13 @@ const plugin = definePlugin({
                 //     没有索引的 agent 照样会继承到全局那行的项目上下文（正是 P0 要消除的漂移）。
                 // 裁决未落地时回落 managed（保守：不挂载）。apply 里的兜底 effect 是同步跑的，
                 // 所以实际路径上裁决总是先于 agent/created 存在。
-                getMounter()?.attach(agent, runtimeRef?.scopeDecision?.mode ?? DEFAULT_MCP_SCOPE);
+                const mounter = getMounter();
+                if (mounter === undefined)
+                    return;
+                // env 的同步预注入必须先于 per-agent 子进程 spawn（射程与实测边界见 env-gate.ts）。
+                whenEnvReady(ctx, () => {
+                    mounter.attach(agent, runtimeRef?.scopeDecision?.mode ?? DEFAULT_MCP_SCOPE);
+                });
             });
             on.call(ctx, 'agent/disposed', (...args) => {
                 const agent = args[0]?.agent;
@@ -3562,15 +3704,21 @@ const plugin = definePlugin({
             if (effective === 'per-agent') {
                 // 补挂已存在的 agent。用 agent 服务（而不是 sessions）：per-agent 要的是
                 // **活的 agent**（agent.ctx 才有 scope），会话列表里可能含没有 agent 的会话。
-                try {
-                    for (const agent of readAgentSurface()?.list?.() ?? [])
-                        active.attach(agent, wanted);
-                }
-                catch (error) {
-                    console.warn('[dsh-codegraph] 补挂已有 agent 失败（之后新建的 agent 不受影响）：'
-                        + (error instanceof Error ? error.message : String(error)));
-                }
-                console.log('[dsh-codegraph] per-agent 模式已生效：' + decision.reason);
+                // 等 env 的同步注入就绪再挂：per-agent 子进程要继承它注入的环境变量。
+                whenEnvReady(ctx, () => {
+                    // 等待期间模式可能已被改回 managed：过期回调不许再挂。
+                    if (appliedScopeMode !== 'per-agent')
+                        return;
+                    try {
+                        for (const agent of readAgentSurface()?.list?.() ?? [])
+                            active.attach(agent, wanted);
+                    }
+                    catch (error) {
+                        console.warn('[dsh-codegraph] 补挂已有 agent 失败（之后新建的 agent 不受影响）：'
+                            + (error instanceof Error ? error.message : String(error)));
+                    }
+                    console.log('[dsh-codegraph] per-agent 模式已生效：' + decision.reason);
+                });
             }
             else {
                 active.detachAll();
@@ -3696,20 +3844,21 @@ const plugin = definePlugin({
             }
             return disposer;
         };
-        /** 按「CLI 可用 + settings 开关 + 索引门禁」刷新两段 section（幂等，可反复调用）。 */
+        /** 按两套门禁刷新两段 section（幂等，可反复调用；门禁口径见上面那段注释）。 */
         const refreshGuidance = () => {
             if (promptApi === undefined)
                 return;
             const resolved = runtimeRef?.current;
             const announce = resolved?.announce ?? announceDefault;
             const usage = resolved?.usage ?? usageDefault;
-            // 探测未落地（undefined）或已判定不可用时都不注入：宁可晚一轮，也不向模型
-            // 宣告一个跑不起来的能力。
+            // 「CLI 探测可用」只对 usage 段成立：公告段讲卡片，卡片不依赖 CLI。探测未落地
+            // （undefined）或已判定不可用时都不注入 usage——宁可晚一轮，也不向模型宣告一个
+            // 跑不起来的能力。
             const ready = cliProbeState.available === true;
             // 索引门禁（P1-a）：判据与 effectiveProjectPath 同源，见上面那段注释。
             // 每次 refresh 现算：会话切换 / 设为默认项目 / uninit 都走 refreshGuidance。
             const indexed = indexState(effectiveProjectPath(runtimeRef)) === 'indexed';
-            announceDisposer = setSection(announceDisposer, ready && announce, (api) => registerLiteralSection(api, { name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }));
+            announceDisposer = setSection(announceDisposer, announce, (api) => registerLiteralSection(api, { name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }));
             usageDisposer = setSection(usageDisposer, ready && usage && indexed, (api) => registerLiteralSection(api, { name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }));
         };
         let probeInFlight;
@@ -3769,10 +3918,10 @@ const plugin = definePlugin({
                     // 两种判死的文案分开（外部 issue 建议三）：超时穷尽与「命令不存在」的
                     // 排障方向完全不同——前者查机器负载，后者查 command 路径。
                     if (result.inconclusive === true) {
-                        console.warn(`[dsh-codegraph] \`${command} --version\` 连续 ${retryDelaysMs.length + 1} 次探测超时（疑似宿主启动争抢或命令挂住）：按不可用跳过 systemPrompt 公告与使用指引，稍后可在卡片「重新探测」—— ${result.error}`);
+                        console.warn(`[dsh-codegraph] \`${command} --version\` 连续 ${retryDelaysMs.length + 1} 次探测超时（疑似宿主启动争抢或命令挂住）：按不可用跳过 systemPrompt 的使用指引（公告段不看 CLI，照常注入），稍后可在卡片「重新探测」—— ${result.error}`);
                     }
                     else {
-                        console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的能力公告与使用指引（卡片与 MCP 托管不受影响）—— ${result.error}`);
+                        console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的使用指引（公告段照常注入；卡片与 MCP 托管不受影响）—— ${result.error}`);
                     }
                 }
                 refreshGuidance();

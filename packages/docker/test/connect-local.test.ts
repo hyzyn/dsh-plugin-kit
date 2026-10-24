@@ -635,10 +635,13 @@ describe('POST /connect-local：本机 docker 不可用时的口径', () => {
 
 describe('docker_connect_local 工具', () => {
   it('恒注册（与能力开关无关），且没有必填参数', () => {
-    const harness = mountPlugin({ targets: [] })
-    const tool = harness.tools.find((item) => item.name === 'docker_connect_local')
+    // 零目标时它也在——空态的两条出路之一（见 tool-registration.test.ts 的零目标用例）
+    const empty = mountPlugin({ targets: [] })
+    expect(empty.tools.map((item) => item.name)).toEqual(['docker_targets', 'docker_connect_local'])
+    const tool = empty.tools.find((item) => item.name === 'docker_connect_local')
     expect(tool).toBeDefined()
-    // 与只读工具同一档：不因 allowMutations / allowExec 未授权而消失
+    // 与只读工具同一档：不因 allowMutations / allowExec 未授权而消失（有目标时 docker_ps 一起在）
+    const harness = mountPlugin({ targets: [SSH_TARGET] })
     expect(harness.tools.map((item) => item.name)).toContain('docker_ps')
   })
 

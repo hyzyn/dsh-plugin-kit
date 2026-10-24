@@ -57,5 +57,6 @@ interface Config {
 
 - The managed block is marked with `# --- dsh-prompt-manager managed ...`; the plugin only rewrites that block and keeps everything else as is.
 - Every Prompt needs at least one version; version content is at most 500KB.
+- Injection has a separate **per-turn cap**: only the first 8,000 characters of the enabled Prompt body are injected per turn, and the injected text notes where to find the full content (Settings → Plugins → Prompt Management). This is a per-turn request-cost guard, not a save limit — version content can still be up to 500KB; the save response carries a `warning` field when saved content exceeds the per-turn cap, which the card can surface.
 - The A/B random pick happens when systemPrompt is refreshed (save / activate / startup), which suits quickly comparing different system prompt wording; if you need per-session routing, plug in an experimentation platform at a higher layer.
 - The browser half of the plugin relies on the core `slots` service, and only the official settings panel of `dsh-web-app` provides that slot.

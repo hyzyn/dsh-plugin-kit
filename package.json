@@ -50,6 +50,7 @@
     "internal-ids:check": "node scripts/check-internal-identifiers.mjs --self-test && node scripts/check-internal-identifiers.mjs",
     "internal-ids:message": "node scripts/check-internal-identifiers.mjs",
     "readme-facts:check": "node scripts/check-readme-facts.mjs --self-test && node scripts/check-readme-facts.mjs",
+    "readme-structure:check": "node scripts/check-readme-structure.mjs",
     "release:publish": "node scripts/release-publish-tag.mjs",
     "release:preflight": "node scripts/release-publish-tag.mjs --preflight"
   },
@@ -95,7 +96,7 @@
     "@hyzyn/dsh-tty": "0.32.4"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2"
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {

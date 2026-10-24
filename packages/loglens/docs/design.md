@@ -73,6 +73,12 @@
   `hit_limit` 同一口径）。**但默认并不截断**（2026-10-14 对齐 Kibana：`_field_caps` 从不 slice，
   长度交给界面/调用方消化）：不传 `limit` 就全列，只有调用方显式给了 `limit` 才可能出现
   `truncated: true` 与那句警告。优先键仍然排在前面（`preferred: true`）。
+  **REVISION（2026-10-24，渐进披露）**：上面那句「默认并不截断」**已推翻**——工具面 schema 曾合计
+  4813 字符，而「不传 = 全列」把最坏情况（通配全集群的 45KB 字段表）默认交给了 agent；截断可见性
+  那一半判据没变（total / truncated / warning 照给），变的是**默认替调用方挡多少**：现在
+  `runFields` 不传 `limit` 落 `FIELDS_DEFAULT_LIMIT = 200`（无硬顶，显式 `limit` 照调用方说的算），
+  截断警告自带下一步（分段传 limit / 先用 facets 看哪些字段真有数据）。原文按纪律保留，
+  守卫见 `test/tools.test.ts`（默认上限用例 + 「去掉 limit 就是全部」不许再出现的反例）。
   **字段清单只说「能用的名字」**（2026-10-14 对齐 Kibana 的第二刀）：`object` / `nested` 这类**容器行**
   （`container` / `host` / `log` 这种没有自己值的父级）不列——真机实测 `_field_caps?fields=*` 在
   `*,-.*` 上回的 200 个名字里有 10 个是容器行，列出来只会让人选一个「点了没结果」的字段；

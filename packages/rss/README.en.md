@@ -6,44 +6,18 @@
 
 ## Features
 
-- **The digest is injected as a systemPrompt section**: the model can cite the day's items directly, so asking "what's worth reading today" returns real content.
+- **The digest is injected as a systemPrompt section**: the model can cite the day's items directly, so asking "what's worth reading today" returns real content. The switch (`announceToAgent`) is **hot** — saving takes effect (shown or withdrawn) without a restart; the section lists **at most the first 8 items** (in `digest.items` order, category headings kept) and points to that day's digest file for the rest, so every request does not carry an over-long list.
 - **Scheduled fetching, aggregation by category**: generated daily; the modal lets you search, filter by category, and copy the Markdown.
 - **Feeds maintained inside the panel**: built-in channels + custom sources, one-click add from the curated RSSHub catalog, and OPML import/export.
 - **A failed source degrades in place**: when an individual source is down only that source is flagged and the rest still render; the optional AI summary falls back to the original excerpt and explains why.
 
-## Transition layer while refreshing (0.3.1)
+## Transition layer while refreshing
 
-When the “Today's Worth Reading” modal and the settings card refresh, they show hints in the same visual language as dsh-docker's "target switch transition":
+When the “Today's Worth Reading” modal and the settings card refresh, they show a hint in the same visual language as dsh-docker's "target switch transition": a **2px indeterminate shimmer progress bar** at the top of the content area, and a **blue pill** (`⟳ Refreshing feeds · current data generated at 14:29`, full explanation in `title`); the bar sits on the lower edge of the category row and the pill rides it, centred — **absolutely positioned, no layout shift**. It only appears on **slow refreshes** (the existing 180ms debounce), so millisecond requests never flash; when data lands the body does an **8px slide-up + fade-in**, respecting `prefers-reduced-motion`.
 
-- one **2px indeterminate shimmer progress bar** at the top of the content area;
-- one **blue pill**: `⟳ Refreshing feeds · current data generated at 14:29` (the full explanation is in `title`).
-- **Do not mix up the two tokens** (lesson learned the hard way): the interpolated color of the progress bar's shimmer must use the **accent color**
-  `--dsw-alias-state-business-primary` (measured `#4176e6`); I first wrote
-  `--dsw-alias-brand-primary`, but in this skin that one is `#0f1115` (brand ink, **near black**),
-  so the "ripple" rendered as a black line. Both names look like "primary", but the one that actually means the accent color is
-  `--dsw-alias-state-business-primary`, while `--dsw-alias-brand-primary` is brand ink.
-- **Looks identical to dsh-docker's `dk_switchOverlay`**: blue background (`color-mix(accent 12%, bg-base)`),
-  blue border (`accent 42%`), text and spinner take `--dsw-alias-state-business-primary`, and the same
-  2px indeterminate shimmer progress bar on top. Measured, the computed colors of the two pills are exactly
-  the same (background `color(srgb .91 .94 .99)`, text `rgb(65,118,230)`).
-- **Position**: the progress bar sits on the **bottom edge of the category row** (= the line at the top of the list area), and the pill **rides that line, horizontally centered**
-  — the same shape as dsh-docker's `dk_switchOverlay`. Both are absolutely positioned on `.rss_modalFilter`:
-  they take no space in the document flow (no layout shift) and do not cover the category chips.
-  Note that `position:absolute` must be written explicitly: omit it and `left/bottom/transform` all stop
-  working, and the pill degrades into a flow element that pushes the whole list down (hit this once, measured +38px).
-- it appears only on a **slow refresh** (reusing the existing 180ms debounce), so millisecond-level requests do not flicker;
-- both are **absolutely positioned**: measured, the position of the blocks / headings / stats / first item / search box does not change at all
-  before and after a refresh, with no "pushed down then bounced back" jump;
-- when the data lands the body **slides up 8px + fades in**, and the animation respects `prefers-reduced-motion`.
+During refresh the body stays dimmed as before (`opacity:.55`) and the old content remains readable; stale-while-revalidate, the skeleton debounce, and the post-refresh focus/caret and scroll restoration are all retained. The modal's slow path **deliberately does not re-render the whole tree**, so the transition layer injects two absolutely-positioned nodes instead — miss that path and the overlay never appears.
 
-During a refresh the body is still dimmed as before (`opacity:.55`), and the old content stays readable.
-
-All existing protections are kept: stale-while-revalidate (old content stays readable and dimmed during a refresh), skeleton debounce, and
-restoring the search box focus/caret and the list scroll position after a refresh. Note that the modal's slow-loading path **deliberately does not re-render the whole tree**,
-so the transition layer "inserts only two absolutely positioned nodes" instead of relying on a re-render — if this path misses the injection, the overlay never appears.
-
-Regression: `pnpm --filter @hyzyn/dsh-rss smoke` (6 static assertions guarding "absolute positioning without layout shift / debounce gate /
-copy shape / landing marker / existing protections").
+Implementation notes (the accent-token trap, why absolute positioning is mandatory, the 6 regression assertions) are in [ROADMAP § completed](./ROADMAP.md#已完成落点--门槛) (Chinese).
 
 ## Capabilities
 
@@ -104,7 +78,7 @@ Common configuration options:
 | Field | Description | Default |
 | --- | --- | --- |
 | `enabled` | Whether to enable the plugin | `true` |
-| `announceToAgent` | Whether to inject the digest into systemPrompt | `true` |
+| `announceToAgent` | Whether to inject the digest into systemPrompt (**hot**: shown or withdrawn on save, no restart) | `true` |
 | `includeCatalog` | Whether to expose the feed catalog (/api/dsh-rss/catalog) | `true` |
 | `sources` | Custom feed list; when passed it replaces all built-in channels | 7 built-in channels |
 | `maxItemsPerSource` | Maximum number of items taken per source | `5` |

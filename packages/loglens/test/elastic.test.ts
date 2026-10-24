@@ -842,11 +842,58 @@ describe('flavor / fields / health', () => {
 })
 
 describe('错误', () => {
-  it('401 把状态码与 reason 一起报出来', async () => {
+  it('401 把状态码与 reason 一起报出来，并补「凭据」的下一步（渐进披露 T8）', async () => {
     const fake = await startFakeEs({ docs: [], failSearch: { status: 401, body: { error: { type: 'security_exception', reason: 'unable to authenticate' } } } })
     const backend = createElasticBackend({ flavor: 'es' })
-    await expect(backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target))
-      .rejects.toThrow('[elasticsearch] HTTP 401：unable to authenticate')
+    const message = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('[elasticsearch] HTTP 401：unable to authenticate')
+    expect(message).toContain('凭据')
+  })
+
+  it('正文仍截在 200 字（下一步缀在正文之后，不放宽既有上限）', async () => {
+    // 提示是**追加**在正文后面的：正文那一刀的 200 字上限必须原样保留，
+    // 否则一句 4KB 的后端报错会把整段错误面撑爆（那正是 detailOf 当初挡住的东西）。
+    const fake = await startFakeEs({ docs: [], failSearch: { status: 401, raw: 'x'.repeat(500) } })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const message = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('x'.repeat(200) + '…')
+    expect(message).not.toContain('x'.repeat(201))
+    // 截断不吞掉下一步
+    expect(message).toContain('凭据')
+  })
+
+  it('404 补「索引或路径」的下一步（渐进披露 T8；游标过期的 404 走 truncation，不经这条文案）', async () => {
+    const fake = await startFakeEs({ docs: [], failSearch: { status: 404, body: { error: { type: 'index_not_found_exception', reason: 'no such index [nope]' } } } })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const message = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('HTTP 404')
+    expect(message).toContain('索引或路径')
+  })
+
+  it('5xx 是后端自己的故障：不把「检查配置」的方向缀上去（渐进披露 T8 的反例）', async () => {
+    const fake = await startFakeEs({ docs: [], failSearch: { status: 502, raw: '<html>bad gateway</html>' } })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const message = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('HTTP 502')
+    expect(message).not.toContain('凭据')
+    expect(message).not.toContain('权限')
+    expect(message).not.toContain('索引或路径')
+  })
+
+  it('连接失败补「地址与网络是否可达」的下一步（渐进披露 T8）', async () => {
+    const fake = await startFakeEs({ docs: [] })
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+    const backend = createElasticBackend({ flavor: 'es' })
+    const message = await backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW }), fake.target)
+      .then(() => '', (error: Error) => error.message)
+    expect(message).toContain('地址与网络是否可达')
   })
 
   it('非 JSON 响应说清楚；os 的前缀是 [opensearch]', async () => {

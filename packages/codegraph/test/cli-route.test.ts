@@ -24,8 +24,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 // 只取 rmStubDir：本文件**自己**有 writeStubCli（带按名缓存与 writeStubCliAt），
 // 从 helper 再导一个同名函数会把它覆盖掉（实测：52 条用例全红）。
 import { rmStubDir } from './stub-cli.js'
-import { apply, staleReasonsFromStatus } from '../src/index.js'
-import type { ProbeTuning } from '../src/index.js'
+import { apply, describeMcpToolState, staleReasonsFromStatus } from '../src/index.js'
+import type { McpSyncStatus, ProbeTuning } from '../src/index.js'
 
 const POSIX = process.platform !== 'win32'
 const sandbox = mkdtempSync(join(tmpdir(), 'dsh-cg-route-'))
@@ -616,7 +616,7 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
   })
 
-  it('CLI 不可用：两段都不注入，GET /default-path 报 cliAvailable=false', async () => {
+  it('CLI 不可用：公告段照常注入（它讲的是卡片），usage 段不注入', async () => {
     const mount = mountFull(missingCli())
     // 探测未落地时 JSON 里没有 cliAvailable（区分「还没探测完」与「确认不可用」）
     const first = await call(mount.routes, '/api/dsh-codegraph/default-path')
@@ -627,10 +627,12 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
       return cliAvailable === false
     })
     expect(cliAvailable).toBe(false)
-    // 探测失败时卡片要报出被探测的命令名，便于让用户把 command 加成绝对路径
+    // 探测失败时卡片要报出被探测的命令名，便于让用户把 command 改成绝对路径
     const withCommand = await call(mount.routes, '/api/dsh-codegraph/default-path')
     expect(withCommand.body?.command).toBe(missingCli())
-    expect(mount.sections.size).toBe(0)
+    // T2：公告段**不跟** CLI 探测走——卡片路由是无条件注册的（插件装着、卡片就能用），
+    // 模型必须知道它存在；usage 段才需要「CLI 跑得起来」这个前提。
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
   })
 
   it('探测失败带出实测原因：命令不存在时是「找不到命令」的实测原文，不是泛泛一句「探测不到」', async () => {
@@ -674,7 +676,8 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     const indexed = indexedProject('gate-late-')
     const mount = mountFull(late, { defaultPath: indexed })
     await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
-    expect(mount.sections.size).toBe(0)
+    // T2：CLI 还没装好时公告段照样在（它讲卡片），usage 段才被 CLI 门禁挡住。
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
 
     // 只把 CLI 文件补上：不动补丁、不重启宿主
     writeStubCliAt(late, 'console.log("9.9.9")')
@@ -761,7 +764,8 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false, 15_000)
     const done = await call(mount.routes, '/api/dsh-codegraph/default-path')
     expect(String(done.body?.cliProbeError ?? '')).toContain('timeout after 600ms')
-    expect(mount.sections.size).toBe(0)
+    // T2：探测判死只撤 usage 段；公告段与 CLI 无关，仍然注入。
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
   })
 
   it('安装级开关关闭：对应段落不注入', async () => {
@@ -808,6 +812,122 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     const empty = await call(mount.routes, '/api/dsh-codegraph/settings', { method: 'POST', body: { defaultPath: '/tmp' } })
     expect(empty.status).toBe(400)
     expect(empty.body?.error).toContain('缺少可写字段')
+  })
+})
+
+/**
+ * 披露面收口（T3 / T4）的长度与内容守卫。
+ *
+ * 为什么要有守卫：这两段是**每一步请求都带**的上下文，长了就是长期摊在 token 账上的
+ * 成本，短了又不能丢掉模型真要执行的信息。没有守卫的话下一次「顺手补一句」就会漂回去
+ * ——上一版公告段就是这么从 327 字涨到 157 字还留着一串按钮名的。
+ *
+ * 数字口径：`text.length` 是**组装后**的真实字符数（含 HTML 注释标记与换行，中文按 1
+ * 个字符算），与任务里「874 → ≤600」的测量口径一致。
+ */
+describe('披露面守卫：公告段 ≤70 / 使用指引段 ≤600，且不背卡片按钮名', () => {
+  const indexed = () => indexedProject('guard-disclosure-')
+
+  it('公告段 ≤70 字符，且不含「sync / 重建索引 / 设为默认项目」这类按钮名', async () => {
+    const mount = mountFull(echoCli(), { defaultPath: indexed() })
+    await waitFor(() => mount.sections.size === 2)
+    const announce = mount.sections.get('plugin:dsh-codegraph')?.text ?? ''
+    expect(announce.length, `公告段 ${announce.length} 字符（上限 70）`).toBeLessThanOrEqual(70)
+    // 可执行信息只剩「引导用户打开卡片」，其余都是 UI 细节
+    expect(announce).toContain('dsh-codegraph')
+    expect(announce).toContain('Codegraph')
+    for (const button of ['sync', '重建索引', '设为默认项目', '搜索符号', '索引状态']) {
+      expect(announce, `公告段不该背卡片按钮名：${button}`).not.toContain(button)
+    }
+  })
+
+  it('使用指引段 ≤600 字符，三条独有信息都在（索引判据 / --path / 别 init）', async () => {
+    const mount = mountFull(echoCli(), { defaultPath: indexed() })
+    await waitFor(() => mount.sections.size === 2)
+    const usage = mount.sections.get('plugin:dsh-codegraph:usage')?.text ?? ''
+    expect(usage.length, `使用指引段 ${usage.length} 字符（上限 600）`).toBeLessThanOrEqual(600)
+    // ① 何时用它：`.codegraph/` 里要有索引库（CLI 自己的安装目录不算）
+    expect(usage).toContain('.codegraph/')
+    // ② 两个入口：MCP 工具 + shell 兜底，`--path` 换项目
+    expect(usage).toContain('mcp__codegraph__codegraph_explore')
+    expect(usage).toContain('--path')
+    // ③ 失败怎么办：没有索引就用常规搜索，且**别**替用户跑 init
+    expect(usage).toContain("don't run")
+  })
+})
+
+describe('T6：状态接口如实回答「有没有工具」（托管行在 ≠ 工具在）', () => {
+  const rowStatus = (over: Partial<McpSyncStatus> = {}): McpSyncStatus => ({
+    mode: 'own',
+    cwd: '/tmp/some-project',
+    indexed: true,
+    indexState: 'indexed',
+    ...over,
+  })
+
+  it('空占位 `- insert: []` + 未索引默认项目：mcp.mode=none 且 mcpTools 给出原因与下一步', async () => {
+    // CG69 现场的形状：文件里有本插件的区块，但区块体是空占位 → 一个 codegraph MCP
+    // 行都没有 → `mcp__codegraph__*` 一个都不注册。字段各自正确、合起来读成「已托管」
+    // 正是这条缺陷的要害，所以状态接口必须自己给结论。
+    writeFileSync(join(dshHome, 'cordis.patch.yml'), [
+      '# --- dsh-codegraph mcp managed (auto-generated; do not edit) ---',
+      '- insert: []',
+      '# --- end dsh-codegraph mcp managed ---',
+      '',
+    ].join('\n'))
+    const mount = mountFull(echoCli()) // 默认项目刻意未索引
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect((capture.body?.mcp as { mode?: string })?.mode).toBe('none')
+    const tools = capture.body?.mcpTools as { tools?: number; reason?: string; nextStep?: string } | undefined
+    expect(tools?.tools).toBe(0)
+    // 原因与下一步都要能独立读懂（卡片直接渲染这两句，不再自己拼）
+    expect(String(tools?.reason)).toContain('托管行')
+    expect(String(tools?.nextStep)).toContain('默认项目')
+  })
+
+  it('空占位 + 未索引默认项目：`mcp.note` 自证「设为默认项目」（空态自证走真出口）', async () => {
+    // 与上一条同一个现场，但断言的是**卡片直接渲染的那句 note**：`snapshotMcpStatus`
+    // 必须把空态自证接上（判据在 `withEmptyStateNote`，这条钉的是「真出口有没有接线」）。
+    writeFileSync(join(dshHome, 'cordis.patch.yml'), [
+      '# --- dsh-codegraph mcp managed (auto-generated; do not edit) ---',
+      '- insert: []',
+      '# --- end dsh-codegraph mcp managed ---',
+      '',
+    ].join('\n'))
+    const mount = mountFull(echoCli()) // 默认项目刻意未索引
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    const mcp = capture.body?.mcp as { mode?: string; note?: string } | undefined
+    expect(mcp?.mode).toBe('none')
+    expect(String(mcp?.note)).toContain('设为默认项目')
+  })
+
+  it('已索引默认项目 + 已托管：tools=1，不给多余的 nextStep', async () => {
+    writeFileSync(join(dshHome, 'cordis.patch.yml'), '\n')
+    const mount = mountFull(echoCli(), { defaultPath: indexedProject('t6-indexed-') })
+    await waitFor(() => mount.sections.size === 2)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    const tools = capture.body?.mcpTools as { tools?: number; reason?: string; nextStep?: string } | undefined
+    expect(tools?.tools).toBe(1)
+    expect(tools?.nextStep).toBeUndefined()
+    expect(String(tools?.reason)).toContain('codegraph_explore')
+  })
+
+  it('行被停用（disabled: true）：tools=0，下一步点明「切回 managed / 重新启用」', () => {
+    const state = describeMcpToolState({ status: rowStatus({ mode: 'dsh-mcp', disabled: true, cwd: '/tmp/p' }), mode: 'managed', mounts: 0 })
+    expect(state.tools).toBe(0)
+    expect(state.reason).toContain('disabled')
+    expect(String(state.nextStep)).toContain('managed')
+  })
+
+  it('per-agent：已挂载数进原因；0 个挂载时给下一步而不是说「已托管」', () => {
+    const mounted = describeMcpToolState({ status: rowStatus({ mode: 'none' }), mode: 'per-agent', mounts: 2 })
+    expect(mounted.tools).toBe(1)
+    expect(mounted.reason).toContain('2 个会话')
+    const idle = describeMcpToolState({ status: rowStatus({ mode: 'none' }), mode: 'per-agent', mounts: 0 })
+    expect(idle.tools).toBe(0)
+    expect(String(idle.nextStep)).toContain('已索引')
   })
 })
 

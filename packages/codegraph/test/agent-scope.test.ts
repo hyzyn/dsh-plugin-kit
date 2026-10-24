@@ -73,11 +73,18 @@ const decision = (targetCwd: string, over: Partial<McpSyncDecision> = {}): McpSy
 describe('P0：模式解析（resolveScopeMode）', () => {
   const base = { manageEnabled: true, agentEvents: true, externalRow: false }
 
-  it('默认是 managed —— 这是行为变更，不许悄悄切成 per-agent', () => {
-    expect(DEFAULT_MCP_SCOPE).toBe('managed')
+  it('默认是 per-agent —— 没有索引的会话拿不到工具，这是默认行为（收口）', () => {
+    // 2026-10-24 从 managed 翻成 per-agent：默认必须是「按会话索引挂载」，
+    // 否则家目录 / 无索引仓库里的会话照样继承全局托管行（工具在、语义随全局 cwd 漂移）。
+    expect(DEFAULT_MCP_SCOPE).toBe('per-agent')
     const d = resolveScopeMode({ ...base })
-    expect(d.mode).toBe('managed')
-    expect(d.reason).toContain('默认')
+    expect(d.mode).toBe('per-agent')
+    expect(d.reason).toContain('per-agent')
+  })
+
+  it('显式 managed 仍然有效（回滚路径）', () => {
+    expect(resolveScopeMode({ ...base, config: 'managed' }).mode).toBe('managed')
+    expect(resolveScopeMode({ ...base, config: 'managed' }).reason).toContain('托管行')
   })
 
   it('显式 per-agent 且前提齐备 → per-agent', () => {
@@ -108,12 +115,17 @@ describe('P0：模式解析（resolveScopeMode）', () => {
     expect(d.reason).toContain('总开关')
   })
 
-  it('非法值一律回落 managed（配置面不让插件起不来）', () => {
-    expect(normalizeMcpScope('nonsense')).toBe('managed')
-    expect(normalizeMcpScope(undefined)).toBe('managed')
-    expect(normalizeMcpScope(42)).toBe('managed')
+  it('非法值一律回落到默认模式（配置面不让插件起不来）', () => {
+    // 回落目标跟着 DEFAULT_MCP_SCOPE 走：默认翻成 per-agent 之后，非法值也落到 per-agent
+    // （前提不成立时再按 resolveScopeMode 退回 managed 并说明原因）。
+    expect(normalizeMcpScope('nonsense')).toBe('per-agent')
+    expect(normalizeMcpScope(undefined)).toBe('per-agent')
+    expect(normalizeMcpScope(42)).toBe('per-agent')
     expect(normalizeMcpScope('per-agent')).toBe('per-agent')
-    expect(resolveScopeMode({ ...base, config: 'nonsense' }).mode).toBe('managed')
+    // 显式 fallback 仍然生效（调用方可以自己钉死回落目标）
+    expect(normalizeMcpScope('nonsense', 'managed')).toBe('managed')
+    expect(resolveScopeMode({ ...base, config: 'nonsense' }).mode).toBe('per-agent')
+    expect(resolveScopeMode({ ...base, config: 'nonsense', agentEvents: false }).mode).toBe('managed')
   })
 })
 

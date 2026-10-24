@@ -15,7 +15,7 @@ const HeadlessTerminal = xtermHeadless.Terminal;
 import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
-import { sharedGrantStore, auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
+import { sharedGrantStore, auditLoadedGrants, attachTierGate, attachTierRestrict, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
 import { probeSsh } from './probe.js';
 import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath, shellIntegrationSupported, tmuxSocketName } from './shell-integration.js';
 import { KEY_VOCABULARY, resolveKeys } from './keys.js';
@@ -304,14 +304,16 @@ const STATS_ONESHOT_TIMEOUT_MS = 15_000;
  * 各自的工具描述里**，这里不再复述一遍：同一件事写两处，既白占每轮上下文，又会随
  * 改动漂成两份互相矛盾的真相（本文件历史上这两处就重复过）。
  *
- * 这里只留工具描述里**没有**的东西：面板侧能力（SSH / SFTP / 隧道 / tmux 持久化在哪配）
- * 与引导用户的话术。
+ * 这里只留工具描述里**没有**、而模型**真的会据此做决策**的两句：什么时候别用终端，
+ * 以及用户提到终端相关需求时该把哪张卡片指给他。面板侧能力（SSH / SFTP / 隧道 /
+ * tmux 持久化）不进这段——模型动不了它们，写在这里只是每轮白占上下文，细节留在
+ * 设置卡片与包 README 里。
+ *
+ * 长度守卫见 `scripts/test/announcement-budget.test.ts`（预算 250）：这段每一轮都在
+ * 上下文里，涨回去的代价是每一轮都付。
  */
-const TTY_GUIDANCE = '**先判断要不要用终端**：只有「需要跨调用保留状态（REPL / 调试器）、要跑长驻或交互式进程、或用户要看着这条命令跑」才用 tty_open / tty_run；一次跑完的有界命令直接用 bash 工具，别在 bash 里挂起等待。用完的会话记得 tty_close——agent 开的会话不随连接回收，攒着会占会话名额与面板标签。'
-    + '面板（Web GUI 侧边栏「终端」）是真 PTY：vim / htop 等 TUI、多标签、断线重连都能跑，新标签默认在当前会话工作目录打开。agent 开的会话**就出现在用户面板里、用户可接管**，所以别开隐形会话。'
-    + '标签栏「+」还能开 SSH 标签（ssh2 原生连接；连接簿、agent forwarding、主机指纹 TOFU、单跳跳板机都在设置卡片维护）；面板内另有 SFTP 文件浏览（上传/下载/建目录/重命名/删除），以及由连接簿条目配置的端口转发隧道；设置卡片开「会话持久化（tmux）」后新标签由 tmux 托管，能跨宿主重启恢复，长任务建议开着它跑。'
-    + '用户提到「开个终端 / 在终端里跑 / SSH 到某台机器 / 传文件 / 转发端口」时，引导他打开这个面板。'
-    + '典型流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '**先判断要不要用终端**：只有需要跨调用保留状态（REPL / 调试器）、要跑长驻或交互式进程、或用户要看着这条命令跑，才用终端；一次跑完的有界命令直接用 bash 工具，别在 bash 里挂起等待。'
+    + '本机装有 dsh-tty 插件（终端面板，tty_* 工具）；用户提到「开终端 / SSH / 传文件 / 转发端口」时，引导他打开 设置 → 插件配置 → 终端面板。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。
  *
  *  `platform` 只为单测注入（D100 的闸门是 win32-only，macOS/Linux 上要能断言两条分支）。
@@ -1153,6 +1155,19 @@ function screenTextOf(screen) {
     while (lines.length > 0 && lines[lines.length - 1].trim() === '')
         lines.pop();
     return lines.join('\n');
+}
+/** `tty_screen` 正文的保尾上限：屏幕末尾（提示符行）才是有效区，丢头部不丢尾部。 */
+const SCREEN_TEXT_CAP = 32 * 1024;
+/**
+ * `tty_screen` 的正文裁剪：保尾截断到 32KB，并**自证**这次有没有截断。
+ *
+ * 大尺寸屏幕装满文本就可能越过 32KB（最多 200 行 × 500 列）；此前截断是静默的，
+ * agent 会把砍过的正文当成整屏。`truncated` 进返回体、也进 schema——让调用方
+ * 从「有没有某句提示」反推是不可靠的。
+ */
+export function screenPayload(full) {
+    const truncated = full.length > SCREEN_TEXT_CAP;
+    return { text: truncated ? full.slice(-SCREEN_TEXT_CAP) : full, truncated };
 }
 /**
  * 唯一追加点（D72）：环形缓冲与单调字符计数一起维护。水位线用绝对值定位
@@ -5139,6 +5154,8 @@ const plugin = definePlugin({
                     return parts.slice(-(lines + 1)).join('\n').replace(/^\n+/, '');
                 };
                 let activeDisposers = [];
+                /** 本次真注册的工具名（启动日志的「实际注册集」；能力全集是文件末尾那行 registered）。 */
+                let registeredNames = [];
                 /** 幂等重注册：撤下现有工具后按 enabled 决定是否重挂（禁用热生效的入口；由 applyPatch 经 refreshToolsHook 触发）。 */
                 const registerAll = () => {
                     for (const dispose of activeDisposers) {
@@ -5150,12 +5167,21 @@ const plugin = definePlugin({
                         }
                     }
                     activeDisposers = [];
+                    registeredNames = [];
                     if (!stateRef.enabled) {
                         stateRef.toolsRegistered = false;
                         console.log('[dsh-tty] agent tools skipped (disabled)');
                         return;
                     }
-                    activeDisposers.push(tools.register(defineTool({
+                    /**
+                     * 注册一个工具并**记下它的名字**（active 日志用；返回值照旧进 activeDisposers，push 顺序不变）。
+                     * 所有工具都必须经这里注册——绕过它 = 日志里的「实际注册集」少一个名字。
+                     */
+                    const registerTool = (definition) => {
+                        registeredNames.push(definition.name);
+                        return tools.register(definition);
+                    };
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_list',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
@@ -5241,7 +5267,7 @@ const plugin = definePlugin({
                             return { sessions: sessions.listForAgent() };
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_open',
                         description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。`command` 按 **宿主 shell 的语法整段执行**（D78：旧版本里 `exec` 包装只跑第一条）——POSIX shell 上 `cd dir && cmd`、`a; b`、`for …; do …; done` 都可以，**Windows 的 cmd / PowerShell 则按它们自己的语法**（当前执行命令的 shell 与语法见 systemPrompt 里的终端一行）；**它跑完退出后会话不会立刻消失**：会转成只读保留（留到显式关闭，最多留 16 条），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
                         parameters: {
@@ -5276,7 +5302,7 @@ const plugin = definePlugin({
                             });
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_close',
                         description: '关闭一个由 tty_open 开的终端会话（结束其中的进程）。**只能关 agent 自己开的会话**：用户在面板里开的标签会被拒绝，请让用户自己在面板里关，不要越权结束用户正在用的终端。对**进程已退出但仍只读保留着**的会话同样可用——那就是它的释放入口（把屏与缓冲还回去）。只读保留默认留到显式关闭（宿主重启也会清空），不按时间释放；同时最多留 16 条，超出按最旧淘汰。',
                         parameters: {
@@ -5300,7 +5326,7 @@ const plugin = definePlugin({
                             return await server.closeAgentSession(input.sid);
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_run',
                         description: '**一次性命令**：开一个终端会话跑 `command`，等它结束，直接返回尾部输出 + 退出码（会话出现在用户面板里、可见可接管）——把「tty_open → 等 → tty_capture{last} → tty_close」四步压成一次调用。命令**跑完就结束**：默认把这个会话关掉（结果已在本调用返回），`keep:true` 则留在「只读保留」态供回看。到 `timeoutSec` 还没结束会返回 `running:true`（会话照旧在跑，**杀不杀由你决定**），接着用 tty_expect / tty_capture 看，或 tty_close 关掉。何时用它而不是 bash 工具：需要用户**看得见**这条命令、或要跑在终端会话里（同一套 PTY / 会话名额 / 后续可接管）时用它；纯非交互、不需要用户看见的命令用 bash 工具更直接。`command` 按宿主 shell 的语法整段执行（POSIX 上 `cd x && cmd`、多行脚本都可以；Windows 的 cmd / PowerShell 按它们自己的语法）。',
                         parameters: {
@@ -5376,7 +5402,7 @@ const plugin = definePlugin({
                             return { ...result, closed: true };
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_stats',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
@@ -5444,7 +5470,7 @@ const plugin = definePlugin({
                             return { sid: input.sid, available: true, ...(session.target !== '' ? { target: session.target } : {}), ...result.frame };
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_capture',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
@@ -5538,7 +5564,7 @@ const plugin = definePlugin({
                             };
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_screen',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
@@ -5555,6 +5581,7 @@ const plugin = definePlugin({
                                     cols: { type: 'number', required: true },
                                     rows: { type: 'number', required: true },
                                     text: { type: 'string', required: true },
+                                    truncated: { type: 'boolean', required: true },
                                     exited: { type: 'boolean' },
                                     signal: { type: 'string' },
                                 },
@@ -5564,7 +5591,9 @@ const plugin = definePlugin({
                                 const note = v.exited === true
                                     ? `（⚠️ 该会话的进程已退出${v.signal !== undefined && v.signal !== '' ? `（signal=${v.signal}）` : ''}：这是退出那一刻的屏幕，只读保留中）`
                                     : '';
-                                return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 当前屏幕（${String(v.cols ?? '?')}×${String(v.rows ?? '?')}）${note}：\n\n${v.text ?? ''}` }];
+                                // 截断提示只在真的截断时出现：≤32KB 的屏幕不该无缘由地把 agent 赶去 tty_capture
+                                const truncNote = v.truncated === true ? '\n\n（仅显示屏幕底部 32KB；完整滚动输出用 `tty_capture` 取）' : '';
+                                return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 当前屏幕（${String(v.cols ?? '?')}×${String(v.rows ?? '?')}）${note}：\n\n${v.text ?? ''}${truncNote}` }];
                             },
                         },
                         async execute(args) {
@@ -5581,17 +5610,19 @@ const plugin = definePlugin({
                                 throw new Error(`虚拟屏不可用: ${input.sid}${why}`);
                             }
                             // 保尾截断：屏幕末尾（提示符行）才是有效区，丢头部不丢尾部
+                            const { text, truncated } = screenPayload(screenTextOf(screen));
                             return {
                                 sid: input.sid,
                                 cols: screen.cols,
                                 rows: screen.rows,
                                 // D77：只读保留态如实标注（屏不再更新，「当前屏幕」= 退出那一刻）
                                 ...(session.exited === null ? {} : { exited: true, ...(session.exited.signal === null || session.exited.signal === '' ? {} : { signal: session.exited.signal }) }),
-                                text: screenTextOf(screen).slice(-32 * 1024),
+                                text,
+                                truncated,
                             };
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_expect',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
@@ -5753,7 +5784,7 @@ const plugin = definePlugin({
                             });
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
+                    activeDisposers.push(registerTool(defineTool({
                         name: 'tty_send',
                         description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送文本与/或按键（data 含换行则以回车提交；Windows 本地会话上插件会把 `\\n` 归一成 CRLF，照常写 `\\n` 即可）。**控制键与方向键用具名 `keys`，不要自己在 data 里拼转义序列**：`"\\x1b[B"` / `"^[[B"` 这类写法会被当成普通字符打印进终端（而 sent 计数一样，看不出错）。data 与 keys 至少给一个；两个都给时先发 data、再按序发 keys（如 data=":wq" + keys=["Enter"]）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、vim/less 的翻页、回答提示）。操作会实时显示在用户的终端面板里。**对已退出（只读保留）的会话会报错**——那种会话只能读，要接着操作请 tty_open 新开一条。',
                         parameters: {
@@ -5818,482 +5849,495 @@ const plugin = definePlugin({
                             return { ok: true, sent: data.length };
                         },
                     })));
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'tunnel_list',
-                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
-                        isConcurrencySafe: () => true,
-                        description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 插件配置 → 终端面板 卡片维护。',
-                        parameters: {},
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    tunnels: {
-                                        type: 'array',
-                                        required: true,
-                                        items: {
-                                            type: 'object',
-                                            additionalProperties: false,
-                                            properties: {
-                                                name: { type: 'string', required: true },
-                                                direction: { type: 'string', required: true },
-                                                rule: { type: 'string', required: true },
-                                                bookName: { type: 'string', required: true },
-                                                state: { type: 'string', required: true },
-                                                error: { type: 'string' },
-                                                fatal: { type: 'boolean', required: true },
-                                                connections: { type: 'number', required: true },
-                                                totalConnections: { type: 'number', required: true },
+                    // 条件注册（判据 live.tunnels）：隧道启停只改**既有**配置（TunnelManager.setEnabled 找不到名字就报错），
+                    // 一条隧道都没配时挂上去只能报错，不注册就没有这条只有报错一条路的工具；
+                    // applyPatch 热应用后无条件调用 refreshToolsHook 重注册，配了隧道就自动出现。
+                    if (live.tunnels.length > 0) {
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'tunnel_list',
+                            // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                            isConcurrencySafe: () => true,
+                            description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 插件配置 → 终端面板 卡片维护。',
+                            parameters: {},
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        tunnels: {
+                                            type: 'array',
+                                            required: true,
+                                            items: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: {
+                                                    name: { type: 'string', required: true },
+                                                    direction: { type: 'string', required: true },
+                                                    rule: { type: 'string', required: true },
+                                                    bookName: { type: 'string', required: true },
+                                                    state: { type: 'string', required: true },
+                                                    error: { type: 'string' },
+                                                    fatal: { type: 'boolean', required: true },
+                                                    connections: { type: 'number', required: true },
+                                                    totalConnections: { type: 'number', required: true },
+                                                },
                                             },
                                         },
                                     },
                                 },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    const tunnels = v.tunnels ?? [];
+                                    if (tunnels.length === 0)
+                                        return [{ type: 'text', text: '当前没有配置端口转发隧道（插件配置 → 终端面板 卡片可添加）' }];
+                                    const text = '端口转发隧道：' + tunnels.map((t) => {
+                                        // fatal 单独措辞（D58）：这类故障不会自愈，不说清就会一直等「正在连」
+                                        const tail = t.error !== null && t.error !== undefined
+                                            ? (t.fatal === true ? `（错误: ${t.error} —— 不会自动重试，需修配置）` : `（错误: ${t.error}）`)
+                                            : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`;
+                                        return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`;
+                                    }).join('');
+                                    return [{ type: 'text', text }];
+                                },
                             },
-                            render: (_args, value) => {
-                                const v = value;
-                                const tunnels = v.tunnels ?? [];
-                                if (tunnels.length === 0)
-                                    return [{ type: 'text', text: '当前没有配置端口转发隧道（插件配置 → 终端面板 卡片可添加）' }];
-                                const text = '端口转发隧道：' + tunnels.map((t) => {
-                                    // fatal 单独措辞（D58）：这类故障不会自愈，不说清就会一直等「正在连」
-                                    const tail = t.error !== null && t.error !== undefined
-                                        ? (t.fatal === true ? `（错误: ${t.error} —— 不会自动重试，需修配置）` : `（错误: ${t.error}）`)
-                                        : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`;
-                                    return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`;
-                                }).join('');
-                                return [{ type: 'text', text }];
+                            async execute() {
+                                // 显式挑字段（0.19.0）：list() 还带 enabled / lastForwardError，
+                                // 整包展开会突破 schema 的 additionalProperties:false——PTC 生成的
+                                // TS 类型会漏字段。
+                                // error 必须是「**键不存在**」而不是「键存在但值为 undefined」：后者
+                                // 保留了一个 undefined，不是无损 JSON 值，宿主校验会判
+                                // 「must be a lossless JSON object」直接把工具调用变成 Error（B33 抓到）。
+                                return {
+                                    tunnels: tunnelManager.list().map((t) => ({
+                                        name: t.name,
+                                        bookName: t.bookName,
+                                        direction: t.direction,
+                                        rule: t.rule,
+                                        state: t.state,
+                                        ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
+                                        fatal: t.fatal,
+                                        connections: t.connections,
+                                        totalConnections: t.totalConnections,
+                                    })),
+                                };
                             },
-                        },
-                        async execute() {
-                            // 显式挑字段（0.19.0）：list() 还带 enabled / lastForwardError，
-                            // 整包展开会突破 schema 的 additionalProperties:false——PTC 生成的
-                            // TS 类型会漏字段。
-                            // error 必须是「**键不存在**」而不是「键存在但值为 undefined」：后者
-                            // 保留了一个 undefined，不是无损 JSON 值，宿主校验会判
-                            // 「must be a lossless JSON object」直接把工具调用变成 Error（B33 抓到）。
-                            return {
-                                tunnels: tunnelManager.list().map((t) => ({
-                                    name: t.name,
-                                    bookName: t.bookName,
-                                    direction: t.direction,
-                                    rule: t.rule,
-                                    state: t.state,
-                                    ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
-                                    fatal: t.fatal,
-                                    connections: t.connections,
-                                    totalConnections: t.totalConnections,
-                                })),
-                            };
-                        },
-                    })));
-                    /*
-                     * 隧道启停（agent 侧，0.25.0）——`tunnel_list` 只读，此前「停掉 → 重开 → 再看」
-                     * 这个诊断闭环只能让用户去卡片上点。
-                     *
-                     * 两个工具刻意**分成两个**（而不是一个 `tunnel_action(name, action)`）：启停都是
-                     * 真变更（会掐断/建立真连接），合成一个工具会让「改配置」这件事在模型眼里可合并
-                     * 成一次可重试的调用；分开后每个名字只表达一件事，`enabled` 这个布尔也没有翻转歧义。
-                     *
-                     * 两者都**改配置**（见 TunnelManager.setEnabled 的说明）：与卡片上那个勾同一条路，
-                     * 写完 settings 热应用 → reconcile，配置始终是唯一真相源。
-                     */
-                    for (const [toolName, enable, verb] of [['tunnel_start', true, '启动'], ['tunnel_stop', false, '停止']]) {
-                        activeDisposers.push(tools.register(defineTool({
-                            name: toolName,
-                            description: `${verb}一条端口转发隧道（name 来自 tunnel_list）。**会改写配置**——与在 插件配置 → 终端面板 卡片上勾选/取消「启用」是同一件事，所以是持久的、用户看得到。返回的是操作后的状态快照：state 通常还是 connecting（拨号异步），要最终结论稍后 tunnel_list。`,
+                        })));
+                        /*
+                         * 隧道启停（agent 侧，0.25.0）——`tunnel_list` 只读，此前「停掉 → 重开 → 再看」
+                         * 这个诊断闭环只能让用户去卡片上点。
+                         *
+                         * 两个工具刻意**分成两个**（而不是一个 `tunnel_action(name, action)`）：启停都是
+                         * 真变更（会掐断/建立真连接），合成一个工具会让「改配置」这件事在模型眼里可合并
+                         * 成一次可重试的调用；分开后每个名字只表达一件事，`enabled` 这个布尔也没有翻转歧义。
+                         *
+                         * 两者都**改配置**（见 TunnelManager.setEnabled 的说明）：与卡片上那个勾同一条路，
+                         * 写完 settings 热应用 → reconcile，配置始终是唯一真相源。
+                         */
+                        for (const [toolName, enable, verb] of [['tunnel_start', true, '启动'], ['tunnel_stop', false, '停止']]) {
+                            activeDisposers.push(registerTool(defineTool({
+                                name: toolName,
+                                description: `${verb}一条端口转发隧道（name 来自 tunnel_list）。**会改写配置**——与在 插件配置 → 终端面板 卡片上勾选/取消「启用」是同一件事，所以是持久的、用户看得到。返回的是操作后的状态快照：state 通常还是 connecting（拨号异步），要最终结论稍后 tunnel_list。`,
+                                parameters: {
+                                    name: { type: 'string', required: true, description: '隧道名（tunnel_list 的 name 字段，形如 <连接簿条目>-L<端口>）' },
+                                },
+                                output: {
+                                    schema: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            name: { type: 'string', required: true },
+                                            enabled: { type: 'boolean', required: true },
+                                            state: { type: 'string', required: true },
+                                            rule: { type: 'string', required: true },
+                                            bookName: { type: 'string', required: true },
+                                            connections: { type: 'number', required: true },
+                                            error: { type: 'string' },
+                                        },
+                                    },
+                                    render: (args, value) => {
+                                        const a = args;
+                                        const v = value;
+                                        const tail = typeof v.error === 'string' && v.error !== '' ? `（${v.error}）` : '';
+                                        return [{ type: 'text', text: `隧道「${String(a.name ?? '?')}」已${verb}：${String(v.rule ?? '')} · ${String(v.state ?? '')}${tail}` }];
+                                    },
+                                },
+                                async execute(args) {
+                                    const input = args;
+                                    if (typeof input.name !== 'string' || input.name.trim() === '')
+                                        throw new Error('name 必须是非空字符串（隧道名来自 tunnel_list）');
+                                    const result = tunnelManager.setEnabled(input.name.trim(), enable);
+                                    if (!result.ok)
+                                        throw new Error(result.error);
+                                    const t = result.status;
+                                    return {
+                                        name: t.name,
+                                        enabled: t.enabled,
+                                        state: t.state,
+                                        rule: t.rule,
+                                        bookName: t.bookName,
+                                        connections: t.connections,
+                                        // error 键必须「不存在」而不是 undefined（同 tunnel_list 的 D52 教训）
+                                        ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
+                                    };
+                                },
+                            })));
+                        }
+                    }
+                    // 条件注册（判据 live.sshHosts）：sftpBookSpec 每次都走 live.findSshHost，连接簿为空时必然抛
+                    // 「连接簿中不存在」——七个工具挂上去只有报错一条路；
+                    // applyPatch 热应用后无条件调用 refreshToolsHook 重注册，配了连接簿条目就自动出现。
+                    if (live.sshHosts.length > 0) {
+                        // —— SFTP 文件传输工具（0.7.0）——
+                        // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
+                        // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
+                        const sftpBookSpec = (book) => {
+                            if (typeof book !== 'string' || book.trim() === '')
+                                throw new Error('book 必须是 SSH 连接簿条目名');
+                            const entry = live.findSshHost(book.trim());
+                            if (entry === undefined)
+                                throw new Error(`连接簿中不存在: ${book.trim()}`);
+                            return entry;
+                        };
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_list',
+                            // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                            isConcurrencySafe: () => true,
+                            description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前；isSymlink 区分符号链接与真目录）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。默认最多列 500 项（超限 truncated:true，可按子目录分批）。',
                             parameters: {
-                                name: { type: 'string', required: true, description: '隧道名（tunnel_list 的 name 字段，形如 <连接簿条目>-L<端口>）' },
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
+                                path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+                                maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
                             },
                             output: {
                                 schema: {
                                     type: 'object',
                                     additionalProperties: false,
                                     properties: {
-                                        name: { type: 'string', required: true },
-                                        enabled: { type: 'boolean', required: true },
-                                        state: { type: 'string', required: true },
-                                        rule: { type: 'string', required: true },
-                                        bookName: { type: 'string', required: true },
-                                        connections: { type: 'number', required: true },
-                                        error: { type: 'string' },
+                                        path: { type: 'string', required: true },
+                                        truncated: { type: 'boolean', required: true },
+                                        entries: {
+                                            type: 'array',
+                                            required: true,
+                                            items: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: {
+                                                    name: { type: 'string', required: true },
+                                                    isDir: { type: 'boolean', required: true },
+                                                    isSymlink: { type: 'boolean', required: true },
+                                                    size: { type: 'number', required: true },
+                                                    mtime: { type: 'number', required: true },
+                                                },
+                                            },
+                                        },
                                     },
                                 },
-                                render: (args, value) => {
-                                    const a = args;
+                                render: (_args, value) => {
                                     const v = value;
-                                    const tail = typeof v.error === 'string' && v.error !== '' ? `（${v.error}）` : '';
-                                    return [{ type: 'text', text: `隧道「${String(a.name ?? '?')}」已${verb}：${String(v.rule ?? '')} · ${String(v.state ?? '')}${tail}` }];
+                                    const entries = v.entries ?? [];
+                                    if (entries.length === 0)
+                                        return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }];
+                                    const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项${v.truncated === true ? '，已截断——按子目录分批或加大 maxEntries' : ''}）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : e.isSymlink ? '@' : ''} — ${e.isDir ? '目录' : e.isSymlink ? '符号链接' : humanFileSize(e.size)}`).join('');
+                                    return [{ type: 'text', text }];
                                 },
                             },
                             async execute(args) {
                                 const input = args;
-                                if (typeof input.name !== 'string' || input.name.trim() === '')
-                                    throw new Error('name 必须是非空字符串（隧道名来自 tunnel_list）');
-                                const result = tunnelManager.setEnabled(input.name.trim(), enable);
-                                if (!result.ok)
-                                    throw new Error(result.error);
-                                const t = result.status;
-                                return {
-                                    name: t.name,
-                                    enabled: t.enabled,
-                                    state: t.state,
-                                    rule: t.rule,
-                                    bookName: t.bookName,
-                                    connections: t.connections,
-                                    // error 键必须「不存在」而不是 undefined（同 tunnel_list 的 D52 教训）
-                                    ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
-                                };
+                                const spec = sftpBookSpec(input.book);
+                                const maxEntries = Math.max(1, Math.min(2000, typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) && input.maxEntries >= 1 ? input.maxEntries : 500));
+                                const result = await sftpManager.list(spec, typeof input.path === 'string' ? input.path : '');
+                                const truncated = result.entries.length > maxEntries;
+                                const entries = result.entries.slice(0, maxEntries).map((e) => ({ name: e.name, isDir: e.isDir, isSymlink: e.isSymlink, size: e.size, mtime: e.mtime }));
+                                return { path: result.path, truncated, entries };
+                            },
+                        })));
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_read',
+                            // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                            isConcurrencySafe: () => true,
+                            description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB，非法值直接报错）；offset 可从指定字节起读（配合 maxBytes 分页拿到大文件尾部）；二进制判定用 NUL + 非法 UTF-8 占比双重检测，拒绝时说明原因。',
+                            parameters: {
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                                path: { type: 'string', required: true, description: '远程文件路径' },
+                                maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144；非法值报错不再静默回落）' },
+                                offset: { type: 'number', description: '起始字节偏移（0~2^53-1，默认 0；>0 时跳过前缀，适合读日志尾部）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        path: { type: 'string', required: true },
+                                        content: { type: 'string', required: true },
+                                        truncated: { type: 'boolean', required: true },
+                                    },
+                                },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断——加大 maxBytes 或用 offset 分页）' : ''}：`;
+                                    return [{ type: 'text', text: head + '\n' + String(v.content ?? '') }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                const spec = sftpBookSpec(input.book);
+                                if (typeof input.path !== 'string' || input.path.trim() === '')
+                                    throw new Error('path 必须是非空字符串');
+                                if (input.maxBytes !== undefined && (typeof input.maxBytes !== 'number' || !Number.isInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 1024 * 1024)) {
+                                    throw new Error('maxBytes 必须是 1~1048576 的整数');
+                                }
+                                const maxBytes = input.maxBytes === undefined ? 256 * 1024 : input.maxBytes;
+                                if (input.offset !== undefined && (typeof input.offset !== 'number' || !Number.isInteger(input.offset) || input.offset < 0)) {
+                                    throw new Error('offset 必须是非负整数');
+                                }
+                                const offset = input.offset === undefined ? 0 : input.offset;
+                                const { stream } = await sftpManager.openDownload(spec, input.path, offset > 0 ? { offset } : undefined);
+                                const chunks = [];
+                                let total = 0;
+                                try {
+                                    for await (const chunk of stream) {
+                                        const piece = chunk;
+                                        chunks.push(piece);
+                                        total += piece.length;
+                                        if (total > maxBytes)
+                                            break; // 只多读一段用于判定截断，其余丢弃
+                                    }
+                                }
+                                finally {
+                                    stream.destroy();
+                                }
+                                const buf = Buffer.concat(chunks);
+                                const truncated = buf.length > maxBytes;
+                                const sliced = truncated ? buf.subarray(0, maxBytes) : buf;
+                                if (looksLikeBinary(sliced))
+                                    throw new Error('疑似二进制文件（含 NUL 或非法 UTF-8 占比过高），sftp_read 只支持文本内容');
+                                return { path: input.path.trim(), content: decodeUtf8ForAgent(sliced), truncated };
+                            },
+                        })));
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_write',
+                            description: '写 SSH 远程文本文件（book 连接簿条目 + path + content）。默认覆盖写入，append:true 追加到文件尾；单次最多 1MB。适合远程写配置、落结果文件。',
+                            parameters: {
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                                path: { type: 'string', required: true, description: '远程文件路径' },
+                                content: { type: 'string', required: true, description: '要写入的文本内容（≤1MB）' },
+                                append: { type: 'boolean', description: 'true 追加到文件尾（默认覆盖）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        ok: { type: 'boolean', required: true },
+                                        path: { type: 'string', required: true },
+                                        bytes: { type: 'number', required: true },
+                                        append: { type: 'boolean', required: true },
+                                    },
+                                },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    return [{ type: 'text', text: `已${v.append === true ? '追加' : '写入'}远程文件 ${v.path ?? '?'}（${String(v.bytes ?? 0)} 字节）` }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                const spec = sftpBookSpec(input.book);
+                                if (typeof input.path !== 'string' || input.path.trim() === '')
+                                    throw new Error('path 必须是非空字符串');
+                                if (typeof input.content !== 'string')
+                                    throw new Error('content 必须是字符串');
+                                const bytes = Buffer.byteLength(input.content, 'utf8');
+                                if (bytes > 1024 * 1024)
+                                    throw new Error(`content 超过上限：${String(bytes)} 字节 > 1MB（大文件请用终端 scp 或面板上传）`);
+                                const append = input.append === true;
+                                const { stream, done } = await sftpManager.openUpload(spec, input.path, append);
+                                stream.write(input.content, 'utf8');
+                                stream.end();
+                                await done;
+                                return { ok: true, path: input.path.trim(), bytes, append };
+                            },
+                        })));
+                        // —— SFTP 管理闭环（0.8.0）——
+                        // mkdir（可逐级补齐）/ rename（可跨目录，等效移动）/ remove（目录
+                        // 递归）/ tree（限深限数的递归列举），与 sftp_list/read/write 一起
+                        // 让 agent 不开面板也能完整管理远程文件；同样只收连接簿条目名。
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_mkdir',
+                            description: '在 SSH 远程创建目录（book 连接簿条目 + path）。parents:true 时逐级补齐缺失的父目录（等效 mkdir -p，默认 false，父目录缺失直接报错）。',
+                            parameters: {
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
+                                path: { type: 'string', required: true, description: '要创建的远程目录路径' },
+                                parents: { type: 'boolean', description: 'true 逐级补齐缺失父目录（默认 false）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        ok: { type: 'boolean', required: true },
+                                        path: { type: 'string', required: true },
+                                    },
+                                },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    return [{ type: 'text', text: `已创建远程目录 ${v.path ?? '?'}` }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                const spec = sftpBookSpec(input.book);
+                                if (typeof input.path !== 'string' || input.path.trim() === '')
+                                    throw new Error('path 必须是非空字符串');
+                                await sftpManager.mkdir(spec, input.path, input.parents === true);
+                                return { ok: true, path: input.path.trim() };
+                            },
+                        })));
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_rename',
+                            description: '在 SSH 远程重命名 / 移动文件或目录（book 连接簿条目 + from + to）。to 与 from 不同目录即为移动（目标目录需已存在）；不会覆盖已存在的目标（服务端 rename 语义）。',
+                            parameters: {
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                                from: { type: 'string', required: true, description: '原远程路径' },
+                                to: { type: 'string', required: true, description: '新远程路径（跨目录即移动）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        ok: { type: 'boolean', required: true },
+                                        from: { type: 'string', required: true },
+                                        to: { type: 'string', required: true },
+                                    },
+                                },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    return [{ type: 'text', text: `已将远程 ${v.from ?? '?'} 重命名/移动为 ${v.to ?? '?'}` }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                const spec = sftpBookSpec(input.book);
+                                if (typeof input.from !== 'string' || input.from.trim() === '')
+                                    throw new Error('from 必须是非空字符串');
+                                if (typeof input.to !== 'string' || input.to.trim() === '')
+                                    throw new Error('to 必须是非空字符串');
+                                await sftpManager.rename(spec, input.from, input.to);
+                                return { ok: true, from: input.from.trim(), to: input.to.trim() };
+                            },
+                        })));
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_remove',
+                            description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。根目录 / home / 含 . .. 相对段的路径会被直接拒绝（防整树误删），请先解析出具体的绝对路径。',
+                            parameters: {
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                                path: { type: 'string', required: true, description: '要删除的远程路径' },
+                                recursive: { type: 'boolean', description: '目录 true 时递归删除全部内容（默认 false）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        ok: { type: 'boolean', required: true },
+                                        path: { type: 'string', required: true },
+                                        recursive: { type: 'boolean', required: true },
+                                    },
+                                },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    return [{ type: 'text', text: `已删除远程 ${v.path ?? '?'}${v.recursive === true ? '（含全部内容）' : ''}` }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                const spec = sftpBookSpec(input.book);
+                                if (typeof input.path !== 'string' || input.path.trim() === '')
+                                    throw new Error('path 必须是非空字符串');
+                                const recursive = input.recursive === true;
+                                // 护栏在 SftpManager.remove 里（agent 工具与面板 HTTP 路由共用同一道）
+                                await sftpManager.remove(spec, input.path, recursive);
+                                return { ok: true, path: input.path.trim(), recursive };
+                            },
+                        })));
+                        activeDisposers.push(registerTool(defineTool({
+                            name: 'sftp_tree',
+                            // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                            isConcurrencySafe: () => true,
+                            description: '递归列举 SSH 远程目录结构（book 连接簿条目 + path）：深度优先、目录优先，maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，超限 truncated:true；符号链接不跟随；读取失败的子目录列入 errors。适合先看远程项目结构再定位文件。',
+                            parameters: {
+                                book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                                path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+                                maxDepth: { type: 'number', description: '最大下钻层数（1~8，默认 3）' },
+                                maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        path: { type: 'string', required: true },
+                                        entries: {
+                                            type: 'array',
+                                            required: true,
+                                            items: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: {
+                                                    path: { type: 'string', required: true },
+                                                    name: { type: 'string', required: true },
+                                                    depth: { type: 'number', required: true },
+                                                    isDir: { type: 'boolean', required: true },
+                                                    size: { type: 'number', required: true },
+                                                    mtime: { type: 'number', required: true },
+                                                },
+                                            },
+                                        },
+                                        truncated: { type: 'boolean', required: true },
+                                        errors: {
+                                            type: 'array',
+                                            required: true,
+                                            items: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: {
+                                                    path: { type: 'string', required: true },
+                                                    message: { type: 'string', required: true },
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                                render: (_args, value) => {
+                                    const v = value;
+                                    const entries = v.entries ?? [];
+                                    if (entries.length === 0)
+                                        return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }];
+                                    // 截断提示要说清「往哪个方向缩」：只写「已截断」的话，agent 下一轮往往原样重跑、
+                                    // 拿到同一份截断——缩小 maxDepth 逐层看，或对某个子目录再 sftp_tree 才拿得全
+                                    const truncatedNote = v.truncated === true ? '，已截断——缩小 `maxDepth` 逐层看，或对某个子目录再 `sftp_tree`' : '';
+                                    const head = `远程目录 ${v.path ?? '?'} 结构（${String(entries.length)} 项${truncatedNote}）：`;
+                                    const lines = entries.map((e) => {
+                                        const indent = '  '.repeat(Math.max(0, e.depth - 1));
+                                        const tail = e.isDir ? '/' : ' — ' + humanFileSize(e.size);
+                                        return `${indent}- ${e.name}${tail}`;
+                                    });
+                                    for (const item of v.errors ?? [])
+                                        lines.push(`! ${item.path}（${item.message}）`);
+                                    return [{ type: 'text', text: head + '\n' + lines.join('\n') }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                const spec = sftpBookSpec(input.book);
+                                const result = await sftpManager.tree(spec, typeof input.path === 'string' ? input.path : '', {
+                                    maxDepth: typeof input.maxDepth === 'number' && Number.isInteger(input.maxDepth) ? input.maxDepth : undefined,
+                                    maxEntries: typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) ? input.maxEntries : undefined,
+                                });
+                                return result;
                             },
                         })));
                     }
-                    // —— SFTP 文件传输工具（0.7.0）——
-                    // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
-                    // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
-                    const sftpBookSpec = (book) => {
-                        if (typeof book !== 'string' || book.trim() === '')
-                            throw new Error('book 必须是 SSH 连接簿条目名');
-                        const entry = live.findSshHost(book.trim());
-                        if (entry === undefined)
-                            throw new Error(`连接簿中不存在: ${book.trim()}`);
-                        return entry;
-                    };
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_list',
-                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
-                        isConcurrencySafe: () => true,
-                        description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前；isSymlink 区分符号链接与真目录）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。默认最多列 500 项（超限 truncated:true，可按子目录分批）。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
-                            path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
-                            maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    path: { type: 'string', required: true },
-                                    truncated: { type: 'boolean', required: true },
-                                    entries: {
-                                        type: 'array',
-                                        required: true,
-                                        items: {
-                                            type: 'object',
-                                            additionalProperties: false,
-                                            properties: {
-                                                name: { type: 'string', required: true },
-                                                isDir: { type: 'boolean', required: true },
-                                                isSymlink: { type: 'boolean', required: true },
-                                                size: { type: 'number', required: true },
-                                                mtime: { type: 'number', required: true },
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                const entries = v.entries ?? [];
-                                if (entries.length === 0)
-                                    return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }];
-                                const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项${v.truncated === true ? '，已截断——按子目录分批或加大 maxEntries' : ''}）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : e.isSymlink ? '@' : ''} — ${e.isDir ? '目录' : e.isSymlink ? '符号链接' : humanFileSize(e.size)}`).join('');
-                                return [{ type: 'text', text }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            const maxEntries = Math.max(1, Math.min(2000, typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) && input.maxEntries >= 1 ? input.maxEntries : 500));
-                            const result = await sftpManager.list(spec, typeof input.path === 'string' ? input.path : '');
-                            const truncated = result.entries.length > maxEntries;
-                            const entries = result.entries.slice(0, maxEntries).map((e) => ({ name: e.name, isDir: e.isDir, isSymlink: e.isSymlink, size: e.size, mtime: e.mtime }));
-                            return { path: result.path, truncated, entries };
-                        },
-                    })));
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_read',
-                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
-                        isConcurrencySafe: () => true,
-                        description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB，非法值直接报错）；offset 可从指定字节起读（配合 maxBytes 分页拿到大文件尾部）；二进制判定用 NUL + 非法 UTF-8 占比双重检测，拒绝时说明原因。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-                            path: { type: 'string', required: true, description: '远程文件路径' },
-                            maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144；非法值报错不再静默回落）' },
-                            offset: { type: 'number', description: '起始字节偏移（0~2^53-1，默认 0；>0 时跳过前缀，适合读日志尾部）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    path: { type: 'string', required: true },
-                                    content: { type: 'string', required: true },
-                                    truncated: { type: 'boolean', required: true },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断——加大 maxBytes 或用 offset 分页）' : ''}：`;
-                                return [{ type: 'text', text: head + '\n' + String(v.content ?? '') }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            if (typeof input.path !== 'string' || input.path.trim() === '')
-                                throw new Error('path 必须是非空字符串');
-                            if (input.maxBytes !== undefined && (typeof input.maxBytes !== 'number' || !Number.isInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 1024 * 1024)) {
-                                throw new Error('maxBytes 必须是 1~1048576 的整数');
-                            }
-                            const maxBytes = input.maxBytes === undefined ? 256 * 1024 : input.maxBytes;
-                            if (input.offset !== undefined && (typeof input.offset !== 'number' || !Number.isInteger(input.offset) || input.offset < 0)) {
-                                throw new Error('offset 必须是非负整数');
-                            }
-                            const offset = input.offset === undefined ? 0 : input.offset;
-                            const { stream } = await sftpManager.openDownload(spec, input.path, offset > 0 ? { offset } : undefined);
-                            const chunks = [];
-                            let total = 0;
-                            try {
-                                for await (const chunk of stream) {
-                                    const piece = chunk;
-                                    chunks.push(piece);
-                                    total += piece.length;
-                                    if (total > maxBytes)
-                                        break; // 只多读一段用于判定截断，其余丢弃
-                                }
-                            }
-                            finally {
-                                stream.destroy();
-                            }
-                            const buf = Buffer.concat(chunks);
-                            const truncated = buf.length > maxBytes;
-                            const sliced = truncated ? buf.subarray(0, maxBytes) : buf;
-                            if (looksLikeBinary(sliced))
-                                throw new Error('疑似二进制文件（含 NUL 或非法 UTF-8 占比过高），sftp_read 只支持文本内容');
-                            return { path: input.path.trim(), content: decodeUtf8ForAgent(sliced), truncated };
-                        },
-                    })));
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_write',
-                        description: '写 SSH 远程文本文件（book 连接簿条目 + path + content）。默认覆盖写入，append:true 追加到文件尾；单次最多 1MB。适合远程写配置、落结果文件。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-                            path: { type: 'string', required: true, description: '远程文件路径' },
-                            content: { type: 'string', required: true, description: '要写入的文本内容（≤1MB）' },
-                            append: { type: 'boolean', description: 'true 追加到文件尾（默认覆盖）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    ok: { type: 'boolean', required: true },
-                                    path: { type: 'string', required: true },
-                                    bytes: { type: 'number', required: true },
-                                    append: { type: 'boolean', required: true },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                return [{ type: 'text', text: `已${v.append === true ? '追加' : '写入'}远程文件 ${v.path ?? '?'}（${String(v.bytes ?? 0)} 字节）` }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            if (typeof input.path !== 'string' || input.path.trim() === '')
-                                throw new Error('path 必须是非空字符串');
-                            if (typeof input.content !== 'string')
-                                throw new Error('content 必须是字符串');
-                            const bytes = Buffer.byteLength(input.content, 'utf8');
-                            if (bytes > 1024 * 1024)
-                                throw new Error(`content 超过上限：${String(bytes)} 字节 > 1MB（大文件请用终端 scp 或面板上传）`);
-                            const append = input.append === true;
-                            const { stream, done } = await sftpManager.openUpload(spec, input.path, append);
-                            stream.write(input.content, 'utf8');
-                            stream.end();
-                            await done;
-                            return { ok: true, path: input.path.trim(), bytes, append };
-                        },
-                    })));
-                    // —— SFTP 管理闭环（0.8.0）——
-                    // mkdir（可逐级补齐）/ rename（可跨目录，等效移动）/ remove（目录
-                    // 递归）/ tree（限深限数的递归列举），与 sftp_list/read/write 一起
-                    // 让 agent 不开面板也能完整管理远程文件；同样只收连接簿条目名。
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_mkdir',
-                        description: '在 SSH 远程创建目录（book 连接簿条目 + path）。parents:true 时逐级补齐缺失的父目录（等效 mkdir -p，默认 false，父目录缺失直接报错）。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
-                            path: { type: 'string', required: true, description: '要创建的远程目录路径' },
-                            parents: { type: 'boolean', description: 'true 逐级补齐缺失父目录（默认 false）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    ok: { type: 'boolean', required: true },
-                                    path: { type: 'string', required: true },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                return [{ type: 'text', text: `已创建远程目录 ${v.path ?? '?'}` }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            if (typeof input.path !== 'string' || input.path.trim() === '')
-                                throw new Error('path 必须是非空字符串');
-                            await sftpManager.mkdir(spec, input.path, input.parents === true);
-                            return { ok: true, path: input.path.trim() };
-                        },
-                    })));
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_rename',
-                        description: '在 SSH 远程重命名 / 移动文件或目录（book 连接簿条目 + from + to）。to 与 from 不同目录即为移动（目标目录需已存在）；不会覆盖已存在的目标（服务端 rename 语义）。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-                            from: { type: 'string', required: true, description: '原远程路径' },
-                            to: { type: 'string', required: true, description: '新远程路径（跨目录即移动）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    ok: { type: 'boolean', required: true },
-                                    from: { type: 'string', required: true },
-                                    to: { type: 'string', required: true },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                return [{ type: 'text', text: `已将远程 ${v.from ?? '?'} 重命名/移动为 ${v.to ?? '?'}` }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            if (typeof input.from !== 'string' || input.from.trim() === '')
-                                throw new Error('from 必须是非空字符串');
-                            if (typeof input.to !== 'string' || input.to.trim() === '')
-                                throw new Error('to 必须是非空字符串');
-                            await sftpManager.rename(spec, input.from, input.to);
-                            return { ok: true, from: input.from.trim(), to: input.to.trim() };
-                        },
-                    })));
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_remove',
-                        description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。根目录 / home / 含 . .. 相对段的路径会被直接拒绝（防整树误删），请先解析出具体的绝对路径。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-                            path: { type: 'string', required: true, description: '要删除的远程路径' },
-                            recursive: { type: 'boolean', description: '目录 true 时递归删除全部内容（默认 false）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    ok: { type: 'boolean', required: true },
-                                    path: { type: 'string', required: true },
-                                    recursive: { type: 'boolean', required: true },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                return [{ type: 'text', text: `已删除远程 ${v.path ?? '?'}${v.recursive === true ? '（含全部内容）' : ''}` }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            if (typeof input.path !== 'string' || input.path.trim() === '')
-                                throw new Error('path 必须是非空字符串');
-                            const recursive = input.recursive === true;
-                            // 护栏在 SftpManager.remove 里（agent 工具与面板 HTTP 路由共用同一道）
-                            await sftpManager.remove(spec, input.path, recursive);
-                            return { ok: true, path: input.path.trim(), recursive };
-                        },
-                    })));
-                    activeDisposers.push(tools.register(defineTool({
-                        name: 'sftp_tree',
-                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
-                        isConcurrencySafe: () => true,
-                        description: '递归列举 SSH 远程目录结构（book 连接簿条目 + path）：深度优先、目录优先，maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，超限 truncated:true；符号链接不跟随；读取失败的子目录列入 errors。适合先看远程项目结构再定位文件。',
-                        parameters: {
-                            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-                            path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
-                            maxDepth: { type: 'number', description: '最大下钻层数（1~8，默认 3）' },
-                            maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
-                        },
-                        output: {
-                            schema: {
-                                type: 'object',
-                                additionalProperties: false,
-                                properties: {
-                                    path: { type: 'string', required: true },
-                                    entries: {
-                                        type: 'array',
-                                        required: true,
-                                        items: {
-                                            type: 'object',
-                                            additionalProperties: false,
-                                            properties: {
-                                                path: { type: 'string', required: true },
-                                                name: { type: 'string', required: true },
-                                                depth: { type: 'number', required: true },
-                                                isDir: { type: 'boolean', required: true },
-                                                size: { type: 'number', required: true },
-                                                mtime: { type: 'number', required: true },
-                                            },
-                                        },
-                                    },
-                                    truncated: { type: 'boolean', required: true },
-                                    errors: {
-                                        type: 'array',
-                                        required: true,
-                                        items: {
-                                            type: 'object',
-                                            additionalProperties: false,
-                                            properties: {
-                                                path: { type: 'string', required: true },
-                                                message: { type: 'string', required: true },
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                            render: (_args, value) => {
-                                const v = value;
-                                const entries = v.entries ?? [];
-                                if (entries.length === 0)
-                                    return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }];
-                                const head = `远程目录 ${v.path ?? '?'} 结构（${String(entries.length)} 项${v.truncated === true ? '，已截断' : ''}）：`;
-                                const lines = entries.map((e) => {
-                                    const indent = '  '.repeat(Math.max(0, e.depth - 1));
-                                    const tail = e.isDir ? '/' : ' — ' + humanFileSize(e.size);
-                                    return `${indent}- ${e.name}${tail}`;
-                                });
-                                for (const item of v.errors ?? [])
-                                    lines.push(`! ${item.path}（${item.message}）`);
-                                return [{ type: 'text', text: head + '\n' + lines.join('\n') }];
-                            },
-                        },
-                        async execute(args) {
-                            const input = args;
-                            const spec = sftpBookSpec(input.book);
-                            const result = await sftpManager.tree(spec, typeof input.path === 'string' ? input.path : '', {
-                                maxDepth: typeof input.maxDepth === 'number' && Number.isInteger(input.maxDepth) ? input.maxDepth : undefined,
-                                maxEntries: typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) ? input.maxEntries : undefined,
-                            });
-                            return result;
-                        },
-                    })));
                     // 档位闸与工具同生命周期：enabled 热切换撤工具时一并撤下（activeDisposers 统一管理）。
                     activeDisposers.push(attachTierGate(ctx, {
                         pkg: 'tty',
@@ -6301,13 +6345,29 @@ const plugin = definePlugin({
                         classify: (tool) => TTY_TIER_CLASS[tool],
                     }));
                     stateRef.toolsRegistered = true;
+                    // 这行是**能力全集**（所有可能注册的工具名，档位闸的分类对账从它取数），不是本次真注册集——
+                    // 运行期真注册集取决于 live.sshHosts / live.tunnels（见上面两处条件注册），下一行才是实况。
                     console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, tunnel_start, tunnel_stop, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
+                    console.log(`[dsh-tty] agent tools active (${registeredNames.join(', ')})`);
                 };
                 refreshToolsHook = registerAll;
                 registerAll();
+                /*
+                 * 按会话档位在 **agent 作用域**上裁掉用不到的 write / exec 工具（试点，见 tier-restrict.ts）。
+                 *
+                 * 刻意放在 effect 体里、**不放进 registerAll**：热应用设置会重注册工具（先撤后挂），
+                 * 而重注册不该把已有 agent 的裁剪一并撤掉——`agent/created` 不会为老 agent 再发一次，
+                 * 撤了就再也裁不回来。与工具同生命周期的是**这一层订阅**，随插件卸载一起撤。
+                 */
+                const disposeTierRestrict = attachTierRestrict(ctx, {
+                    pkg: 'tty',
+                    prefixes: TTY_TIER_PREFIXES,
+                    classify: (tool) => TTY_TIER_CLASS[tool],
+                });
                 return () => {
                     stateRef.toolsRegistered = false;
                     refreshToolsHook = () => { };
+                    disposeTierRestrict();
                     for (const dispose of activeDisposers) {
                         try {
                             dispose();

@@ -250,6 +250,21 @@ describe('行尾（Windows CRLF 补丁文件）', () => {
     expect(outcome.lines.some((line) => line.includes('\r'))).toBe(false)
   })
 
+  it('空托管区块（`- insert: []`）是已知空态：dryRun 不改盘，YAML 语义不变', () => {
+    // 验收口径（2026-10-24）：空占位不是「写坏的文件」，而是 per-agent 挂起 / 无已索引
+    // 默认项目时的已知空态。这里钉两件事：① 快照路径**不动盘**；② 它仍然是宿主可解析的
+    // 顶层数组（`- insert: []`），没有退化成 0 字节 / 纯注释（CG67 的现场）。
+    const lines = ['# dsh home patch layer', OWN_MARK_START, '- insert: []', OWN_MARK_END, '']
+    const outcome = syncManagedMcpRow(lines, { ...decision(plainDir), dryRun: true })
+    expect(outcome.changed).toBe(false)
+    expect(outcome.lines).toBe(lines)
+    const parsed: unknown = yaml.load(outcome.lines.join('\n'))
+    expect(Array.isArray(parsed)).toBe(true)
+    expect((parsed as Array<{ insert?: unknown[] }>)[0]?.insert).toEqual([])
+    // 「为什么空 / 下一步」由状态面说清（cli-route.test.ts 钉 DTO 那一段）
+    expect(outcome.status.mode).toBe('none')
+  })
+
   it('CRLF + 缺结束标记的损坏区块：自愈后不出现孤立 \r 行', () => {
     const broken = ['# dsh home patch layer', MCP_MARK_START, '- insert: []', ''].join('\r\n')
     const outcome = syncManagedMcpRow(broken.split('\n'), decision(indexedDir))

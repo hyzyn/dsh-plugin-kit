@@ -31,7 +31,7 @@
 | `npx vitest run`（全仓） | 779 passed / 48 files | **56 files / 965 tests**（该时点输出）<br>`pnpm test` |
 | 本包可用的运行时依赖 | `cordis` + `schemastery` | **`cordis` + `dsh-mcp-client` + `schemastery`**（`dsh-mcp-client` 是 optional peer，pnpm 已装） |
 | 宿主基线 | 本机 `0.1.6-alpha.2`；`engines` 下限 `0.1.2-rc.1` | 本机 **`0.1.7-rc.2` + `0.2.0-rc.1` + `0.2.0-rc.2` + `0.2.1-alpha.1` + `0.2.1-alpha.2`**；peer `^0.1.7-rc.2 \|\| ^0.2.0-rc.1 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-alpha.1 \|\| ^0.2.1-alpha.2`；`dsh.engines.dsh` `>=0.1.7-rc.2`（最低档） |
-| host-contract 真机 | P3-a 记 25/25、P2-b 记 31/31（均 `0.1.6-alpha.2`） | **42/42**（`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2` 与 `0.2.1-alpha.1` 各一次，见 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli)） |
+| host-contract 真机 | P3-a 记 25/25、P2-b 记 31/31（均 `0.1.6-alpha.2`） | **42/42**（`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2` 与 `0.2.1-alpha.1` 各一次，见本文「host cohort 逐档实测证据」） |
 | 路由条数 | P3-a 时点记 18 条 | **25**（该时点输出）<br>`grep -oE "/api/dsh-codegraph/[a-z-]+" packages/codegraph/src/index.ts \| sort -u \| wc -l` |
 
 > 下文的 P2-b / P3-a 两节是**当时的落点记录**，其中的 31 / 25 / 18 是历史值，按维护规则**保留不改**。
@@ -97,7 +97,7 @@
 
 | 级别 | 事项 | 影响 | 代价 | 落点 |
 | --- | --- | --- | --- | --- |
-| **P0** | ~~agent 侧改 **per-agent scoped MCP 挂载**~~ **✅ 已实现**（默认 `managed`，`mcpScope: 'per-agent'` 显式开启；托管行保留为回落） | 多项目真并行；删掉写盘 + 热加载 + 竞态整条链；跟随不再依赖 GUI 页面 | M–L | `src/scope.ts`（新）+ `apply()` 接线 + `/agents` + 卡片开关；见 [docs/p0-plan.md](./docs/p0-plan.md) |
+| **P0** | ~~agent 侧改 **per-agent scoped MCP 挂载**~~ **✅ 已实现**（**默认 `per-agent`**——2026-10-24 从 managed 翻过来，`mcpScope: 'managed'` 显式回滚；托管行保留为回落） | 多项目真并行；删掉写盘 + 热加载 + 竞态整条链；跟随不再依赖 GUI 页面；**默认就没有索引的会话拿不到工具**（披露面收口） | M–L | `src/scope.ts`（新）+ `apply()` 接线 + `/agents` + 卡片开关；见 [docs/p0-plan.md](./docs/p0-plan.md) |
 | **P1** | ~~**注入加索引门禁**~~ **✅ 已完成**（见下） | 无索引仓库里省掉约 310 token/轮，也不再诱导模型调必然失败的工具 | S | `refreshGuidance()` + 5 条门禁用例 |
 | **P1** | ~~**一键诊断包**~~ **✅ 已完成**（见下） | 环境性故障的排查路径固化成一个按钮 | S | `GET /diagnose` + 卡片按钮 + 6 条用例 |
 | **P1** | ~~**采纳率仪表**~~ **✅ 已完成**（见下） | 把「提示词有没有用」从感觉变成数字；有数据才谈得上调提示词或做预注入 | S–M | `createMetricsCollector()` + `/api/dsh-codegraph/metrics` + 卡片一行 |
@@ -259,6 +259,88 @@ settings 快照（`lastStored`）重跑 sync，由 `applyScopeMode` 的「模式
 `if (agentEventsAvailable) return`，根本走不到 sync；改成「先等它变一次、再用同值设置写触发真正的
 重算、断言零改动」才有牙齿。
 
+### per-agent 挂载等 env 的 `dshEnvReady` 门（2026-10-24 真机复核）
+
+**为什么加**：env 在 `apply()` 开头**同步**把值写进 `process.env`，而插件按加载器并发 create 挂载
+（`Promise.all` + 动态 `import()`），**配置行序不保证 apply 顺序**。per-agent 挂载会 spawn 一个 MCP
+子进程，子进程的环境 = 宿主 `scrubbedParentEnv()` + `config.env`，理论上 env 晚到就会少掉它注入的变量。
+于是让 env 在注入完成后 `ctx.provide('dshEnvReady', …)`，codegraph 用 `whenEnvReady()` 等它（已就绪 /
+宿主没装 / 装了还没到，三条分支），实现在 [src/env-gate.ts](./src/env-gate.ts)。
+
+**本次复核纠正了一条写错的因果**（原表述散在 `env-gate.ts`、两份 README、`architecture.md` §2/§5、
+`packages/all/README.md` 与 `scripts/aggregate-order.mjs` 头部，**均已改**）：那些地方说 per-agent 会
+「import `dsh-mcp-client` 并求值 `!!js` 认证头」。**实测与读代码都不成立**——
+
+- per-agent 传给 mcp-client 的 config 只有 `serverName` / `transport: 'stdio'` / `command` / `args` /
+  `cwd` / `failOnStartupError`（`scope.ts` 里那份），**没有 `headers`**，也就没有求值这回事；
+- 它也**不传 `config.env`**，所以子进程拿到的就是「宿主环境 − 凭据形状名字 − `DSH_*`」；
+- 最该防的**凭据形状变量本来就进不去子进程**：`scrubbedParentEnv()` 剔除命中
+  `/KEY|PASSWORD|SECRET|TOKEN/i` 的名字，**门不开也漏不了**——那是宿主在兜底，与这道门无关。
+
+真正受影响的是「子进程继承到的**普通**环境变量」。这仍是真实的时序面，只是射程比原表述小得多。
+
+**真机验证（隔离 `DSH_HOME` + `dsh --from-default-profile headless` 新建 profile，`link:` 装本仓
+env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真实 `~/.dsh/cordis.patch.yml` 与
+`env.yml` 收尾哈希不变）**：
+
+- **整条链路通**：`per-agent MCP 已挂载：agent=session-…`，子进程里能读到 env 注入的普通变量；
+- **门的机制在真 cordis 上成立**（变异对照：只改 `ctx.get('loader').entries()` 里有没有 env 那一行，
+  判据取**子进程自己写出的 env 快照**）：有 env 行 → 工具出现在 1942ms、env apply 于 1511ms、子进程
+  **有**标记变量；没有 env 行（= 改动前）→ 工具出现在 256ms、env apply 于 1504ms、子进程**没有**。
+  两条方向相反，所以不是恒真；
+- **三条退化路径都对**：没装 env 直接挂（304ms）、env 被 loader 禁用也直接挂（304ms）、env 装了但
+  `apply` 从不 provide 时**确实停等**（fail-visible，与文件头边界声明一致）；
+- **但那个窗口在真宿主上没复现出来**：把 env 的**模块装载**人为推迟（`await` 在模块顶层——这是
+  「fiber 晚 active」的真实成因，不是伪造 apply 期）700ms / 6s / 15s 三档，**带门与不带门两版都拿到了**
+  注入值。时间戳给出原因：挂载自身有 `loadClient()` 动态 import + spawn 的异步跨度（实测 ~350ms），
+  env 几乎总在这段里就装完了；真宿主里 `agent/created` 又发生在启动完成之后。
+  **所以这道门目前是防御性时序保险，不是已证实的修复。**
+
+**边界（别再写大）**：env 装了但它的模块 import/apply 抛错时服务不出现，per-agent 挂载会停在「等待
+就绪」——刻意不设超时兜底，让 env 的错误在启动日志里可见，比静默降级更符合本仓口径。热重载同理：
+已 spawn 的子进程不会重新同步一份环境，那次同步只在启动时发生一次。
+
+**用例（`test/env-gate.test.ts` 8 条 + `packages/env/test/ready-service.test.ts` 2 条）**：就绪即跑、
+缺席即跑、装了才等、重复触发只跑一次，以及禁用 / 无 `inject` / `inject` 抛错三条退化路径；env 侧钉
+「正常配置 provide 且 `keys` 不含值」与「禁用时也 provide `{enabled:false}`」。这些是**机制钉守**，
+不是回归复现——上面那条真机结论写在这里，就是为了将来有人问「这扇门为什么在」时有据可查。
+
+**变异时踩到的两个坑**（下次照抄省一轮）：
+
+- `ps eww -p <child>` 读别人进程的 environ 在这个沙箱里**被拒**（返回空串）。第一版拿它当判据，
+  结果对照组那条「子进程没有标记变量」**假绿通过**——观测不到被当成结论，正是
+  [docs/agent-real-test.md](../../docs/agent-real-test.md) 警告的那种。改成让被测子进程自己
+  `env > dump` 再 exec 真 CLI，并且「dump 写不出来」算 FAIL 而不是 PASS。
+- 真宿主里那个 `mcp-client(codegraph): initial connection or tool synchronization failed` **不是本改动
+  引起的**（HEAD 版同样失败）：隔离宿主没有 API key → `MISSING_CREDENTIAL`（比失败早 15ms）→ agent 被
+  回收，connection 在 pending 中途被 dispose。塞一个占位 `DEEPSEEK_API_KEY` 后挂载即成功。
+
+### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.1-rc.2）
+
+> 从 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli) 搬入（2026-10-23）：README 只留「支持哪些档 + 为什么这么声明」，
+> 逐轮实测的落点 / 门槛 / 「未跑」清单归这里。原文保留，只把「见上条」补成明确指向。
+
+  - **`0.1.7-rc.1`（上一轮适配基线，2026-09-23 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087 --dsh-bin <独立安装的 rc.1 dsh> --runtime-store <该安装的 .pnpm/node_modules/@deepseek-ai>` **42/42 通过**——25 条路由全在（含 `/projects`、`/metrics`、`/diagnose`、`/unlock`、`/files`、`/affected`、`/explore`、`/context`、`/uninit`、`/telemetry`、`/agents`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁、`mcpScope` 开关「切 per-agent → 全局行被挂起 → 切回 managed 恢复」全程可逆且真实 `~/.dsh/cordis.patch.yml` 逐字节未变。**新增的两项**专门验 0.1.7 的 settings 迁移：启动后经插件自己的写路径把 `mcpScope` 切回 managed 基线、并把默认项目切到临时项目，两项都要求 HTTP 200（旧 API 下这两步只会 500）。
+    - 验证方式说明：本机全局 dsh 若不是 rc.1，可用 `--dsh-bin` 指向一份独立安装的 rc.1，并用 `--runtime-store` 把**复制出来**的临时 profile 的 `node_modules/@deepseek-ai/*` 重指到该安装的运行时——否则那些链接仍指向全局旧安装，新 cohort 的兼容性 preflight 会把整套旧运行时行判成 incompatible 而全部禁用（宿主根本起不来，与本插件无关）。
+    - 另一条已跑过的真机证据：隔离 `DSH_HOME` 启动 test profile（同样做运行时重指）→ 10 个插件全部 mounted、0 行 `disabling profile plugin row`，`POST /api/dsh-codegraph/settings` 在 `per-agent` / `managed` 之间往返都是 200。
+  - **`0.1.7-rc.2`（当前适配基线，2026-09-25 实测）**：cohort 从 rc.1 提到 rc.2，`peerDependencies` 与 `dsh.engines.dsh` 的下限同步提升。`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087`（本机全局就是 rc.2，无需 `--dsh-bin` / `--runtime-store`）**42/42 通过**——25 条路由、POST / loopback 门禁、`/diagnose` 分段、浏览器半体可供给、MCP 托管行写入隔离 home 补丁、`mcpScope` 在 `per-agent` / `managed` 间往返可逆且真实 `~/.dsh/cordis.patch.yml` 逐字节未变。另两项：真宿主加载 test profile 时 **10 个插件全部 mounted、0 行 `disabling profile plugin row`**；工作区 `pnpm -r typecheck` 全绿、`vitest` **960/960**、`pnpm -r build` 绿。本轮未改任何插件运行行为（只有兼容性声明、文档与 lockfile）。rc.1 → rc.2 的 lib 产物逐文件比对：`dsh-tools` 仅新增可选 `PreToolDecision.displayReason`（本仓不构造该决策）、`dsh-session-query` 仅 JSDoc、`dsh-client-ui-theme` 仅设计 token 增补，`dsh-mcp-client` / `dsh-host-webserver` / `dsh-subprocess-local` / `dsh-credentials` / `dsh-base` / `dsh-settings` / `dsh-web-app` / `dsh-headless` 逐字节相同；`dsh-app-boot` 删除了 `skippedProfileBundles` 并改了 `generateConfigSchema` 签名（去掉首参 `binName`），但那是 DSH 自己的 CLI 与 app-boot 之间的内部面，本仓无任何引用。
+
+    > ⚠️ **标注（本次未擅改）——两个测试总数不是同一次运行的产物**：本条写的是 **rc.2 那一轮验证
+    > 时点**的用例数（`960/960`）；本轮项目级文档改造之后，当前值为全仓 **56 files / 965 tests**
+    > （`packages/codegraph` 本包 14 files / 317 tests）。**两个数都不改**——当前值以
+    > [ROADMAP.md 的「2026-09-25 复测」表](./ROADMAP.md#基线本次实测)为准。
+    >
+    > 本条的「25 条路由」同理：**以命令现算为准**，别把它当契约（现算命令见 ROADMAP 复测表）。
+  - **`0.2.0-rc.1`（同轮新增的第二档基线，2026-09-28 实测）**：不改任何运行代码，只把兼容范围写成两段（见下两条）。证据：① 用 0.2.0-rc.1 自己的判定器（`dsh-app-boot` 的 `evaluatePluginCompatibility`）对本仓 13 个可安装包逐一核对：单段 `^0.1.7-rc.2` 时 **12/12 全被拒**（`^0.1.7-rc.2` 展开是 `>=0.1.7-rc.2 <0.2.0-0`，`0.2.0-rc.1` 恰好卡在 `-0` 上，`includePrerelease: true` 也救不回来），改成两段后逐 cohort 全部放行。② 隔离 `DSH_HOME` 在真 0.2.0-rc.1 宿主上：`dsh plugin add` **不需要任何豁免**就装上 10 个插件，启动后 10 个全部 mounted、无 `skipping profile bundle`；`verify-client-ui` **5/5 PASS**、`verify-rss-opml` **9/9 PASS**（真实下载 + 回环）。③ 同一批包在 0.1.7-rc.2 宿主上回归同样全绿（client-ui 5/5、rss-opml 9/9）。④ 两档的插件 API 面逐文件比对：`dsh-tools` / `dsh-client-ui-slots` / `dsh-client-locale` / `dsh-host-webserver` / `dsh-subprocess-local` / `dsh-client-modules` / `dsh-package-manifest` 的 `.d.ts` **逐字节相同**，`plugins.row.config` 槽契约相同，`cordis` 4.0.4 与 `schemastery` 3.18.4 同版本。
+  - **`0.2.0-rc.2`（同轮追加的第三档基线，2026-09-29 实测）**：不改任何运行代码，只把兼容范围追加第三段（见下两条）。注意这一段与前两档不同：`0.2.0-rc.2` **本来就被 `^0.2.0-rc.1` 覆盖**（`>=0.2.0-rc.1 <0.3.0-0`，`includePrerelease: true` 下 `semver.satisfies('0.2.0-rc.2', …)` 为真），所以它是**显式声明**而不是修边界——但照样走完「每加一档都必须实测」的全部动作。证据：① 三档各自的判定器（`dsh-app-boot` 的 `evaluatePluginCompatibility`，0.1.7-rc.2 与 0.2.0-rc.1 从 registry 装出带依赖的副本）对本仓 13 个可安装包逐包 × 逐 cohort 核对，**3 档判定器 × 3 个 cohort 全部放行**（`node scripts/check-dsh-peers.mjs --app-boot <该档的 dsh-app-boot 目录>`）。② 隔离 `DSH_HOME` 在真 0.2.0-rc.2 宿主上：`dsh plugin add` **不需要任何豁免**就装上 10 个插件；`--dump-config` 的 stderr **0 行**、10 条 `@hyzyn` bundle 全在组合结果里；启动后 **10/10 mounted、无 `skipping profile bundle`**。③ 同一宿主上的三层真机验收：`verify-client-ui` **6/6 PASS**（10 个 `@hyzyn` 客户端 bundle 真在 Chrome 里被加载、0 未捕获异常、0 error 级控制台输出、0 失败子请求）、`verify-rss-opml` **9/9 PASS**（真实下载 + 导入回环 + 收尾复原）、`verify-codegraph-host-contract` **42/42 PASS**（25 条路由、POST / loopback 门禁、`/diagnose` 分段、浏览器半体可供给、MCP 托管行写入隔离 home 补丁、`mcpScope` 在 `per-agent` / `managed` 间往返可逆，真实 home 的 `cordis.patch.yml` 逐字节未变）。④ rc.1 → rc.2 的插件 API 面逐文件比对：cli + web-app 的全部依赖包 **166 个里只有 40 个有真实改动**，本仓 import 的宿主包（`dsh-base` / `dsh-tools` / `dsh-client-ui-slots` / `dsh-web-app` / `dsh-plugin-manager` / `dsh-mcp-client` / `dsh-settings` / `dsh-system-prompt` / `dsh-credentials` / `dsh-scope` / `dsh-session-query` / `dsh-launch-environment` / `dsh-agent` / `dsh-hmr` 等）**零代码变化**；唯一与本仓相关的是 `dsh-cordis-client-runner` 的 slot 目录 **97 → 98 条、只增不减**（新增 `sidebar.right.tab.files.actions`），本仓注册的 4 个槽（`plugins.row.config` / `settings.kit.item` / `settings.plugin.item` / `sidebar.right.pane.tab`）逐字节相同。⑤ 工作区回归：`pnpm -r build` / `pnpm -r typecheck` 绿、`pnpm test` **92 files / 1484 tests** 全过；本轮只动兼容性声明与文档，未动任何插件运行行为。
+  - **`0.2.1-alpha.1`（第四档基线，2026-10-03 实测）**：不改任何运行代码，只把兼容范围追加第四段（见下两条）。这一段与第三档同类，也是**显式声明**而不是修边界：`0.2.1-alpha.1` **本来就被 `^0.2.0-rc.2` 覆盖**（`>=0.2.0-rc.2 <0.3.0-0`，`includePrerelease: true` 下 `semver.satisfies('0.2.1-alpha.1', …)` 为真），但照样走完「每加一档都必须实测」的全部动作。证据：① 用 **0.2.1-alpha.1 自带的判定器**（本机全局安装里的 `dsh-app-boot`，同一次安装的 `getDshRuntimeVersion()` 报 `0.2.1-alpha.1`）对本仓 13 个条目（12 个可安装包 + `templates/hello`）逐一核对：**13/13 放行**；`node scripts/check-dsh-peers.mjs --app-boot <该安装的 @deepseek-ai/dsh-app-boot 目录>` **四档 × 13 条目全部放行**。② 隔离 `DSH_HOME` 起真宿主（复制本机 `test2` profile，`--patch` 固定端口）：**10/10 个 `@hyzyn` 插件 mounted、0 行 `disabling profile plugin row`、0 行 `skipping profile bundle`**；本机真实 `test2` profile 上再跑一遍安装期判定：`dsh plugin --profile test2 add link:<每个包>`（10 个）**全部返回 `Already up to date`、无 `incompatible-version`、不需要任何豁免**（安装前与启动时各过一次）。③ 同一宿主上的四层验收：`verify-client-ui --mode boot` **5 PASS / 0 WARN / 0 FAIL**、`--mode full` **17 PASS / 1 WARN / 0 FAIL**（10 个 `@hyzyn` 客户端 bundle 真在 Chrome 里被加载、0 未捕获异常、0 error 级控制台输出、0 失败子请求；`--mode full` 另证 **8/8 个插件的内联配置卡片都渲染出来**（`plugins.bundle.config` + 行标记 `plugins.row.config`）与设置里「插件配置」行的 8 张 kit 卡片，唯一 WARN 是沙箱里 PTY 被拒 `posix_openpt failed`，不是回归）、`verify-mcp-http` **7 PASS / 0 FAIL**（三种 streamable-http 响应模式 + 打不通时可读失败）、`verify-rss-opml` **9 PASS / 0 FAIL**（真实下载 + 导入回环 + 收尾复原）、`verify-codegraph-host-contract` **42/42 PASS**（25 条路由、POST / loopback 门禁、`/diagnose` 分段、浏览器半体可供给、MCP 托管行写入隔离 home 补丁、`mcpScope` 在 `per-agent` / `managed` 间往返可逆，且真实 `~/.dsh/cordis.patch.yml` 逐字节未变）。④ 0.2.0-rc.2 → 0.2.1-alpha.1 的插件 API 面逐文件比对：CLI 包 20 个文件里只有 `package.json` 变；本仓 import 的宿主包（`dsh-base` / `dsh-host-webserver` / `dsh-subprocess-local` / `dsh-client-locale` / `dsh-client-ui-slots` / `dsh-settings` / `dsh-session-query` / `dsh-mcp-client` / `dsh-system-prompt` / `dsh-launch-environment` / `dsh-client-ui-theme` / `dsh-headless` 等）**零代码变化**；`dsh-tools` 只改 `run_code` 的参数顺序与文案、并删掉 `./invariant` 子路径导出（本仓零引用，`index.d.ts` 逐字节相同），`evaluatePluginCompatibility` 语义等价；`dsh-cordis-client-runner` 的 slot 目录 **98 → 100 条、只增不减**（新增 `plugins.add.actions` / `shell.bottom`），本仓注册的槽全在。⑤ 运行时依赖版本漂移：这一档的宿主带 `cordis` 4.0.5-alpha.1 与 `schemastery` 3.18.5-alpha.1（前三档都是 4.0.4 / 3.18.4），但两份 tarball 除 `package.json` 外**逐字节相同**，且 app-boot 用 `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`）；本仓的 `pnpm -r typecheck` 正是**重链到这两个新版本之后**跑的，绿。⑥ 工作区回归：`pnpm -r build` / `pnpm -r typecheck` 绿、`pnpm test` **106 files / 1644 tests** 全过、`pnpm aggregate` 无 diff；本轮只动兼容性声明、守卫与文档，未动任何插件运行行为。**未跑**：`pnpm live-smoke`（它把一次性 profile 复制到 `~/.dsh/profiles/live-smoke-*`，本轮执行环境只允许写工作区，`~/.dsh` 写入被拒；需要时在本机普通终端补跑）。
+  - **`0.2.1-alpha.2`（第五档基线，2026-10-09 实测）**：不改任何运行代码，只把兼容范围追加第五段（见下两条）。这一段与第三、四档同类，也是**显式声明**而不是修边界：`0.2.1-alpha.2` **本来就被 `^0.2.1-alpha.1` 覆盖**（同一个 `0.2.1` 版本元组，预发布之间不比大小），但照样走完「每加一档都必须实测」的全部动作。证据：① 用 **0.2.1-alpha.2 自带的判定器**（本机全局安装里的 `dsh-app-boot`，同一次安装的 `getDshRuntimeVersion()` 报 `0.2.1-alpha.2`）对本仓 13 个条目（12 个可安装包 + `templates/hello`）逐一核对：**13/13 放行**；`node scripts/check-dsh-peers.mjs --with-app-boot`（自动定位到那份判定器）**五档 × 13 条目全部放行**。② 本机真实 `test` profile 上跑安装期判定：`dsh plugin --profile test add link:<每个包>`（10 个）**全部返回 `Already up to date`、无 `incompatible-version`、不需要任何豁免**；随后 `dsh --profile test --patch <端口层>` 起真宿主（runtime `0.2.1-alpha.2`）：**10/10 个 `@hyzyn` 插件 mounted、0 行 `disabling profile plugin row`、0 行 `skipping profile bundle`**。③ 同一宿主上的验收：`verify-client-ui --mode full` **18 PASS / 0 WARN / 0 FAIL**（10 个 `@hyzyn` 客户端 bundle 真在 Chrome 里被加载、**8/8 个插件的内联配置卡片都渲染出来**（`plugins.bundle.config` + 行标记 `plugins.row.config`）、设置里「插件配置」行的 8 张 kit 卡片、全局搜索命令面板往返真的有结果、终端面板 xterm 初始化完成、0 未捕获异常、0 error 级控制台输出、0 失败子请求；这一轮 PTY 没被拒，所以第四档那条 WARN 也不在）、`pnpm live-smoke`（= `live-host-smoke --bootstrap --strict`）**18/18 PASS**（两个宿主实例的授权阶梯、路由门控、工具清单、试连文案、宿主正服务的 `client.js`）——**第四档那条「未跑」在这里补上了**。④ 0.2.1-alpha.1 → 0.2.1-alpha.2 的插件 API 面逐文件比对：本仓 import 的宿主包里 `dsh-mcp-client`（MCP 托管行）/ `dsh-settings` / `dsh-credentials` / `dsh-launch-environment` / `dsh-sandbox` / `dsh-scope` / `dsh-user-approval` / `dsh-agent` / `dsh-client-locale` / `dsh-subprocess` **除 `package.json` 外逐字节相同**；`dsh-tools` 里本仓用的 `defineTool` 导出行逐字节相同，改动只有 `ToolPresentationMode` 去掉 `'both'`（本仓零使用）与 PTC 内部桥 `RunCodeBridgeOptions` 多一个必填的 `resolveWorkingDirectory`（本仓没有实现方）；客户端槽面**只增不减**（新增 `conversation.chat.flow` / `conversation.chat.reasoning.body`，零删除零改名，本仓注册的槽一个没被拿掉）；`dsh-host-webserver` 与 `dsh-web-app` 的改动都在**宿主配置面**（监听地址只收环回或具体网卡、新增 TLS 配置、`webRuntime` → `webStartup`），本仓对这些名字零引用。⑤ 运行时依赖：这一档的宿主带的仍是 `cordis` 4.0.5-alpha.1 与 `schemastery` 3.18.5-alpha.1（与第四档同一对）。⑥ 工作区回归：`pnpm -r build` / `pnpm -r typecheck` 绿——**且是在 `node scripts/link-dsh-runtime.mjs` 把本仓 `node_modules/@deepseek-ai/*` 指到 alpha.2 那套之后跑的**（即类型面就是 alpha.2 的 `dsh-tools`，不是仓里 devDeps 钉的旧档），`pnpm test` **139 files / 2420 tests** 全过、`pnpm aggregate` 无 diff。⑦ 同轮还按宿主的**升级绊线**复核了 `docs/os-consent-plan.md` §2.1 的三条事实与 picker 口径：宿主这一档**真的换了口径**（环回判定改用 `dsh-host-webserver` 的 `isLoopbackHost()`、新增 `allowsRemoteAuthorities` 一条），绊线按设计报红、复核记录写进该文 §2.1 末与 §4 第 2 条。
+  - **`0.2.1-alpha.5`（第六档基线，2026-10-17 实测）**：**加档本身只改 `peerDependencies` 的范围串与文档**（本包运行代码未动）。与第三~五档同属**显式声明**：`0.2.1-alpha.5` **本来就被 `^0.2.1-alpha.2` 覆盖**（同一个 `0.2.1` 版本元组，预发布之间不比大小）。⚠️ **但它与前面几档不同——这一档带着真实的宿主行为变化进来**，「对宿主行为零差异」那句话在这里**不成立**，所以证据里多了「本仓引用面」这一项（`RELEASING.md` 的加档规则也据此补了警告）。证据：① 用 **0.2.1-alpha.5 自带的判定器**（本机全局安装里的 `dsh-app-boot`，`getDshRuntimeVersion()` 报 `0.2.1-alpha.5`）对本仓 13 个条目（12 个可安装包 + `templates/hello`）逐一核对：**13/13 放行**；`node scripts/check-dsh-peers.mjs --app-boot <该安装的 @deepseek-ai/dsh-app-boot 目录>` **六档 × 13 条目全部放行**。② 真宿主组合：`dsh --profile test --dump-config` 里 10 个 `@hyzyn` bundle 全在，**0 行 `disabling profile plugin row`、0 行 `skipping profile bundle`**（stderr 另有 2 行是该 profile 自己 `cordis.patch.yml` 里两个不存在的 entry——`devfront` / `devenv`，与本轮无关、也不是禁用行）。③ **真宿主加载**（本轮动了 preflight 会读的范围串，所以这条最要紧）：`pnpm live-smoke`（= `live-host-smoke --strict`）**18/18 PASS**——两个一次性宿主实例都跑在 `0.2.1-alpha.5` 上，授权阶梯、路由门控、agent 工具清单、宿主正服务的 `client.js` 全过。④ 本仓引用面（`0.2.1-alpha.2` → `0.2.1-alpha.5`：18 个内联包的 130 个 d.ts 里 115 个逐字节相同）：`dsh-mcp-client` / `dsh-base` / `dsh-settings` / `dsh-client-locale` / `dsh-session-query` / `dsh-sandbox` / `dsh-launch-environment` / `dsh-headless` / `dsh-user-approval` / `dsh-subprocess` 的 `lib/` **逐字节相同**；`dsh-tools` 里本仓用的 `defineTool` 未变；被删除或改签名的 `HARNESS_SOURCE_SECTION` / `addHarnessSourceSection` / `createRunCodeTool` 新增必填参 / `probeLinuxScope` 一族 / `dsh-host-webserver` 的 `get port(): number | undefined` / `dsh-credentials-local` 的 `ignoredKeys`——本仓**全部零引用或零影响**。⑤ **四条行为变化都已落进本仓**（这才是这一档真正的内容）：判定器字段名 `peers` → `requirements`（alpha.4）、顶层 `engines.dsh` 开始短路 peer（alpha.4）、凭据层级翻面（**alpha.3**）、macOS 原生 picker 换 JXA + 取消改由空 stdout 表达（alpha.5）——对应改动见 `scripts/check-dsh-peers.mjs` 头部、`packages/env` 的启动期预注入、`docs/os-consent-plan.md` §2.1。⑥ 工作区回归：`pnpm typecheck` / `pnpm build` / `pnpm aggregate` 绿、`pnpm test` **149 files / 2554 tests** 全过（该数字**含同轮另一条并行工作线**的用例；本包自己此刻是 **14 files / 328 tests**）。
+    - **未跑**：本轮的 `verify-codegraph-host-contract` / `verify-client-ui` / `verify-rss-opml`——第六档的 host-contract 仍以第五档那次 **42/42** 为准，**未在 alpha.5 上重跑**。
+  - **`0.2.1-rc.2`（第八档基线，2026-10-19 实测）**：**纯显式声明，本包运行代码未动**（`lib/` 产物零 diff）。`0.2.1-rc.2` **本来就被 `^0.2.1-rc.1` 覆盖**（同一 `0.2.1` 版本元组，预发布之间不比大小），官方判定器实测放行。逐文件比对（rc.1 装临时树 + rc.2，304 个宿主包逐个 `lib/`）：**有差异的只有 9 个文件**，且逐个查清后**没有一处影响本仓**——纯版本串 4 处（`dsh-client-modules` 的 commit hash、`settings-account` / `settings-general` / `sidebar` 的 `0.2.1-rc.1` → `rc.2`）；`dsh-web` 把 `searchProvider` / `fetchProvider` 改成 `.volatile()`（设置页可热改，本仓零引用这两个字段）；`dsh-web-search-deepseek` 请求多带 `thinking: {type:'disabled'}` 且报错文案改指向新设置页；`client-ui-settings-web-search` 新增「Use the new Web Search API」开关（本仓不碰 `dsh-client-store`）；`dsh-cordis-client-runner` 的 slot 占用表新增官方 `deepseek-model-label` 一条（本仓注册的槽未被动）。`cordis` / `schemastery` 仍是 4.0.5 / 3.18.5（与第六、七档同一对）；包集合只多两个宿主自带包（`dsh-client-ui-deepseek-model-label-1017` / `dsh-web-deepseek-api`），不改变本仓 import 的任何包。证据：① `node scripts/check-dsh-peers.mjs --app-boot <宿主 dsh-app-boot>` —— **八档 × 13 条目全部放行**（判定器自报运行时 `0.2.1-rc.2`）；② 真机：`live-smoke` 18/18、`verify-issue-13-14`（logs-test）16/16，均无回归。
+  - **`0.2.1-rc.1`（第七档基线，2026-10-17 实测）**：**纯显式声明，本包运行代码未动**（`pnpm build` 之后 `lib/` 产物零 diff）。`0.2.1-rc.1` **本来就被 `^0.2.1-alpha.5` 覆盖**（同一个 `0.2.1` 版本元组，预发布之间不比大小），官方判定器实测放行。它与第六档**性质相反**：不是「有变化但没影响」，而是逐文件比对下来**根本没有变化**——两档各装一份完整依赖树（各 304 个包）逐 `lib/` 比对，本仓 import 的 14 个宿主包（`dsh-tools` / `dsh-mcp-client` / `dsh-credentials` / `dsh-credentials-local` / `dsh-client-locale` / `dsh-base` / `dsh-web-app` / `dsh-user-approval` / `dsh-settings` / `dsh-session-query` / `dsh-sandbox` / `dsh-launch-environment` / `dsh-headless` / `dsh`）**逐字节相同**，判定器 `dsh-app-boot` 的 `lib/` 同样逐字节相同；整套里只有 5 个客户端产物不同，且**差异只有版本字符串**（`settings-general` / `sidebar` / `settings-account` 里的 `0.2.1-alpha.5` → `0.2.1-rc.1`、`dsh-client-modules` 里的 commit 哈希、`dsh-web-frontend` 只有 `.map`）。`cordis` / `schemastery` 仍是 4.0.5 / 3.18.5（与第六档同一对）。证据：① 用 **0.2.1-rc.1 自带的判定器**（`dsh-app-boot`，`getDshRuntimeVersion()` 报 `0.2.1-rc.1`）对本仓 13 个条目逐一核对：**13/13 放行**；`node scripts/check-dsh-peers.mjs --app-boot <该判定器目录>` **七档 × 13 条目全部放行**。② **真宿主加载**（本轮改了 preflight 会读的范围串，所以这条最要紧）：在**隔离的 `DSH_HOME`**（临时目录，真实 `~/.dsh` 全程只读）上从自带 `web` 模板新建 profile、`dsh plugin --profile probe add link:<10 个包>` 全部装上且**无需任何豁免、无 `incompatible-version`**，随后 `dsh --profile probe --no-open --port <空闲口>` 起真宿主（runtime `0.2.1-rc.1`）：**10/10 插件 mounted、0 行 `disabling profile plugin row`、0 行 `skipping profile bundle`**（`dsh-tty` 的挂载证据是 `agent tools registered` 一行，19 个工具）。③ 主题令牌快照按纪律用 rc.1 宿主重新生成：`--check` 与宿主**逐字一致（403 个 token）**，重新生成后快照里只有 `dshVersion` / `generatedAt` 两个字段变化。④ 工作区回归：`pnpm typecheck`（在把本仓 `node_modules/@deepseek-ai/*` 指到 rc.1 那套之后跑的）、`pnpm build`、`pnpm aggregate` 绿，`pnpm test` **152 files / 2580 tests** 全过（含 os-consent 的升级绊线与两条 picker 反例——它们现在跑在真 rc.1 宿主上）。
+    - **未跑**：本轮的 `verify-client-ui` / `verify-rss-opml` / `verify-codegraph-host-contract` 与 `pnpm live-smoke`——host-contract 仍以第五档那次 **42/42** 为准。
+
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
 一次性能解决五个问题，是唯一改到「上限」的项：
@@ -289,10 +371,21 @@ per-agent 生效时全局行被**挂起**（`disabled: true`，loader 会跳过�
 - ~~`dsh.engines` 下限需重新标定~~：机制依赖 `dsh-tools` 的 `view(scope)` 分层与 `agent.ctx`
   的 scope 语义，本机 `0.1.6-alpha.2` 已验证；三平台仍只有 CI 矩阵（无真机）；
 - 收益只覆盖「多项目并发」这一窄场景（**实测时间占比 3.1%**，峰值 4 个项目），因此
-  **默认值保持 `managed`**，由用户显式开启——属口味问题而非明显对错。
+  当时**默认值保持 `managed`**，由用户显式开启——属口味问题而非明显对错。
+  **这条判断 2026-10-24 被推翻**：默认值改成 `'per-agent'`。推翻它的不是那 3.1%，而是
+  **披露面**——managed 那行建在根 scope 上，于是家目录 / 无索引仓库里开的会话同样继承
+  `mcp__codegraph__*`，工具在、语义却随全局 cwd 漂移；而 per-agent 的「没有索引就不挂」
+  正好是「没有索引的会话不该看见这个工具」这条要求的实现。性能代价没变（仍是每会话一个
+  ~40MB 子进程），回滚 = 显式写 `'managed'`。
 
 **退一步的最小版本**（不动架构时至少做这三条）：写入去抖 / 合帧；`followSession` 加跨进程
 owner 判定；会话目录无有效索引时不写盘（现有行为，保持）。
+
+**明确不做（2026-10-24 审计结论）**：per-agent 挂载**不顺带** `tools.restrict` / `presentAs`。
+本包只挂 1 个工具（实测 codegraph 1.6.0 的 `tools/list` 只有 `codegraph_explore`），
+restrict 没有任何收敛收益；而「前缀 / 通配」的 restrict 语义本仓从未验证过，往判据里
+引一个未验证的用法比不做更危险。`src/scope.ts` 保持「只决策 + 挂载 + 回收」三件事，
+不持有工具面。
 
 ## P1：先测得准，再谈环境健壮
 

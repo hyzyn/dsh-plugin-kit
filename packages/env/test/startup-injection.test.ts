@@ -71,6 +71,7 @@ function fakeCtx(seam: unknown | null): unknown {
       if (seam !== null && names.includes('credentials')) callback({ credentials: seam })
     },
     effect: () => {},
+    provide: () => () => {},
   }
 }
 
@@ -282,5 +283,77 @@ describe('启动期同步预注入（ref 托管密钥）', () => {
 
     apply(fakeCtx(null) as never, { announceToAgent: false })
     expect(process.env.CHAT2DB_AUTH).toBe('from-dsh-home')
+  })
+})
+
+/**
+ * 异步对账**不许**把「解析不到」当成「已经删了」（2026-10-22 复核）。
+ *
+ * 旧实现：`seam.resolve()` 答 undefined 就 `delete process.env[key]`。而启动期同步注入
+ * （applyStoreRefsToProcessEnv）读的是**文件**——只要 seam 那一刻答不出来（未就绪 /
+ * 与文件不同源 / 抛错），刚放好的值就会被这条异步对账删掉，「今天为什么又丢了」。
+ *
+ * 新判据：先看 `.credentials.yaml` 的 refs；文件里还有值就照文件写回、绝不删；
+ * 只有文件里也没有了，才认定「存储确实已删」并删除变量。
+ */
+describe('异步对账：resolve 不到 ≠ 已删除', () => {
+  /** 走一遍「文件里还有值」的启动，再等异步对账跑完。 */
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  it('seam 答 undefined、但 refs 里还有值 → 启动期注入的值必须活下来', async () => {
+    writeBlock(['- key: CHAT2DB_AUTH', '  secret: true'])
+    writeCreds({ CHAT2DB_AUTH: 'chat2db-token' })
+
+    apply(fakeCtx(inertSeam()) as never, { announceToAgent: false })
+    expect(process.env.CHAT2DB_AUTH, '同步注入这一拍').toBe('chat2db-token')
+
+    await settle()
+    expect(process.env.CHAT2DB_AUTH, '异步对账不得删掉文件里仍然存在的值').toBe('chat2db-token')
+  })
+
+  it('seam 抛错、但 refs 里还有值 → 既不删也不清，按文件写回', async () => {
+    writeBlock(['- key: CHAT2DB_AUTH', '  secret: true'])
+    writeCreds({ CHAT2DB_AUTH: 'chat2db-token' })
+    const brokenSeam = {
+      describe: async () => {
+        throw new Error('seam down')
+      },
+      resolve: async () => {
+        throw new Error('seam down')
+      },
+      set: async () => {},
+      unset: async () => {},
+    }
+
+    apply(fakeCtx(brokenSeam) as never, { announceToAgent: false })
+    await settle()
+    expect(process.env.CHAT2DB_AUTH).toBe('chat2db-token')
+  })
+
+  it('反例：seam 与文件都没有这个键 → 仍然删除（「存储里已删」的语义没被放宽）', async () => {
+    writeBlock(['- key: CHAT2DB_AUTH', '  secret: true'])
+    writeCreds({ SOME_OTHER_KEY: 'x' })
+    process.env.CHAT2DB_AUTH = 'stale-value'
+
+    apply(fakeCtx(inertSeam()) as never, { announceToAgent: false })
+    await settle()
+    expect(process.env.CHAT2DB_AUTH).toBeUndefined()
+  })
+
+  it('反例：seam 与文件都有值时以 seam 为准（宿主层级不变）', async () => {
+    writeBlock(['- key: CHAT2DB_AUTH', '  secret: true'])
+    writeCreds({ CHAT2DB_AUTH: 'from-store' })
+    const seam = {
+      describe: async () => ({ configured: true, writable: true }),
+      resolve: async () => ({ value: 'from-seam', source: 'file' }),
+      set: async () => {},
+      unset: async () => {},
+    }
+
+    apply(fakeCtx(seam) as never, { announceToAgent: false })
+    await settle()
+    expect(process.env.CHAT2DB_AUTH).toBe('from-seam')
   })
 })

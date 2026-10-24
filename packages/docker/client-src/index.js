@@ -62,11 +62,11 @@ const I18N_ZH = {
   'status.restarting': '重启中',
   'status.removing': '删除中',
   'status.unknown': '未知',
-  'hint.pickMaxLocal': '最多 {max} 个容器——再多会占满浏览器的同源连接，整个页面都会卡',
-  'hint.pickMaxSsh': '最多 {max} 个容器——再多会占满浏览器的同源连接，整个页面都会卡',
-  'hint.pickMany': '已接近上限，再选下去整个页面会变卡',
+  'hint.pickMaxLocal': '最多 {max} 个容器——再多一次读不清，宿主上也会多起几条 logs 进程',
+  'hint.pickMaxSsh': '最多 {max} 个容器——再多一次读不清，SSH 通道也会被占满',
+  'hint.pickMany': '已接近上限，再多就看不清了',
   'hint.pickAtLeastTwo': '至少选择 2 个容器',
-  'hint.pickBudget': '浏览器每个站点最多同时保持 4 条实时流（含活动条的事件流），再多页面就会卡住',
+  'hint.pickBudget': '聚合日志只占一条 SSE（所有选中容器共用一条连接），活动条的事件流另外只占一条',
   'option.presetAll': '全部可见',
   'status.unhealthy': '不健康',
   'status.attention': '需关注',
@@ -310,7 +310,7 @@ const I18N_ZH = {
   'meta.lines': '- 行数：{count}',
   'meta.exportedAt': '- 导出时间：{time}',
   'msg.listSep': '、',
-  'status.aggConnected': '已连接 {count} 条容器日志流（docker logs -f）',
+  'status.aggConnected': '正在跟随 {count} 个容器的日志（docker logs -f，共用一条连接）',
   'status.aggConnecting': '正在连接容器日志流…',
   'status.aggReconnecting': '部分连接中断，正在自动重连…',
   'status.aggPartialError': '部分容器日志流出错',
@@ -553,11 +553,11 @@ const I18N_EN = {
   'status.restarting': 'Restarting',
   'status.removing': 'Removing',
   'status.unknown': 'Unknown',
-  'hint.pickMaxLocal': 'At most {max} containers — more would exhaust the browser\'s per-origin connections and stall the whole page',
-  'hint.pickMaxSsh': 'At most {max} containers — more would exhaust the browser\'s per-origin connections and stall the whole page',
-  'hint.pickMany': 'Close to the limit — selecting more will slow the whole page down',
+  'hint.pickMaxLocal': 'At most {max} containers — beyond that the merged view gets hard to read, and each one adds another logs process on the host',
+  'hint.pickMaxSsh': 'At most {max} containers — beyond that the merged view gets hard to read, and the SSH channels fill up',
+  'hint.pickMany': 'Close to the limit — more will be hard to read',
   'hint.pickAtLeastTwo': 'Select at least 2 containers',
-  'hint.pickBudget': 'A browser keeps at most 4 live streams per origin (including the Activity strip\'s event stream); more will stall the page',
+  'hint.pickBudget': 'Aggregated logs use a single SSE connection shared by every selected container; the Activity strip\'s event stream is separate',
   'option.presetAll': 'All visible',
   'status.unhealthy': 'Unhealthy',
   'status.attention': 'Needs attention',
@@ -801,7 +801,7 @@ const I18N_EN = {
   'meta.lines': '- Rows: {count}',
   'meta.exportedAt': '- Exported at: {time}',
   'msg.listSep': ', ',
-  'status.aggConnected': 'Connected to {count} container log stream(s) (docker logs -f)',
+  'status.aggConnected': 'Following {count} container logs (docker logs -f, one shared connection)',
   'status.aggConnecting': 'Connecting to container log streams…',
   'status.aggReconnecting': 'Some connections were lost, reconnecting…',
   'status.aggPartialError': 'Some container log streams errored',
@@ -1570,29 +1570,36 @@ const ICON_VOLUME =
  * 实测（真 Chrome + test profile 宿主，页内连打 10 次普通请求、2s 超时）：
  *   常驻流 4 条 → 6/6 成功、中位 29ms；常驻流 5 条 → **0/6 全部超时**。
  * 宿主侧同时刻实测 41ms（进程外请求正常）——**堵在浏览器，不在宿主**。
- * 所以预算是 4 条常驻流，且要**连同事件流一起算**：面板停在容器页时事件流恒开
- * （见下方 events effect），聚合日志只能用掉剩下的 3 条。
- *
- * 这个数**不是猜的**，是量出来的；改它之前请重跑那组实验（README「已知限制」有复现步骤）。
+ * 所以预算是 4 条常驻流。这个数**不是猜的**，是量出来的；改它之前请重跑那组实验
+ * （README「已知限制」有复现步骤）。
  */
 const SAME_ORIGIN_STREAM_BUDGET = 4
-/** 容器页常开的那条事件流（活动条）。它在预算里，不能被聚合日志挤掉。 */
+/** 容器页常开的那条事件流（活动条）。它算在预算里，是面板唯一一条常驻流。 */
 const RESERVED_STREAMS = 1
-/** 聚合日志可达的硬上限 = 预算 − 事件流。 */
-const PICK_MAX = SAME_ORIGIN_STREAM_BUDGET - RESERVED_STREAMS
+/**
+ * 聚合日志一次最多选几个容器。
+ *
+ * **与浏览器预算解耦了**（D168）：聚合日志现在是一条 `/logs/stream?ids=…`，选 2 个还是
+ * 3 个都只占**一条**同源连接，不再「每个容器一条」。所以这个数不是连接悬崖推出来的，
+ * 而是两个产品 / 宿主侧约束里取小：
+ *   - 可读性：一屏混三份以上日志，服务名前缀会把内容挤得没法看；
+ *   - 宿主侧长流额度：每个被选的容器仍是一条 `docker logs -f`（SSH 上是同一条连接上的
+ *     独立 channel，共享 `MAX_STREAMS_PER_TARGET = 8` 的额度，D150）。
+ */
+const PICK_MAX = 3
 /**
  * 超过这个数就给软提示（仍可聚合）。
  *
- * 与硬上限之间刻意**留一档**：硬上限是「再点就连页面都卡」的红线，而用户在 3 条时
- * 已经在消耗大部分预算——给一句提醒，但不禁用。
+ * 与硬上限之间刻意**留一档**：硬上限是「再多就看不清 / 挤占宿主通道」的红线，而用户在
+ * 3 个时已经在消耗大部分可读性——给一句提醒，但不禁用。
  */
 const PICK_SOFT_MAX = 2
 /**
  * SSH 目标为什么不再单独降一档：真正卡住页面的是**浏览器同源预算**（上面那条，与目标
  * 类型无关），而不是 SSH 的 `MaxSessions`。旧代码把上限按「SSH 要同时装实时流与短命令」
  * 设成 6——那条例由针对的是**宿主侧**通道额度，与浏览器这一层是两笔独立的账，写成同一个
- * 数字正好把两者都算错（6 > 实测安全值）。现在两者各归各：浏览器预算管上限，
- * `MaxSessions` 由宿主侧的 `MAX_STREAMS_PER_TARGET` 管。
+ * 数字正好把两者都算错（6 > 实测安全值）。现在两者各归各：浏览器预算由「一条连接装
+ * N 个容器」直接消掉，`MaxSessions` 由宿主侧的 `MAX_STREAMS_PER_TARGET` 管。
  */
 const PICK_MAX_SSH = PICK_MAX
 
@@ -1616,6 +1623,42 @@ function shouldOfferConnectLocal(targets) {
 function isSshTarget(name) {
   const targets = configCache !== null && Array.isArray(configCache.targets) ? configCache.targets : []
   return targets.some((item) => item.name === name && item.kind === 'ssh')
+}
+
+/**
+ * 宿主是否支持「一条 `/logs/stream` 带多个容器」（`streamProtocol ≥ 3`，D168）。
+ *
+ * 为什么需要协商：聚合日志为了少占浏览器同源连接，胜在一条流里带 `ids=a,b,c`；但**没重启
+ * 的宿主进程仍是旧代码**（模块已在内存里，浏览器却从磁盘读到新 client.js——D166/D167 那次
+ * 开发档错位就是这么来的）。旧宿主只认 `id=`，多源请求会被 400，于是整个聚合视图一句日志
+ * 都没有。所以拿到 config 后按版本分流：≥3 走单连接，更老退回「每容器一条流」，宁可多占
+ * 几条连接也不能让功能凭空消失。
+ *
+ * config 缺失（面板还在加载）按**不支持**处理：先按老形状建流，config 到达后 effect 因
+ * 依赖变化重跑、自动换成单连接。反过来（先乐观地按新协议建流）会在老宿主上 400 一次，
+ * 界面上就是「连接中断」闪一下。
+ */
+function supportsMultiLogStream(config) {
+  return config !== null
+    && typeof config === 'object'
+    && typeof config.streamProtocol === 'number'
+    && config.streamProtocol >= 3
+}
+
+/**
+ * 容器列表此刻是否真的在屏幕上 —— 活动条的事件流**只在这时**才值得占一条同源连接。
+ *
+ * 详情 / 拉取 / 聚合 / Compose / 网络 / 卷这些视图都会**整段替掉列表**（见渲染里的
+ * `detailView`），活动条随之不可见；此时事件流收不到任何**看得到**的东西，却照旧占着
+ * D165 那 6 条同源连接里的一条。回到列表时 effect 重跑，`hadOpen` 会补一次全量刷新，
+ * 隐藏期间漏掉的事件不影响列表状态的正确性（D93 的语义，与折叠 tab 断流同一套）。
+ */
+function shouldStreamEvents(state) {
+  return state.active === true
+    && state.view === 'containers'
+    && typeof state.target === 'string'
+    && state.target !== ''
+    && state.listVisible === true
 }
 
 /**
@@ -4900,15 +4943,18 @@ window.__ModuleLoader__.load({
         jsx('div', { className: 'dk_tabs', children: tabs.map(([key, label]) => jsx('button', {
           type: 'button', className: 'dk_tab', 'data-on': tab === key ? '1' : '0', onClick: () => setTab(key), children: label,
         }, key)) }),
-        jsx('div', { className: 'dk_detailBody', children: tab === 'services' ? servicesTab() : jsx(ComposeLogs, { target: props.target, targetLabel: props.targetLabel, items }) }),
+        jsx('div', { className: 'dk_detailBody', children: tab === 'services' ? servicesTab() : jsx(ComposeLogs, { target: props.target, targetLabel: props.targetLabel, items, multiLog: props.multiLog }) }),
       ] })
     }
 
     /**
-     * 项目级聚合日志：**每个容器各开一条 /logs/stream**，客户端按 service 名前缀
-     * 混流（宿主侧 logsStream 本就支持任意容器，无需新接口）。混流是到达序，
+     * 项目级聚合日志：默认**所有容器共用一条 `/logs/stream?ids=…`**（D168），帧里带
+     * `id`，客户端按 service 名前缀混流——浏览器同源连接只占一条。混流是到达序，
      * 不保证跨容器严格时序——排障要的是「一屏看全这个项目的动静」，不是精确排序。
-     * 某个容器流失败只标注状态，不影响其余流。
+     * 某个容器那条子流失败只标注状态，不影响其余容器。
+     *
+     * 老宿主（`streamProtocol < 3`）不支持 `ids`，此时退回「每个容器各一条流」；
+     * 分流判据在 `supportsMultiLogStream`，由面板把 `multiLog` 传下来。
      */
     /**
      * docker `logs --timestamps` 前缀（RFC3339）。聚合日志为了**跨容器按时间合并**必须
@@ -5085,6 +5131,13 @@ window.__ModuleLoader__.load({
       return next.length > limit ? { entries: next.slice(next.length - limit), dropped: true } : { entries: next, dropped: false }
     }
 
+    /**
+     * 聚合日志共用组件（Compose 项目日志 / 手勾多选都走它）。
+     *
+     * `props.multiLog === true` 时用**一条** `/logs/stream?ids=…` 装下所有容器（D168），
+     * 否则退回旧宿主的「每容器一条流」。判据由面板按 `/config.streamProtocol` 算好传进来，
+     * 组件自己不再读模块级缓存——它要进 effect 依赖，config 迟到时才能自动换路径。
+     */
     function ComposeLogs(props) {
       const items = props.items
       const [entries, setEntries] = useState([])
@@ -5228,21 +5281,15 @@ window.__ModuleLoader__.load({
           clearTimeout(flushTimerRef.current)
           flushTimerRef.current = null
         }
-        let open = 0
         let closed = 0
-        /*
-         * 每条容器流各一个订阅句柄（D133）：首连带 tail 补历史，**重连带 tail=0** 只补
-         * 新行。聚合视图一条流断了就用 EventSource 自动重连的话，那条流的 tail 会被
-         * 整段重放，混进同一条列表里就是「凭空多出一段重复日志」。
+        /**
+         * 分片 → 完整行：残行按容器 id 存（pendingRef）；行对象组出来时即取单调 id
+         * （之后重排/合并只是挪位置，key 不抖动），再交给 enqueue——commit/合帧在
+         * 组件作用域（见上）。单连接多容器与「每容器一条流」共用这一份。
          */
-        const sources = items.map((item) => {
+        const makePush = (item) => {
           const service = item.composeService === null ? item.name : item.composeService
-          /**
-           * 分片 → 完整行：残行按 item 存（pendingRef）；行对象组出来时即取单调 id
-           * （之后重排/合并只是挪位置，key 不抖动），再交给 enqueue——commit/合帧
-           * 在组件作用域（见上），N 条流共享同一份。
-           */
-          const push = (text) => {
+          return (text) => {
             const pending = pendingRef.current.get(item.id) ?? ''
             const parts = (pending + text).split('\n')
             pendingRef.current.set(item.id, parts.pop() ?? '')
@@ -5258,6 +5305,110 @@ window.__ModuleLoader__.load({
             }
             enqueue(rows)
           }
+        }
+        /*
+         * 主机侧背压丢帧（D153）：与单容器视图同一份语义，聚合成一句状态行提示；
+         * 计数累加而不是覆盖（D157）——skip 是增量通知，覆盖会少报。两条路径共用。
+         */
+        const handleSkip = (payload) => {
+          const frames = payload !== null && typeof payload.frames === 'number' ? payload.frames : null
+          if (frames !== null) aggSkippedRef.current += frames
+          setSkipNotice(frames === null
+            ? t('hint.logSkippedNoCount')
+            : t('hint.logSkipped', { frames: aggSkippedRef.current }))
+        }
+        const cleanupTimers = () => {
+          if (arrivalTimerRef.current !== null) {
+            clearTimeout(arrivalTimerRef.current)
+            arrivalTimerRef.current = null
+          }
+        }
+
+        /*
+         * 多容器单连接（宿主 streamProtocol ≥ 3，D168）。
+         *
+         * 这是本视图**唯一**的浏览器同源连接：`ids=a,b,c` 由宿主的同一条 SSE 装下，
+         * 帧里带 `id` 再按容器派回各自的残行缓冲。旧实现是「每个容器一条 EventSource」，
+         * 3 个容器就是 3 条同源连接——叠加活动条的事件流正好吃满 4 条常驻流，而浏览器
+         * 每个源只有 6 条 TCP（D165），再多一条普通请求就整页静默排队。
+         *
+         * 为什么不无条件走它：老宿主只认 `id=`，多源请求会 400。开发档里「宿主进程还是
+         * 旧代码、浏览器却读到新 client.js」是真实出现过的组合（D166/D167），所以按宿主
+         * 版本分流；老宿主退回下面「每容器一条流」，宁可多占几条连接也不能让聚合视图空白。
+         */
+        if (props.multiLog === true) {
+          const byId = new Map(items.map((item) => [item.id, item]))
+          let ended = 0
+          let errored = 0
+          const noteSourceEnd = () => {
+            ended += 1
+            if (errored > 0) setStatus('partial')
+            else if (ended >= items.length) setStatus('closed')
+          }
+          const handle = subscribeLogStream({
+            t,
+            /*
+             * timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数。
+             * 首连带 tail 补历史、重连一律 tail=0（D133）：单连接下所有容器同一口径，
+             * 不会出现「某一条重连把历史重放一遍」的重复。
+             */
+            buildUrl: (tailNow) => streamUrl('/logs/stream', { target: props.target, ids: itemIds, tail: String(tailNow), timestamps: '1' }),
+            tail,
+            onStatus: (next) => {
+              if (next === 'connecting') return
+              if (next === 'open') {
+                // 一条连接 = 一次握手：跳过计数与提示清零（D157，与单容器视图同一语义）
+                aggSkippedRef.current = 0
+                setSkipNotice('')
+                setStatus('open')
+                return
+              }
+              if (next === 'reconnecting') setStatus('reconnecting')
+            },
+            onLine: (text, payload) => {
+              /*
+               * 帧里没有 id（理论上不会：ids 请求必然带）→ 丢掉这一片，**不猜**
+               * 「大概是第一个容器」——猜错就是把 A 的日志写进 B 的行里。
+               */
+              const item = typeof payload.id === 'string' ? byId.get(payload.id) : undefined
+              if (item !== undefined) makePush(item)(text)
+            },
+            onSkip: handleSkip,
+            // 单个容器停了：整条连接还在推其余容器，只计数、不改连接状态
+            onSourceEnd: noteSourceEnd,
+            onSourceError: () => {
+              // 单个容器失败：其余容器的日志照常收；状态行标注「部分出错」
+              errored += 1
+              setStatus('partial')
+            },
+            onEnd: (payload, controls) => {
+              const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
+              if (reason === 'container-exit') {
+                // 所有容器都到头了：整条连接自然结束
+                controls.close()
+                setStatus(errored > 0 ? 'partial' : 'closed')
+                return
+              }
+              // 服务端停流 / 宿主队列溢出：重连（只补新行）
+              controls.reconnect()
+            },
+            onError: () => {
+              // 服务端 event:error（参数 / 执行失败）：整条连接没有可用数据了
+              setStatus('partial')
+            },
+          })
+          return () => {
+            handle.close()
+            cleanupTimers()
+          }
+        }
+
+        /*
+         * 旧宿主（streamProtocol < 3）的退路：**每个容器各一条** /logs/stream。
+         * 首连带 tail 补历史、重连带 tail=0（D133）；一条流断了不影响其余流——
+         * 这正是它对同源连接的代价所在（N 个容器 = N 条，D165 的账）。
+         */
+        const sources = items.map((item) => {
           // timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数
           const handle = subscribeLogStream({
             t,
@@ -5266,7 +5417,6 @@ window.__ModuleLoader__.load({
             onStatus: (next) => {
               if (next === 'connecting') return
               if (next === 'open') {
-                open += 1
                 // 任一条容器流重连成功：跳过计数与提示清零（D157，与单容器视图同一语义）
                 aggSkippedRef.current = 0
                 setSkipNotice('')
@@ -5275,16 +5425,8 @@ window.__ModuleLoader__.load({
               }
               if (next === 'reconnecting') setStatus('reconnecting')
             },
-            onLine: push,
-            // 主机侧背压丢帧（D153）：与单容器视图同一份语义，聚合成一句状态行提示；
-            // 计数累加而不是覆盖（D157）——skip 是增量通知，覆盖会少报
-            onSkip: (payload) => {
-              const frames = payload !== null && typeof payload.frames === 'number' ? payload.frames : null
-              if (frames !== null) aggSkippedRef.current += frames
-              setSkipNotice(frames === null
-                ? t('hint.logSkippedNoCount')
-                : t('hint.logSkipped', { frames: aggSkippedRef.current }))
-            },
+            onLine: makePush(item),
+            onSkip: handleSkip,
             onEnd: (payload, controls) => {
               const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
               if (reason === 'container-exit') {
@@ -5304,15 +5446,11 @@ window.__ModuleLoader__.load({
           })
           return () => handle.close()
         })
-        void open
         return () => {
           for (const close of sources) close()
-          if (arrivalTimerRef.current !== null) {
-            clearTimeout(arrivalTimerRef.current)
-            arrivalTimerRef.current = null
-          }
+          cleanupTimers()
         }
-      }, [active, props.target, itemIds, tail])
+      }, [active, props.target, itemIds, tail, props.multiLog])
 
       // 上滚看历史时不拽回底部（D61）/ 贴底时钉到最底：搬进 useLogRows（D152）的 pin——
       // 那里是绘制前的 layout effect，垫高与滚动位置同一次提交落定；暂停时不 pin（D61）。
@@ -5693,7 +5831,7 @@ window.__ModuleLoader__.load({
           jsx('span', { className: 'dk_headerSpacer' }),
           props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: t('btn.closePanel'), onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
         ] }),
-        jsx('div', { className: 'dk_detailBody', children: jsx(ComposeLogs, { target: props.target, targetLabel: props.targetLabel, items: props.items }) }),
+        jsx('div', { className: 'dk_detailBody', children: jsx(ComposeLogs, { target: props.target, targetLabel: props.targetLabel, items: props.items, multiLog: props.multiLog }) }),
       ] })
     }
 
@@ -6533,7 +6671,27 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 事件流生命周期：只在容器列表页、且选了目标时开一条。
+       * 列表此刻是否在屏幕上（D168）。
+       *
+       * 详情 / 镜像详情 / 拉取 / Compose / 聚合日志 / 网络 / 卷都会**整段替掉列表**
+       * （见下面渲染里的 `detailView` 分支）——活动条跟着一起消失。此时事件流没有任何
+       * 可见的消费者，却照旧占着浏览器同源连接里的一条（D165：6 条里的一条），正是
+       * 「聚合日志 + 事件流 = 4 条 docker 常驻流」这个危险形状的最后一条。
+       *
+       * 判据放在 effect 外、用 state 直接拼，而不是去读渲染末尾的 `detailView`：hooks
+       * 的依赖数组在渲染时求值，引用后面才声明的 const 会踩 TDZ（本仓踩过，整棵 React
+       * 树被卸载、面板空白）。这里的状态都在本行之前声明。
+       */
+      const listVisible = detail === null
+        && imageDetail === null
+        && pullOpen === false
+        && composeDetail === null
+        && aggregateOpen === false
+        && networkDetail === null
+        && volumeDetail === null
+
+      /**
+       * 事件流生命周期：只在容器列表页、且选了目标、**且列表真的在场**时开一条。
        *
        * 两个关键语义：
        *   1. **防抖刷新**：一帧事件不刷一次列表，攒到 500ms 静默期再刷（见
@@ -6541,13 +6699,14 @@ window.__ModuleLoader__.load({
        *   2. **重连补偿**：EventSource 断线会自动重连，但断线窗口里的事件已经漏了，
        *      所以重连成功后先补一次全量列表刷新把状态对齐；首次 open 不补（列表刚加载过）。
        *
-       * 切页 / 切 target / 关面板都会走 effect 清理：关流 + 取消防抖。
+       * 切页 / 切 target / 关面板都会走 effect 清理：关流 + 取消防抖。进入详情或聚合
+       * 视图同样会关（列表被替掉、活动条不可见，D168），回来时按 `hadOpen` 补一次刷新。
        */
       useEffect(() => {
-        // 折叠的 tab 不建流（S3）。代价是隐藏期间的活动条事件会漏掉——但重连后本来就
-        // 会补一次全量列表刷新（见上面的「重连补偿」），列表状态不会因此失真。
-        if (!active) return undefined
-        if (view !== 'containers' || target === '') return undefined
+        // 折叠的 tab 不建流（S3）；列表被详情 / 聚合视图替掉时同理（D168）。
+        // 代价是隐藏期间的活动条事件会漏掉——但重连后本来就会补一次全量列表刷新
+        // （见上面的「重连补偿」），列表状态不会因此失真。
+        if (!shouldStreamEvents({ active, view, target, listVisible })) return undefined
         if (typeof EventSource !== 'function') {
           setEventsStatus('unsupported')
           return undefined
@@ -6674,7 +6833,7 @@ window.__ModuleLoader__.load({
           close()
           debounced.cancel()
         }
-      }, [active, view, target, eventsReconnect])
+      }, [active, view, target, eventsReconnect, listVisible])
 
       /*
        * 宿主版本协商（2026-10-11）：`streamProtocol < 2` 的宿主从不发 `ready`。
@@ -7172,7 +7331,8 @@ window.__ModuleLoader__.load({
        * 不算数了，不至于出现「已选 3 个」但只连出 2 条流。
        */
       const aggregateItems = pickItems(containers, pickedIds)
-      // SSH 目标上一条连接要同时装下所有流与短命令，所以聚合上限更紧（见 PICK_MAX_SSH）
+      // 与目标类型无关了（D168 后浏览器同源连接不再随选择数增长），两个上限同值；
+      // 保留分档只是为了「目标类型 → 预算」这层映射不被悄悄删掉。
       const pickTargetIsSsh = isSshTarget(target)
       const pickMax = pickTargetIsSsh ? PICK_MAX_SSH : PICK_MAX
       const pickInfo = pickDecide(aggregateItems.length, pickTargetIsSsh)
@@ -7196,6 +7356,12 @@ window.__ModuleLoader__.load({
       const composeItems = composeDetail === null
         ? []
         : (groupCompose(containers).find((group) => group.project === composeDetail.project)?.items ?? [])
+      /*
+       * 聚合日志的建流方式（D168）：宿主 `streamProtocol ≥ 3` 才能用一条流装多个容器，
+       * 老宿主退回「每容器一条」。config 还没到时按老路径走，到达后这个布尔值变化会
+       * 触发 ComposeLogs 的 effect 重跑、自动切到单连接（不需要用户重开视图）。
+       */
+      const multiLog = supportsMultiLogStream(config)
       /*
        * 整栏视图互斥：容器详情 > 镜像详情 > 拉取进度 > Compose 项目。
        * 它们都占满正文（不叠列表工具条），同一个位置只挂一个。
@@ -7238,6 +7404,7 @@ window.__ModuleLoader__.load({
                 items: composeItems,
                 target,
                 targetLabel: targetLabel(target),
+                multiLog,
                 onBack: () => setComposeDetail(null),
                 onClose: requestClose,
                 docked,
@@ -7248,6 +7415,7 @@ window.__ModuleLoader__.load({
                   items: aggregateItems,
                   target,
                   targetLabel: targetLabel(target),
+                  multiLog,
                   onBack: resetPick,
                   onClose: requestClose,
                   docked,
@@ -8943,6 +9111,15 @@ window.__ModuleLoader__.load({
      * 这类**接线**错误（路径拼歪了在真机上才暴露）。
      */
     exports.__api = api
+    /*
+     * 流判定的测试缝（D168）：这两条纯函数决定的都是**浏览器同源连接数**——宿主是否
+     * 支持「一条流装多个容器」、活动条的事件流该不该占一条。连接数没法在离线冒烟里
+     * 数，只能把判定钉住；组件侧的接线由 `client-smoke` 的源码级锚点补。
+     */
+    exports.__streams = {
+      multiLog: supportsMultiLogStream,
+      shouldStreamEvents,
+    }
     /*
      * 日志缓冲的测试缝：环形上限 / 残行分片 / 单调 id / 快照切分都是纯逻辑，离线冒烟
      * 直接驱动（真实 EventSource 时序进不了 Node 桩）。常量挂出来供用例对齐，避免两边漂移。

@@ -22,10 +22,11 @@ import {
   originProofHint,
   plainConfig,
   readJsonBody,
+  registerLiteralSection,
   settingsEntryScope,
   writeJson,
 } from '@hyzyn/dsh-kit'
-import type { ReqLike, ResLike, SettingsEntryScope } from '@hyzyn/dsh-kit'
+import type { PromptSectionApi, ReqLike, ResLike, SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { MAX_TARGETS, addTarget, normalizeConfig, publicConfig, removeTarget, updateTarget } from './config.js'
 import type { LoglensConfig, SourceKind } from './config.js'
 import { backendFor } from './backends/registry.js'
@@ -70,6 +71,38 @@ interface Route {
   kind: 'prefix'
   path: string
   handler: (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => void | Promise<void>
+}
+
+/**
+ * 面向模型的公告（渐进披露 T5，2026-10-24）。
+ *
+ * 五个工具此前只靠各自 description 自我介绍，「何时用哪个、没配来源先去哪」没有任何文本面。
+ * 这里补一段具名 section（`plugin:dsh-loglens`，order 151），只写**顺序与门禁**：
+ * 查日志的推荐链路、facets 的能力门（只有 ES / OpenSearch 来源有）、零来源时先去配置。
+ * 不写：参数清单、内部 API 名、配置文件路径、仓内文档编号（那是 schema 与 README 的事）。
+ */
+export const LOGLENS_GUIDANCE = '本机已安装 dsh-loglens 插件（日志查询）：用户在问某个服务 / 容器的日志、报错或时间分布时，'
+  + '先用 loglens_sources 拿到来源 target，再用 loglens_search 查行、loglens_context 看某行前后的上下文、'
+  + 'loglens_facets 看分组与时间分布（仅 Elasticsearch / OpenSearch 来源支持聚合）。'
+  + '一个来源都还没配时，先引导用户到「设置 → 插件配置 → 日志查询」添加，不要调用其余 loglens 工具。'
+
+/**
+ * 注册面按当前配置收窄（渐进披露 T2/T7）。返回 undefined = 五个全注册（既有行为）。
+ *
+ *  - **零来源**：只放行 `loglens_sources`——它是「去设置里配来源」的唯一入口，其余四个此刻调用
+ *    必然在 resolveTarget 的空清单文案上抛错，注册它们等于给模型四个必然报错的工具。
+ *  - **没有任何一个来源支持聚合**（Loki 声明 aggregations:false、Docker 没有适配器）：跳过
+ *    `loglens_facets`——它对所有现役来源都只会抛 facetsHint。
+ *
+ * 名单随配置走：面板增删来源走 /config → persist → refreshTools 重建，重建时按新清单现算；
+ * 设置侧的热更新（scope.onChanged）也跟着重建。对账守卫（test/tier-gate.test.ts）按
+ * tools.ts 的 add() 字面量现算**全量名单**做分类对账，不受这里收窄的影响。
+ */
+function includeFor(config: LoglensConfig): ((name: string) => boolean) | undefined {
+  if (config.targets.length === 0) return (name) => name === 'loglens_sources'
+  const aggregatable = config.targets.some((target) => backendFor(target.kind)?.capabilities().aggregations === true)
+  if (!aggregatable) return (name) => name !== 'loglens_facets'
+  return undefined
 }
 
 /**
@@ -267,6 +300,9 @@ const plugin = definePlugin<Config>({
     if (scope !== undefined) {
       ctx.effect(() => scope.onChanged(() => {
         live = normalizeConfig(scope.get()).config
+        // 注册面（零来源只放 sources / 无聚合来源跳过 facets）跟着配置走：清单变了就重建一次。
+        // refreshTools 还是 noop 的窗口（tools 服务尚未注入）里这次重建自然落空，下一次 write 会补上。
+        refreshTools()
       }), 'dsh-loglens: settings sync')
     }
 
@@ -310,6 +346,8 @@ const plugin = definePlugin<Config>({
             config: () => live,
             backendFor,
             dockerLoaded: () => dockerPluginLoaded(ctx),
+            // 注册面收窄（渐进披露 T2/T7）：零来源只放 sources；没有任何可聚合来源时跳过 facets
+            include: includeFor(live),
             add: (name, definition) => {
               try {
                 disposers.push(tools.register(definition))
@@ -375,6 +413,22 @@ const plugin = definePlugin<Config>({
         }
       }, 'dsh-loglens: routes')
     })
+
+    /*
+     * 面向模型的公告（渐进披露 T5）：具名 section `plugin:dsh-loglens`（order 151），文本见
+     * LOGLENS_GUIDANCE。开关复用 announce——它的语义从「启动日志」升级为「面向模型的公告」：
+     * 关掉它等于本插件不向任何一面自报家门（下面那条启动日志与这段 section 一起静音）。
+     * 两者都是挂载期定档（与 env / mcp 的公告同款）：announce / enabled 运行期翻转不撤下 section，
+     * 工具面由 refreshTools 跟着 enabled 走；要 section 也跟热翻转得搬进 refresh，先不做。
+     */
+    if (config.announce !== false) {
+      ctx.inject(['systemPrompt'], (promptCtx: Context) => {
+        promptCtx.effect(() => {
+          const systemPrompt = (promptCtx as unknown as { systemPrompt: PromptSectionApi }).systemPrompt
+          return registerLiteralSection(systemPrompt, { name: 'plugin:dsh-loglens', order: 151, text: LOGLENS_GUIDANCE })
+        }, 'dsh-loglens: announcement')
+      })
+    }
 
     if (config.announce !== false) {
       // 这句要跟得上能力：原先写的是「查询能力尚未实现」——查询区、四条路由与 agent 工具早就有了。

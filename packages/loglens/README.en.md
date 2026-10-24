@@ -184,9 +184,9 @@ The **source configuration** collapses by default into one summary line on the p
   in the head comment of `histogramScale` in [pure.js](./client-src/pure.js).
 - **The group field is supplied by the user** (the panel has **no default field** — field names differ
   across index families, and guessing one would be forging a scope on the user's behalf). Opening that cell
-  shows this source's field-name candidates: **not passing `limit` = no truncation**, so what you see is
-  every field of this source (the same basis as Kibana's `_field_caps`; the same source is not re-fetched,
-  and the popup footer reports "N fields total" and offers "refresh"). Only "usable names" appear among the
+  shows this source's field-name candidates: the host **lists at most the first 200 by default** (when
+  truncated, `truncated: true` and the "first 200 of N" warning are copied verbatim into the footer; the
+  same source is not re-fetched). Only "usable names" appear among the
   candidates: container rows such as `object` / `nested` that have no value of their own are not listed; a
   field whose **type differs** across indices is marked "type conflict" at the end of its row (hovering lists
   both types).
@@ -281,14 +281,18 @@ plugin's own routes (relative paths).
 
 Once sources are configured, the agent queries through these tools (**the authoritative list is the
 registration site in [src/tools.ts](./src/tools.ts)**). They are **all** in the **read** tier (the tier table
-is in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1).
+is in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1). The registration surface
+narrows with the configuration (since 2026-10-24): **with zero sources only `loglens_sources` registers**
+(it is the only entry that says "go configure a source"; the other four would just throw at call time);
+when every configured source is Loki / Docker, `loglens_facets` is skipped too. Any source-list change
+(panel add/remove, settings hot update) rebuilds the registration.
 
 | Tool | Purpose |
 |---|---|
 | `loglens_sources` | List sources (with the **resolved index expression** and a probe count); other `loglens_*` tools take their `target` from here |
 | `loglens_search` | Query: supports `filters` structured filtering and `level` (**and-above** semantics), `from` / `to` / `limit` / `direction` / `cursor` |
-| `loglens_fields` | Show which fields exist. On the ES / OpenSearch side it **does not list `object` / `nested` container rows**, and a name whose **type differs** across indices is marked `conflict: true` with `esTypes` / `conflictDescriptions` |
-| `loglens_facets` | Group by field / bucket by time ("which service is erroring"); currently only ES / OpenSearch have it. **On zero buckets it says which cause it is** — using "how many rows this window holds" to tell "this field is a shell" from "nothing matched in this window", whose next steps are opposite |
+| `loglens_fields` | Show which fields exist. **Lists at most the first 200 by default** (the full count sits in `total`; when truncated `truncated: true` plus a warning with the next step; pass `limit` in segments for more). On the ES / OpenSearch side it **does not list `object` / `nested` container rows**, and a name whose **type differs** across indices is marked `conflict: true` with `esTypes` / `conflictDescriptions` |
+| `loglens_facets` | Group by field / bucket by time ("which service is erroring"); currently only ES / OpenSearch have it — **when every configured source is Loki / Docker this tool is not registered at all**. **On zero buckets it says which cause it is** — using "how many rows this window holds" to tell "this field is a shell" from "nothing matched in this window", whose next steps are opposite |
 | `loglens_context` | Fetch the context around one row (**two segments**: one counting back from the anchor, one counting forward, each filling its own `before`/`after` — so the anchor row itself is always included even in dense windows). The anchor is matched by **priority**: exact id → the variant with one leading `#` stripped → exact message → equal after whitespace normalization → one-way whitespace-normalized substring → `ts` alone (a **fallback** tier that applies whether or not a message was given; a higher tier always wins, within a tier the row nearest the `ts` wins, ties broken by id then message). The `#id` right after the message on each rendered row is that exact coordinate (labels may follow it); a non-id hit says in `warnings` which tier it used |
 
 **Shape of the rendered row** (shared by `loglens_search` and `loglens_context`): time · level · message ·
@@ -301,11 +305,24 @@ is in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1).
 - **Multi-line messages (stack traces) keep their shape**: a `log.flags=multiline` stack trace is one document
   whose `message` already contains newlines, and echoing it raw yields flat "newline inside a line" text.
   Continuation lines now get a `    | ` prefix (the message content is untouched), and past 20 lines it
-  truncates and **reports** the total and the number not shown.
+  truncates and **reports** the total and the number not shown, plus an executable next step ("pass
+  `expand: true` and query again" — both paths take `expand`, which only affects rendering while the
+  returned message stays full).
+- **Pagination has guidance**: when the adapter provides a `nextCursor` (ES's PIT / Loki's full-ts-group),
+  both the result and the rendered text say "pass `nextCursor` back as `cursor` (same window, same
+  `direction`)" instead of leaving only "(truncated: hit_limit)" for the model to decode.
 - **Only the identity keys are laid out** (`LABEL_PRIORITY` in `src/line.ts`, the first 3: container → host →
   stream); the rest collapse into `+N labels` — one filebeat document can flatten into 20 labels, and laying
   them all out drowns the message. **Collapsing is not dropping**: the full labels live in the result's
   `lines[].labels`.
+
+**Model-facing announcement** (since 2026-10-24): on mount the plugin injects a named section into the
+system prompt (`plugin:dsh-loglens`, order 151, ≤300 characters) that only carries the recommended query
+chain (sources → search → context → facets), the facets capability gate, and where to go with zero sources;
+the `announce` switch governs both it and the startup log (off = the plugin stays silent on both surfaces).
+The five tools' schema descriptions were slimmed in the same pass (each ≤120 characters); details moved to
+the result-side warnings and this section — the model-visible surface no longer restates the implementation
+manual and carries no in-repo document references.
 
 ## HTTP surface (loopback)
 
@@ -317,7 +334,7 @@ is in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1).
 | Update source | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | The id cannot be changed (it is the only way the browser side references it) |
 | Remove source | `POST {"action":"targets.remove","id":"<id>"}` | |
 | Query once | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | Used by the panel; returns rows + counts + truncation signals, **the same shape as `loglens_search`** (one execution layer). May carry `filters` (`{"field":"value"}`) — that is how the panel drills down from the board, and `/facets` carries the same copy |
-| List fields | `POST /api/dsh-loglens/fields` `{"target":"<id>"}` (may carry `"limit":80` to narrow) | Fetched when the group-field cell is opened (the panel **passes no `limit`** → the host does not truncate and lists everything); only when `limit` really truncated does it return `truncated: true` plus that warning, which the UI copies verbatim |
+| List fields | `POST /api/dsh-loglens/fields` `{"target":"<id>"}` (may carry `"limit":80` to narrow) | Fetched when the group-field cell is opened (the panel **passes no `limit`** → the host applies the default cap of the **first 200**); when truncated it returns `truncated: true` plus the "first 200 of N" warning, which the UI copies verbatim |
 | Aggregate | `POST /api/dsh-loglens/facets` `{"target":"<id>","by":"container.name","interval":"5m"}` | Group by field / bucket by time (currently only ES / OpenSearch have it; the panel uses `interval` for the time distribution and `by` for the group board, and the tool surface is `loglens_facets`) |
 
 Fence ([docs/design.md §4](./docs/design.md)): the whole route set goes through the **hardened tier**

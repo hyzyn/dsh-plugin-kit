@@ -426,14 +426,27 @@ export interface LogGrepLine {
     /** 命中时：匹配到的子串（供调用方定位；上下文行为 null）。 */
     highlight: string | null;
 }
-/** 日志检索结果。两个「截断」要分清：truncated = 扫描侧字节闸截断，limited = 命中数达到 limit。 */
+/**
+ * logsGrep 的**返回侧行闸**（与扫描侧的 8~32MB 字节预算是两件事）。
+ *
+ * 扫描预算管「能从多少原文里筛」，这个常量管「筛出来的能塞回多少给模型」：
+ * limit 上限 500 × context 上限 20 ⇒ 最多约 20500 行，一次性返回会把模型上下文撑爆
+ * （命中多的时候返回的是真有用的行，不是噪音，但超长的结果是另一种不可用）。
+ * 超了截到本上限，并给 `truncatedForSize` 与 `notes`——**不给**一个静默截断。
+ * `matched` 不受此闸影响：全量命中数仍如实上报，那是缩小窗口时最有用的信号。
+ */
+export declare const MAX_RESULT_LINES = 4000;
+/**
+ * 日志检索结果。三个「截断」要分清：truncated = 扫描侧字节闸截断，limited = 命中数达到
+ * limit，truncatedForSize = 返回侧行闸截断（见 MAX_RESULT_LINES）。
+ */
 export interface LogGrepResult {
     id: string;
-    /** 命中总行数（即使超过 limit 也如实计数）。 */
+    /** 命中总行数（即使超过 limit 也如实计数；返回侧行闸**不改变**它）。 */
     matched: number;
     /** 实际扫描的行数。 */
     scanned: number;
-    /** 返回的行数（命中 + 去重后的上下文）。 */
+    /** **实际返回**的行数（命中 + 去重后的上下文；被返回侧行闸截过就是截断后的条数）。 */
     returned: number;
     /** 命中数达到 limit、还有命中没返回。 */
     limited: boolean;
@@ -442,6 +455,10 @@ export interface LogGrepResult {
      * 窗口已对齐到行边界，所以 `lines` 里不会出现半行；但切口之前的内容确实没参与检索。
      */
     truncated: boolean;
+    /** 组装出的行数超过 MAX_RESULT_LINES、`lines` 已按上限截断。 */
+    truncatedForSize?: boolean;
+    /** 面向调用方的可执行提示（目前只有返回侧行闸这一档）：缩小 limit / 减小 context / 圈 since~until。 */
+    notes?: string[];
     contextLines: number;
     lines: LogGrepLine[];
 }
@@ -660,8 +677,10 @@ export declare class DockerApi {
      * 与 logs() 的分工（写进工具描述，供模型选择）：「报错在最近尾部」→ docker_logs；
      * 「埋在深处 / 特定时间窗 / 找关键词」→ docker_logs_grep。扫描与返回的预算是**分开**
      * 的：扫描侧给到 8~32MB（maxOutputKb 只是单命令返回闸，grep 的意义就是从大量原文里
-     * 筛出少量命中），返回侧由 limit × context 夹住；两侧截断各有独立信号位
-     * （truncated = 扫描侧溢出丢最旧、limited = 命中超过 limit），都不静默。扫描窗口
+     * 筛出少量命中），返回侧由 limit × context 夹住，且另有**返回侧行闸**
+     * MAX_RESULT_LINES（limit 上限 500 × context 上限 20 能凑出两万行，一次返回会撑爆
+     * 上下文）；三处截断各有独立信号位（truncated = 扫描侧溢出丢最旧、limited = 命中超过
+     * limit、truncatedForSize = 返回行数超上限），都不静默。扫描窗口
      * **对齐到行边界**（`lineAlign`）：切口处的半行不当作一行返回，否则它会以没有时间戳的
      * 噪音形式进模型上下文，看起来像「检索结果里有脏行」。
      *

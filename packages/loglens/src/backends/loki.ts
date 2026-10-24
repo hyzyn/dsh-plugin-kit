@@ -15,7 +15,7 @@
 import type { LoglensTarget } from '../config.js'
 import { decodeCursor, encodeCursor, lineFromLoki, slicePage } from '../cursor.js'
 import { withLevel } from '../line.js'
-import { requestJson as fetchJson } from '../net.js'
+import { httpFailureHint, requestJsonWithHint as fetchJson } from '../net.js'
 import type { LookupFn } from '../net.js'
 import type { LokiCursor } from '../cursor.js'
 import { countsOf, truncationOf } from '../query.js'
@@ -281,7 +281,9 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
       ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
     })
     if (!response.ok) {
-      throw new Error(label + ' HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text))
+      // 正文仍由 detailOf 截在 200 字；末尾缀一句按状态给的下一步（渐进披露 T8；5xx 不缀）
+      throw new Error(label + ' HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text)
+        + httpFailureHint(response.status))
     }
     if (response.body === undefined) {
       const trimmed = response.text.trim()

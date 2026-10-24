@@ -8,7 +8,7 @@
 
 - **保存即热加载**：改写 `~/.dsh/cordis.patch.yml` 的托管区块，DSH 的 HMR 监听自动重载，工具以 `mcp__<server>__<tool>` 注册给模型。
 - **stdio 与 streamable-http 双传输**：stdio（command / args / env / cwd）与 streamable-http（url / headers，含 SSE 与 session 头）；值可写 `js:` 表达式，密钥不落补丁文件。
-- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。启动子进程走 `@hyzyn/dsh-kit` 的 `spawnPortable`——Windows 上 MCP 服务器常是 `.cmd` shim，裸 `spawn` 会 `EINVAL`（Node 对 `.cmd` 的加固），连接测试会永久报错并误导成「CLI 没装好」；探测进程的 stderr 也用同库的容错解码器（UTF-8 优先、遇非法字节回落控制台代码页）读，卡片上不会出现 `���`。注意这只影响本插件的探测：**真正的工具加载**走 DSH 核心的 `@deepseek-ai/dsh-mcp-client`（官方 SDK + cross-spawn），本来就没这个问题。
+- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。启动子进程走 `@hyzyn/dsh-kit` 的 `spawnPortable`——Windows 上 MCP 服务器常是 `.cmd` shim，裸 `spawn` 会 `EINVAL`（Node 对 `.cmd` 的加固），连接测试会永久报错并误导成「CLI 没装好」；探测进程的 stderr 也用同库的容错解码器（UTF-8 优先、遇非法字节回落控制台代码页）读，卡片上不会出现 `���`。注意这只影响本插件的探测：**真正的工具加载**走 DSH 核心的 `@deepseek-ai/dsh-mcp-client`（官方 SDK + cross-spawn），本来就没这个问题。探测对**错误**也有判据：POST / GET 收到 401/403 当场报 `认证失败(HTTP 401)`（带 `WWW-Authenticate`），其它 4xx/5xx 报状态码——认证失败不会再被兜底成「SSE 流已结束」；`js:` 头或 stdio `env` 的值求值出 `undefined` 时（含被 base64 藏进 `Basic …` 的形态）在发请求 / 起进程前点名缺哪几个环境变量。
 - **存活状态与命名冲突可见**：从 loader fiber 读存活状态（运行中 / 已停用 / 错误 / 加载中）。命名冲突分两档、**不混为一谈**（issue #5）：`conflicts` 只放**真正重名**的托管行——同名两个实例抢同一套 `mcp__<serverName>__*` 工具名，横幅只在这种情况下出现；本卡之外的实例清单走 `externalServers`，以中性信息条表达「这些名字已被本卡之外的实例占用，在本卡内别重名」。服务器可启用 / 停用（`disabled: true`）/ 编辑 / 删除。**「已挂载」不等于「连上了」**：fiber 存活状态由 loader 给出，而连不上时 `mcp-client` 的 apply 照常 resolve（`failOnStartupError` 默认 `false`，不抛错）——于是不可达的地址会一直显示成绿色「运行中」。现在 DTO 的每个托管行多带一个 `toolCount`（工具注册表里 `mcp__<serverName>__*` 的条数）：`active` 且 `toolCount === 0` 时徽标改显**「未连接」**（顶掉绿色的「运行中」），行下另给一条说明点明代价（每次启动都要为它等一次连接尝试）并配一个手边的「停用」按钮。读不到工具注册表时 `toolCount` **字段缺失**（不是 0），界面据此**不下结论**——绝不能把「读不到」渲染成「未连接」。
 - **能力公告注入 systemPrompt**：注入能力公告（systemPrompt section），提到「MCP 配置 / MCP 服务器」时模型知道指本插件。
 
@@ -95,3 +95,34 @@ dsh plugin --profile web remove @hyzyn/dsh-mcp
   `disabled` 的行本来就不该有工具，不计入「未连接」。注意它**不改变启动耗时**：地址不可达时
   启动仍要为那行等一次连接尝试（约 10s；能连上但不回应最长 60s），想省掉就把那行停用
 - 浏览器半体为手写 ESM（React 外壳经 `__ModuleLoader__` 的 `require` 解析，面板本身是纯 DOM），无需 tsdown；宿主半体 tsc 直出 ESM
+
+## 排障：`server is disconnected` 怎么分诊
+
+**症状几乎一样，成因分四档，修法完全不同。** 别从凭据开始猜——先按下表定位到一档，
+再动手（2026-10-24 一次真机事故里，**三档同时存在**：缺注入 + 没连 VPN + 重连预算耗尽，
+每层单独看都像「认证失败」，这是它难查的原因）。
+
+| 判据（一条可粘贴命令 / 一处证据） | 结论 | 修法 |
+|---|---|---|
+| `nc -z <host> <port>` 不通（内网地址还要先看 `ping` 是否 100% 丢包） | **网络不可达**——与插件、凭据都无关 | 连 VPN / 换到能到那台机器的网络 |
+| 端口通，但宿主日志尾部有 `giving up after N consecutive failed reconnect attempts` | **重连预算已耗尽**：`reconnect.maxAttempts` 默认 10 次（`RECONNECT_DEFAULT_MAX_ATTEMPTS`）用完后就放弃并注销该服务器的工具，之后网络恢复它**也不会再试** | **重启宿主**（或对该插件做一次 HMR 重载） |
+| 端口通、日志里没有放弃记录，但仍未连接 | 连接还在建立中或刚失败待重试（首次连接约 10s，能连上但不回应最长 60s） | 等一个重连周期；持续失败就按上一档处理 |
+| 401 / 工具数是 0 | **凭据未注入**：`!!js process.env.X` 求值成 `undefined`，拼出 `Basic base64("undefined:undefined")` 这种**合法但错误**的串，服务器只会回 401 | 装并启用 `@hyzyn/dsh-env`，确认这些键**真的写进了宿主进程**（`env` 在同步预注入后才 `provide` `dshEnvReady`） |
+
+重连的另外两个默认值同上，退避是**从初始值指数翻倍、封顶**：
+
+- `reconnect.initialDelayMs` 默认 500 ms（`RECONNECT_DEFAULT_INITIAL_DELAY_MS`）；
+- `reconnect.maxDelayMs` 默认 30000 ms（`RECONNECT_DEFAULT_MAX_DELAY_MS`），也是退避的上限。
+- 上面那三个数都写成了具名常量：改它们**构建期不会有任何东西报红**，但本节的数字由
+  `scripts/check-readme-facts.mjs` 现算校验——**改了就要回来改这一节**。
+- `maxAttempts` 是**连续失败**的预算：一次成功连接存活超过 `maxDelayMs` 后预算会重置，
+  所以「断过一次」不等于「下次一定放弃」。
+
+三条配套判据：
+
+- **认证头是否已经算对**：`!!js` 由 loader 在激活 `mcp-client` 那条 entry 时求值（`process` 是宿主进程的），
+  不是本插件求值的——本插件的 `evalValue()` 只服务于「连接测试」按钮。所以「卡片看起来正常、
+  agent 侧却连不上」通常不是本插件的问题，往上面那张表查。
+- **连接测试能给出凭据那一档的判词**：它会把「引用的环境变量 X 在当前宿主进程里没有值（未注入）」
+  直接写进结果，而不是含糊的 401。**但这条检查只在点「连接测试」时才跑**，不覆盖启动时的连接。
+- **重启是重连预算耗尽后的唯一出路**：`enabled: true` 只表示「失败后会重试」，不表示「会永远重试」。

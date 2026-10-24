@@ -42,6 +42,15 @@ interface Route {
     handler: (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => void | Promise<void>;
 }
 /**
+ * 面向模型的公告（渐进披露 T5，2026-10-24）。
+ *
+ * 五个工具此前只靠各自 description 自我介绍，「何时用哪个、没配来源先去哪」没有任何文本面。
+ * 这里补一段具名 section（`plugin:dsh-loglens`，order 151），只写**顺序与门禁**：
+ * 查日志的推荐链路、facets 的能力门（只有 ES / OpenSearch 来源有）、零来源时先去配置。
+ * 不写：参数清单、内部 API 名、配置文件路径、仓内文档编号（那是 schema 与 README 的事）。
+ */
+export declare const LOGLENS_GUIDANCE: string;
+/**
  * 构造 /config 的读写路由。
  *
  * read 取当前生效配置、write 落盘（并更新内存里的那一份）。两者都由 apply 注入，

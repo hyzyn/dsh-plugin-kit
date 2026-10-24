@@ -56,6 +56,14 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(html).toContain('per-agent 未生效，已退回 managed')
     // 退回时不能说「生效中」——同时出现两句自相矛盾的文案就是卡片在骗用户
     expect(html, '退回态下不该又说「生效中」').not.toContain('per-agent 生效中')
+    // T6：退回态同时是「托管行在 ≠ 工具在」的现场，reason + nextStep 都要渲染出来
+    expect(html, '工具为 0 时卡片必须说清原因').toContain('mcp__codegraph__* 不会注册')
+    expect(html, '工具为 0 时卡片必须给下一步').toContain('托管行才会写出来')
+  })
+
+  it('T6：有工具时不渲染那条警告（警告只在 0 工具时出现）', () => {
+    const html = render(['--per-agent'], 'codegraph-card-per-agent.html')
+    expect(html, 'per-agent 有挂载时不该出现 0 工具警告').not.toContain('不会注册')
   })
 
   it('--busy：两级反馈都要出现（按钮自己 + 标题行全局）', () => {

@@ -56,7 +56,7 @@ function git(dir: string, args: string[], env = {}) {
 }
 
 /**
- * 造一个临时仓库：真钩子挂在 `.githooks/`，`pnpm` 与两个闸门脚本都用替身。
+ * 造一个临时仓库：真钩子挂在 `.githooks/`，`pnpm` 与各道闸门脚本都用替身。
  *
  * 种子提交在 `core.hooksPath` **设置之前**做——否则钩子会在这个夹具自己的提交上跑一遍。
  */
@@ -81,6 +81,7 @@ function makeRepo({ buildFails = false } = {}) {
   writeFileSync(join(dir, 'scripts/check-no-public-ip.mjs'), 'process.exit(0)\n')
   writeFileSync(join(dir, 'scripts/check-internal-identifiers.mjs'), 'process.exit(0)\n')
   writeFileSync(join(dir, 'scripts/check-readme-facts.mjs'), 'process.exit(0)\n')
+  writeFileSync(join(dir, 'scripts/check-readme-structure.mjs'), 'process.exit(0)\n')
   writeFileSync(join(dir, 'packages/demo/src/index.ts'), 'v1\n')
   writeFileSync(join(dir, 'packages/demo/lib/index.js'), 'v1\n')
 
@@ -167,5 +168,20 @@ describe.skipIf(process.platform === 'win32')('pre-commit：产物只跟着「�
     expect(result.ok).toBe(false)
     expect(result.out).toContain('构建失败，提交中止')
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()).toBe(before)
+  })
+
+  it('中英 README 结构闸门红灯 → 中止（证明钩子真的调了它）', () => {
+    const dir = makeRepo()
+    // 把替身改成红灯：只写替身、钩子却没调用的话，这一笔会照常成功——所以这条用例
+    // 同时守着「闸门被静默从钩子里摘掉」那种漂移（摘掉它，这条用例就变绿不了）。
+    writeFileSync(join(dir, 'scripts/check-readme-structure.mjs'), 'process.exit(1)\n')
+    put(dir, 'docs-note.md', 'b')
+    git(dir, ['add', 'docs-note.md'])
+    const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
+
+    const result = git(dir, ['commit', '-qm', 'structure red'], hookEnv(dir))
+    expect(result.ok, '闸门红灯时提交必须中止').toBe(false)
+    expect(result.out).toContain('中英 README 的章节结构已经漂了')
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim(), 'HEAD 不许推进').toBe(before)
   })
 })

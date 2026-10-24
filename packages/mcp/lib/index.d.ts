@@ -7,6 +7,20 @@ export interface Config {
     /** 是否向 agent 注入插件能力公告。默认开。 */
     announceToAgent?: boolean;
 }
+/**
+ * `reconnect` 的默认值——**具名常量而不是散在 validateReconnect 里的字面量**。
+ *
+ * 为什么单独提出来：这三个数在 README 的排障表里是**判据的一部分**（「`maxAttempts`
+ * 用完就放弃、必须重启」正是最常见的误判点），而 README 里的数字由
+ * `scripts/check-readme-facts.mjs` 现算校验。
+ *
+ * **必须 `export`**：那个闸门只收集 `export const`（`collectConstants` 的判据是
+ * 「非导出常量不是对外承诺的一部分」）。第一版写成模块内私有常量，抽不到 →
+ * 比对不到 → 闸门恒绿，改错数字也不会红（实测：把 10 改成 99 仍然「通过」）。
+ */
+export declare const RECONNECT_DEFAULT_INITIAL_DELAY_MS = 500;
+export declare const RECONNECT_DEFAULT_MAX_DELAY_MS = 30000;
+export declare const RECONNECT_DEFAULT_MAX_ATTEMPTS = 10;
 interface JsExpr {
     __jsExpr: string;
 }
@@ -119,6 +133,29 @@ export declare function buildServersDto(ctx: Context): {
         serverName: string;
     }>;
 };
+interface ProbeResult {
+    ok: boolean;
+    transport: 'stdio' | 'streamable-http';
+    durationMs: number;
+    protocolVersion?: string;
+    serverInfo?: {
+        name?: string;
+        version?: string;
+    };
+    tools?: Array<{
+        name: string;
+        description?: string;
+    }>;
+    toolsCount: number;
+    error?: string;
+}
+/**
+ * 连接测试入口（`POST /api/dsh-mcp/test` 走这里）。
+ *
+ * 导出只为单测：探测的两条关键判据（401/403 定性、凭据未注入自检）都在**网络之前**，
+ * 用用例钉住比真机截图稳定。运行期它只被路由调用。
+ */
+export declare function testServer(rawConfig: unknown): Promise<ProbeResult>;
 interface ReqLike {
     method?: string;
     url?: string;

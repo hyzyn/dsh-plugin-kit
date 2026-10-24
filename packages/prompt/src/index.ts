@@ -45,6 +45,13 @@ const PROMPT_ID_RE = /^p-[A-Za-z0-9-]{1,64}$/
 const VERSION_ID_RE = /^v-[A-Za-z0-9-]{1,64}$/
 const MAX_NAME_LENGTH = 80
 const MAX_CONTENT_LENGTH = 500_000
+/**
+ * 每轮注入 systemPrompt 的正文上限——**这是每轮请求成本的保护，不是保存限制**：
+ * 保存防呆是上面的 MAX_CONTENT_LENGTH（超限拒存），这里超限只截断本轮注入的内容，
+ * 文件里始终是完整正文。取 8000 而不是 kit 的 DEFAULT_SECTION_MAX_CHARS（4000），
+ * 是因为用户 Prompt 正文通常比插件公告长，4000 会误伤正常用法；8000 仍远低于保存上限。
+ */
+export const PROMPT_BODY_MAX_CHARS = 8_000
 const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 const EXPORT_SCHEMA = 'dsh-prompt'
 const EXPORT_VERSION = 1
@@ -445,8 +452,85 @@ function resolveActiveText(store: PromptStore): ActiveText {
   }
 }
 
-function buildSystemPromptText(store: PromptStore): string {
-  return resolveActiveText(store).text
+/** 注入段落的名字：注册名与超限告警的去重键共用它。 */
+const PROMPT_SECTION_NAME = 'plugin:dsh-prompt-manager'
+
+/** 已告警过正文超限的段落名：同名只告警一次（与 kit enforceBudget 的同名去重同一策略）。 */
+const bodyBudgetWarned = new Set<string>()
+
+/**
+ * 把启用的 Prompt 正文变成要注册进 systemPrompt 的文本；超限就做**语义化截断**。
+ *
+ * 为什么不用 kit 的通用截断标记（`…（本段超过 N 字符上限，已截断）`）：这段是**用户内容**，
+ * 模型需要知道的不止「以上不是全文」，还有「完整内容去哪提醒用户找」——通用标记只说得出前者。
+ *
+ * 截断说明计入预算**之内**：正文保留 `PROMPT_BODY_MAX_CHARS - 说明自身长度` 字符，最终文本
+ * 总长恰好等于上限。调用点（registerActivePromptSection）给 kit 传的 `maxChars` 与这里是
+ * **同一个常量**，kit 的长度安全网因此永远不会触发；两边一旦不相等（比如调用点传小了），
+ * kit 就会二次截断、语义说明被顶掉——prompt-section.test.ts 的反例用例钉住了这个形状。
+ */
+export function buildSystemPromptText(store: PromptStore): string {
+  const text = resolveActiveText(store).text
+  if (text.length <= PROMPT_BODY_MAX_CHARS) return text
+  if (!bodyBudgetWarned.has(PROMPT_SECTION_NAME)) {
+    bodyBudgetWarned.add(PROMPT_SECTION_NAME)
+    console.warn(
+      `[dsh-prompt-manager] 启用的 Prompt 正文 ${text.length} 字符，超过每轮注入上限 ${PROMPT_BODY_MAX_CHARS} 字符，已截断注入；` +
+        '这是每轮请求成本的保护，不是保存限制，完整正文仍保存在 prompts.yml 里',
+    )
+  }
+  const notice =
+    `\n\n> 正文超过 ${PROMPT_BODY_MAX_CHARS} 字符上限，以上为前 ${PROMPT_BODY_MAX_CHARS} 字符；` +
+    '完整内容请在「设置 → 插件配置 → Prompt 管理」里查看。'
+  return text.slice(0, PROMPT_BODY_MAX_CHARS - notice.length) + notice
+}
+
+/**
+ * 注册「启用的 Prompt 正文」段落；正文为空时返回 null（什么都不注册）。
+ *
+ * `maxChars` 必须与 `buildSystemPromptText` 的截断阈值是**同一个常量**：语义截断已经把总长
+ * 压到上限以内，这里传别的值只可能让 kit 二次截断（两份截断标记）或把安全网架空。
+ * 导出仅为测试：生产路径只有 refreshSystemPrompt 一个调用点。
+ */
+export function registerActivePromptSection(api: PromptSectionApi, store: PromptStore): (() => void) | null {
+  const text = buildSystemPromptText(store)
+  if (text === '') return null
+  return registerLiteralSection(api, {
+    name: PROMPT_SECTION_NAME,
+    order: 140,
+    text,
+    maxChars: PROMPT_BODY_MAX_CHARS,
+  })
+}
+
+/**
+ * 保存响应的正文预警：保存的 Prompt 里**会被注入**的版本若有超过每轮注入上限的，回一条
+ * warning 让卡片提示「这份 Prompt 每轮只会注入前 8000 字符」。候选版本与 resolveActiveText
+ * 的选择对齐——A/B 启用且两侧都存在时两侧都可能被注入；否则走「activeVersionId → 第一个
+ * 版本」的回落链。不在注入链上的超限版本（比如存着备用的长稿）不触发，免得卡片误报。
+ * 导出仅为测试。
+ */
+export function promptBodyWarning(prompt: Prompt): string | undefined {
+  let candidates: string[]
+  if (
+    prompt.ab.enabled &&
+    prompt.versions.some((version) => version.id === prompt.ab.aVersionId) &&
+    prompt.versions.some((version) => version.id === prompt.ab.bVersionId)
+  ) {
+    candidates = [prompt.ab.aVersionId, prompt.ab.bVersionId]
+  } else {
+    const effective = prompt.versions.find((version) => version.id === prompt.activeVersionId) ?? prompt.versions[0]
+    candidates = effective === undefined ? [] : [effective.id]
+  }
+  const over = prompt.versions.filter(
+    (version) => candidates.includes(version.id) && version.content.length > PROMPT_BODY_MAX_CHARS,
+  )
+  if (over.length === 0) return undefined
+  const ids = over.map((version) => version.id).join('、')
+  return (
+    `这份 Prompt 的版本 ${ids} 正文超过每轮注入上限 ${PROMPT_BODY_MAX_CHARS} 字符，` +
+    `启用后每轮只会注入前 ${PROMPT_BODY_MAX_CHARS} 字符；完整内容仍保存在文件里，可随时在卡片查看`
+  )
 }
 
 /* ------------------------------------------------------------------ *
@@ -515,7 +599,8 @@ async function readJsonBody(req: ReqLike & AsyncIterable<Uint8Array>): Promise<R
 type RouteHandler = (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => Promise<void>
 
 
-function makeRoutes(
+/** 导出仅为测试：生产路径只有 apply 里这一处调用。 */
+export function makeRoutes(
   ctx: Context,
   onChanged: () => void,
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
@@ -586,7 +671,15 @@ function makeRoutes(
         }
         onChanged()
         const after = readManagedStore()
-        writeJson(res, 200, { ok: true, ...storeDto(after.store), ...(after.fileError !== undefined ? { fileError: after.fileError } : {}) })
+        const saved = after.store.prompts.find((prompt) => prompt.id === validated.prompt!.id)
+        const warning = saved === undefined ? undefined : promptBodyWarning(saved)
+        writeJson(res, 200, {
+          ok: true,
+          ...storeDto(after.store),
+          ...(after.fileError !== undefined ? { fileError: after.fileError } : {}),
+          // 保存内容里有会被注入的超限版本时的卡片提示；只影响提示，不改保存语义（MAX_CONTENT_LENGTH 照旧）。
+          ...(warning !== undefined ? { warning } : {}),
+        })
       },
     },
     {
@@ -842,7 +935,7 @@ function makeRoutes(
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const PROMPT_GUIDANCE = '本机已安装 dsh-prompt-manager 插件（Prompt 管理）：Web GUI 的 插件配置里有「Prompt 管理」卡片，提供 systemPrompt 的可视化编辑、版本管理、A/B 测试、导出/分享。配置保存在 ~/.dsh/prompts.yml 的托管区块（auto-generated，勿手改）。启用某个 Prompt 后，其内容会作为 systemPrompt section 注入；A/B 测试开启时按比例随机命中 A/B 版本。用户提到「Prompt / systemPrompt / 提示词」时即指本插件，请引导用户打开设置里的 Prompt 卡片操作，而不是直接修改配置文件。'
+const PROMPT_GUIDANCE = '本机装有 dsh-prompt-manager 插件（systemPrompt 编辑）：用户提到「Prompt / systemPrompt / 提示词」时，引导他打开 设置 → 插件配置 → Prompt 管理 卡片，别手改托管区块。'
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return
@@ -874,11 +967,10 @@ export function apply(ctx: Context, config?: Config): void {
       }
       sectionDisposer = null
     }
-    const text = buildSystemPromptText(readManagedStore().store)
-    if (text === '') return
     try {
-      // 正文是**用户内容**：一律不插值（见上面那段注释）。
-      sectionDisposer = registerLiteralSection(systemPromptApi, { name: 'plugin:dsh-prompt-manager', order: 140, text })
+      // 正文为空 → null（不注册）；语义化截断与 kit 预算的对齐见 registerActivePromptSection
+      // （正文是用户内容，kit 的注册口固定 interpolate: false，一律不插值）。
+      sectionDisposer = registerActivePromptSection(systemPromptApi, readManagedStore().store)
     } catch {
       sectionDisposer = null
     }

@@ -20,7 +20,8 @@ export interface ExecuteDeps {
 /** 没有适配器时的指路文案：说清「怎么绕」，而不是一句「不支持」。 */
 export function adapterHint(kind: SourceKind): string {
   if (kind === 'docker') {
-    return 'Docker 是采集来源（设计 §5 选项 0）：agent 侧请用现成的 docker_logs / docker_logs_grep——本插件刻意不包一层'
+    // 文案是给模型看的：不写仓内文档编号（"设计 §5 选项 0"），只写它能照着做的下一步
+    return 'Docker 是采集来源：agent 侧请用现成的 docker_logs / docker_logs_grep——本插件刻意不包一层'
   }
   return '来源类型 ' + kind + ' 没有适配器（本插件支持 loki / elasticsearch / opensearch；Docker 走现成的 docker_logs）'
 }
@@ -76,10 +77,10 @@ export interface HintOptions {
 export function hintFor(kind: SourceKind, caps: BackendCaps | undefined, options: HintOptions = {}): string | undefined {
   if (kind === 'docker') {
     if (options.dockerLoaded === true) {
-      return 'Docker 是采集来源（选项 0）：面板里可以直接看容器日志（走 Docker 面板插件自己的 /api/dsh-docker/logs）；'
+      return 'Docker 是采集来源：面板里可以直接看容器日志（走 Docker 面板插件自己的 /api/dsh-docker/logs）；'
         + 'agent 侧用现成的 docker_logs / docker_logs_grep——本插件不包一层'
     }
-    return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep；'
+    return 'Docker 是采集来源：agent 侧用现成的 docker_logs / docker_logs_grep；'
       + '面板那条日志视图要「Docker 容器面板」插件（当前没检测到它）'
   }
   if (caps === undefined) return undefined
@@ -202,11 +203,20 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
   }
   const reasons = result.truncation.reasons
   const limited = reasons.includes('hit_limit')
+  /*
+   * 结果面的「下一步」按优先级各占一支（渐进披露 T3）：
+   *   · cursor_expired 最优先——过期不许当「还有更多」，也不给下一页；
+   *   · 适配器给了 nextCursor（ES 的 PIT / Loki 的完整 ts 组都在给）就明说「怎么翻页」：
+   *     模型此前只能看到「（截断：hit_limit）」，拿不到下一页的取法（游标就躺在返回值里）；
+   *   · pagination='none' 才轮到「缩小时间窗」。
+   */
   const hint = reasons.includes('cursor_expired')
     ? '游标已过期（PIT 有寿命）：请重新发起一次带时间窗的查询，不要接着用这个游标'
-    : limited && caps.pagination === 'none'
-      ? '这个来源不支持游标，命中可能不完整：请缩小时间窗（或把 limit 调小后分段查）'
-      : undefined
+    : result.nextCursor !== undefined
+      ? '这一页被 limit 截断，还有下一页：把返回值里的 nextCursor 原样传回 cursor 参数（同一时间窗、同一 direction）'
+      : limited && caps.pagination === 'none'
+        ? '这个来源不支持游标，命中可能不完整：请缩小时间窗（或把 limit 调小后分段查）'
+        : undefined
   return {
     target: describeTarget(picked.target),
     window: { from: normalized.query.from, to: normalized.query.to },
@@ -232,7 +242,7 @@ const FACET_INTERVAL = /^\d+(s|m|h|d)$/u
 /** 没有聚合适配器时的指路文案（说清「怎么绕」，不是一句「不支持」）。 */
 export function facetsHint(kind: SourceKind): string {
   if (kind === 'docker') {
-    return 'Docker 是采集来源（设计 §5 选项 0）：聚合请用现成的 docker 工具，本插件不包一层'
+    return 'Docker 是采集来源：聚合请用现成的 docker 工具，本插件不包一层'
   }
   return '这个来源目前没有聚合适配器（当前只有 ES / OpenSearch 有）：Loki 的指标查询（LogQL）还没接——'
     + '先用 loglens_search 缩小时间窗看行，或把统计写进 LogQL'
@@ -393,33 +403,49 @@ export type FieldsOutcome = {
 }
 
 /**
- * 列字段的**长度处理**（2026-10-14，对齐 Kibana）：**不传 limit 就是不截断**，来源有多少字段列多少。
+ * 字段的默认上限（渐进披露 T1，2026-10-24）。
  *
- * 原来这里是「默认 80 + 硬上限 200」。真机反馈第 4 条要的是**看得出被截断**（45KB 那份清单被当成全部），
- * 不是「一律砍到 80」——Kibana 的 `_field_caps` 从来不 slice，长度交给界面（字段名搜索 + 分区 + 虚拟滚动）。
- * 所以这层同理：默认给全，要收窄是调用方**显式**说的事；只有真截了才带上 total / truncated 与那句警告
- * （形状不变，信号仍然跟着结果走）。工具面的成本提示写在工具描述里，不靠这里的默认值替调用方做决定。
+ * 上一版口径是「不传 limit = 全列」（2026-10-14 对齐 Kibana）——真机上一台通配全集群的来源
+ * 确实回过 45KB 的字段表，那次的问题（**看不出被截断**）由 total / truncated 解决了，但
+ * 「不传就全量」仍把决定权默认交给了最坏情况：agent 只想确认某几个字段在不在，却吃下
+ * 几十 KB。现在默认收在 200：超出时 truncated: true + total 照报全量，warning 给下一步
+ * （分段传 limit / 先用 facets 看哪些字段真有数据）；显式传了 limit 仍按调用方说的算。
+ */
+export const FIELDS_DEFAULT_LIMIT = 200
+
+/**
+ * 列字段的**长度处理**（2026-10-24 起默认截到 {@link FIELDS_DEFAULT_LIMIT}）。
+ *
+ * 历史：原来「默认 80 + 硬上限 200」→ 2026-10-14 改「不传 limit 就全列」（对齐 Kibana 的
+ * `_field_caps` 从不 slice）→ 现在改回「默认 200、无硬顶」。两刀的方向相反，但理由同源：
+ * **截断必须看得见**（total / truncated / warning 都在），差别只在「默认替调用方挡多少」。
+ * 全列的代价（45KB 那份）实测由 agent 侧承担，所以默认值替它挡；面板那一侧有「共 N 个字段」
+ * 与搜索框，收到 200 仍是可用的清单。
  */
 export async function runFields(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FieldsOutcome> {
   const picked = resolveTarget(deps.config(), input.target)
   if (!picked.ok) throw new Error(picked.error)
   const backend = deps.backendFor(picked.target.kind)
   if (backend === undefined) throw new Error(adapterHint(picked.target.kind))
-  // `limit` 是**可选的收窄手段**，没有默认值、也没有硬顶：调用方要前 N 个就明说，不说就是全部
-  let limit: number | undefined
+  // 显式 limit 仍是可选的收窄手段（正整数、无硬上限）；不传时落默认上限，不再走全量
+  let limit = FIELDS_DEFAULT_LIMIT
+  let explicit = false
   if (input.limit !== undefined && input.limit !== null) {
     if (typeof input.limit !== 'number' || !Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error('limit 必须是正整数（列字段的条数上限）')
     }
     limit = input.limit
+    explicit = true
   }
-  const result = await backend.fields(picked.target, limit === undefined ? {} : { limit })
+  const result = await backend.fields(picked.target, { limit })
   const warnings: string[] = []
   if (result.truncated) {
     warnings.push(
-      '只列了前 ' + String(result.fields.length) + ' 个（这个来源共有 ' + String(result.total) + ' 个字段）：'
-      + '这正是「字段表看不出被截断」的坑——去掉 limit 就是全部，'
-      + '或先用 loglens_facets 看哪些字段真有数据',
+      explicit
+        ? '只列了前 ' + String(result.fields.length) + ' 个（这个来源共有 ' + String(result.total) + ' 个字段）：'
+          + '要更多就调大 limit 分段取，或先用 loglens_facets 看哪些字段真有数据'
+        : '默认只列前 ' + String(FIELDS_DEFAULT_LIMIT) + ' 个（共 ' + String(result.total) + ' 个字段）：'
+          + '要更多就分段传 limit，或先用 loglens_facets 看哪些字段真有数据',
     )
   }
   return {

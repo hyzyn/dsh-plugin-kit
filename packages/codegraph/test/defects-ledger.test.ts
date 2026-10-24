@@ -105,22 +105,21 @@ describe('DEFECTS.md：现状行必须与表格现算一致', () => {
 })
 
 /**
- * 路由条数：README 的兼容性矩阵里写着「N 条路由全在」，而路由会随功能增加。
- * 这类「文档里的数字 vs 代码里的事实」漂移过两次（DEFECTS 现状行多算 1、
- * README 路由数停在 24 而实际 25），所以一并钉住。
+ * 路由表：README 的 API 表与源码里的路由必须**双向**一致。
+ *
+ * 早先这里还钉过一个「N 条路由全在」的数字；那批逐档证据在 2026-10-23 搬进了
+ * ROADMAP 的「host cohort 逐档实测证据」（README 只留声明，见 docs/conventions.md 的
+ * 文档分层）。那是一个**带日期的历史记录**，路由增长后不该反过来改它——所以数字判据
+ * 撤掉，换成双向覆盖：表里缺一条、或表里多一条源码不存在的，都红。
  */
-describe('README 的兼容性矩阵：路由条数必须与源码一致', () => {
+describe('README 的 API 表：路由必须与源码双向一致', () => {
   const SRC = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
 
-  it('README 声明的路由条数 == 源码里注册的路由数', () => {
-    const actual = [...SRC.matchAll(/path: '\/api\/dsh-codegraph\//g)].length
-    const m = /(\d+) 条路由全在/.exec(README)
-    expect(m, 'README 兼容性矩阵里找不到「N 条路由全在」').not.toBeNull()
-    const stated = Number(m[1])
-    expect(
-      stated,
-      `README 写「${String(stated)} 条路由」，源码里实际 ${String(actual)} 条——加/删路由后请同步 README。`,
-    ).toBe(actual)
+  it('README 路由表不许列源码里不存在的路由（幽灵路由）', () => {
+    const registered = new Set([...SRC.matchAll(/path: '\/api\/dsh-codegraph\/([a-z-]+)'/g)].map((m) => m[1]))
+    const listed = [...README.matchAll(/`\/api\/dsh-codegraph\/([a-z-]+)/g)].map((m) => m[1])
+    const ghosts = [...new Set(listed.filter((name) => !registered.has(name)))]
+    expect(ghosts, `README 路由表列了源码里不存在的路由：${ghosts.join(', ')}`).toEqual([])
   })
 
   it('README 的路由表覆盖了全部路由（新增路由必须进表）', () => {

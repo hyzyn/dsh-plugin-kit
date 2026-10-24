@@ -986,6 +986,9 @@ window.__ModuleLoader__.load({
        */
       const [busyAction, setBusyAction] = React.useState('')
       const [mcp, setMcp] = React.useState(null)
+      // T6：宿主侧给的「到底有没有工具」结论（`mcpTools`）。托管行在 ≠ 工具在——
+      // CG69 现场（`- insert: []`）两份各自正确的字段被读成「已托管」，这里补一句原因。
+      const [mcpTools, setMcpTools] = React.useState(null)
       // GET /default-path 的索引态：默认项目（= 托管 MCP 的 cwd）是否真是有效索引。
       // 只看 mcp.mode 会把「已对齐一个非项目目录」显示成一切正常。
       const [defaultInfo, setDefaultInfo] = React.useState(null)
@@ -1041,6 +1044,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await api('/api/dsh-codegraph/default-path')
           setMcp(data.mcp || null)
+          setMcpTools(data.mcpTools && typeof data.mcpTools.tools === 'number' ? data.mcpTools : null)
           setDefaultInfo({
             defaultPath: typeof data.defaultPath === 'string' ? data.defaultPath : '',
             indexed: data.indexed === true,
@@ -1426,6 +1430,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ path: effectivePath }),
           })
           setMcp(data.mcp || null)
+          setMcpTools(data.mcpTools && typeof data.mcpTools.tools === 'number' ? data.mcpTools : null)
           setOk(t('msg.defaultSet', {
             path: data.defaultPath || effectivePath,
             session: data.persisted === false ? t('msg.sessionOnly') : '',
@@ -1457,6 +1462,7 @@ window.__ModuleLoader__.load({
           setManual(true)
           setPath(target)
           setMcp(data.mcp || null)
+          setMcpTools(data.mcpTools && typeof data.mcpTools.tools === 'number' ? data.mcpTools : null)
           setOk(t('msg.switched', { path: data.defaultPath || target }))
           await Promise.all([loadMcpStatus(), loadProjects()])
         } catch (err) {
@@ -1478,6 +1484,9 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ [key]: value }),
           })
           await loadMcpStatus()
+          // 切 MCP 模式后补挂 / 回收是**异步**的（每个会话要起 / 收一个子进程），刚切完
+          // 那一次刷新很可能读到「还没有会话挂上」。只在这一支补一次延迟刷新，不轮询。
+          if (key === 'mcpScope') setTimeout(() => { void loadMcpStatus() }, 3000)
           setOk({
             announceToAgent: t('msg.announceUpdated'),
             usageGuidance: t('msg.guidanceUpdated'),
@@ -1762,6 +1771,15 @@ window.__ModuleLoader__.load({
                     ],
                   }),
                   jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
+                  // T6：托管行「看起来在」而工具是 0 个时，必须由状态行自己说清原因与
+                  // 下一步（CG69 现场：`- insert: []` 的快照如实报 mode=none，卡片却像
+                  // 「已托管」）。reason / nextStep 都是宿主侧正文，原样透出（同 mcp.note）。
+                  mcpTools && mcpTools.tools === 0
+                    ? jsx('p', {
+                      className: 'cg_warn',
+                      children: mcpTools.reason + (mcpTools.nextStep ? ' · ' + mcpTools.nextStep : ''),
+                    })
+                    : null,
                   // P2 项目列表：一台 MCP 服务器同一时刻只挂一个项目，所以「换项目」是
                   // 高频动作；以前只能手敲绝对路径。只列「用户真在这里工作过」的目录
                   // （活跃会话 / 跟随上报 / 查过状态），不做全盘扫描。

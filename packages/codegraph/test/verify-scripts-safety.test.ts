@@ -124,6 +124,22 @@ describe('per-agent 检查器：对**正在跑的宿主**，必须只读', () =>
     expect(src2).toContain("'-P'")
     expect(src2, '应注释说明为什么').toMatch(/daemon/)
   })
+
+  it('补丁位置不假定在 home 层（CG70 起写 profile 层，隔离 home 下会静默 SKIP 成真空）', () => {
+    // 实测（2026-10-24）：隔离 DSH_HOME 起宿主时 home 层根本没有 codegraph 行，托管行在
+    // `profiles/<name>/cordis.patch.yml` 里；第一版只读 home 层 → ③ 永远 SKIP，看起来全绿。
+    expect(src2, '应支持显式 --patch').toContain("flag('--patch')")
+    expect(src2, '应支持 --profile').toContain("flag('--profile')")
+    expect(src2, '应从宿主 /diagnose 自报的位置读').toContain('/api/dsh-codegraph/diagnose')
+    expect(src2, '找不到时要明确 SKIP 并给做法').toContain('找不到补丁文件')
+  })
+
+  it('managed 分支不断言「没有 codegraph 子进程」（全局那份本来就是宿主的直接子进程）', () => {
+    // 实测：managed 生效时 pid 就在 `pgrep -P <宿主>` 里（cwd = 托管行 cwd）。旧判据
+    // `pids.length === 0` 会在「回滚完全正确」时判 FAIL，把干净的还原报成回归。
+    expect(src2).not.toContain('managed 模式下宿主没有 per-agent MCP 子进程')
+    expect(src2, '应改为「最多 1 个 + cwd 对齐」').toContain('pids.length <= 1')
+  })
 })
 
 describe('CG49：真浏览器 UI 脚本（自起隔离宿主 + 真 Chrome）', () => {

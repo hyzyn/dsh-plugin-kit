@@ -10,6 +10,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type { BackendCaps, LogBackend, LogLine, LogQueryResult, NormalizedQuery } from '../src/backends/types.js'
 import type { LoglensConfig, LoglensTarget, SourceKind } from '../src/config.js'
 import { adapterHint, clampCount, findAnchor, formatLine, formatTimestamp, hintFor, LINE_CONTRACT_KEYS, LINE_SCHEMA, registerLoglensTools, renderFields, renderLines, renderMessage, resolveTarget } from '../src/tools.js'
+import { facetsHint } from '../src/execute.js'
 
 interface Captured {
   execute: (args: unknown) => Promise<unknown>
@@ -237,15 +238,27 @@ describe('loglens_search', () => {
     expect(value.nextCursor).toBeUndefined()
   })
 
-  it('来源声明了游标就透传 nextCursor，且不误报「可能不完整」', async () => {
+  it('适配器给了 nextCursor：透传，且 hint 明说「怎么翻下一页」（渐进披露 T3）', async () => {
     const cursorCaps = { ...CAPS, pagination: 'cursor' as const }
     const backend = fakeBackend({
       capabilities: () => cursorCaps,
       query: async () => resultOf([line(1, 'a')], { truncation: { truncated: true, reasons: ['hit_limit'] }, nextCursor: 'next-page' }),
     })
-    const value = await harness(backend).execute({ from: 1_700_000_000_000, to: 1_700_000_060_000 }) as Record<string, unknown>
+    const tool = harness(backend)
+    const value = await tool.execute({ from: 1_700_000_000_000, to: 1_700_000_060_000 }) as Record<string, unknown>
     expect(value.nextCursor).toBe('next-page')
-    expect(value.hint).toBeUndefined()
+    // hint 指向下一页的取法（此前只有「（截断：hit_limit）」，模型拿不到怎么翻页）
+    const hint = String(value.hint)
+    expect(hint).toContain('下一页')
+    expect(hint).toContain('nextCursor')
+    expect(hint).toContain('cursor')
+    expect(hint).toContain('direction')
+    // 不是「命中可能不完整」那支：游标在手就没有不完整的问题
+    expect(hint).not.toContain('可能不完整')
+    // 渲染文本里也要出现「下一页」——模型读的是渲染文本，不是返回值结构
+    const rendered = tool.output.render({}, value) as Array<{ type: string, text: string }>
+    expect(rendered[0].text).toContain('下一页')
+    expect(rendered[0].text).toContain('nextCursor')
   })
 
   it('游标过期时不装作「查完了」：给一句「重新发起带时间窗的查询」', async () => {
@@ -286,7 +299,7 @@ describe('loglens_fields', () => {
     })
   }
 
-  it('**不传 limit 就是不截断**：120 个字段全给、truncated 恒 false（2026-10-14 对齐 Kibana）', async () => {
+  it('不超过默认上限时不截断：120 个字段全给、truncated false（默认上限 200 以内）', async () => {
     const { add, captured } = capture()
     registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => manyFieldsBackend(120), add })
     const value = await captured.get('loglens_fields')!.execute({}) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
@@ -297,7 +310,34 @@ describe('loglens_fields', () => {
     expect(value.warnings).toEqual([])
   })
 
-  it('传了 limit 才截：只列前 N 个，total / truncated / 警告都在（真机反馈第 4 条）', async () => {
+  it('默认上限（渐进披露 T1）：不传 limit 且后端有 500 个字段 → 只列前 200，truncated / total / 下一步都在', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => manyFieldsBackend(500), add })
+    const value = await captured.get('loglens_fields')!.execute({}) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
+    expect(value.fields).toHaveLength(200)
+    expect(value.total).toBe(500)
+    expect(value.truncated).toBe(true)
+    const warning = value.warnings.join()
+    expect(warning).toContain('默认只列前 200 个')
+    expect(warning).toContain('共 500 个')
+    // 「下一步」要可执行：分段传 limit，或先用 facets 看哪些字段真有数据
+    expect(warning).toContain('分段传 limit')
+    expect(warning).toContain('loglens_facets')
+    // 旧文案「去掉 limit 就是全部」在默认上限之后是假话，不许再出现
+    expect(warning).not.toContain('去掉 limit')
+  })
+
+  it('后端只有 3 个字段时不截断、无警告（反例：默认上限不是「一律砍到 200」）', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => manyFieldsBackend(3), add })
+    const value = await captured.get('loglens_fields')!.execute({}) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
+    expect(value.fields).toHaveLength(3)
+    expect(value.total).toBe(3)
+    expect(value.truncated).toBe(false)
+    expect(value.warnings).toEqual([])
+  })
+
+  it('显式 limit 照调用方说的截：只列前 N 个，total / truncated / 警告都在（真机反馈第 4 条）', async () => {
     const { add, captured } = capture()
     registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => manyFieldsBackend(120), add })
     const value = await captured.get('loglens_fields')!.execute({ limit: 50 }) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
@@ -305,11 +345,13 @@ describe('loglens_fields', () => {
     expect(value.total).toBe(120)
     expect(value.truncated).toBe(true)
     expect(value.warnings.join()).toContain('只列了前 50 个')
-    expect(value.warnings.join()).toContain('去掉 limit 就是全部')
-    // limit 只校验正整数：没有硬上限了（默认本来就是全部，再给个「上限」只会出现
-    // 「要 300 被夹到 200，比不传还少」这种自相矛盾）
+    expect(value.warnings.join()).toContain('调大 limit 分段取')
+    // limit 只校验正整数：没有硬上限（要 300 就给 300，不能出现「被默认值夹得更少」的自相矛盾）
     await expect(captured.get('loglens_fields')!.execute({ limit: 0 })).rejects.toThrow('limit 必须是正整数')
     await expect(captured.get('loglens_fields')!.execute({ limit: 1.5 })).rejects.toThrow('limit 必须是正整数')
+    const more = await captured.get('loglens_fields')!.execute({ limit: 300 }) as { fields: unknown[], truncated: boolean }
+    expect(more.fields).toHaveLength(120)
+    expect(more.truncated).toBe(false)
   })
 
   it('直接搬运后端报的字段', async () => {
@@ -1103,6 +1145,125 @@ describe('loglens_context', () => {
     expect(clampCount(99, 5)).toBe(50)
     expect(clampCount('x', 5)).toBe(5)
   })
+
+  it('context 的 expand：默认只渲染 20 行 + 下一步，expand=true 时 21 行全出（渐进披露 T3）', async () => {
+    /*
+     * 锚点行本体是 21 行的堆栈：默认渲染只出 20 行 + 「还有 1 行未显示」（带 expand 下一步），
+     * expand=true 时 21 行全出。与 search 同一条口径：expand 只影响渲染，
+     * 返回值 anchor.message 一直是全文（堆栈没有丢，丢的是只有渲染才该担的长度）。
+     */
+    const stack21 = Array.from({ length: 21 }, (_unused, index) => 'frame-' + String(index)).join('\n')
+    const backend = fakeBackend({ query: async () => resultOf([{ ...line(at(4000), stack21, 'stack-1') }]) })
+    const tool = harness(backend)
+    const value = await tool.execute({ ts: at(4000), id: 'stack-1' }) as { anchor: LogLine }
+    expect(value.anchor.message.split('\n')).toHaveLength(21)   // 返回值是全文
+    const compact = (tool.output.render({}, value) as Array<{ text: string }>)[0].text
+    expect(compact).toContain('frame-19')
+    expect(compact).not.toContain('frame-20')
+    expect(compact).toContain('还有 1 行未显示，共 21 行')
+    expect(compact).toContain('expand')
+    const expanded = (tool.output.render({ expand: true }, value) as Array<{ text: string }>)[0].text
+    expect(expanded).toContain('frame-20')
+    expect(expanded).not.toContain('未显示')
+  })
+})
+
+describe('注册面收窄（渐进披露 T2 的漏斗半边）', () => {
+  it('include 只放行 loglens_sources 时，注册表里就只有它（零来源时的形态）', () => {
+    const { add, captured } = capture()
+    registerLoglensTools({
+      config: () => configWith(),
+      backendFor: () => undefined,
+      add,
+      include: (name) => name === 'loglens_sources',
+    })
+    expect([...captured.keys()]).toEqual(['loglens_sources'])
+    // 漏掉的四个不是「注册了坏工具」：它们此刻调用必然抛「还没有配置任何日志来源」
+    expect(captured.get('loglens_sources')).toBeDefined()
+  })
+
+  it('include 未传 = 五个全注册（既有行为不变；名单以 add() 字面量为准）', () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => fakeBackend(), add })
+    expect(captured.size).toBe(5)
+    expect([...captured.keys()].sort()).toEqual([
+      'loglens_context', 'loglens_facets', 'loglens_fields', 'loglens_search', 'loglens_sources',
+    ])
+  })
+
+  it('include 判假的名字一个都不注册（闸是「整支跳过」，不是注册后再隐藏）', () => {
+    const { add, captured } = capture()
+    registerLoglensTools({
+      config: () => configWith(target('loki', 'loki')),
+      backendFor: () => fakeBackend(),
+      add,
+      include: (name) => name !== 'loglens_facets',
+    })
+    expect([...captured.keys()].sort()).toEqual(['loglens_context', 'loglens_fields', 'loglens_search', 'loglens_sources'])
+  })
+})
+
+describe('schema 文案守卫（渐进披露 T4：把实现手册从 schema 里赶出去）', () => {
+  /*
+   * desc+params 曾合计 4813 字符（约 1604 tokens），其中大头是三条「实现手册」：
+   * fields 的 542 字符描述、search q 的 392 字符、search level 的 218 字符。
+   * 细节归位：能力口径在返回值 warnings（execute.ts 生成）、流程与门禁在 systemPrompt section，
+   * schema 只回答「做什么 + 关键取舍」。这条守卫防它们再长回来。
+   */
+  function captureDescriptions(): { fields: string, q: string, level: string } {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => fakeBackend(), add })
+    const fields = captured.get('loglens_fields') as unknown as { description: string }
+    const search = captured.get('loglens_search') as unknown as { parameters: { properties: Record<string, { description: string }> } }
+    return {
+      fields: fields.description,
+      q: search.parameters.properties.q.description,
+      level: search.parameters.properties.level.description,
+    }
+  }
+
+  it('三条曾经的「实现手册」都压在 120 字符内（防回归）', () => {
+    const texts = captureDescriptions()
+    expect(texts.fields.length, 'loglens_fields 描述：' + texts.fields).toBeLessThanOrEqual(120)
+    expect(texts.q.length, 'loglens_search q 描述：' + texts.q).toBeLessThanOrEqual(120)
+    expect(texts.level.length, 'loglens_search level 描述：' + texts.level).toBeLessThanOrEqual(120)
+  })
+
+  it('瘦身不等于掏空：做什么与关键取舍还在', () => {
+    const texts = captureDescriptions()
+    // fields：默认上限 + conflict + .keyword 三件调用方真要知道的事
+    expect(texts.fields).toContain('200')
+    expect(texts.fields).toContain('conflict')
+    expect(texts.fields).toContain('.keyword')
+    // q：方言 + 留空全量 + 精确匹配的取舍（三个静默陷阱点名存在，不再展开手册）
+    expect(texts.q).toContain('LogQL')
+    expect(texts.q).toContain('留空即全量')
+    expect(texts.q).toContain('"词"')
+    // level：及以上语义 + 页内筛范围（counts 仍是整页）
+    expect(texts.level).toContain('及以上')
+    expect(texts.level).toContain('这一页')
+  })
+
+  it('deferLoading 只在 loglens_facets 上（渐进披露 T6 的试点边界）', () => {
+    /*
+     * 真宿主验证记录（2026-10-24，cohort 0.2.1-rc.3）：
+     *   · 宿主消费该标记——dsh-llm-deepseek 把它转成 `defer_loading: true` 发给 LLM API
+     *     （dsh-system-prompt 组装与 dsh-tools 的 schemaOf 都原样保留）；
+     *   · 起真宿主（隔离 DSH_HOME + 工作区符号链接）boot：注册无失败告警、section 无崩溃。
+     * 模型侧首屏是否隐藏定义是 API 侧行为（要真 LLM 会话的轨迹才能观测）；按任务口径先只
+     * 试点 facets、不推广（sources 恒常驻）。这条守卫钉住「标记只在 facets」——推广或撤销都要改这里。
+     */
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => fakeBackend(), add })
+    const flags = [...captured.entries()].map(([name, definition]) => [name, (definition as { deferLoading?: true }).deferLoading === true])
+    expect(Object.fromEntries(flags)).toEqual({
+      loglens_sources: false,
+      loglens_search: false,
+      loglens_fields: false,
+      loglens_facets: true,
+      loglens_context: false,
+    })
+  })
 })
 
 describe('渲染', () => {
@@ -1161,6 +1322,8 @@ describe('渲染', () => {
     expect(truncated).toContain('frame-19')
     expect(truncated).not.toContain('frame-20')
     expect(truncated).toContain('还有 5 行未显示，共 25 行')
+    // 截断句要带**可执行的下一步**（渐进披露 T3）：search 与 context 都有 expand 参数，两边都适用
+    expect(truncated).toContain('expand')
     // 行内嵌换行的行经 formatLine 出来后，续行前缀仍在（外层分隔只影响首行）
     expect(formatLine(line(1_700_000_000_000, 'a\nb'))).toMatch(/a\n {4}\| b/)
   })
@@ -1177,6 +1340,8 @@ describe('渲染', () => {
     expect(compact).toContain('frame-19')
     expect(compact).not.toContain('frame-20')
     expect(compact).toContain('还有 10 行未显示，共 30 行')
+    // 截断提示带下一步（渐进披露 T3）：expand 两边（search / context）都有
+    expect(compact).toContain('把 expand 传 true 重查一次')
     // expand：整段都在，且不再出现截断提示
     const full = formatLine(line, { expand: true })
     expect(full).toContain('frame-29')
@@ -1300,7 +1465,9 @@ describe('渲染', () => {
 
   it('hintFor：docker 给替代路径、无游标的来源提醒截断、ES/OS 提醒 PIT 寿命', () => {
     const lokiCaps = { ...CAPS, pagination: 'none' as const }
-    expect(String(hintFor('docker', undefined))).toContain('选项 0')
+    // 模型可见文案不带仓内文档编号（「选项 0」这类），只说它照着能做的下一步（渐进披露 T9）
+    expect(String(hintFor('docker', undefined))).toContain('docker_logs')
+    expect(String(hintFor('docker', undefined))).not.toContain('选项 0')
     // dockerLoaded 决定那句「面板那条路有没有」：装了指向它的路由，没装说清缺什么
     expect(String(hintFor('docker', undefined, { dockerLoaded: true }))).toContain('/api/dsh-docker/logs')
     expect(String(hintFor('docker', undefined, { dockerLoaded: false }))).toContain('没检测到')
@@ -1309,5 +1476,22 @@ describe('渲染', () => {
     expect(String(hintFor('opensearch', { ...CAPS, pagination: 'cursor' as const, flavor: 'os' }))).toContain('PIT')
     expect(hintFor('loki', { ...CAPS, pagination: 'cursor' as const })).toBeUndefined()
     expect(hintFor('elasticsearch', undefined)).toBeUndefined()
+  })
+
+  it('模型可见字符串不出现仓内文档引用（渐进披露 T9 的 grep 守卫）', () => {
+    /*
+     * 「设计 §5 选项 0」对模型没有意义——它是仓库文档的坐标，模型看不到那份文档。
+     * 这条守卫把 adapterHint / hintFor / facetsHint 三个出口钉住：改文案时把编号加回去要红。
+     * （注释里的「设计 §」不在此列——注释是给人看的。）
+     */
+    for (const text of [
+      adapterHint('docker'),
+      String(hintFor('docker', undefined)),
+      String(hintFor('docker', undefined, { dockerLoaded: true })),
+      String(hintFor('docker', undefined, { dockerLoaded: false })),
+      facetsHint('docker'),
+    ]) {
+      expect(text, text).not.toMatch(/设计 §|design §|选项 0/)
+    }
   })
 })

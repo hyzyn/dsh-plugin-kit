@@ -100,65 +100,41 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
-## Windows 宿主（0.18.1，best-effort）
+## Windows 宿主（best-effort）
 
-**0.18.1 之前，Windows 宿主上的本地终端一条都开不起来**，两处都在同一条路径上：
+Windows 支持是 **best-effort**：默认 shell 取 `%COMSPEC%`（系统保证存在）；要 PowerShell 就在设置卡片把
+「Shell 路径」填成 `powershell.exe` / `pwsh.exe` 的完整路径（候选列表给 `%COMSPEC%` + Windows PowerShell 5.1 +
+PowerShell 7（装了才有），默认项排最前）。**Windows 上不做 POSIX 包装层**：直接 `[shell]`；PowerShell 家族补
+`-NoLogo`（去版权横幅）、**不补 `-NoProfile`**（用户的 profile 正是别名与函数的来源）；TERM / COLORTERM 对
+ConPTY 没有意义，也不再注入。
 
-1. `$SHELL` 在 Windows 上**根本不存在**，默认 shell 无条件回落 `/bin/zsh` → `spawn` 直接
-   ENOENT（实测：`spawn /bin/zsh -> ENOENT`，而 `%COMSPEC%` 可用）；
-2. 启动计划是 POSIX 形状的 `-c 'export TERM=…; export COLORTERM=…; exec "$shell"'` ——
-   cmd.exe 不认 `-c`（忽略整行、空跑一场就退出，标签开了就消失），PowerShell 认 `-c` 但把
-   `export` 当不存在的 cmdlet 报错。
+- **「跑一条命令」的标签**（docker exec、agent 起的命令标签）走 `cmd /c` 或 `PowerShell -Command`。注意
+  **PowerShell 的 `-Command` 会把「末条命令非零」塌成进程退出码 1**（`cmd /c exit 5` → 1，两版一致），
+  要拿到具体码值就让命令自己 `exit 5`（POSIX 侧 `sh -c` 不会这样）。
+- **输入行尾归一化（D74）**：conhost 的 Enter 是 **CR**，裸 LF 只把光标下移一格、**不提交命令行**。
+  win32 的本地会话上插件把裸 LF 补成 CRLF（已经是 CRLF 的不重复补；非 Windows 与 SSH 会话原样透传），
+  所以照工具描述写 `\n` 这条主路径直接可用。
+- **shell 集成（OSC 133/7）按家族分**：**PowerShell 家族支持**（`powershell.exe` / `pwsh.exe`，`-File` 稳定桩
+  挂 `prompt` + `PSConsoleHostReadLine` 钩子）——拿到 `tty_list.cwd` 跟随 `cd`、退出码、`running` 三态与命令
+  粒度的 `tty_expect`；**cmd 不支持**（没有命令开始/结束钩子），设置卡片把开关置灰并指向「把 Shell 路径换成
+  PowerShell」。**两版语法不同，提示文案按版本分支给**：`&&` / `||` 只有 **PowerShell 7** 认，5.1 上写 `&&`
+  是解析错误（一条命令都不会跑）。
+  - **退出码口径**：PowerShell 家族里**解析错误**（5.1 上的 `&&`、两版上的 `echo (1`）命令一条都没跑，而
+    D 标记报 **0** —— 不能只看退出码判成功，报错文本在输出里。
+  - **桩的两条边界**：靠 `-ExecutionPolicy Bypass`（进程级）才载得进来——**组策略**把执行策略锁成
+    Restricted / AllSigned 时该参数压不过 GPO，桩载不进去、标签照开而集成静默失效（与「用户关了 PSReadLine」
+    同一种降级）；这个参数还会把值写进 `$Env:PSExecutionPolicyPreference`，从该会话里再起的 PowerShell 会继承它。
+  - **已知副作用**：包装 `prompt` 会让用户原 prompt 读到的 `$?` 变成我们那几次写入的成败（恒真），依赖 `$?`
+    的失败提示会失效。
+  - **未复现的记录**：曾有记录说 PowerShell 7 上命令输出在 ConPTY 里晚于 D 标记抵达、`tty_capture{last}` 可能
+    取到空；2026-10-13 在 pwsh **7.6.6**（Win11 ARM64）上按三档输出量复测 **0/20 空窗**，未复现——真遇到就用
+    `tty_capture` 读尾部，并把当时的 pwsh 版本报回来。
+- **不支持的两项（宿主侧自动关掉，设置卡片里写明原因）**：**tmux 持久化**（Windows 上没有 tmux，本地标签照常
+  打开但不受托管；SSH 到 Linux 主机仍可用）；**服务器状态条**（本地只拿得到 CPU / 内存 / 在线时长（`node:os`），
+  磁盘 / TCP / 网速 / 温度显示「无」；远端 Windows 主机走 PowerShell 那一跳，见「服务器状态条」一节）。
 
-两条都在 **Windows 11 ARM（24H2）+ Node 22 ARM64** 上实测复现，修法：
-
-- **默认 shell = `%COMSPEC%`**（系统保证存在）；要 PowerShell 就在设置卡片把「Shell 路径」
-  填成 `powershell.exe` / `pwsh.exe` 的完整路径。Windows 上候选列表给的是 `%COMSPEC%` +
-  Windows PowerShell 5.1 + PowerShell 7（装了才有），默认项排最前；
-- **Windows 上不做包装层**：直接 `[shell]`；PowerShell 家族补 `-NoLogo`（去掉版权横幅），
-  **不补 `-NoProfile`** —— 用户的 profile 正是别名与函数的来源。TERM / COLORTERM 对 ConPTY
-  没有意义，也不再注入；
-- **「跑一条命令」的标签**（docker exec、agent 起的命令标签）走 `cmd /c` 或
-  `PowerShell -Command`；**PowerShell 的 `-Command` 会把「末条命令非零」塌成进程退出码 1**
-  （`cmd /c exit 5` → 1，两版一致），要拿到具体码值就让命令自己 `exit 5`（POSIX 侧 `sh -c` 不会这样）；
-- **输入行尾归一化（D74，2026-09-27 真机报告）**：conhost 的 Enter 是 **CR**，裸 LF 只把光标
-  下移一格、**不提交命令行**——`tty_send` 按工具描述发 `echo X\n` 时命令停在输入行上（没有输出、
-  没有新提示符，看起来像「发出去了但没执行」）。**win32 的本地会话**上插件现在把裸 LF 补成 CRLF
-  （已经是 CRLF 的不重复补；非 Windows 与 SSH 会话原样透传），所以照描述写 `\n` 这条主路径直接可用；
-- **shell 集成（OSC 133/7）按家族分**：**PowerShell 家族支持**（`powershell.exe` / `pwsh.exe`）——
-  注入走 `-File` 稳定桩（挂 `prompt` + `PSConsoleHostReadLine` 钩子），拿到 `tty_list.cwd` 跟随
-  `cd`、退出码、`running` 三态与命令粒度的 `tty_expect`；**cmd 不支持**（没有命令开始/结束钩子），
-  设置卡片把开关置灰并指向「把 Shell 路径换成 PowerShell」。**两版语法不同，提示文案按版本分支给**：
-  `&&` / `||` 只有 **PowerShell 7** 认，5.1 上写 `&&` 是解析错误（一条命令都不会跑）。
-  **已知限制（未复现）**：曾有记录说 PowerShell 7 上命令输出在 ConPTY 里晚于 D 标记抵达、
-  `tty_capture{last}` 可能取到空；2026-10-13 在 pwsh **7.6.6**（Win11 ARM64）上按三档输出量复测
-  （20 次小输出 / 2000 行大输出 / 2s 内分 20 次的慢输出）**0/20 空窗**，未复现 —— 真遇到就用
-  `tty_capture` 读尾部，并把当时的 pwsh 版本报回来。另有一条**退出码口径**：PowerShell 家族里
-  **解析错误**（5.1 上的 `&&`、两版上的 `echo (1`）命令一条都没跑，而 D 标记报 **0** —— 不能只看
-  退出码判成功，报错文本在输出里。
-  桩靠 `-ExecutionPolicy Bypass`（进程级）才载得进来，两条边界如实记着：**组策略**把执行策略锁成
-  Restricted / AllSigned 时该参数压不过 GPO，桩载不进去、标签照开而集成静默失效（与「用户关了
-  PSReadLine」同一种降级）；这个参数还会把值写进 `$Env:PSExecutionPolicyPreference`，从该会话里
-  再起的 PowerShell 会继承它。另有一条已知副作用：包装 `prompt` 会让**用户原 prompt 读到的 `$?`**
-  变成我们那几次写入的成败（恒真），依赖 `$?` 的失败提示会失效；
-- **不支持的两项（宿主侧自动关掉，设置卡片里写明原因）**：
-  - **tmux 持久化**：Windows 上没有 tmux，本地标签照常打开但不受托管（SSH 到 Linux 主机仍可用）；
-  - **服务器状态条**：本地只拿得到 CPU / 内存 / 在线时长（`node:os`），磁盘 / TCP / 网速 / 温度
-    显示「无」（**远端** Windows 主机走 PowerShell 那一跳，见「服务器状态条」一节）；
-- **验证到什么程度**：Windows 11 ARM 上跑过完整安装（`dsh plugin add @hyzyn/dsh-all`）、九个插件
-  装载、`dsh web` 起服务与浏览器半体交付（与 macOS 上服务的是同一份产物，构建后比对大小与
-  内容标记一致；不写死字节数——每次重建都会变）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；x64 Windows 由 CI
-  的三平台矩阵覆盖（build / typecheck / test，见「开发」）。
-- **端到端覆盖（0.19.0）**：`scripts/windows-smoke.mjs` 在 CI 的 windows-latest 上跑真实 `cmd.exe`
-  的 spawn → 输入回显 → kill → 重开，外加两条只在真机上成立的链路（W6：`tty_send` 的裸 LF 经归一化
-  后 conhost 真的执行了命令，D74；W7：`command` 型会话跑完退出后转只读保留、`tty_capture` 仍读得到
-  退出前的输出，D77）。**W8（PowerShell 的 OSC 133/7 档）在 CI 上照常跑**（2026-10-13 起）：
-  它此前只在真机车道守，是因为「杀一个 ConPTY 会话」会踩 `0xC0000374`——根因（同一个 PTY 被原生
-  `kill()` 两次）已定位并修好，见 [DEFECTS.md](./DEFECTS.md) 的 **D100** 与
-  [ROADMAP.md](./ROADMAP.md) 的 2026-10-13 一节；本机找不到 PowerShell 时它会如实进 `SKIP` 一档
-  （分母扣掉、汇总行点名，不许装成 `12/12`）。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
-  出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到
-  socket 回调里抛出，调用方的 try/catch 拦不住。
+0.18.1 之前为什么一条本地终端都开不起来、修复落点、真机验证范围与 `windows-smoke` 的 W6–W8 覆盖，见
+[ROADMAP § 已完成](./ROADMAP.md#已完成落点--门槛) 的「Windows 宿主（0.18.1）」一节。
 
 ## agent 工具
 
@@ -172,7 +148,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `tty_run` | **一次性命令**（0.23.0）：开一个会话跑 `command`，等它结束，直接返回尾部输出 + 退出码——把「`tty_open` → 等 → `tty_capture{last}` → `tty_close`」四步压成一次调用。默认**跑完即关**（结果已在本次调用返回），`keep:true` 则留在只读保留态；到 `timeoutSec`（1~600，默认 120）还没结束就返回 `running:true` 且**不杀会话**（继续等或关掉由调用方决定）。何时用它而不是 bash 工具：需要用户**看得见**这条命令、或要跑在终端会话里时用它，纯非交互命令用 bash 更直接 |
 | `tty_stats` | 读会话所在机器的实时指标（0.20.0）：CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长。本地会话取宿主机；SSH 会话取那台远程主机（另开一段非 PTY 通道，不影响终端）。部署、压测前先看它 |
 | `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节）；命令**在途**时（刚发送、完成标记未到）返回 `inProgress:true` 且不带旧结果——避免把上一条的输出当成这一条（0.19.0）。**命令型会话（`tty_open command=` / `tty_run`）没有「上一条命令」**（它们不注入 shell 集成钩子），对它们用 `last:true` 会明确报错并指向 lines（0.23.0，D87） |
-| `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
+| `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面。正文保尾最多 32KB：超出时返回 `truncated:true`，渲染文本末尾提示用 `tty_capture` 取完整滚动输出（大尺寸屏幕装满文本才会撞到） |
 | `tty_expect` | 用正则等一个就绪信号（dev server URL、构建完成等）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出，故命令瞬间跑完也不会白等），再等后续输出；命中即返回 `matched:true` + `matchedFrom`（`live` 本次等待期间新产生 / `last` 上一条命令的输出 / `buffered` 此前已到达的缓冲输出）。超时不抛错（`matched:false` + 尾部输出，且**不消耗未读区**——换个 pattern 还能回溯到同一段），命令提前结束也会带退出码早停；**刚发进去的命令回显不算命中**（靠 OSC 133 的 A..B 边界，无标记环境靠发送记录剔除，见下节；只命中回显时超时结果带 `echoOnly:true`）；同一会话在途调用最多 5 个，累积窗口只保留尾部 64KB（0.19.0；回溯匹配见 D72，回显剔除见 D75） |
 | `tty_send` | 向指定会话发送文本与/或按键（如 dev server 的 q 键、菜单选择、vim 的 `:wq`）。**控制键与方向键用具名 `keys`**（`["C-c"]`、`["Down","Down","Enter"]`，白名单查表；名字不认得就报错，绝不静默当字面量发出去），**不要自己在 `data` 里拼转义序列**——`"\x1b[B"` / `"^[[B"` 会被当成普通字符打印进终端，而 `sent` 计数看不出区别（0.23.0）；`data` 与 `keys` 至少给一个，两个都给时先 `data`、再按序 `keys`。命令以 `\n` 结尾即可：**Windows 本地会话**上行尾裸 LF 会被归一成 CRLF（D74，见「Windows 宿主」一节），非 Windows 与 SSH 会话原样透传。对**已退出**的会话会明确报错（那种会话只能读） |
 | `sftp_list` | 列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）；`book` 为连接簿条目名，`path` 缺省为登录 home；默认最多 500 项（超限 `truncated:true`），`isSymlink` 区分软链与真目录（0.19.0） |
@@ -201,6 +177,16 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 部署）时**不闸**（与引入前行为一致），启动日志会打一行
 `tier-gate: services absent (…), per-call gate disabled` 说明这件事。机制（决策矩阵 / 与静态能力
 开关 `allowProxyCommand` 的双层关系）见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)。
+
+**受限档的会话连工具面也一并裁掉**（试点，宿主的 `tools.restrict`）：档位是仅可查看 / 工作区内修改时，
+插件在该会话的 **agent 作用域**上把上表的「写」「执行」两类从工具表里摘掉——agent 看到的 tty 工具从
+19 个降到 10 个（只剩「读」那一行）。**安全边界仍然是上面那张逐调用的矩阵**：裁剪只是提前把按当前
+档位不可能成功的工具拿走，省掉「试 → 被拒 → 换个工具再试」的往返；名单漏了谁、或工具在会话建立
+之后才注册，都只影响模型看不看得见，不构成越权（调用照样被闸拦住）。完全权限 / Auto review 档与宿主
+未组合档位服务时**不裁**（与闸的 allow 分支同一口径）。日志里有一行
+`tier-restrict: agent <id> mode=… → tty 工具 19 → 10（裁掉 N 个 write/exec：…）`。
+**现状边界**：会话中途切档不会立即重算工具面（下一次 `agent/created` 或工具集变化时才对上），
+执行期闸则逐调用读实时档位。
 
 典型 agent 流程（推荐）：跑完就算完的命令用 `tty_run` 一次调用拿回输出 + 退出码；
 需要**长驻**的会话用 `tty_open`（长驻进程用 `persistName` 要 tmux 持久化）→ `tty_send` 启动命令

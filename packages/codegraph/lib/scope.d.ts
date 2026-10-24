@@ -1,7 +1,8 @@
 /**
  * ROADMAP P0：per-agent scoped MCP 挂载。
  *
- * 现状（'managed'）是**一行托管**：本插件在 `~/.dsh/cordis.patch.yml` 里维护
+ * 旧模式（'managed'；本版默认已改为 'per-agent'，它仍可由用户显式开启）是**一行托管**：
+ * 本插件在 `~/.dsh/cordis.patch.yml` 里维护
  * `@deepseek-ai/dsh-mcp-client` 的 codegraph 行，一台 MCP 服务器同一时刻只服务一个
  * 项目（行里的 `cwd`），多项目靠 `projectPath` 入参 + `followSession` 重写 cwd 后
  * 热加载重建连接。代价：时分复用、每次会话切换都写盘、多实例并发写同一文件、
@@ -41,7 +42,24 @@
 export type McpScopeMode = 'managed' | 'per-agent';
 /** 两种模式的规范值（卡片与配置校验共用，避免两处字面量漂移）。 */
 export declare const MCP_SCOPE_MODES: readonly McpScopeMode[];
-/** 默认模式：**保持现状**。per-agent 是行为变更，由用户显式开启（见 docs/p0-plan.md 第五节）。 */
+/**
+ * 默认模式：**per-agent**（2026-10-24 从 managed 翻过来，披露面收口）。
+ *
+ * 为什么必须翻：managed 是**一行全局托管**，它建在根 scope 上，于是家目录 / 没有
+ * `.codegraph/` 的仓库里开的会话同样继承 `mcp__codegraph__*`——工具在，但它服务的是
+ * 全局行那个 cwd，「工具名相同而语义随全局 cwd 漂移」正是本模块要消除的问题（见文件头）。
+ * per-agent 的挂载判据里本来就写着「会话目录没有可用索引就不挂」（见
+ * {@link agentMountDecision}）；把它设成默认，那条判据才真的对**所有人**生效，而不是
+ * 只对愿意去改配置的人生效。
+ *
+ * 代价与边界（都实测过，不是推测）：
+ *   - 每个已索引会话一个 `serve --mcp` 子进程（空 Node 基线 ~40MB，见 docs/p0-plan.md）；
+ *   - 前提不成立时仍按 {@link resolveScopeMode} 退回 managed 并说明原因，**没有索引的
+ *     会话拿不到工具**这条只在 per-agent 真能生效时成立；
+ *   - 回滚 = 把 `mcpScope` 写回 `'managed'`（插件配置或卡片开关）。per-agent 期间挂起
+ *     或删掉的全局行按标记还原，`scripts/check-codegraph-per-agent.mjs --expect managed`
+ *     就是验这条（含「不残留 `disabled: true` / `# dsh-codegraph: suspended`」）。
+ */
 export declare const DEFAULT_MCP_SCOPE: McpScopeMode;
 /** 把任意输入规范化成模式；非法值回落 fallback（不抛：配置面永远不该让插件起不来）。 */
 export declare function normalizeMcpScope(value: unknown, fallback?: McpScopeMode): McpScopeMode;

@@ -6,6 +6,11 @@
     - id: dsh-plugin-kit
       name: '@hyzyn/dsh-plugin-kit'
 
+# from ../packages/env
+- insert:
+    - id: env-manager
+      name: '@hyzyn/dsh-env'
+
 # from ../packages/codegraph
 - insert:
     - id: codegraph
@@ -15,11 +20,6 @@
 - insert:
     - id: docker
       name: '@hyzyn/dsh-docker'
-
-# from ../packages/env
-- insert:
-    - id: env-manager
-      name: '@hyzyn/dsh-env'
 
 # from ../packages/kit-settings
 - insert:

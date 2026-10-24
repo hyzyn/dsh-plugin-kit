@@ -141,11 +141,22 @@ export type FieldsOutcome = {
     warnings: string[];
 };
 /**
- * 列字段的**长度处理**（2026-10-14，对齐 Kibana）：**不传 limit 就是不截断**，来源有多少字段列多少。
+ * 字段的默认上限（渐进披露 T1，2026-10-24）。
  *
- * 原来这里是「默认 80 + 硬上限 200」。真机反馈第 4 条要的是**看得出被截断**（45KB 那份清单被当成全部），
- * 不是「一律砍到 80」——Kibana 的 `_field_caps` 从来不 slice，长度交给界面（字段名搜索 + 分区 + 虚拟滚动）。
- * 所以这层同理：默认给全，要收窄是调用方**显式**说的事；只有真截了才带上 total / truncated 与那句警告
- * （形状不变，信号仍然跟着结果走）。工具面的成本提示写在工具描述里，不靠这里的默认值替调用方做决定。
+ * 上一版口径是「不传 limit = 全列」（2026-10-14 对齐 Kibana）——真机上一台通配全集群的来源
+ * 确实回过 45KB 的字段表，那次的问题（**看不出被截断**）由 total / truncated 解决了，但
+ * 「不传就全量」仍把决定权默认交给了最坏情况：agent 只想确认某几个字段在不在，却吃下
+ * 几十 KB。现在默认收在 200：超出时 truncated: true + total 照报全量，warning 给下一步
+ * （分段传 limit / 先用 facets 看哪些字段真有数据）；显式传了 limit 仍按调用方说的算。
+ */
+export declare const FIELDS_DEFAULT_LIMIT = 200;
+/**
+ * 列字段的**长度处理**（2026-10-24 起默认截到 {@link FIELDS_DEFAULT_LIMIT}）。
+ *
+ * 历史：原来「默认 80 + 硬上限 200」→ 2026-10-14 改「不传 limit 就全列」（对齐 Kibana 的
+ * `_field_caps` 从不 slice）→ 现在改回「默认 200、无硬顶」。两刀的方向相反，但理由同源：
+ * **截断必须看得见**（total / truncated / warning 都在），差别只在「默认替调用方挡多少」。
+ * 全列的代价（45KB 那份）实测由 agent 侧承担，所以默认值替它挡；面板那一侧有「共 N 个字段」
+ * 与搜索框，收到 200 仍是可用的清单。
  */
 export declare function runFields(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FieldsOutcome>;

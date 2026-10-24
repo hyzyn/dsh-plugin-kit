@@ -1451,14 +1451,14 @@ await test('聚合选择：入口 / 勾选框 / 操作条装配进 bundle', () =
   assert.ok(decoded.includes('已选 '), '缺少「已选 N 个容器」计数')
   assert.ok(decoded.includes('聚合日志 · '), '缺少聚合视图标题')
   assert.ok(decoded.includes('至少选择 2 个容器'), '缺少 N<2 的提示')
-  assert.ok(decoded.includes('已接近上限，再选下去整个页面会变卡'), '缺少软上限提示')
+  assert.ok(decoded.includes('已接近上限，再多就看不清了'), '缺少软上限提示')
   // 硬上限文案由「数字 + 后缀」拼出来（数字不写死），所以这里只锁静态部分；
   // 具体数字由下面 pickDecide 的用例断言（它同时钉住「数字从哪来」）。
   assert.ok(decoded.includes('最多 '), '缺少硬上限的「最多」前缀')
   assert.ok(decoded.includes('个容器'), '缺少硬上限的「个容器」文案')
-  assert.ok(decoded.includes('会占满浏览器的同源连接，整个页面都会卡'), '缺少硬上限的成因后缀')
-  // 上限的来由要写在选择条上（D165）：不写清楚，3 看起来就只是个随手定的数字
-  assert.ok(decoded.includes('浏览器每个站点最多同时保持 4 条实时流'), '缺少「预算从哪来」的说明')
+  assert.ok(decoded.includes('一次读不清'), '缺少硬上限的成因后缀')
+  // 上限的来由要写在选择条上（D165 → D168 改写）：现在一句话说清「一条流装全部容器」
+  assert.ok(decoded.includes('聚合日志只占一条 SSE'), '缺少「预算从哪来」的说明')
   assert.ok(code.includes('dk_pickBudget'), '缺少预算说明的样式钩子')
   // 接线判据走源码级：局部标识符会被压缩改名，产物里 `budget: t(` 认不出来
   const pickSource = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
@@ -1470,32 +1470,74 @@ await test('聚合选择：入口 / 勾选框 / 操作条装配进 bundle', () =
   assert.ok(code.includes('dk_pillPick'), '缺少「聚合选择」激活态样式钩子')
 })
 
-await test('聚合选择：上限绑在浏览器同源连接预算上（4 条流 − 事件流 = 3）', () => {
+await test('聚合选择：上限是交互 / 宿主通道上限，不再随浏览器同源连接增长（D168）', () => {
   const pick = pickApi()
   /*
-   * D165（2026-10-08 真机实测）：宿主是 HTTP/1.1，每条 EventSource 独占一条同源
-   * 连接且不释放。实测常驻流 4 条 → 页内请求 6/6 成功（中位 29ms）；5 条 → 0/6 全部超时
-   * （同时刻进程外请求 41ms 正常，堵在浏览器不在宿主）。容器页常开着事件流，所以聚合
-   * 只能用掉剩下的 3 条。这条用例把「数字从哪来」钉住，免得后人凭手感调大。
+   * D165（2026-10-08 真机实测）：宿主是 HTTP/1.1，每条 EventSource 独占一条同源连接且
+   * 不释放；实测常驻流 4 条 → 页内请求 6/6 成功（中位 29ms），5 条 → 0/6 全部超时。
+   *
+   * D168 之后聚合日志是**一条** `/logs/stream?ids=…`，选 2 个还是 3 个都只占一条连接；
+   * 所以 PICK_MAX 不再是「预算 − 事件流」推出来的，而是可读性 + 宿主侧每个容器一条
+   * `docker logs -f`（SSH 上是 `MAX_STREAMS_PER_TARGET = 8` 的通道额度）取小。这里的
+   * BUDGET / RESERVED 常量仍钉住**浏览器预算这份事实**（事件流 + 聚合流 = 2 条），只是
+   * 它不再参与 PICK_MAX 的除法——后人别把两个数重新绑回去。
    */
   assert.equal(pick.MAX, 3)
-  assert.equal(pick.SSH_MAX, 3, 'SSH 与本地共用同一个浏览器预算（卡页面的是浏览器，不是 MaxSessions）')
+  assert.equal(pick.SSH_MAX, 3, 'SSH 与本地同值：两边都不再受浏览器连接数驱动（D168）')
   assert.equal(pick.SOFT_MAX, 2)
-  assert.equal(pick.BUDGET, 4, '同源预算：4 条常驻流')
-  assert.equal(pick.RESERVED, 1, '其中 1 条留给活动条的事件流')
+  assert.equal(pick.BUDGET, 4, '同源预算：4 条常驻流（D165 实测事实，仍要钉住）')
+  assert.equal(pick.RESERVED, 1, '其中 1 条是活动条的事件流')
   assert.deepEqual(pick.decide(0), { canRun: false, hint: '' })
   assert.deepEqual(pick.decide(1), { canRun: false, hint: '至少选择 2 个容器' })
   assert.deepEqual(pick.decide(2), { canRun: true, hint: '' })
-  // 第 3 个已经在吃满预算前的最后一格：可点，但给一句软提示
+  // 第 3 个是可读性的最后一格：可点，但给一句软提示
   assert.equal(pick.decide(3).canRun, true)
-  assert.match(pick.decide(3).hint, /整个页面会变卡/)
+  assert.match(pick.decide(3).hint, /看不清/)
   const over = pick.decide(4)
   assert.equal(over.canRun, false, '超过硬上限必须置灰')
   assert.match(over.hint, /最多 3 个容器/)
 
-  // 两个目标类型走同一套上限：真正卡住页面的是浏览器同源预算，与目标是 SSH 还是本机无关
+  // 两个目标类型走同一套上限：一次读不清与宿主通道额度是同一个量级
   assert.deepEqual(pick.decide(4, true).canRun, false, 'SSH 目标同样在 4 个时置灰')
   assert.match(pick.decide(4, true).hint, /最多 3 个容器/)
+})
+
+await test('D168：多容器日志走一条流 + 事件流只跟列表可见性', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const streams = exports_.__streams
+  assert.ok(streams !== undefined, '缺少 __streams 测试缝')
+  assert.equal(typeof streams.multiLog, 'function')
+  assert.equal(typeof streams.shouldStreamEvents, 'function')
+
+  /*
+   * 宿主协议协商：>=3 才支持 `ids=` 单连接。config 未到 / 字段缺失都按老路径处理——
+   * 先按 N 条流建、config 到了多源布尔值变化会让 effect 重跑并切到单连接（不闪空白）。
+   */
+  assert.equal(streams.multiLog({ streamProtocol: 3 }), true)
+  assert.equal(streams.multiLog({ streamProtocol: 4 }), true)
+  assert.equal(streams.multiLog({ streamProtocol: 2 }), false, '老宿主只认 id=，必须退回每容器一条')
+  assert.equal(streams.multiLog({}), false, '字段缺失 = 更老的宿主')
+  assert.equal(streams.multiLog(null), false)
+  assert.equal(streams.multiLog('nope'), false)
+
+  // 事件流建流判据：列表不在场（详情 / 聚合 / 拉取……）就不该再占一条同源连接
+  const base = { active: true, view: 'containers', target: '本机', listVisible: true }
+  assert.equal(streams.shouldStreamEvents(base), true)
+  assert.equal(streams.shouldStreamEvents({ ...base, listVisible: false }), false, '详情 / 聚合视图替掉列表时必须断流')
+  assert.equal(streams.shouldStreamEvents({ ...base, active: false }), false, '折叠的 tab 不建流')
+  assert.equal(streams.shouldStreamEvents({ ...base, view: 'images' }), false)
+  assert.equal(streams.shouldStreamEvents({ ...base, target: '' }), false)
+
+  /*
+   * 源码级接线判据（产物里局部标识符会被压缩改名，只剩属性名 / 字符串）：
+   * 聚合视图必须真的用 `ids=` 一条流、多源分支必须由协议协商控制、老退路不能删、
+   * 事件流 effect 必须走上面那条判据。
+   */
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  assert.ok(source.includes('ids: itemIds'), '聚合日志要多源单连接（ids=）')
+  assert.ok(source.includes('if (props.multiLog === true)'), '多源分支必须看宿主协议协商结果')
+  assert.ok(source.includes('id: item.id'), '老宿主退路（每容器一条流）不能删')
+  assert.ok(source.includes('shouldStreamEvents({ active, view, target, listVisible })'), '事件流建流必须走统一判据')
 })
 
 await test('聚合选择：勾选增删保序 + 列表刷新按 id 对账', () => {
@@ -1638,8 +1680,11 @@ await test('事件流断开：活动条接线（兄弟按钮、不是嵌套按�
   assert.ok(headClose !== -1, '折叠头应有结束标记')
   assert.ok(!source.slice(headOpen, headClose).includes('dk_activityRetry'), '重连按钮不能嵌在折叠按钮里（非法 HTML + 读屏会听成一个动作）')
 
-  // 事件流 effect 的依赖里必须有重连令牌，否则点了不重开
-  assert.ok(/\}, \[active, view, target, eventsReconnect\]\)/.test(source), '事件流 effect 的依赖数组里必须含 eventsReconnect（否则点了不重开）')
+  // 事件流 effect 的依赖里必须有重连令牌，否则点了不重开；
+  // 列表可见性同样要在依赖里（D168）：进详情 / 聚合视图时断流、回列表时重开，靠的就是它变化
+  const eventsDeps = source.match(/\}, \[([^\]]*eventsReconnect[^\]]*)\]\)/)
+  assert.ok(eventsDeps !== null, '事件流 effect 的依赖数组里必须含 eventsReconnect（否则点了不重开）')
+  assert.ok(eventsDeps[1].includes('listVisible'), '列表可见性要进事件流 effect 依赖（否则进出详情不会断流 / 回来不会重开）')
   // 令牌必须自增：布尔翻回 false 时 effect 看不出「又要求了一次」
   assert.ok(/setEventsReconnect\(\(value\) => value \+ 1\)/.test(source), '重连令牌必须自增')
 

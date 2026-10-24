@@ -691,6 +691,17 @@ export declare function listGroupsOf(llm: unknown, providers: Array<{
     }>;
 }>>;
 /**
+ * `tty_screen` 的正文裁剪：保尾截断到 32KB，并**自证**这次有没有截断。
+ *
+ * 大尺寸屏幕装满文本就可能越过 32KB（最多 200 行 × 500 列）；此前截断是静默的，
+ * agent 会把砍过的正文当成整屏。`truncated` 进返回体、也进 schema——让调用方
+ * 从「有没有某句提示」反推是不可靠的。
+ */
+export declare function screenPayload(full: string): {
+    text: string;
+    truncated: boolean;
+};
+/**
  * TOFU 主机指纹存储：get/record 面向 spawnSsh 的 hostVerifier；
  * record 时经 persist 回调写入 settings（宿主重启后钉扎仍在）。
  */
