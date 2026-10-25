@@ -113,4 +113,16 @@ if ! node scripts/check-readme-facts.mjs --staged; then
   echo "✘ [pre-commit] README 里的数字与源码常量已经漂了，已中止（详见上方指引）"
   exit 1
 fi
+
+# 中英 README 结构一致性（2026-10-23 新增）：有 README.en.md 的包，两版标题层级序列必须一致。
+#
+# 为什么放这里：docs/conventions.md § 文档分档 纪律 2 早就写着「中英同结构」，但此前**没有任何
+# 守卫读它**——i18n 管的是客户端目录键集，readme-facts 明说「不查章节顺序」，docs-index 只报行数。
+# 漂移的形状很确定：中文版加一节、英文版没加（或反过来），英文读者找不到那一节，却不会让任何
+# 闸门红。判据是纯静态的（读各包的双语 README、比标题层级序列），裸 Node 几十毫秒；与上一道
+# readme-facts 同属「内容之间要自洽」，所以紧挨着它放。
+if ! node scripts/check-readme-structure.mjs; then
+  echo "✘ [pre-commit] 中英 README 的章节结构已经漂了，已中止（详见上方指引）"
+  exit 1
+fi
 exit 0

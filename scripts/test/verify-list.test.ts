@@ -46,11 +46,13 @@ describe('verify:list：清单现算（真实仓库）', () => {
 
   it('通用脚本不属于任何包，命令是 node 形态（不假装有包内入口）', () => {
     const generic = items.filter((item) => item.pkg === '（通用）')
-    // 三个：verify-client-ui.mjs（打外部宿主，`--url/--token`）、
-    // verify-issue-13-14.mjs（**自起**宿主，命令自带 `--from`）与
-    // mcp-tool-budget.mjs（成本报告，打外部宿主，默认 127.0.0.1:3082 可 `--url` 覆盖）。
+    // 四个：disclosure-report.mjs（披露面测量报告，只读；宿主不可达只打 SKIP）、
+    // mcp-tool-budget.mjs（成本报告，打外部宿主，默认 127.0.0.1:3082 可 `--url` 覆盖）、
+    // verify-client-ui.mjs（打外部宿主，`--url/--token`）与
+    // verify-issue-13-14.mjs（**自起**宿主，命令自带 `--from`）。
     // 断言的是**集合**而不是条数：多一个通用脚本必须被看见，而不是被一个数字放过。
     expect(generic.map((item) => item.file).sort()).toEqual([
+      'disclosure-report.mjs',
       'mcp-tool-budget.mjs',
       'verify-client-ui.mjs',
       'verify-issue-13-14.mjs',

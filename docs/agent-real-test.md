@@ -150,6 +150,10 @@ dsh --profile <测试 profile> --patch <port.yml>
 | 全部 | `pnpm live-smoke`（= `node scripts/live-host-smoke.mjs`；干净机器 `node scripts/live-host-smoke.mjs --bootstrap --strict`）（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
 | 全部 | `node scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
 
+> **真模型回合的验收**（脚本证明不了「模型会不会主动装载」）：做法与结论记在根
+> [ROADMAP.md](../ROADMAP.md) 的「`agentToolLoading` 的**真模型回合**验收（默认仍 `eager`）」一条
+> ——复制真实 profile + `--patch` 覆盖 + 真浏览器发一句、**判据取自会话日志的 `tool/call`**。
+>
 > **`tier-smoke` 与 `on-demand-smoke` 的分工**：两者都**不进 CI、不 spawn 宿主**（进程内挂真模块 +
 > 隔离 `DSH_HOME`），但验的是两件事——`tier-smoke`（kit）验**档位契约**：`tools.restrict()` 的投影
 > 让受限档看见什么、升 / 降档怎么重算、per-agent 挂载为什么不受前缀裁剪；`on-demand-smoke`（mcp）验

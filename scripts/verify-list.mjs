@@ -141,6 +141,15 @@ export const VERIFY_SCRIPTS = [
     needs: '正在跑的宿主（装了 dsh-mcp）；只发一个只读 GET /api/dsh-mcp/servers——**加 server 前先跑**的工具面成本报告（`--budget N` 超则退出码 1，`--json` 机器可读）',
     note: '✅ 2026-10-25 实跑（127.0.0.1:3082）：合计 55 个工具；per-agent 挂载的行报 0——「不在全局层」不是「没工具」（见文件头三条语义）',
   },
+  {
+    file: 'disclosure-report.mjs',
+    pkg: '（通用）',
+    entry: undefined,
+    // 根 `package.json` 有别名条目 `pnpm disclosure-report`；通用脚本按本清单惯例渲染 node 直跑形态
+    command: 'node scripts/disclosure-report.mjs',
+    needs: '可选：正在跑的宿主（只读 GET；不可达则 SKIP）',
+    note: '✅ 2026-10-25 实跑（127.0.0.1:3082）：8 段公告合计 1181 字符 / 0 段超预算（docker 250/250 顶格）；MCP 合计 69 个工具；三张档位分类表合计 42 条（read 28 / write 9 / exec 5）——只有公告超预算才退出码 1，宿主不可达只打 SKIP',
+  },
 ]
 
 /** 读一个包的 `scripts`（读不到 = 空对象）。 */

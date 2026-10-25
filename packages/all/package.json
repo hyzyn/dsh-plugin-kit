@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@hyzyn/dsh-codegraph": "0.6.15",
-    "@hyzyn/dsh-docker": "0.13.4",
+    "@hyzyn/dsh-docker": "0.13.5",
     "@hyzyn/dsh-env": "0.3.11",
     "@hyzyn/dsh-kit-settings": "0.2.7",
     "@hyzyn/dsh-loglens": "0.1.4",

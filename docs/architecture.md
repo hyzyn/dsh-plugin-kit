@@ -47,6 +47,15 @@
 > 而 kit 提供的是**宿主半体**工具（HTTP 围栏 / 托管区块 / `!!js` / 服务读取 / Windows shim / 输出解码）
 > ——它一个都用不上，所以 `dependencies` 为空。
 
+> **挂载顺序**：聚合层不是纯字母序——`@hyzyn/dsh-env` 固定排第一（启动期同步预注入必须先于任何
+> 依赖 `process.env` 的插件；最直接的是在托管行里写 `!!js process.env.*` 认证头的 MCP 条目，
+> 而 codegraph 的 per-agent 挂载只是「spawn 的子进程要继承到注入的变量」）。
+> 规则在 [`scripts/aggregate-order.mjs`](../scripts/aggregate-order.mjs)，落地说明见
+> `packages/all/README.md`（**不写成链接**：§2 的包清单按 `../packages/<pkg>/README.md` 链接现算，
+> 在节内再放一条包链接会被算成第 14 行）。
+> 注：这是**配置行序**，不是运行时 apply 顺序的硬保证（loader 并发 create；真正的先后由 §5 的
+> `dshEnvReady` 服务表达）。
+
 ## 3. 依赖方向（不许反向）
 
 ```
@@ -95,12 +104,14 @@
 | `tty` | `docker` | tty ≥ 0.13.0 | SSH 标签连接栏出现「容器」按钮，用当前会话那台主机直接开面板 |
 | `tty` | `docker` | 任意 | `kind=ssh` 目标可直接**引用 tty 连接簿条目名**；主机指纹 TOFU **以 tty 已有记录作种子** |
 | `mcp` | `codegraph` | — | 同一份 `cordis.patch.yml` 托管区块；codegraph 只补自己那行的 `cwd`，已在 MCP 卡片配置过的行不动其它字段 |
+| `env` | `codegraph` | — | env 在同步预注入后 `ctx.provide('dshEnvReady', { enabled, keys, at })`；codegraph 的 per-agent 挂载用 `ctx.inject(['dshEnvReady'])` 等它，好让 spawn 出来的 MCP 子进程继承到注入的环境变量（子进程环境 = 宿主 `scrubbedParentEnv()` + per-agent 不传的 `config.env`）。**加载顺序不构成保证**（loader 并发 create），所以用服务就绪表达先后；宿主没装 env 时按「无此依赖」直接放行。**射程**：只管「子进程继承的普通变量」——per-agent 走 stdio、config 里没有 `headers`，凭据形状的变量本来就由宿主 scrub 挡住，**不靠这道门**。实现与实测边界：`packages/codegraph/src/env-gate.ts` |
 | `prompt` | `search` | — | `search` **只读** `~/.dsh/prompts.yml` 托管区块 |
 | `mcp` | `search` | — | `search` 按 `mcp__` 前缀枚举已挂载工具并标注所属 server |
 | `docker` | `loglens` | 任意 | `loglens` 的「Docker 来源」在面板里直接调 docker 插件的 `/api/dsh-docker/config` / `containers` / `logs`（相对路径 = **同源**，连接簿与指纹不复制一份）；在不在的判据是 cordis registry 里有没有 `docker`（`packages/loglens/src/plugins.ts`）。**没装就退化**：agent 侧只指路到现成的 `docker_logs` / `docker_logs_grep`，面板不摆会 404 的入口 |
 | `kit-settings` | 全部插件 | — | 提供「设置 → 插件配置」这一行入口；各插件同时注册三代插槽 |
 
 **协作的硬约束**：消费方必须**在提供方未安装 / 版本过低时优雅退化**（上面每一行都有退化路径）。
+`dshEnvReady` 的服务名与值形状是**跨包契约**：改名 / 改形状等于破坏消费者，按契约变更处理。
 `docker` 的「终端」按钮三级退化就是范本：**能嵌就嵌，不能嵌就开标签，再不行就复制命令**。
 
 ## 6. 客户端半体与供给链

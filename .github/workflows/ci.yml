@@ -214,6 +214,15 @@ jobs:
       - name: Check README numbers match source constants
         if: matrix.os == 'ubuntu-latest'
         run: pnpm readme-facts:check
+      # 防回归：**有 README.en.md 的包，中英两版的章节结构必须一致**。
+      # 为什么要有：conventions § 文档分档 纪律 2 早就写着「中英同结构」，但此前没有任何守卫读它
+      # ——i18n 管客户端目录键集、readme-facts 只认常量数字、docs-index 只报行数。漂移的形状很确定：
+      # 中文版加一节、英文版没加（或反过来），英文读者找不到那一节，且不会让任何闸门红。
+      # 判据只比标题层级序列、不比文字；`pnpm test` 里的用例兜同一道判据（CI 因此也会跑），
+      # 这里单独成 step 是为了让「这次红的是结构」一眼可查。
+      - name: Check zh/en README section structure
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm readme-structure:check
       - name: Check commit messages carry no internal identifiers
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -306,7 +315,7 @@ jobs:
       # pin 住要挂进去的 DSH 版本：它与根 package.json 的 peer 范围同档，升 cohort 时一起改。
       # 装不上（或版本与 cohort 不匹配）时 `--bootstrap` 会**自证失败**并把原因打出来——不会假绿。
       - name: Install dsh CLI (pinned)
-        run: npm install -g @deepseek-ai/dsh@0.2.1-rc.2
+        run: npm install -g @deepseek-ai/dsh@0.2.1-rc.3
       # 用 **DSH 自己的判定器**逐包 × 逐 cohort 复核兼容性声明（2026-10-04 接进 CI）。
       #
       # 为什么必须有它：上面 build 那个 job 的 `dsh-peers:check` 只回答「我们的声明自洽吗」

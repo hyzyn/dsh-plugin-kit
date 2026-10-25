@@ -254,9 +254,23 @@ function isTargetFailure(error) {
     return error !== null && typeof error === 'object' && error[TARGET_FAILURE] === true;
 }
 /**
- * agent 公告：本插件的能力面与两条 exec 通道的边界。
+ * agent 公告：只留**能力索引 + 安全契约**（空态出路 / 能力开关 / 两条 exec 通道的边界 /
+ * root 权限警示）。
  *
- * ⚠️ **「允许 exec」只管本插件的一次性通道**（D163）。卡片「终端」按钮跑的是
+ * 剩下的事实在别处各有一份，**不要再写回来**（2026-10-25 从 562 压到 250 字符时删的三段）：
+ *   - 「`*`（全部目标）只有 `docker_ps` / `docker_attention` 支持」——两条工具自己的
+ *     `description` 里各写了一遍（`docker_ps`「target 传 `*` = 一次列出所有目标」、
+ *     `docker_attention`「target 传 `*` 时跨所有目标聚合」）；`targetParam` 与运行期报错
+ *     也各有一份。
+ *   - 排障顺序（`docker_attention` → `docker_ps` → `docker_logs` → 尾部看不到成因再
+ *     `docker_logs_grep` → `docker_inspect` / `docker_stats`）——散在各工具 `description` 里
+ *     （「排障入口」/「排障第一步」/「改用 docker_logs_grep」），挨着要用的那个工具读才有用。
+ *   - 网络 / 卷的增删只在面板——插件压根没有给这两个工具，模型做不了，写了也只是噪音。
+ *   这三条的「仍在别处」由 `test/announcement.test.ts` 反向钉住：工具描述被精简掉就红。
+ *   长度预算归 `scripts/test/announcement-budget.test.ts` 那份名单（docker 公告并入其中），
+ *   本文件不再自带一条长度判据。
+ *
+ * ⚠️ **「允许 exec」只管本插件的一次性通道**（D163）。面板「终端」按钮跑的是
  * `docker exec -it` 交互式 shell——它经 tty 的 `ttyTerminal` 承载、**不检查 `allowExec`**
  * （`client-src/index.js` 的 `openExec` 里没有任何该判断，只读模式下也照常可用），所以这句话
  * 一旦退回「…docker exec，都需要…才有对应工具与按钮」的笼统说法，就是在**声称一条不成立的
@@ -265,11 +279,10 @@ function isTargetFailure(error) {
  *
  * ⚠️ **零目标时注册面只剩两条工具**（`ZERO_TARGET_TOOLS`），公告必须给出那条出路：
  * 否则 `docker_targets` 描述里「其他 docker_* 工具的 target 参数取自这里」指向的是一批
- * **此刻并不存在**的工具，模型只能原地打转。那句话放在「target 传 `*`…」**之前**——
- * 先解决空态，再讲通配（通配对空态毫无用处）。守卫：`test/announcement.test.ts`
+ * **此刻并不存在**的工具，模型只能原地打转。守卫：`test/announcement.test.ts`
  * （含「删掉那句必须变红」的反例）。
  */
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件：Web GUI 侧边栏「容器」入口即其面板，目标含本机 / SSH 主机。**默认只读**：启动/停止/重启/删除容器、删除镜像/清理 dangling/拉取镜像、**一次性** docker exec（docker_exec 工具与面板命令框），都需要用户在设置里打开「允许变更操作」「允许 exec」才有对应工具；「允许 exec」只管这条一次性通道——卡片「终端」按钮的 docker exec -it 由 tty 承载、**不受它门控**，只读模式下也能用；网络/卷的增删只在面板。**一个目标都没有时先 `docker_connect_local` 加上本机目标**。target 传 `*` 只有 docker_ps / docker_attention 支持，其余必须给具体目标。排障：不确定从哪看先 docker_attention（可 `*`）→ docker_ps → docker_logs（报错在尾部）→ 尾部看不到成因再用 docker_logs_grep（pattern + since/until 检索深处）→ docker_inspect / docker_stats。docker socket 等价目标主机 root 权限，用户没明确要求别做变更。';
+const DOCKER_GUIDANCE = '本机装有 dsh-docker 插件（侧栏「容器」）。**默认只读**：启停删容器、镜像删除/清理/拉取、**一次性** docker exec（本插件），都需要用户在设置里打开「允许变更操作」「允许 exec」；「允许 exec」只管这条一次性通道——面板「终端」按钮的 exec -it 由 tty 承载、**不受它门控**。**一个目标都没有时先 `docker_connect_local` 加上本机目标**。docker socket 等价目标主机 root 权限，用户没明确要求别做变更。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。

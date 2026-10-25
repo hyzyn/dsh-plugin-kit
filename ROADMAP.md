@@ -871,9 +871,69 @@ patch 行格式与卡片）。本轮要解决的是 **token 账单**：真机会
 `mcp_load(['probe'])` 后**真调用** `probe_echo` 拿到回显、另一个 agent 的工具面逐名未变、
 `mcp_load([])` 卸干净 + 未知 server 不装不抛、`eager` 第二宿主零副作用、真实补丁逐字节未变。
 
-**边界（明确不做 / 还没做）**：默认**仍 `eager`**——切成默认之前还需要**一次真模型回合的
-验收**（模型会先 `mcp_servers` 再 `mcp_load` 装配自己要用的工具，而不是绕去 `bash`）；脚本能
-证明工具面与装载动作对，证明不了模型的**选择**。也不改动 `mcp__*` 的宿主注册方式与 patch 行。
+**边界（明确不做 / 还没做）**：默认**仍 `eager`**（翻不翻是维护者的判断，见下一条的真机回合
+结论）；不改动 `mcp__*` 的宿主注册方式与 patch 行；不解决进程隔离（每会话一个子进程那条是
+codegraph 的路线，另开）。
+
+
+### 2026-10-25：`agentToolLoading` 的**真模型回合**验收（默认仍 `eager`）
+
+脚本能证明「工具面与装载动作对」，证明不了模型的**选择**——所以补了一次真宿主 + 真模型 + 真浏览器的
+回合，判据取自**会话日志**（不是模型的自述）：
+
+- **做法**：复制一份真实 profile 到临时名（真 `~/.dsh`，凭据/路由都在）→ `--patch` 覆盖两处
+  （`webserver.port` 换空闲口、`mcp-config.agentToolLoading: on-demand`）→ `dsh --profile <临时>   --patch /tmp/… --no-open` → 浏览器把访问模式切到「完全权限」→ 发一句「先看有哪些 MCP server、
+  挑一个工具数大于 0 的装载起来，实际调一个工具」。收尾：关页面、停宿主；**真实 home 补丁
+  mtime/size 未变**；临时 profile 未删（删除要先问）。
+- **结果（`tool/call` 三条，按序）**：`mcp_servers({})` → `mcp_load({"servers":["dbx"]})` →
+  `mcp__dbx__dbx_list_connections({})`。1 轮 4 步。
+- **工具面证据（`request/header` 快照）**：装载前 **81 个工具**，`mcp` 族只有 `mcp_servers` /
+  `mcp_load`（+ codegraph 那条 per-agent 挂载的 `mcp__codegraph__*`，它不在本插件托管行里，按
+  「只裁托管行」**本就不该被裁**）；`mcp_load(['dbx'])` 之后的请求 **106 个工具**，多出来的正是
+  dbx 的 27 个，**其余 server 的工具仍然不可见**。同机 eager 基线实测是 149 个 → on-demand 在
+  装载前省掉 **68 个工具（−45.6%）**。
+- **附带实测**：这一轮里把访问模式从「工作区内修改」切到「完全权限」，日志里落了
+  `permission/preset` ×2 + `sandbox/mode` ×2——即 2026-10-25 那条「会话中途切档重算」在**真 UI**
+  上走通了；同一份日志也把 per-agent 挂载的 own-layer 豁免（`mcp__codegraph__*` 在受限档仍可见）
+  在真宿主里复现了一次。
+
+### 2026-10-25：`DOCKER_GUIDANCE` 拆段（562 → 250），进 250 名单
+
+- **落点**：`packages/docker/src/index.ts`（公告本体）、`packages/docker/test/announcement.test.ts`
+  （判据手术）、`scripts/announcement-budget.mjs` 的 `ANNOUNCEMENT_NAMES`/`PACKAGES`（**8 段**）。
+- **删掉的三段与它们的落点**：`target` 通配只在 `docker_ps` / `docker_attention` →
+  两条工具自己的 `description` 里已经写着；排障链（attention → ps → logs → grep → inspect）→
+  `docker_attention`「排障入口」/ `docker_ps`「排障第一步」/ `docker_logs`「改用 `docker_logs_grep`」；
+  「网络/卷的增删只在面板」→ 本来就没有对应工具。**不是搬到工具描述**（描述也是每轮都付，搬过去
+  等于没省），是**删重复**。
+- **判据**：250 字符（= 预算，**顶格**）；`exec-terminal-scope` 的「一次性 / 不受…门控」仍在；
+  零目标出路仍在且仍在通配之前（顺序判据随通配句一起作废）；**新增**一条反查——被删的事实必须
+  仍在工具描述里（配反例：把 `docker_logs` 描述里的 `docker_logs_grep` 抠掉 → 红）。
+- **边界**：顶格意味着下一次改这条公告必须**换掉**同等字符，不能再加。
+
+### 2026-10-25：`pnpm disclosure-report`（披露面单一出口）
+
+- **落点**：`scripts/announcement-budget.mjs`（把测量从 `scripts/test/announcement-budget.test.ts`
+  抽成纯 JS；测试改为 import 它，fixture/反例留在测试里）、`scripts/disclosure-report.mjs`、
+  根 `package.json` 的 `disclosure-report`、`scripts/verify-list.mjs`（通用脚本第 4 个）、
+  `docs/conventions.md` 的对应 bullet。
+- **输出四节**：公告长度表（逐条 / 预算 / 余量 / 合计，超预算退出码 1）、MCP 工具面（只读 HTTP，
+  宿主不可达打 `SKIP` 而不是失败）、档位分类表规模（从各包 `lib` 现算，并注明**不是**各档真实
+  注册面——那要给真宿主，口径是 `tier-smoke`）、结论 + 相关入口。`--json` 四键。
+- **门槛**：`scripts/test/disclosure-report.test.ts` 12 条（表格内容、合计=逐条之和、超预算标出、
+  弃权/缺失不计入、MCP 可达/不可达两态、`--json` 结构、**两个模块不落盘**的源码级断言）。
+- **第一次真跑**：8 段公告合计 **1181** 字符 / 0 段超预算；MCP **69** 个工具；三张分类表合计
+  **42** 条（read 28 / write 9 / exec 5）。
+
+### 2026-10-25：公告模板化（原 T7）——**明确不做**，换「总和对」
+
+形态趋同（「本机装有 X；用户提到 Y 时引导打开卡片」）是表象，长度差来自**内容必须不同**：
+docker 那段是安全契约（D163 守卫钉着）、codegraph 那段是 66 字符的路牌。模板化只会统一便宜的
+那部分，然后把带守卫的那句压成模板槽——正好是 D163 的死路。
+
+要动预算结构，改「**逐条 250 保留作纪律 + 总和对**」更贴成本模型：7 段时代合计 931 → 现在 8 段
+合计 1181，而真实的账单是**合计**（每轮都在上下文里）。这条**若要做**，判据是「总和上限 + 逐条
+250」，两个数都要能从 `disclosure-report` 现算出来（本轮已具备）。
 
 ## 已由 L0 资产承接（不再是待办）
 

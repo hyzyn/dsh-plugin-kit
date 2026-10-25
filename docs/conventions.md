@@ -582,6 +582,14 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   按 server 报出 `mcp__*` 工具面的常驻成本——**加一个 server 之前先跑它**。它是报告工具、没有
   断言要验，但同样要正在跑的宿主，按「真机脚本进不了 CI」的口径**刻意不进 CI**；已登记进
   `verify:list` 清单。用法与语义见 [`packages/mcp/README.md`](../packages/mcp/README.md)。
+- **披露面测量报告（报告工具，只读）**：`pnpm disclosure-report`
+  （[`scripts/disclosure-report.mjs`](../scripts/disclosure-report.mjs)）用一条命令把「披露面」摊开：
+  8 段插件公告的字符数 / 余量（超预算退出码 1，判据在 `scripts/announcement-budget.mjs`、由
+  `scripts/test/announcement-budget.test.ts` 调）、
+  MCP 工具面的常驻规模（宿主不可达只打 `SKIP`，数字口径复用 `mcp-budget`）、三张 `*_TIER_CLASS`
+  分类表的规模——最后一项**注明是「分类表规模」、不是各档真实注册面**，后者要 `tier-smoke`。
+  它同样是报告工具、没有断言要验，按「真机脚本进不了 CI」的口径**刻意不进 CI**；已登记进
+  `verify:list` 清单。`--json` 机器可读，`--no-mcp` 可离线跑。
 - **档位裁剪的宿主契约验收（真机档，进程内）**：`pnpm --filter @hyzyn/dsh-kit run tier-smoke`
   （[`scripts/verify-tier-restrict.mjs`](../scripts/verify-tier-restrict.mjs)）。它在**进程内**搭一个最小
   但真实的 cordis 根（真 `tools` / `sessions` / `sandboxPolicy` 服务 + 三个包的真实分档表），验
