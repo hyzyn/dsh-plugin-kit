@@ -146,14 +146,27 @@
    * 假 locale 服务（`@deepseek-ai/dsh-client-locale`）：插件用 `ctx.inject(['locale'], cb)`
    * **动态**取它（老宿主上取不到就保持中文兜底）。没有这个桩，`exports.apply` 第一句
    * `installI18n(ctx)` 会直接抛 `ctx.inject is not a function`——迁移时真踩过。
-   * boot 前把 `window.__previewLocale` 设成 `'en'` 就能预览英文界面。
+   * boot 前把 `window.__previewLocale` 设成 `'en'` 就能预览英文界面；boot 之后要切语言，
+   * 用 `window.__previewSetLocale('en')`（等价于真宿主的 `locale.setLocale()`）。
+   *
+   * **`subscribe` 必须有**：真宿主 `ctx.provide('locale', LocaleRuntime)` 暴露的就是同一个带
+   * `register` / `bind` / `subscribe` 的对象。夹具少这一项，插槽之外靠订阅重绘的界面
+   * （如侧边栏入口）在英文预览里会一直是中文——那测的就是一条不存在的路。
    */
   const localeDicts = new Map()
+  const localeListeners = new Set()
+
+  /** 真宿主里「活动语言变了 / 字典注册了」都会 bump revision 并通知订阅者。 */
+  const notifyLocale = () => {
+    for (const fn of [...localeListeners]) fn()
+  }
+
   const localeStub = {
     register: (ns, locale, dict) => {
       const entry = localeDicts.get(ns) || {}
       entry[locale] = dict
       localeDicts.set(ns, entry)
+      notifyLocale()
       return () => {}
     },
     bind: (ns) => (key, params) => {
@@ -163,6 +176,17 @@
       if (params === undefined) return text
       return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
     },
+    /** LocaleFace subscribe：快照变化即通知，返回退订函数。 */
+    subscribe: (fn) => {
+      localeListeners.add(fn)
+      return () => { localeListeners.delete(fn) }
+    },
+  }
+
+  /** 运行时切语言：改活动语言 + 广播 revision（UI 自己按订阅重绘）。 */
+  window.__previewSetLocale = (id) => {
+    window.__previewLocale = id === 'en' ? 'en' : 'zh'
+    notifyLocale()
   }
 
   const ctx = {
