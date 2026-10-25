@@ -1546,6 +1546,16 @@ async function run() {
     const alive = openSession(port)
     await alive.open()
 
+    /*
+     * 「工具面回归」不能写死个数：0.33.0 起注册是**按配置条件**的（`sftp_*` 要有连接簿条目、
+     * `tunnel_*` 要有隧道）。本脚本跑到 B29 时 B20 / B23 已经把 tunnels 与 sshHosts 清空，
+     * 此刻的注册面就是基础那 9 个——写死 19 等于让「禁用/启用热生效」这条用例去赌前面的用例
+     * 留下了什么配置（2026-10-25 的 CI 实测：报 `当前 9`，而插件行为完全正确）。
+     *
+     * 改成**名字集合相等**：与配置无关，而且比数字更严——漏一个、多一个都会红。
+     */
+    const surfaceBefore = toolDefs.map((definition) => definition.name).sort()
+
     const off = await configPost({ enabled: false })
     if (off.status === 200 && off.body.config?.enabled === false) pass('B29a POST /config enabled=false 生效')
     else fail('B29a POST /config enabled=false 生效', `status=${String(off.status)}`)
@@ -1585,9 +1595,11 @@ async function run() {
     if (on.status === 200 && on.body.config?.enabled === true) pass('B29h 重新启用生效')
     else fail('B29h 重新启用生效', `status=${String(on.status)}`)
     await sleep(100)
-    // 0.25.0：tunnel_start / tunnel_stop 加入后是 19 个（0.23.0 加 tty_run 时是 17 个）
-    if (toolDefs.length === 19) pass('B29i 重新启用后 19 个 agent 工具回归')
-    else fail('B29i 重新启用后 19 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
+    const surfaceAfter = toolDefs.map((definition) => definition.name).sort()
+    const missing = surfaceBefore.filter((name) => !surfaceAfter.includes(name))
+    const extra = surfaceAfter.filter((name) => !surfaceBefore.includes(name))
+    if (missing.length === 0 && extra.length === 0) pass(`B29i 重新启用后 agent 工具逐个回归（${String(surfaceAfter.length)} 个，与禁用前一致）`)
+    else fail('B29i 重新启用后 agent 工具逐个回归', `禁用前 ${String(surfaceBefore.length)} 个 / 恢复后 ${String(surfaceAfter.length)} 个；缺=${missing.join(',') || '(无)'} 多=${extra.join(',') || '(无)'}`)
     if (promptParts.length === 2) pass('B29j 重新启用后公告与动态快照恢复')
     else fail('B29j 重新启用后公告与动态快照恢复', `当前 ${String(promptParts.length)}`)
     const again = openSession(port)
