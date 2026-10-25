@@ -584,31 +584,35 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
 | --- | --- | --- | --- |
 | `docker_targets` | 恒注册 | `probe?: boolean` | 列出目标（name / kind / label）；`probe:true` 逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）。其他工具的 `target` 取自这里 |
 | `docker_connect_local` | 恒注册 | —（无参数） | **连接本机**：确保存在一条 `kind=local` 目标并选中它（已存在则复用，不重复创建；SSH / 自定义目标原样保留），随后只读探测 daemon：返回 `{name, kind, created, saved, reachable, serverVersion?}`。没有任何目标时其余工具不注册（见下方「零目标」那条），用它一步补上。**不需要任何能力授权**（只写插件自己的配置 + 只读探测）；不会安装 Docker / 启动 daemon / 切 context / 改环境变量。daemon 不可达时在结果文本里说清成因（CLI 缺失 / 探测超时 / daemon 未启动 / socket 无权；CLI 缺失时还会点名 PATH 里找到的别的容器 CLI，但不会替你改 dockerBin），不是只报空列表 |
-| `docker_ps` | 恒注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean` | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（同一次 `-p` 不再出现两遍，D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
-| `docker_attention` | 恒注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`（ps 摘要里 137 无法区分手动 kill）。排障入口：不确定从哪台/哪个容器看起时先调它 |
-| `docker_inspect` | 恒注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
-| `docker_logs` | 恒注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?`、`until?` | `docker logs --tail` 尾部；`since` / `until` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）圈时间窗；超上限标记 `truncated` |
-| `docker_logs_grep` | 恒注册 | `target?`、`id`、`pattern`（必填，≤512 字符）、`regexp?`、`ignoreCase?`、`since?`、`until?`、`context?`（0~20，默认 2）、`limit?`（1~500，默认 200）、`tail?`（缺省 = 扫全部历史）、`timestamps?`（默认开） | **日志服务端检索**：宿主侧逐行过滤（不碰远端 shell、不拼 `\| grep`），返回命中行 + 前后上下文，并如实报告 `matched`（全量命中数，即使没返回）/ `scanned` / `limited` / `truncated`——「只扫到这些」与「扫完了没更多」可区分；扫描窗口**对齐到行边界**（按字节截断处的半行不当作一行返回，所以 `lines` 里每一行都是完整的行）；返回行数另有上限（4000 行）：超了截到上限并给 `truncatedForSize` 与 `notes`（缩小 `limit` / 减小 `context` / 加 `since`·`until` 圈时间窗），`matched` 仍报全量。与 `docker_logs` 的分工：报错就在最近尾部 → `docker_logs`（便宜）；埋在深处 / 特定时间窗 / 找关键词、异常码、请求 ID → 本工具。默认字面子串（grep -F 语义，零 ReDoS），`regexp: true` 才按 JS 正则 |
-| `docker_stats` | 恒注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器。实时跟随是面板能力（SSE），工具保持单值快照语义 |
-| `docker_images` | 恒注册 | `target?` | 镜像列表（仓库:标签 / 大小 / 创建时间 / 短 ID） |
-| `docker_events` | 恒注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
-| `docker_networks` | 恒注册 | `target?` | 网络列表（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表不进列表行——详情页会连坐 inspect，列表逐行 inspect 就是 N 次 docker 调用 |
-| `docker_volumes` | 恒注册 | `target?` | 卷列表（名称 / 驱动 / 范围 / 挂载点） |
-| `docker_image_inspect` | 恒注册 | `target?`、`ref`（必填） | `docker image inspect` + `docker history`：大小 / 含父层大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 构建历史（每步命令与大小） |
-| `docker_action` | 仅 `allowMutations` | `target?`、`action`（`start` \| `stop` \| `restart` \| `remove`）、`id` | 容器生命周期操作。`remove` 是破坏性的：删除容器配置与可写层（数据卷不在其中），执行前必须向用户确认目标容器 |
-| `docker_image_remove` | 仅 `allowMutations` | `target?`、`ref`（必填） | 删除镜像（`docker image rm`，不带 `-f`）。**破坏性**：被容器或子镜像引用时会失败；执行前须确认目标镜像并复述后果 |
-| `docker_image_prune` | 仅 `allowMutations` | `target?` | 清理 dangling（无标签）镜像（`docker image prune -f`）。刻意不加 `--all`，只删无标签镜像 |
-| `docker_image_pull` | 仅 `allowMutations` | `target?`、`ref`（必填）、`timeoutSec?`（10~1800，默认 600） | `docker pull` 快照形态（**可能耗时数分钟**）；交互式看逐层进度请让用户到面板镜像页的拉取图标看 SSE 进度流 |
-| `docker_exec` | 仅 `allowExec` | `target?`、`id`、`command`（必填，经容器内 `sh -c` 执行）、`timeoutSec?`（1~120，默认 `execTimeoutSec`） | 一次性 `docker exec`，返回退出码 / stdout / stderr；无 TTY，交互式排障请让用户到 tty 面板跑 `docker exec -it <容器> sh` |
+| `docker_ps` | 有目标即注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（同一次 `-p` 不再出现两遍，D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
+| `docker_attention` | 有目标即注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`（ps 摘要里 137 无法区分手动 kill）。排障入口：不确定从哪台/哪个容器看起时先调它 |
+| `docker_inspect` | 有目标即注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
+| `docker_logs` | 有目标即注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?`、`until?` | `docker logs --tail` 尾部；`since` / `until` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）圈时间窗；超上限标记 `truncated`；截断时（`truncated`）结果里会说明可传更小的 `tail`、加 `since`/`until`，或改用 `docker_logs_grep` |
+| `docker_logs_grep` | 有目标即注册 | `target?`、`id`、`pattern`（必填，≤512 字符）、`regexp?`、`ignoreCase?`、`since?`、`until?`、`context?`（0~20，默认 2）、`limit?`（1~500，默认 200）、`tail?`（缺省 = 扫全部历史）、`timestamps?`（默认开） | **日志服务端检索**：宿主侧逐行过滤（不碰远端 shell、不拼 `\| grep`），返回命中行 + 前后上下文，并如实报告 `matched`（全量命中数，即使没返回）/ `scanned` / `limited` / `truncated`——「只扫到这些」与「扫完了没更多」可区分；扫描窗口**对齐到行边界**（按字节截断处的半行不当作一行返回，所以 `lines` 里每一行都是完整的行）；返回行数另有上限（4000 行）：超了截到上限并给 `truncatedForSize` 与 `notes`（缩小 `limit` / 减小 `context` / 加 `since`·`until` 圈时间窗），`matched` 仍报全量。与 `docker_logs` 的分工：报错就在最近尾部 → `docker_logs`（便宜）；埋在深处 / 特定时间窗 / 找关键词、异常码、请求 ID → 本工具。默认字面子串（grep -F 语义，零 ReDoS），`regexp: true` 才按 JS 正则 |
+| `docker_stats` | 有目标即注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器。实时跟随是面板能力（SSE），工具保持单值快照语义 |
+| `docker_images` | 有目标即注册 | `target?`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 镜像列表（仓库:标签 / 大小 / 创建时间 / 短 ID） |
+| `docker_events` | 有目标即注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
+| `docker_networks` | 有目标即注册 | `target?`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 网络列表（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表不进列表行——详情页会连坐 inspect，列表逐行 inspect 就是 N 次 docker 调用 |
+| `docker_volumes` | 有目标即注册 | `target?`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 卷列表（名称 / 驱动 / 范围 / 挂载点） |
+| `docker_image_inspect` | 有目标即注册 | `target?`、`ref`（必填） | `docker image inspect` + `docker history`：大小 / 含父层大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 构建历史（每步命令与大小） |
+| `docker_action` | `allowMutations` + 有目标 | `target?`、`action`（`start` \| `stop` \| `restart` \| `remove`）、`id` | 容器生命周期操作。`remove` 是破坏性的：删除容器配置与可写层（数据卷不在其中），执行前必须向用户确认目标容器 |
+| `docker_image_remove` | `allowMutations` + 有目标 | `target?`、`ref`（必填） | 删除镜像（`docker image rm`，不带 `-f`）。**破坏性**：被容器或子镜像引用时会失败；执行前须确认目标镜像并复述后果 |
+| `docker_image_prune` | `allowMutations` + 有目标 | `target?` | 清理 dangling（无标签）镜像（`docker image prune -f`）。刻意不加 `--all`，只删无标签镜像 |
+| `docker_image_pull` | `allowMutations` + 有目标 | `target?`、`ref`（必填）、`timeoutSec?`（10~1800，默认 600） | `docker pull` 快照形态（**可能耗时数分钟**）；交互式看逐层进度请让用户到面板镜像页的拉取图标看 SSE 进度流 |
+| `docker_exec` | `allowExec` + 有目标 | `target?`、`id`、`command`（必填，经容器内 `sh -c` 执行）、`timeoutSec?`（1~120，默认 `execTimeoutSec`） | 一次性 `docker exec`，返回退出码 / stdout / stderr；无 TTY，交互式排障请让用户到 tty 面板跑 `docker exec -it <容器> sh` |
 
 - `target` 省略时回落到**唯一**已配置目标；配置了多个目标则必填，错误信息会
   列出可用目标名。
 - **零目标时只有 `docker_targets` / `docker_connect_local` 注册**：其余工具没有可寻址对象，
-  注册了只会让模型白试一次；配好目标后**立即补注册**，无需重启。
+  注册了只会让模型白试一次；配好目标后**立即补注册**，无需重启。表中标「恒注册」的就是这两条。
+- **四条列表工具支持分页**：`docker_ps` / `docker_images` / `docker_networks` / `docker_volumes`
+  都接受 `limit`（1~500，默认 100）与 `offset`（默认 0），结果带 `total` / `truncated`，
+  截断时渲染文本会给出下一页的 `offset`。分页只解决「结果长到读不下去」，不改变单条
+  docker 命令 512KB 的上限（超了照旧报错）。
 - 两个开关变化会**立即重注册**工具：关掉 `allowMutations` / `allowExec` 后，
   对应工具（含三个镜像变更工具）从 agent 侧消失，无需重启。
-- **已注册的调用还受会话权限档位闸（tier gate）约束**：按类分——`read` 类（上表「恒注册」
-  的全部）全档放行；`docker_action` / `docker_image_remove` / `docker_image_prune` /
+- **已注册的调用还受会话权限档位闸（tier gate）约束**：按类分——`read` 类（上表
+  标「有目标即注册」的读工具）全档放行；`docker_action` / `docker_image_remove` / `docker_image_prune` /
   `docker_image_pull` 归 `write` 类，`docker_exec` 归 `exec` 类，这两类在受限档（仅可查看 /
   工作区内修改）下**每次调用弹授权询问**（人允许这一次才执行；无人值守即审批策略 `never`
   时确定性拒绝），完全权限档零询问，Auto review 档不叠加（宿主的模型预审已在管）。宿主未组合
@@ -1017,9 +1021,9 @@ abort）、客户端断开静默中止，以及**管道起来后先发一帧 `re
   ├─ 网络 / 卷路由：/networks · /volumes 与各自的 inspect（只读）、remove / prune（allowMutations）
   └─ agent 工具：docker_targets / docker_ps / docker_inspect /
      docker_logs（快照语义不变）/ docker_logs_grep（服务端检索）/ docker_stats / docker_events / docker_images /
-     docker_image_inspect / docker_networks / docker_volumes（恒注册）
+     docker_image_inspect / docker_networks / docker_volumes（有目标即注册）
      + docker_action / docker_image_remove / docker_image_prune / docker_image_pull
-       （allowMutations）/ docker_exec（allowExec）
+       （allowMutations + 有目标）/ docker_exec（allowExec + 有目标）
 ```
 
 ## 开发与验收
