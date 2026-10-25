@@ -41,8 +41,7 @@ dsh plugin --profile web add link:$(pwd)/packages/docker    # repo development a
 
 The aggregate package `@hyzyn/dsh-all` (or the repo-root bundle) already includes this plugin, so there is no need to
 add it separately when installing everything at once. After installing, restart `dsh web` and the "Containers"
-entry appears in the sidebar; the Settings → Plugins →
-"Docker Container Panel" card maintains targets and switches, and **saving applies hot** (`settings/updated`
+entry appears in the sidebar; the "Docker Container Panel" card maintains targets and switches, and **saving applies hot** (`settings/updated`
 triggers re-resolution, with no restart needed).
 
 > If you have already installed `@hyzyn/dsh-all` or the root bundle in the web profile, do **not** add this package
@@ -394,7 +393,7 @@ semantically wrong.
 There are two ways to fill in `kind=ssh`:
 
 1. **Reference a tty connection-book entry**: put the entry name in `book` (maintained in the connection book
-   under Settings → Plugins → Terminal Panel), and the host / port / username / auth method follow from it. The
+   under the Terminal Panel card), and the host / port / username / auth method follow from it. The
    settings card's dropdown only lists connection-book entries tty has saved; if tty is not installed or the entry
    does not exist, that target fails to resolve and both the panel and the agent tools report a clear error.
 2. **Inline fields**: `host` + `username` are required, the rest as needed (`port` / `auth` /
@@ -524,7 +523,7 @@ The "Overview" page lays out all targets on one screen: one counter card per tar
   "most recent end time" descending, so the freshest crash is at the top (hovering a row shows the end / start times,
   restart count and exit code).
 
-## Configuration (Settings → Plugins → "Docker Container Panel", saved and applied hot)
+## Configuration (saved and applied hot)
 
 ![Settings card: target CRUD, capability switches and parameters, saved and applied hot](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-setting.png)
 
@@ -535,7 +534,6 @@ Where the settings surface **lives** depends on the DSH version, but it is alway
 |---|---|
 | `0.2.0-rc.1` and later | **Directly below the description on the plugin detail page** (`plugins.bundle.config`, key = **this package's own** bundle name) — no extra ">" step into a sub-page |
 | `0.1.6` line | Plugins sidebar → the bundle's **row** → the ">" row detail (`plugins.row.config`) |
-| `≤0.1.5` | Settings → Plugins → the plugin's collapsible card (`settings.plugin.item`) |
 | All of the above | Settings → **plugin configuration**, the same entry (`settings.kit.item`, provided by `@hyzyn/dsh-kit-settings`) |
 
 On hosts that have the bundle slot, **this package's** row entry is **no longer registered** — two entries

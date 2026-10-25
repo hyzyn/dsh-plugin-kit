@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-> The “Codegraph” card under DSH **Settings → Plugins**: it brings code-graph status, symbol search, and call chains into the GUI, and aligns the project directory of the codegraph MCP server for you.
+> DSH's “Codegraph” card: it brings code-graph status, symbol search, and call chains into the GUI, and aligns the project directory of the codegraph MCP server for you.
 
 ## Features
 

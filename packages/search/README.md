@@ -89,7 +89,7 @@ interface Config {
   includePrompts?: boolean
   /** 是否搜索 MCP 工具。默认 true。 */
   includeMcpTools?: boolean
-  /** 是否搜索设置面板（设置 → 插件 → 插件配置）。默认 true。 */
+  /** 是否搜索设置面板。默认 true。 */
   includePanels?: boolean
   /** 是否向 agent 注入插件能力公告。默认开。 */
   announceToAgent?: boolean

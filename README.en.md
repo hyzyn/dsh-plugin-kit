@@ -172,7 +172,7 @@ dsh plugin --profile web add @hyzyn/dsh-all              # aggregate package
 dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # repo root bundle (mounts the whole family too)
 ```
 
-**Restart `dsh web`** afterwards; all cards appearing under Settings → Plugins means it worked.
+**Restart `dsh web`** afterwards; all entries appearing on the plugin configuration page means it worked.
 If a card does not appear, you probably forgot to restart. You can also use
 `dsh --profile web --dump-config` to confirm the plugin configuration layer is mounted.
 Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the matching subpackage), then restart.
@@ -181,7 +181,6 @@ Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the matching sub
 > pointing at the same configuration — the sidebar **“Plugins”** → pick a plugin → its row’s
 > “Configure” (the official two-pane page), and **Settings → “Plugin configuration”** (a row next to
 > “General settings”, provided by `@hyzyn/dsh-kit-settings`).
-> DSH ≤ `0.1.5` uses the cards inside **Settings → Plugins → “Plugin configuration”**.
 > Client halves register all three slot generations (`plugins.row.config`, `settings.kit.item`,
 > `settings.plugin.item`), so one build works on every generation.
 > This configuration itself lives in the **current profile's plugin entry** (`cordis.patch.yml` user

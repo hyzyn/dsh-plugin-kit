@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-> The “Profile Management” card in DSH **Settings → Plugins**: view, create, copy, rename, and delete DSH profiles without memorizing commands.
+> DSH's “Profile Management” card: view, create, copy, rename, and delete DSH profiles without memorizing commands.
 
 ## Features
 
@@ -62,7 +62,7 @@ interface Config {
 
 ## UI preview
 
-Settings → Plugins → the “Profile Management” card (configuration UI):
+The “Profile Management” card (configuration UI):
 
 ![Profile Management configuration UI](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 

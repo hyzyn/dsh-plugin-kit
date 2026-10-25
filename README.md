@@ -167,7 +167,6 @@ dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # 仓库根 bundle（�
 > **配置入口在哪一版**：DSH ≥ `0.1.6-alpha.2` 有**两个**入口，指向同一份配置——侧边栏
 > **「插件」**→ 选插件 → 该行的「配置」（官方新版两视图页面），以及**设置 →「插件配置」**
 > （与「通用设置」平级的一行，由 `@hyzyn/dsh-kit-settings` 提供）。
-> DSH ≤ `0.1.5` 是**设置 → 插件 →「插件配置」**标签页里的卡片。
 > 客户端半体同时注册三代插槽（`plugins.row.config`、`settings.kit.item`、`settings.plugin.item`），
 > 一份产物在各代上都能用。
 > 这份配置本身落在**当前 profile 的插件 entry**（`cordis.patch.yml` 用户层），不再是全局 `settings.yaml`

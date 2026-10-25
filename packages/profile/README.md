@@ -2,7 +2,7 @@
 
 中文 | [English](README.en.md)
 
-> DSH **设置 → 插件** 里的「Profile 管理」卡片：查看、创建、复制、重命名、删除 DSH profile，不用记命令。
+> DSH 的「Profile 管理」卡片：查看、创建、复制、重命名、删除 DSH profile，不用记命令。
 
 ## 特性
 
@@ -62,7 +62,7 @@ interface Config {
 
 ## 界面预览
 
-设置 → 插件 →「Profile 管理」卡片（配置界面）：
+「Profile 管理」卡片（配置界面）：
 
 ![Profile 管理配置界面](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 

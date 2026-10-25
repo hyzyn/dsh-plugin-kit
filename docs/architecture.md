@@ -98,7 +98,7 @@
 | `prompt` | `search` | — | `search` **只读** `~/.dsh/prompts.yml` 托管区块 |
 | `mcp` | `search` | — | `search` 按 `mcp__` 前缀枚举已挂载工具并标注所属 server |
 | `docker` | `loglens` | 任意 | `loglens` 的「Docker 来源」在面板里直接调 docker 插件的 `/api/dsh-docker/config` / `containers` / `logs`（相对路径 = **同源**，连接簿与指纹不复制一份）；在不在的判据是 cordis registry 里有没有 `docker`（`packages/loglens/src/plugins.ts`）。**没装就退化**：agent 侧只指路到现成的 `docker_logs` / `docker_logs_grep`，面板不摆会 404 的入口 |
-| `kit-settings` | 全部插件 | — | 提供「设置 → 插件配置」这一行入口（0.1.5 时代卡片形态）；各插件同时注册三代插槽 |
+| `kit-settings` | 全部插件 | — | 提供「设置 → 插件配置」这一行入口；各插件同时注册三代插槽 |
 
 **协作的硬约束**：消费方必须**在提供方未安装 / 版本过低时优雅退化**（上面每一行都有退化路径）。
 `docker` 的「终端」按钮三级退化就是范本：**能嵌就嵌，不能嵌就开标签，再不行就复制命令**。

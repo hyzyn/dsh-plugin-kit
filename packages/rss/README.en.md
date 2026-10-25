@@ -28,7 +28,7 @@ Implementation notes (the accent-token trap, why absolute positioning is mandato
 - **Optional AI summaries**: when enabled, the host LLM is called to generate a one-sentence Chinese summary for each item, shown in the digest / modal and appended to the systemPrompt; summaries are cached per entry for 30 days (up to 500 entries, `ai-cache.json`), and repeated entries are not requested again; a single failure (timeout / non-stop finish / empty output) falls back to the original excerpt only and does not affect other items, while a missing route skips AI summaries for that whole run and records the reason in the digest;
 - Generates the day's digest automatically at `08:00` by default; if the day's digest does not exist at plugin startup it is also generated to fill the gap;
 - Injects the day's digest into `systemPrompt`, so the model can cite it directly when the user asks about “Today's Worth Reading”;
-- Provides a Web GUI card: Settings → Plugins → “RSS / News Aggregation”, for managing built-in channel toggles / custom channels / news categories / aggregation settings, with the day's digest refreshed automatically after saving; custom channels support filtering and counting by name / URL, with an inline warning for duplicate URLs; the top of the card previews today's digest directly (item count / source count / generation time / failure warnings) and offers one-click view list, refresh, and copy Markdown;
+- Provides a Web GUI card “RSS / News Aggregation” for managing built-in channel toggles / custom channels / news categories / aggregation settings, with the day's digest refreshed automatically after saving; custom channels support filtering and counting by name / URL, with an inline warning for duplicate URLs; the top of the card previews today's digest directly (item count / source count / generation time / failure warnings) and offers one-click view list, refresh, and copy Markdown;
 - The UI uses "block-scoped update" rendering: typing, catalog search, and adding/removing channels rebuild only the affected blocks, so focus / caret / scroll are not lost; unsaved changes are flagged with a badge;
 - Provides a “Today's Worth Reading” shortcut in the sidebar below "New Session" (near Task Board / SSH); clicking it opens a modal for reading the news directly; the modal supports search by title / summary / source, category filtering, a "visible / total" counter, and copy Markdown, plus Esc to close and focus trapping;
 - The digest is displayed grouped by "category" (items without a category go under "Uncategorized"), and each item is labeled with its source and date; each source's "View more" links straight to its website;
@@ -37,14 +37,14 @@ Implementation notes (the accent-token trap, why absolute positioning is mandato
 
 ## Screenshots
 
-Settings → Plugins → “RSS / News Aggregation” card (built-in channel toggles + custom channels + news categories):
+“RSS / News Aggregation” card (built-in channel toggles + custom channels + news categories):
 
 ![RSS settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
 Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
 `0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
 below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
-sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+sub-page under the Plugins sidebar.
 
 Sidebar “Today's Worth Reading” modal (grouped by category, sources with "View more" linking straight to their websites, manual refresh at the bottom):
 
@@ -146,6 +146,6 @@ dsh plugin --profile web add link:$(pwd)/packages/rss
 | `package.json` | `dsh.bundle.patch` points to cordis.patch.yml; `main` / `exports["."]` point to lib/index.js |
 | `cordis.patch.yml` | bundle patch: `insert: { id: rss-digest, name: '@hyzyn/dsh-rss' }` inserts this plugin's row into the profile roster |
 | `src/index.ts` | plugin host half: RSS/Atom parsing, fetching, digest generation, AI summaries, scheduling, HTTP API, systemPrompt injection |
-| `client.js` | browser half: Settings → Plugins → “RSS / News Aggregation” card |
+| `client.js` | browser half: the “RSS / News Aggregation” card |
 | `test/ai-summary.test.ts` | regression tests for AI summaries (message construction / sanitization, cache TTL·LRU, route resolution, store allowlist, rendering, LLM termination branches, generation fallback paths) |
 | `tsconfig.json` | extends the root tsconfig.base.json; tsc emits lib/ |

@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-> The “Environment Variables / Secrets” card under DSH **Settings → Plugins**: manage `~/.dsh/env.yml` graphically (overridable with `DSH_ENV_FILE`); **secret plaintext goes into the official credential store by default**, so the env file never holds plaintext.
+> DSH's “Environment Variables / Secrets” card: manage `~/.dsh/env.yml` graphically (overridable with `DSH_ENV_FILE`); **secret plaintext goes into the official credential store by default**, so the env file never holds plaintext.
 
 ## Features
 

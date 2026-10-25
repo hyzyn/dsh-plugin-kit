@@ -22,7 +22,7 @@ dsh plugin --profile web add @hyzyn/dsh-tty    # npm install (after release)
 dsh plugin --profile web add link:$(pwd)/packages/tty   # repo development/debugging
 ```
 
-After installing, restart `dsh web`; a “Terminal” entry appears in the sidebar — click it to open the panel; the Settings → Plugins → “Terminal Panel” card lets you change the configuration (**saving takes effect immediately**, no restart needed).
+After installing, restart `dsh web`; a “Terminal” entry appears in the sidebar — click it to open the panel; the “Terminal Panel” card lets you change the configuration (**saving takes effect immediately**, no restart needed).
 
 ## How to use
 
@@ -400,7 +400,7 @@ lacks that service the box is switched back off and disabled, with a note that o
 
 ## Port forwarding (0.5.0)
 
-Maintain tunnels in the “Port forwarding” block of the Settings → Plugins → Terminal Panel card; each tunnel
+Maintain tunnels in the “Port forwarding” block of the “Terminal Panel” card; each tunnel
 references one connection-book entry (host and authentication come with it), in two directions:
 
 - **Local forwarding (-L)**: listen on local `127.0.0.1:localPort` → connect through SSH on the server side
@@ -723,7 +723,7 @@ and the agent tools all reuse the same scheduling.
   against impersonation), with a reset pointer in the error message. A host’s multiple keys (0.19.0, e.g.
   rsa + ed25519) are each recorded and merged into one record — algorithm negotiation changes no longer
   cause false alarms. After a host reinstall or key change,
-  delete the record under Settings → Plugins → Terminal Panel → “SSH host key
+  delete the record under the “Terminal Panel” card’s “SSH host key
   records” and reconnect (the record list supports deletion). **“Import from known_hosts”
   (0.4.1)**: parses `~/.ssh/known_hosts` in one click to pre-fill existing host fingerprints in bulk, keeping
   all of a host’s rsa/ed25519 entries (no longer first-entry-only); host
@@ -839,12 +839,12 @@ terminal; clicking it sends **the tail of that command's output** to the model a
   excerpt above, and lightly masked before sending (explicit-form secrets only; normal log lines are never
   mangled).
 
-## Configuration (Settings → Plugins → “Terminal Panel”, saving takes effect immediately)
+## Configuration (saving takes effect immediately)
 
 Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
 `0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
 below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
-sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+sub-page under the Plugins sidebar.
 
 | Item | Default | Description |
 | --- | --- | --- |

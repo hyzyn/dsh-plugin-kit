@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-> The “MCP Server Configuration” card under DSH **Settings → Plugins**: maintain MCP servers graphically, **saving hot-reloads them**, no host restart needed.
+> DSH's “MCP Server Configuration” card: maintain MCP servers graphically, **saving hot-reloads them**, no host restart needed.
 
 ## Features
 
@@ -98,8 +98,8 @@ so **you only mount it once**. After the plugin code is updated, restart `dsh we
 
 The plugin row itself needs no HMR: after you save the **MCP Server Configuration** (the rows inside the managed
 block), DSH’s watcher on the home patch layer hot-loads them as `mcp__<server>__<tool>`
-tools within 1–2 seconds. After refreshing the page, expand the “MCP Server Configuration”
-card under Settings → Plugins in the Web GUI to manage servers. Note: the browser
+tools within 1–2 seconds. After refreshing the page, manage servers in the Web GUI’s
+“MCP Server Configuration” card. Note: the browser
 half depends on the core `slots` service, and only the official settings panel of
 `dsh-web-app` provides that slot.
 

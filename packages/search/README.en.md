@@ -82,7 +82,7 @@ interface Config {
   includePrompts?: boolean
   /** Whether to search MCP tools. Defaults to true. */
   includeMcpTools?: boolean
-  /** Whether to search settings panels (Settings → Plugins → Plugin configuration). Defaults to true. */
+  /** Whether to search settings panels. Defaults to true. */
   includePanels?: boolean
   /** Whether to inject the plugin capability announcement to the agent. Defaults to true. */
   announceToAgent?: boolean

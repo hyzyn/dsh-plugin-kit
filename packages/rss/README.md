@@ -28,7 +28,7 @@
 - **可选 AI 摘要**：启用后调用宿主 LLM 为每条资讯生成一句话中文摘要，显示在 digest / 弹窗里并追加进 systemPrompt；摘要按条目缓存 30 天（最多 500 条，`ai-cache.json`），重复条目不会重复请求；单条失败（超时 / 非 stop 终止 / 空输出）只回落原文摘要，不影响其它条目，路由缺失时本次生成整体跳过并在 digest 中记录原因；
 - 默认每天 `08:00` 自动生成当天 digest；插件启动时若当天 digest 不存在也会自动补生成；
 - 把当天 digest 注入 `systemPrompt`，模型在用户问“今日值得读”时可以直接引用；
-- 提供 Web GUI 卡片：设置 → 插件 →「RSS / 新闻聚合」，维护内置渠道开关 / 自定义渠道 / 新闻分类 / 聚合设置，保存后自动刷新当天 digest；自定义渠道支持按名称 / URL 筛选与计数，并对重复 URL 给出内联警告；卡片顶部直接预览今日 digest（条数 / 源数 / 生成时间 / 失败告警），可一键查看列表、刷新、复制 Markdown；
+- 提供 Web GUI 卡片「RSS / 新闻聚合」：维护内置渠道开关 / 自定义渠道 / 新闻分类 / 聚合设置，保存后自动刷新当天 digest；自定义渠道支持按名称 / URL 筛选与计数，并对重复 URL 给出内联警告；卡片顶部直接预览今日 digest（条数 / 源数 / 生成时间 / 失败告警），可一键查看列表、刷新、复制 Markdown；
 - 界面采用「分区块更新」渲染：输入、目录搜索、增删渠道只重建受影响区块，焦点 / 光标 / 滚动不丢失；未保存修改有角标提示；
 - 在侧边栏「新建会话」下方（任务看板 / SSH 附近）提供「今日值得读」快捷入口，点击弹窗直接查看新闻；弹窗支持按标题 / 摘要 / 来源搜索、按分类筛选、显示「可见 / 总数」计数、复制 Markdown，支持 Esc 关闭与焦点圈定；
 - digest 按「分类」分组展示（无分类归入「未分类」），条目标注来源与日期；每个来源的「查看更多」直达其官网；
@@ -37,13 +37,13 @@
 
 ## 界面截图
 
-设置 → 插件 →「RSS / 新闻聚合」卡片（内置渠道勾选 + 自定义渠道 + 新闻分类）：
+「RSS / 新闻聚合」卡片（内置渠道勾选 + 自定义渠道 + 新闻分类）：
 
 ![RSS 设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
 设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**：`0.2.0-rc.1` 起挂
 `plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
-（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
+（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页。
 
 侧边栏「今日值得读」弹窗（按分类分组、来源带「查看更多」直达官网、底部可手动刷新）：
 
@@ -151,6 +151,6 @@ dsh plugin --profile web add link:$(pwd)/packages/rss
 | `package.json` | `dsh.bundle.patch` 指向 cordis.patch.yml；`main` / `exports["."]` 指向 lib/index.js |
 | `cordis.patch.yml` | bundle 补丁：`insert: { id: rss-digest, name: '@hyzyn/dsh-rss' }` 把本插件行插入 profile 阵容 |
 | `src/index.ts` | 插件宿主半体：RSS/Atom 解析、抓取、digest 生成、AI 摘要、定时调度、HTTP API、systemPrompt 注入 |
-| `client.js` | 浏览器半体：设置 → 插件 →「RSS / 新闻聚合」卡片 |
+| `client.js` | 浏览器半体：「RSS / 新闻聚合」卡片 |
 | `test/ai-summary.test.ts` | AI 摘要的回归测试（消息构造 / 清洗、缓存 TTL·LRU、路由解析、store 白名单、渲染、LLM 终止分支、生成降级路径） |
 | `tsconfig.json` | 继承根 tsconfig.base.json，tsc 产出 lib/ |

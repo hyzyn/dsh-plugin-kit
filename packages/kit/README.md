@@ -260,10 +260,10 @@ kit 生态的插件统一支持 `enabled` 配置（默认 `true`），语义分�
 
 ## 设置卡片约定（settings.plugin.item）
 
-kit 插件的设置面板统一注册到宿主 `settings.plugin.item` 插槽（key = 各自的
-settings 命名空间），渲染在 设置 → 插件 → 插件配置 列表里。**不另开设置导航
-入口**：配置只有一个寻址点；功能面走主界面侧栏入口（与宿主「插件市场」的
-导航项 + 列表卡片分层同构）。
+kit 插件的设置面板按宿主槽位代际注册三代（`plugins.bundle.config` 详情页内联 /
+`plugins.row.config` 行详情 / `settings.plugin.item` 老宿主），另加本仓
+`settings.kit.item` 的配置页条目；key 一律是各自的 settings 命名空间。
+功能面走主界面侧栏入口（与宿主「插件市场」的导航项 + 列表卡片分层同构）。
 
 ### order 取号
 
