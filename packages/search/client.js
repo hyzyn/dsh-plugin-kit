@@ -215,6 +215,25 @@ window.__ModuleLoader__.load({
     let t = i18nFallback
 
     /**
+     * Sidebar entries created so far. An entry bakes its visible text into
+     * `innerHTML` at creation, so a locale switch cannot re-render it the way a
+     * slot outlet re-renders: without this set the placeholder and aria-label
+     * stay in the language that was active when the page loaded.
+     */
+    const sidebarEntries = new Set()
+
+    function refreshEntryLabels(entry) {
+      if (entry === undefined || entry === null) return
+      entry.setAttribute('aria-label', t('card.name'))
+      const input = entry.querySelector('.gs_sidebarSearchInput')
+      if (input !== null) input.setAttribute('placeholder', t('placeholder.sidebar'))
+    }
+
+    function refreshAllEntryLabels() {
+      for (const entry of sidebarEntries) refreshEntryLabels(entry)
+    }
+
+    /**
      * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
      * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
      *
@@ -226,7 +245,14 @@ window.__ModuleLoader__.load({
         const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
         const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
         t = i18nCtx.locale.bind(I18N_NS)
+        // Entries that already exist were created before this binding; repaint
+        // them now and again on every later locale switch.
+        refreshAllEntryLabels()
+        const disposeSub = typeof i18nCtx.locale.subscribe === 'function'
+          ? i18nCtx.locale.subscribe(refreshAllEntryLabels)
+          : undefined
         return () => {
+          if (disposeSub !== undefined) disposeSub()
           disposeEn()
           disposeZh()
           t = i18nFallback
@@ -417,6 +443,8 @@ window.__ModuleLoader__.load({
       entry.setAttribute('role', 'search')
       entry.setAttribute('aria-label', t('card.name'))
       entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ENTRY_ICON + '</span><input class="gs_sidebarSearchInput" placeholder="' + esc(t('placeholder.sidebar')) + '" readOnly />'
+      sidebarEntries.add(entry)
+      refreshEntryLabels(entry)
       entry.addEventListener('click', (event) => {
         event.preventDefault()
         openPalette()
