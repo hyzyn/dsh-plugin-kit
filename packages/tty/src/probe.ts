@@ -23,7 +23,7 @@
 import { Client } from 'ssh2'
 import type { ConnectConfig } from 'ssh2'
 import { connect as netConnect } from 'node:net'
-import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISABLED, PROXY_COMMAND_NOT_GRANTED, proxyCommandAllowedNow, proxyCommandGrantedNow, proxyFailureSuffix, sanitizeProxyCommand, sshTarget } from './ssh.js'
+import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISABLED, PROXY_COMMAND_NOT_GRANTED, proxyCommandAllowedNow, proxyCommandGrantedNow, proxyFailureSuffix, sanitizeProxyCommand, sshTarget, usableJump } from './ssh.js'
 import { hostKeyIdentity } from './ssh.js'
 import type { HostKeyStore, SshSpec, SshTransport } from './ssh.js'
 
@@ -223,8 +223,11 @@ export async function probeSsh(spec: SshSpec, store?: HostKeyStore): Promise<Pro
    * **走代理命令时整段跳过**（上面已经把 tcp 标成 skipped）。
    */
   const jumpLabel = jumpTargetLabel(spec)
-  const tcpHost = spec.jump !== undefined ? spec.jump.host.trim() : spec.host
-  const tcpPort = spec.jump !== undefined ? spec.jump.port ?? 22 : port
+  // 与 jumpTargetLabel 同一个判据（usableJump）：没有 host 的「半个 jump」当没配，
+  // 否则这里也会去连一个空主机名（0.33.0 连接簿条目全挂的那条路径，见 D102）
+  const jump = usableJump(spec)
+  const tcpHost = jump !== undefined ? jump.host.trim() : spec.host
+  const tcpPort = jump !== undefined ? jump.port ?? 22 : port
   const tcpPrefix = jumpLabel === '' ? '' : `跳板机 ${jumpLabel} `
   const tcpResult = !proxyActive && await new Promise<{ ok: boolean; error?: string; ms: number }>((resolve) => {
     const sock = netConnect({ host: tcpHost, port: tcpPort })

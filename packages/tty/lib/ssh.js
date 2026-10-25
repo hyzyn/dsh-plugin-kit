@@ -242,10 +242,33 @@ export function applyHostKeyPolicy(options) {
     };
     return { mismatchMessage: () => hostKeyMismatch };
 }
+/**
+ * 可用的跳板机规格；`undefined` = **真的没配**。
+ *
+ * 为什么要这一道，而不是只判 `spec.jump !== undefined`：`SshSpec.jump` 的类型来自 settings
+ * schema，而 schemastery 给**嵌套 object 字段**的默认值是 `{}`（见 `SSH_HOST_SCHEMA.jump`），
+ * 于是「没配跳板机」的条目可能带着 `jump: { port: 22, username: '', … }` 这种**没有 host 的
+ * 半个对象**进入连接路径。0.33.0 的 `jumpTargetLabel` 直接 `jump.host.trim()`：
+ * `Cannot read properties of undefined (reading 'trim')`——**每一条**连接簿条目都连不上，
+ * 报的还是一句看不出跟跳板机有关的 TypeError（D102）。
+ *
+ * 判据只认 `host` 是非空字符串：其余字段（端口 / 用户 / 凭据）本来就可以继承目标那一跳。
+ * 收在一处（而不是终端 / SFTP / 隧道 / 探针各写一遍）的理由与 `prepareSshConnect` 相同：
+ * 四个连接点必须用**同一个**判据，否则又是「终端能连、SFTP 报错」的半吊子状态。
+ */
+export function usableJump(spec) {
+    // 运行时数据来自 JSON 帧 / settings 存储，可能是 null（类型上不该有，但这是边界）
+    const jump = spec.jump;
+    if (jump === undefined || jump === null)
+        return undefined;
+    if (typeof jump.host !== 'string' || jump.host.trim() === '')
+        return undefined;
+    return jump;
+}
 /** 跳板机展示串（`user@host:port`）；没有跳板机时返回空串。**凭据不进这里**。 */
 export function jumpTargetLabel(spec) {
-    const jump = spec.jump;
-    if (jump === undefined || jump.host.trim() === '')
+    const jump = usableJump(spec);
+    if (jump === undefined)
         return '';
     const port = jump.port ?? 22;
     return `${jump.username ?? spec.username}@${jump.host.trim()}${port === 22 ? '' : ':' + String(port)}`;
@@ -268,9 +291,13 @@ function targetWithJump(spec) {
         return `${sshTarget(spec)}（经代理命令）`;
     return sshTarget(spec);
 }
-/** 跳板机那一跳的连接规格：显式给的优先，其余**继承目标**。 */
-function jumpSpecOf(spec) {
-    const jump = spec.jump;
+/**
+ * 跳板机那一跳的连接规格：显式给的优先，其余**继承目标**。
+ *
+ * `jump` 由调用方经 `usableJump()` 取（保证 `host` 是非空字符串）——这里不再自己判空，
+ * 也不接受 `spec.jump` 的原始形态：那正是「半个对象」能把 `trim()` 打到 undefined 上的入口。
+ */
+function jumpSpecOf(spec, jump) {
     const username = typeof jump.username === 'string' && jump.username.trim() !== '' ? jump.username.trim() : spec.username;
     return {
         host: jump.host.trim(),
@@ -306,7 +333,15 @@ const REMOTE_TMUX_PROBE_ROUNDS = 1;
  *      keepalive 一直养着的连接。
  */
 export async function dialJump(options) {
-    const jumpSpec = jumpSpecOf(options.spec);
+    /*
+     * 跳板机规格只从 `usableJump()` 取（判据：host 是非空字符串）。`dialJump` 是**导出**的，
+     * 调用方可能拿着半截 `jump`（如配置层物化出来的 `{ port: 22 }`）直接走进来——在那里抛一句
+     * 点名的错，好过让 `jump.host.trim()` 抛 TypeError（用户只看到「Cannot read properties」）。
+     */
+    const jump = usableJump(options.spec);
+    if (jump === undefined)
+        throw new Error('跳板机配置缺少 host（jump.host 为空）——请在连接簿里重新填写跳板机地址');
+    const jumpSpec = jumpSpecOf(options.spec, jump);
     const label = jumpTargetLabel(options.spec);
     const destination = sshTarget(options.spec);
     const bastion = new Client();
@@ -877,7 +912,17 @@ export async function attachSshTransport(options) {
     const connectConfig = await buildConnectConfig(spec);
     if (options.readyTimeoutMs !== undefined)
         connectConfig.readyTimeout = options.readyTimeoutMs;
-    const hasJump = spec.jump !== undefined;
+    /*
+     * 跳板机判据走 `usableJump()`，不是 `spec.jump !== undefined`：
+     * 「没配」可能是 `undefined`，也可能是配置层物化出来的**没有 host 的半个对象**。
+     * 后者若按「有跳板机」处理，就会去拨一个空主机名（0.33.0 更早：先在 `jumpTargetLabel`
+     * 里抛 TypeError）。这里把它当「没配」并 **warn**——不静默，否则用户以为自己走的是跳板机。
+     */
+    const jump = usableJump(spec);
+    if (spec.jump !== undefined && jump === undefined) {
+        logger?.warn(`[dsh-tty] ssh ${sshTarget(spec)} 的跳板机配置缺少 host（jump.host 为空）——本次按直连处理；请在 设置 → 插件 → 终端面板 的连接簿里重新填写跳板机`);
+    }
+    const hasJump = jump !== undefined;
     const proxyCommand = sanitizeProxyCommand(spec.proxyCommand);
     if (hasJump && proxyCommand !== undefined) {
         // OpenSSH 语义：两者互斥、ProxyJump 优先。**不静默**——用户以为走的是代理命令是最坏情况

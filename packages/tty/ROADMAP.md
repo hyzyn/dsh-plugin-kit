@@ -318,6 +318,42 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 > 标记都统一到 `0.30.0`（`0.28` / `0.29` 在 npm 上不存在，留着会指向没发生过的版本）。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
 
+### 2026-10-26（0.33.1）：连接簿条目全挂（→ [D102](./DEFECTS.md)）——**schema 会填默认值，不只是校验**
+
+**为什么做**：用户截图上报——终端面板里点连接簿条目 `CDC_TEST_KB`，标签立刻转红，浮层只有
+「连接出错 / Cannot read properties of undefined (reading 'trim')」；旁边那条同样是书的 `cdc-test-161` 也红，
+而**本地终端照常**。也就是说 0.33.0 上**每一条**连接簿条目都连不上（终端 / SFTP / 探针 / 隧道四个连接点全挂），
+报错还完全指不到原因。
+
+**根因（一句话：把 schema 校验过的 config 当成了用户写的那份）**：`SSH_HOST_SCHEMA.jump` 是**嵌套 object**，
+而 schemastery 给 object schema 的 `meta.default` 恒为 `{}`（库实现，见 `Schema.prototype.default`：
+`if (name === 'object' || name === 'dict') schema.meta.default = {}`）。于是**没配跳板机**的条目在宿主启动解析
+配置后长出 `jump: { port: 22, username: '', keyPath: '', passphrase: '', password: '' }`——**没有 host 的半个对象**。
+`mergeSshSpec` 只看 `profile?.jump` 有没有，于是把它当「配了跳板机」塞进 `SshSpec`；`jumpTargetLabel` 第一句
+`jump.host.trim()` 当场抛 TypeError。第二半同源：`GET /api/dsh-tty/config` 回给设置卡片的也是这份半个对象，
+卡片保存时 `validateSshHosts` 以「jump.host 必须是非空字符串」**400 拒掉整次保存**（改个名字都存不进去）。
+
+**落点**：① `src/index.ts` 的 `jump` 外套 `z.union([SSH_JUMP_SCHEMA])`——union 自身没有默认值，`undefined`
+原样穿过，里层校验一字不动；② `mergeSshSpec` 对**连接簿那一份**也过 `sanitizeJumpSpec`（原先只有内联过，
+与 docker 的 `readTtyBooks` 同款）；③ `src/ssh.ts` 新增导出 `usableJump()`（判据只认 `host` 是非空字符串），
+`jumpTargetLabel` / `dialJump` / `attachSshTransport` 三处共用，半个对象按「没配」直连并 **warn**（不静默）、
+`jumpSpecOf` 改成接收**已判定**的 jump；④ `src/probe.ts` 的 TCP 预检「探哪一跳」同判；⑤ `src/tunnels.ts`
+自拼 SshSpec 时对 `book.jump` 过同一道清洗。
+
+**门槛**：`test/jump-absent.test.ts` 10 条**按出口**铺（配置解析不带 jump / 带 jump 原样 / 非法端口仍被拒 /
+`mergeSshSpec` 丢弃半个对象 + 保留有效 jump + 内联覆盖 / `usableJump` 与 `jumpTargetLabel` 不抛 /
+`dialJump` 给点名的错且不建连接 / `spawnSsh` 半个对象 → 直连目标并 warn）+ `test/tunnels.test.ts` 一条隧道出口
++ `test/jump-spec.test.ts` 的清洗新格。**真机验收**（复制 web profile 起真宿主 + 真浏览器，用出事的同一份连接簿）：
+无 jump 的 `CDC_TEST_KB` **真连上**（tmux 持久标签 + 状态条有远端 CPU/内存 + SFTP 列出 `/root`，探针
+tcp 17ms / hostkey matched / auth 250ms）；临时加一条带 jump 的条目 → 明确报「跳板机连接失败（root@bastion.invalid）：
+DNS 解析失败」，不静默直连；`GET /config` 的无 jump 条目不再带 `jump`，显式空 host 的 jump 仍 400 拒。
+
+**教训（比修法更该记住的）**：上一节（工具条件注册）写过「启动路径的 `config` 是宿主按 schema 校验过的，
+不在启动路径重复 sanitize」——这句话**只对了一半**：schema 不是纯校验器，它**会改写数据形状**（补默认值、
+丢未知键）。凡是用到「可选嵌套对象」的地方，都要么在 schema 上显式去掉默认值（外裹 union），要么在使用点清洗，
+不能靠「类型上写着 `undefined` 就是 `undefined`」。同一族的第二处已经在 `hostKeys` / `persistSessions` 上潜伏
+（目前只用它的 `host` / `tmuxName`，缺了也只是无效条目，不会抛）——以后给它们加必填字段时先回来看这一条。
+
 ### 2026-10-24：agent 工具按配置条件注册（隧道三件 / SFTP 七件不再常驻）
 
 **为什么做**：`registerAll()` 原先无条件注册全部工具，于是两种「配了才有意义」的工具常驻却只有报错一条路——

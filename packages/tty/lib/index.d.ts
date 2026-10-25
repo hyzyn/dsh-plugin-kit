@@ -81,7 +81,7 @@ import xtermHeadless from '@xterm/headless';
 declare const HeadlessTerminal: typeof xtermHeadless.Terminal;
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>;
 import type { TierClass } from '@hyzyn/dsh-kit';
-import type { HostKeyRecord, SshHostEntry, TermHandle } from './ssh.js';
+import type { HostKeyRecord, SshHostEntry, SshSpec, TermHandle } from './ssh.js';
 import type { TunnelSpec } from './tunnels.js';
 import type { StatsFrame } from './stats.js';
 export type { HostKeyRecord } from './ssh.js';
@@ -1209,6 +1209,18 @@ export declare class TtyServer {
 export declare function handleCredentialRefsRoute(req: ReqLike, res: ResLike): Promise<void>;
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export declare function readCredentialRefNames(): string[];
+/**
+ * 「连接簿条目作基底 + 内联字段逐项覆盖」的共享解析（WS ssh 帧与 SFTP 路由共用）。
+ * name 指向连接簿缺失条目、或解析结果缺 host/username 时返回 error。
+ *
+ * **导出仅供单测**（`test/jump-absent.test.ts`）：这条函数是「连接簿 → 连接规格」的**唯一**
+ * 入口（终端 / SFTP / 探针三条路径共用，隧道那条在 tunnels.ts 里自己拼但用同一套清洗），
+ * `jump` 的「半个对象」判据挪进私有函数就等于没有测试入口——0.33.0 的连不上正是这样漏出去的。
+ */
+export declare function mergeSshSpec(findSshHost: (name: string) => SshHostEntry | undefined, name: unknown, inline: Record<string, unknown>): {
+    spec?: SshSpec;
+    error?: string;
+};
 /**
  * 数据路由的统一闸门（**导出仅供单测**）：回环围栏（加固档）+ 变更端点的同源证明。
  * 十二处路由此前各抄一遍 403 样板，`mutation` 这条判据一加就会各写各的——收敛成一处后

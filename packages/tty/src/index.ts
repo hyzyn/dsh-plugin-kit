@@ -229,8 +229,19 @@ const SSH_HOST_SCHEMA = z.object({
    * 不改连接地址。缺省空串 = 按 host 定位（与从前一致）。见 SshSpec 的说明。
    */
   hostKeyAlias: z.string().default(''),
-  /** 经跳板机连接（ProxyJump 单跳）；缺省 = 直连。 */
-  jump: SSH_JUMP_SCHEMA,
+  /**
+   * 经跳板机连接（ProxyJump 单跳）；缺省 = 直连。
+   *
+   * **外面这层 `z.union([...])` 不是语法糖，是必需的**：schemastery 给 object schema 的
+   * `meta.default` 恒为 `{}`（库实现如此），于是「没配跳板机」的条目在配置解析后会长出
+   * `jump: { port: 22, username: '', keyPath: '', passphrase: '', password: '' }` ——
+   * **没有 host 的半个对象**。它一路传到连接路径，`jump.host.trim()` 抛
+   * `Cannot read properties of undefined (reading 'trim')`：本版里**每一条**连接簿条目
+   * 都连不上（`mergeSshSpec` 把它当成「配了跳板机」，`jumpTargetLabel` 当场炸）。
+   * union 自身没有默认值，`undefined` 因此原样穿过；里层 object schema 的校验一字不动。
+   * 回归守卫见 test/jump-spec.test.ts「没配跳板机的条目解析后**不带** jump」。
+   */
+  jump: z.union([SSH_JUMP_SCHEMA]),
   /**
    * 代理命令（ProxyCommand）：本机执行、stdio 当 SSH 传输。**需要 allowProxyCommand 才生效**。
    * `~/.ssh/config` 导入永不自动带入（那一档信任级要用户自己开开关并手填）。
@@ -4104,8 +4115,12 @@ function listCandidateShells(): string[] {
 /**
  * 「连接簿条目作基底 + 内联字段逐项覆盖」的共享解析（WS ssh 帧与 SFTP 路由共用）。
  * name 指向连接簿缺失条目、或解析结果缺 host/username 时返回 error。
+ *
+ * **导出仅供单测**（`test/jump-absent.test.ts`）：这条函数是「连接簿 → 连接规格」的**唯一**
+ * 入口（终端 / SFTP / 探针三条路径共用，隧道那条在 tunnels.ts 里自己拼但用同一套清洗），
+ * `jump` 的「半个对象」判据挪进私有函数就等于没有测试入口——0.33.0 的连不上正是这样漏出去的。
  */
-function mergeSshSpec(
+export function mergeSshSpec(
   findSshHost: (name: string) => SshHostEntry | undefined,
   name: unknown,
   inline: Record<string, unknown>,
@@ -4129,9 +4144,14 @@ function mergeSshSpec(
   /*
    * 跳板机：内联给了就以它为准（清洗不出可用对象则退回连接簿那一份），否则用连接簿的。
    * `jump` 只在**目标那一跳**之外多一跳，不支持嵌套（单跳），所以这里不做递归解析。
+   *
+   * 连接簿那一份**必须过 `sanitizeJumpSpec`**（原先直接 `profile.jump`）：live 配置可能是
+   * 配置层物化出来的「半个对象」（没有 host，见 SSH_HOST_SCHEMA.jump 的说明），直接放行就是
+   * 0.33.0 那条 `Cannot read properties of undefined (reading 'trim')`——四条连接路径
+   * （终端 / SFTP / 隧道 / 探针）全部不可用。清洗的语义正好是「host 为空 = 没配」。
    */
   const inlineJump = inline.jump === undefined ? undefined : sanitizeJumpSpec(inline.jump)
-  const jump = inlineJump ?? profile?.jump
+  const jump = inlineJump ?? sanitizeJumpSpec(profile?.jump)
   if (jump !== undefined) spec.jump = jump
   /*
    * 代理命令：与跳板机同款「内联优先、否则用连接簿那一份」。两者同时存在**不在这里二选一**：

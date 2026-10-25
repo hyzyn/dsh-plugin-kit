@@ -20,7 +20,7 @@
 import net from 'node:net'
 import { Client } from 'ssh2'
 import type { ConnectConfig } from 'ssh2'
-import { classifyError, prepareSshConnect, proxyFailureSuffix } from './ssh.js'
+import { classifyError, prepareSshConnect, proxyFailureSuffix, sanitizeJumpSpec } from './ssh.js'
 import type { ProxyCommandDial } from './ssh.js'
 import type { HostKeyStore, SshHostEntry, SshSpec } from './ssh.js'
 
@@ -536,6 +536,7 @@ export class TunnelManager {
       this.failTunnel(rt, `连接簿中不存在条目: ${spec.bookName}（条目被删除或改名）——在 设置 → 插件 → 终端面板 → 端口转发 里更正 bookName 或恢复条目后保存`)
       return
     }
+    const bookJump = sanitizeJumpSpec(book.jump)
     const sshSpec: SshSpec = {
       host: book.host,
       port: book.port,
@@ -545,8 +546,9 @@ export class TunnelManager {
       passphrase: book.passphrase,
       password: book.password,
       // 跳板机也要跟着走：隧道与终端走的是两条不同的连接，漏了它就得到「隧道连不上、
-      // 终端能连」这种半吊子状态（本项立项时点名的正是这种状态）
-      ...(book.jump !== undefined ? { jump: book.jump } : {}),
+      // 终端能连」这种半吊子状态（本项立项时点名的正是这种状态）。
+      // 同样要过 sanitizeJumpSpec：live 条目可能带着配置层物化出来的「半个 jump」（无 host）。
+      ...(bookJump !== undefined ? { jump: bookJump } : {}),
       // 代理命令同理（一整档信任级；闸门在 ssh.ts 的 dialProxyCommand 里统一判）
       ...(book.proxyCommand !== undefined ? { proxyCommand: book.proxyCommand } : {}),
     }

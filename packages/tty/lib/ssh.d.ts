@@ -269,6 +269,21 @@ export declare function applyHostKeyPolicy(options: {
 }): {
     mismatchMessage(): string | null;
 };
+/**
+ * 可用的跳板机规格；`undefined` = **真的没配**。
+ *
+ * 为什么要这一道，而不是只判 `spec.jump !== undefined`：`SshSpec.jump` 的类型来自 settings
+ * schema，而 schemastery 给**嵌套 object 字段**的默认值是 `{}`（见 `SSH_HOST_SCHEMA.jump`），
+ * 于是「没配跳板机」的条目可能带着 `jump: { port: 22, username: '', … }` 这种**没有 host 的
+ * 半个对象**进入连接路径。0.33.0 的 `jumpTargetLabel` 直接 `jump.host.trim()`：
+ * `Cannot read properties of undefined (reading 'trim')`——**每一条**连接簿条目都连不上，
+ * 报的还是一句看不出跟跳板机有关的 TypeError（D102）。
+ *
+ * 判据只认 `host` 是非空字符串：其余字段（端口 / 用户 / 凭据）本来就可以继承目标那一跳。
+ * 收在一处（而不是终端 / SFTP / 隧道 / 探针各写一遍）的理由与 `prepareSshConnect` 相同：
+ * 四个连接点必须用**同一个**判据，否则又是「终端能连、SFTP 报错」的半吊子状态。
+ */
+export declare function usableJump(spec: Pick<SshSpec, 'jump'>): SshJumpSpec | undefined;
 /** 跳板机展示串（`user@host:port`）；没有跳板机时返回空串。**凭据不进这里**。 */
 export declare function jumpTargetLabel(spec: SshSpec): string;
 /**

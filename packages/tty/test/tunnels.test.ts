@@ -147,6 +147,26 @@ describe('TunnelManager.reconcile 收敛', () => {
     expect(t.clients[0].ended).toBe(true) // 旧连接被停用
     expect((t.clients[1].connectConfig as { host: string }).host).toBe('203.0.113.9')
   })
+
+  /*
+   * 与 test/jump-absent.test.ts 同一条事故的隧道出口：live 条目可能带着配置层物化出来的
+   * 「半个 jump」（没有 host）。旧实现把它原样塞进 SshSpec → `prepareSshConnect` 里的
+   * `jumpTargetLabel` 抛 TypeError → 隧道永远 error（终端也一样连不上）。
+   * 判据：**照常直连目标**（不是「不报错」，而是连接真的拨到 book.host 上）。
+   */
+  it('连接簿带着「半个 jump」（无 host）→ 照常直连目标，不当跳板机', async () => {
+    const halfJumpBook = { ...BOOK, jump: { port: 22 } } as unknown as SshHostEntry
+    const t = makeHarness(() => halfJumpBook)
+    t.manager.reconcile([specOf()])
+    await until(() => t.clients.length === 1)
+    expect(t.status()?.state).toBe('connecting')
+    expect(t.status()?.error ?? null).toBeNull() // 没有错误（半个 jump 被当「没配」，不是配置级 fatal）
+    expect((t.clients[0].connectConfig as { host: string; sock?: unknown }).host).toBe('203.0.113.9')
+    expect((t.clients[0].connectConfig as { sock?: unknown }).sock).toBeUndefined() // 没有借来的通道
+    t.clients[0].trigger('ready')
+    expect(t.status()?.state).toBe('active')
+    t.manager.disposeAll()
+  })
 })
 
 describe('TunnelManager 连接簿缺失 → fatal（D15 ①）', () => {

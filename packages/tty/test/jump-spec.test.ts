@@ -106,6 +106,8 @@ describe('sanitizeJumpSpec / validateJumpSpec（两个纯函数白名单点）',
     expect(sanitizeJumpSpec(undefined)).toBeUndefined()
     expect(sanitizeJumpSpec({})).toBeUndefined()
     expect(sanitizeJumpSpec({ host: '   ' })).toBeUndefined()
+    // 配置层物化出来的形状（没有 host，其余字段是 schema 默认值）：与 {host:''} 同判
+    expect(sanitizeJumpSpec({ port: 22, username: '', keyPath: '', passphrase: '', password: '' })).toBeUndefined()
     expect(sanitizeJumpSpec({ host: ' bastion ', port: '2222', username: ' jump ', auth: 'password', password: 'pw' }))
       .toEqual({ host: 'bastion', port: 2222, username: 'jump', auth: 'password', password: 'pw' })
   })
