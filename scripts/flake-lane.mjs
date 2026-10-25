@@ -30,7 +30,7 @@
  * - **不加 CPU 忙循环**：`repro-flake.mjs` 加 `--spinners` 是因为它要**稳定复现**某一条；
  *   而车道是常设闸门，在 4 核 runner 上并发几份套件本身就足以吃满 CPU，再塞忙循环只是烧电。
  * - **不自动重跑**：重跑到绿正是要避免的事（那会把真 flake 洗成绿）。红了就是红了，
- *   报告里点名哪一份红、红在哪条用例，交给定位。
+ *   报告里点名哪一份红、红在哪条用例、断言原文是什么，交给定位。
  *
  * 不写 shebang：本文件要被 `scripts/test/flake-lane.test.ts` import。
  */
@@ -84,22 +84,42 @@ export function workersPerSuite(runs, cores = cpus().length) {
 }
 
 /**
- * 从一份 vitest 输出里抠出「哪条用例 / 哪个文件红了」。
+ * 从一份 vitest 输出里抠出「哪条用例 / 哪个文件红了」，**连同断言原文**。
  *
  * 车道存在的意义是**让人能去定位**，所以报告不能只说「有一份红了」——那等于把「跑一遍」
  * 的活留给下一个人。dot reporter 的失败行是 ` ❯ path (N tests | M failed)`，别的 reporter
  * 用 `FAIL`；两种都收。
  *
+ * 只报文件名还不够（2026-10-25 的教训）：那次 `ssh-channel-gate.test.ts` 红了，报告里只有
+ * 「这个文件 1 failed」，**断言原文与行号全丢了**，于是没人能判断「是时序巧合还是真回归」。
+ * 所以失败行之后紧跟的几条细节也一并收：dot reporter 的 `→ 断言消息`、verbose 的
+ * `AssertionError: …`、以及 `❯ path:line:col` 那一行定位。每条失败最多跟 3 行，报告不会失控。
+ *
  * @param output - 一份运行的 stdout + stderr
- * @returns 去重后的失败行（顺序按出现位置）
+ * @returns 去重后的失败行（顺序按出现位置；失败行后紧跟它自己的细节行）
  */
 export function extractFailures(output) {
   const hits = []
+  /** 当前失败行之后，允许再收几条细节（超过就认为已经进入下一段无关输出）。 */
+  const MAX_DETAILS = 3
+  let capturing = false
+  let details = 0
   for (const line of String(output).split('\n')) {
     const trimmed = line.trim()
-    if (/^❯ .*failed/.test(trimmed) || /^FAIL\b/.test(trimmed)) {
+    if (trimmed === '') continue
+    if (/^❯ .*failed/u.test(trimmed) || /^FAIL\b/u.test(trimmed)) {
       if (!hits.includes(trimmed)) hits.push(trimmed)
+      capturing = true
+      details = 0
+      continue
     }
+    // 细节行：dot reporter 的 `→ …`、错误名、以及堆栈里的 `❯ path:line:col`
+    if (capturing && details < MAX_DETAILS && /^(?:→|(?:Assertion|Type|Range|Reference)?Error:|❯ \S+:\d+:\d+)/u.test(trimmed)) {
+      if (!hits.includes(trimmed)) hits.push(trimmed)
+      details += 1
+      continue
+    }
+    capturing = false
   }
   return hits
 }

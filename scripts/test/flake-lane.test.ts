@@ -7,7 +7,8 @@
  * 这组用例守三件事：
  *
  * 1. **一份红 → 整体红**，且**点名是哪一份**（车道的用途是让人去定位，报告得能指向现场）；
- * 2. **失败用例名要被抠出来**（只说「有一份红了」等于把跑一遍的活留给下一个人）；
+ * 2. **失败用例名 + 断言原文都要抠出来**（只说「有一份红了」等于把跑一遍的活留给下一个人；
+ *    而只说文件名、不给断言，则连「时序巧合还是真回归」都判不了——2026-10-25 的教训）；
  * 3. **零份 = 红**——本仓真实发生过「命中 0、恒绿、拦不住任何东西」的闸门。
  *
  * 真机校准记录（2026-10-03，本机 10 核）：空载 `spawnSync(node -e 0)` p50=25ms / max=33ms；
@@ -37,6 +38,48 @@ describe('extractFailures：把「红在哪条用例」抠出来', () => {
   it('同一行重复出现只报一次（dot reporter 会在汇总里再打一遍）', () => {
     const line = ' ❯ a.test.ts (2 tests | 1 failed)'
     expect(extractFailures(`${line}\n...\n${line}\n`)).toHaveLength(1)
+  })
+
+  it('dot reporter：连断言原文一起抠出来（只给文件名等于让人再跑一遍）', () => {
+    const output = [
+      ' ❯ packages/docker/test/ssh-channel-gate.test.ts (10 tests | 1 failed) 45ms',
+      '   → expected false to be true // Object.is equality',
+      '',
+      ' Test Files  1 failed (1)',
+    ].join('\n')
+    expect(extractFailures(output)).toEqual([
+      '❯ packages/docker/test/ssh-channel-gate.test.ts (10 tests | 1 failed) 45ms',
+      '→ expected false to be true // Object.is equality',
+    ])
+  })
+
+  it('verbose reporter：`FAIL` + `AssertionError` + 行号定位都收', () => {
+    const output = [
+      'FAIL  packages/docker/test/ssh-channel-gate.test.ts > RemoteExec > 通道被拒',
+      'AssertionError: D07：被替换的旧连接必须真的 end(): expected false to be true',
+      ' ❯ packages/docker/test/ssh-channel-gate.test.ts:257:47',
+    ].join('\n')
+    expect(extractFailures(output)).toEqual([
+      'FAIL  packages/docker/test/ssh-channel-gate.test.ts > RemoteExec > 通道被拒',
+      'AssertionError: D07：被替换的旧连接必须真的 end(): expected false to be true',
+      '❯ packages/docker/test/ssh-channel-gate.test.ts:257:47',
+    ])
+  })
+
+  it('细节行有上限（每条失败最多 3 行，报告不该被一段堆栈灌满）', () => {
+    const output = [
+      'FAIL  a.test.ts > 组 > 用例',
+      'AssertionError: 1',
+      'Error: 2',
+      '❯ a.test.ts:1:2',
+      '❯ a.test.ts:3:4',
+      '❯ a.test.ts:5:6',
+    ].join('\n')
+    expect(extractFailures(output)).toHaveLength(1 + 3)
+  })
+
+  it('没有失败行时不收孤立的 `→` / `AssertionError`（不许无中生有）', () => {
+    expect(extractFailures('   → 某条被跳过的用例的说明\nAssertionError: 不在失败上下文里\n')).toEqual([])
   })
 
   it('全绿输出抠不出东西（不许把「通过」误当失败）', () => {
@@ -70,6 +113,15 @@ describe('summarizeRuns：收敛成「红没红 + 可读报告」', () => {
     })
     expect(report).toContain('packages/tty/test/screen-crash.test.ts')
     expect(report).toContain('第 1 份')
+  })
+
+  it('报告里也带断言原文（判「时序巧合还是真回归」靠它）', () => {
+    const output = [
+      ' ❯ packages/docker/test/ssh-channel-gate.test.ts (10 tests | 1 failed) 45ms',
+      '   → expected false to be true // Object.is equality',
+    ].join('\n')
+    const { report } = summarizeRuns({ runs: [run(1, 1, output)] })
+    expect(report).toContain('expected false to be true')
   })
 
   it('红但抠不出用例名时，把输出尾部附上（加载/编译失败才是这种形状）', () => {
