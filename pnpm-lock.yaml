@@ -15,13 +15,13 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.15
+        specifier: 0.6.16
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.13.5
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.11
+        specifier: 0.3.12
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.7
@@ -33,19 +33,19 @@ importers:
         specifier: 0.3.9
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.10
+        specifier: 0.2.11
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.10
+        specifier: 0.2.11
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.10
+        specifier: 0.4.11
         version: link:packages/rss
       '@hyzyn/dsh-search':
         specifier: 0.4.12
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.32.4
+        specifier: 0.33.0
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -67,13 +67,13 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.15
+        specifier: 0.6.16
         version: link:../codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.13.5
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.11
+        specifier: 0.3.12
         version: link:../env
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.7
@@ -85,19 +85,19 @@ importers:
         specifier: 0.3.9
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.10
+        specifier: 0.2.11
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.10
+        specifier: 0.2.11
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.10
+        specifier: 0.4.11
         version: link:../rss
       '@hyzyn/dsh-search':
         specifier: 0.4.12
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.32.4
+        specifier: 0.33.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
