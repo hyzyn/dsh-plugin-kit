@@ -2,7 +2,7 @@
  * `pnpm verify:list`（[scripts/verify-list.mjs](../verify-list.mjs)）的守卫。
  *
  * 它守的是这轮改造真正容易再坏掉的那一环：**清单与入口不许脱钩**——
- *   - 清单里列的 11 个脚本必须真的存在（改名/删除会立刻红）；
+ *   - 清单里列的 12 个脚本必须真的存在（改名/删除会立刻红）；
  *   - 9 个包内脚本必须在对应 `package.json` 里有同名条目（否则打印出来的「可粘贴命令」
  *     是假的，`registered: false` + 退出码 1）；
  *   - 通用脚本（不属于任何包）**不该**假装有包内条目。
@@ -15,8 +15,8 @@ import { collectVerifyList, formatVerifyList, VERIFY_SCRIPTS } from '../verify-l
 const items = collectVerifyList()
 
 describe('verify:list：清单现算（真实仓库）', () => {
-  it('十一个脚本一个不少，且都真的存在', () => {
-    expect(items).toHaveLength(11)
+  it('十二个脚本一个不少，且都真的存在', () => {
+    expect(items).toHaveLength(12)
     expect(items.filter((item) => !item.exists)).toEqual([])
     expect(items.map((item) => item.file).sort()).toEqual([...items.map((item) => item.file)].sort())
   })
@@ -32,9 +32,10 @@ describe('verify:list：清单现算（真实仓库）', () => {
 
   it('通用脚本不属于任何包，命令是 node 形态（不假装有包内入口）', () => {
     const generic = items.filter((item) => item.pkg === '（通用）')
-    // 两个：verify-client-ui.mjs（打外部宿主，`--url/--token`）与
-    // verify-issue-13-14.mjs（**自起**宿主，命令自带 `--from`）
-    expect(generic).toHaveLength(2)
+    // 三个：verify-client-ui.mjs（打外部宿主，`--url/--token`）、
+    // verify-issue-13-14.mjs（**自起**宿主，命令自带 `--from`）与
+    // mcp-tool-budget.mjs（成本报告，打外部宿主，默认 127.0.0.1:3082 可 `--url` 覆盖）
+    expect(generic).toHaveLength(3)
     for (const item of generic) {
       expect(item.entry).toBeUndefined()
       expect(item.command).toMatch(/^node scripts\//)

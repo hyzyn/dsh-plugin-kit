@@ -52,6 +52,7 @@ window.__ModuleLoader__.load({
       '.mX_btnGhost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
       '.mX_btnGhost:disabled{opacity:.4;cursor:not-allowed}',
       '.mX_btnGhost:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      '.mX_actionSep{flex:none;width:1px;height:12px;background:var(--dsw-alias-border-l1)}',
       '.mX_btnDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent)}',
       '.mX_btnDanger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
       '.mX_linkBtn{color:var(--dsw-alias-link);background:0 0;border:none;padding:0;font-size:12px;line-height:18px;font-weight:500;cursor:pointer;white-space:nowrap;text-decoration:none}',
@@ -60,11 +61,9 @@ window.__ModuleLoader__.load({
       '.mX_card{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:6px}',
       '.mX_cardRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
       '.mX_cardSummary{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}',
-      '.mX_cardActions{display:flex;align-items:center;gap:6px;margin-left:auto}',
+      '.mX_cardActions{display:flex;align-items:center;gap:10px;margin-left:auto}',
       // 卡片内的问题行（目前只有「已挂载但没连上」一种）：与摘要之间加一道分隔，
       // 文字保持次要色（长句用警告色会吵），靠徽标与左边的停用按钮传达该干什么。
-      '.mX_cardWarn{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;border-top:.5px solid var(--dsw-alias-border-l1);margin-top:2px;padding-top:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
-      '.mX_cardWarnText{flex:1;min-width:0}',
       '.mX_badge{display:inline-block;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;corner-shape:round;padding:1px 8px;font-size:11px;line-height:16px;white-space:nowrap}',
       '.mX_badge[data-kind=stdio]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
       '.mX_badge[data-kind=http]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
@@ -111,8 +110,15 @@ window.__ModuleLoader__.load({
       // 用强调蓝 state-business-primary（#4176e6）就是浏览器默认蓝勾那种错——那是状态与徽标的颜色。
       '.mX_checkRow input[type=checkbox]{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
       '.mX_checkRow input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+      // 该行贡献的工具数：**成本**信息（次级色，与传输/运行中/冲突那些徽标同一行）。
+      // 不并进徽标族——本卡的徽标是「状态」语义，工具数是「这一行要付多少常驻上下文」。
+      '.mX_metaRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
+      '.mX_toolCount{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code)}',
       '.mX_formError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
       '.mX_toolWrap{border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);flex:none;overflow:hidden}',
+      // 试连结果槽：没有结果时是空的，:empty 把节点整个摘出布局——否则它会以 flex gap 的形式
+      // 在列表和底栏之间多留 12px（每次打开面板都看得见）。
+      '.mX_testPanel:empty{display:none}',
       '.mX_toolHeader{background:var(--dsw-alias-bg-layer-2);border-bottom:.5px solid var(--dsw-alias-border-l1);padding:8px 10px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);display:flex;gap:12px;flex-wrap:wrap}',
       '.mX_toolList{max-height:220px;overflow-y:auto;padding:4px 0}',
       '.mX_toolItem{padding:5px 10px;font-size:12px;line-height:18px;display:flex;flex-direction:column;gap:2px;border-bottom:.5px solid var(--dsw-alias-border-l2)}',
@@ -124,6 +130,9 @@ window.__ModuleLoader__.load({
       '.mX_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:200;background:var(--dsw-alias-bg-layer-2);border:0;color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md);padding:9px 16px;font-size:13px;line-height:20px;box-shadow:var(--dsw-elevation-prominent);max-width:70vw}',
       '.mX_toast[data-kind=ok]{color:var(--dsw-alias-state-success-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-success-primary)}',
       '.mX_toast[data-kind=error]{color:var(--dsw-alias-state-error-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-error-primary)}',
+      // 宿主给的 warning（例如「宿主没有 settings 服务：改动只在本次进程内有效」）走第三档：
+      // 它不是错误（这次改动生效了），也不是成功（重启后会丢），所以复用告警色而不是红或绿。
+      '.mX_toast[data-kind=warn]{color:var(--dsw-alias-state-warn-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-warn-primary)}',
       '.mX_mono{font-family:var(--ds-font-family-code)}',
     ].join('\n')
 
@@ -171,13 +180,16 @@ window.__ModuleLoader__.load({
       'btn.testConnection': '测试连接',
       'btn.save': '保存',
       'list.statusActive': '运行中',
+      'list.notConnected': '未连接',
       'list.statusDisabled': '已停用',
       'list.statusError': '错误',
       'list.statusLoading': '加载中',
       'list.statusNotLoaded': '未加载',
       'list.conflict': 'serverName 冲突',
-      'list.notConnected': '未连接',
-      'list.notConnectedDetail': '这行当前没有注册任何工具。每次启动都要为它等一次连接尝试（地址不可达约 10 秒、能连上但不回应最长 60 秒），会拖慢启动完成；用不上时建议停用。',
+      'list.toolsCount': '工具 {count}',
+      'list.toolsUnknown': '工具数未知',
+      'list.toolsCountHint': '该 server 目前在工具注册表里注册的工具数（宿主 DTO 的 toolCount）。显示「未知」表示宿主读不到注册表，不是 0。',
+      'list.agentBudget': 'MCP 工具合计 {total} 个，已超过 {budget} 这条阈值：这些工具会常驻每一轮上下文。用不上时停用几行——停用后不再注册工具，也不再占这份成本。',
       'panel.editorCreate': '添加 MCP 服务器',
       'panel.editorEdit': '编辑 MCP 服务器',
       'panel.fieldName': 'serverName（模型侧命名空间，[A-Za-z0-9_-] 1~32 字符）',
@@ -243,13 +255,16 @@ window.__ModuleLoader__.load({
       'btn.testConnection': 'Test connection',
       'btn.save': 'Save',
       'list.statusActive': 'Running',
+      'list.notConnected': 'Not connected',
       'list.statusDisabled': 'Disabled',
       'list.statusError': 'Error',
       'list.statusLoading': 'Loading',
       'list.statusNotLoaded': 'Not loaded',
       'list.conflict': 'serverName conflict',
-      'list.notConnected': 'Not connected',
-      'list.notConnectedDetail': 'This row currently registers no tools. Every boot waits once for its connection attempt (about 10s when the address is unreachable, up to 60s when it is reachable but unresponsive), which delays startup — disable it while you do not need it.',
+      'list.toolsCount': '{count} tools',
+      'list.toolsUnknown': 'tool count unknown',
+      'list.toolsCountHint': 'How many tools this server currently has in the tool registry (the host DTO’s toolCount). “Unknown” means the host cannot read the registry — that is not 0.',
+      'list.agentBudget': 'MCP tools add up to {total}, past the {budget} line: they ride along in every request. Disable a few rows you do not need — a disabled row registers no tools, so it stops costing anything.',
       'panel.editorCreate': 'Add MCP server',
       'panel.editorEdit': 'Edit MCP server',
       'panel.fieldName': 'serverName (model-side namespace, [A-Za-z0-9_-], 1–32 chars)',
@@ -357,13 +372,21 @@ window.__ModuleLoader__.load({
     }
 
     const apiList = () => apiRequest(API.list)
-    // clearAll 只在「用户明确删光」时带上：宿主对「空列表且无该标记」的保存会返回 400，
-    // 避免启动竞态 / 陈旧卡片拿到空列表时把已配置的服务器静默清空。
-    const apiSave = (servers, options) => apiRequest(API.save, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ servers, ...(options !== undefined && options.clearAll === true ? { clearAll: true } : {}) }),
-    })
+    /*
+     * `options.clearAll` 是**显式信号**：只在「用户明确删光」时带上。宿主对「空列表且无该标记」
+     * 的保存会返回 400，避免启动竞态 / 陈旧卡片拿到空列表时把已配置的服务器静默清空。
+     */
+    const apiSave = (servers, options) => {
+      const opts = options !== undefined ? options : {}
+      return apiRequest(API.save, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          servers,
+          ...(opts.clearAll === true ? { clearAll: true } : {}),
+        }),
+      })
+    }
     const apiTest = (config) => apiRequest(API.test, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -377,6 +400,10 @@ window.__ModuleLoader__.load({
       // 真正重名的托管行（横幅只渲染这份）；外部实例清单另存 externalServers，两者别混用。
       conflicts: [],
       externalServers: [],
+      // 宿主下发的成本阈值（DTO 的 toolBudget）；老宿主没有这个字段 → null → 不提示。
+      toolBudget: null,
+      // 正在等宿主把 patch 热加载完（见 reloadUntilSettled）：这段时间徽标按**期望态**渲染。
+      settling: false,
       fileError: '',
       patchFile: '',
       loading: false,
@@ -399,6 +426,18 @@ window.__ModuleLoader__.load({
       }, 3200)
     }
 
+    /**
+     * 保存类请求的统一收尾：**宿主给的 warning 优先**。
+     *
+     * 它说的是「宿主没有 settings 服务，改动只在本次进程内有效」这类比「已保存」重要得多的事实；
+     * 被后一条 toast 顶掉等于没说（toast 只有一条）。
+     */
+    function notifySaved(body, message) {
+      const warning = body !== undefined && body !== null ? body.warning : undefined
+      if (typeof warning === 'string' && warning !== '') toast(warning, 'warn')
+      else toast(message, 'ok')
+    }
+
     /* ================================ 渲染：主视图 ================================ */
 
     /*
@@ -418,9 +457,38 @@ window.__ModuleLoader__.load({
     let panelEl
     let toastEl
 
+    /*
+     * 上一次渲染出去的 HTML（判断「要不要真的重绘」用，见 renderAll）。
+     * 放在闭包里而不是 DOM 属性上：整份 HTML 有几 KB，塞进 data-* 既难看又会被别处读到。
+     */
+    let lastRenderedHtml = ''
+
     function renderAll(container) {
       panelEl = container
-      container.innerHTML = state.editor ? renderEditorHtml() : renderMainHtml()
+      const html = state.editor ? renderEditorHtml() : renderMainHtml()
+      /*
+       * 内容没变就**别碰 DOM**。
+       *
+       * 整块 `innerHTML = …` 会把所有节点重建一遍：滚动位置跳回顶部、hover / 焦点全丢。
+       * 而保存后有一段轮询（见 reloadUntilSettled），每 600ms 一次整块重建 = 肉眼可见的
+       * 「点一下卡片在闪」（2026-10-25 实测反馈）。这里记一份上次渲染的 HTML，逐字相同就跳过；
+       * 真变了（状态徽标 / 工具数 / 行集）才重绘一次。
+       */
+      if (lastRenderedHtml === html) {
+        renderToast()
+        return
+      }
+      /*
+       * 整块重建会把列表的滚动位置清零（`.mX_list` 是独立滚动容器）。先记下来、重建完放回去——
+       * 试连已经改成原地更新（见 refreshTestPanel），但保存 / 刷新 / 行集变化仍会走整块重绘，
+       * 不还原就会「滚到某一行操作一下、界面跳回顶部」。
+       */
+      const listBefore = container.querySelector('.mX_list')
+      const listScrollTop = listBefore === null ? 0 : listBefore.scrollTop
+      lastRenderedHtml = html
+      container.innerHTML = html
+      const listAfter = container.querySelector('.mX_list')
+      if (listAfter !== null && listScrollTop > 0) listAfter.scrollTop = listScrollTop
       bindEditorEvents(container)
       renderToast()
     }
@@ -462,19 +530,103 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 「已挂载，但没连上」：判据是宿主 DTO 的 `toolCount`（工具注册表里属于这行的工具数）。
+     * 徽标显示哪一态：平时用**观测态**（`server.status`，loader 说了算）。
      *
-     * 为什么不看 `status`：它来自 fiber 生命周期，而连不上时 mcp-client 的 apply 照样 resolve
-     * （默认 `failOnStartupError: false`，不抛错）⇒ 徽标显示「运行中」，可这个服务器一个工具
-     * 都没有。工具是「连接成功 + tools/list」之后**唯一**会留下的产物，所以「active 且 0 个工具」
-     * 就等于没连上；而且它是零成本的（读内存注册表，不做任何网络探测）。
+     * 只有「刚保存、正在等 HMR 收敛」的那一两秒（`state.settling`）改按文件里的**期望态**
+     * （`server.disabled`）渲染：保存早就成功了，但宿主重读补丁层、重挂 mcp-client 有 1~2 秒
+     * 延迟，这期间徽标若继续写「运行中」，用户会以为「点了没反应」（2026-10-25 实测反馈）。
+     * 收敛窗口一结束就回到观测态——宿主真的没重载成功时，界面上不会留下一个骗人的「已停用」。
+     */
+    function displayStatus(server) {
+      if (!state.settling) return server.status
+      if (server.disabled === true) return 'disabled'
+      return server.status === 'disabled' ? 'loading' : server.status
+    }
+
+    /**
+     * 「运行中但一个工具都没有」按**未连接**显示。
      *
-     * `toolCount === undefined` = 宿主读不到注册表（老宿主）⇒ 返回 false：宁可什么都不说，
-     * 也不能把「读不到」显示成「未连接」。disabled 的行本来就不该有工具，不算；
-     * loading / error 各有自己的徽标，不叠加。
+     * 为什么不只看 `status`：mcp-client 连不上时 apply 照样 resolve（`failOnStartupError` 默认
+     * false），fiber 还是 active——只看它就会显示「运行中」，可服务器一个工具都没有。工具是
+     * 「连接成功 + tools/list」之后唯一会留下的产物，所以 active 且 0 个工具就是没连上。
+     * `toolCount === undefined`（宿主读不到注册表）**不猜**；停用的行也不叠加。
      */
     function notConnected(server) {
-      return server.toolCount === 0 && server.disabled !== true && server.status === 'active'
+      return server.status === 'active' && server.disabled !== true && server.toolCount === 0
+    }
+
+    /** 状态槽位的 HTML（渲染与原地同步共用同一判据，否则两处迟早不一致）。 */
+    function statusSlotHtml(server) {
+      return notConnected(server) ? badge(t('list.notConnected'), 'warn', '') : statusBadge(displayStatus(server))
+    }
+
+
+    /** 启停按钮文案（渲染与原地同步共用）。 */
+    function toggleLabel(server) {
+      return server.disabled ? t('btn.enable') : t('btn.disable')
+    }
+
+    /**
+     * 只同步「会随宿主变化的那几个点」，**不重建 DOM**。
+     *
+     * 为什么需要它：整块 `innerHTML = …` 会把列表里所有节点重建一遍（滚动跳、hover / 焦点丢），
+     * 而点一次启停、等宿主 HMR 收敛的那几秒里状态会变两三次——逐次整块重绘就是用户看到的
+     * 「点一下就闪」（2026-10-25 实测反馈）。这里改成只改状态徽标、工具数与启停文案；
+     * 只有**结构性**变化（增删行、编辑器开关）才回落整块重绘。
+     */
+    function syncLiveState() {
+      if (panelEl === undefined || panelEl === null) return
+      if (state.editor !== null) {
+        refresh()
+        return
+      }
+      const cards = [...panelEl.querySelectorAll('.mX_card[data-id]')]
+      if (cards.length !== state.servers.length) {
+        refresh()
+        return
+      }
+      const byId = new Map(cards.map((card) => [card.getAttribute('data-id'), card]))
+      for (const server of state.servers) {
+        const card = byId.get(server.id)
+        if (card === undefined) {
+          refresh()
+          return
+        }
+        const statusSlot = card.querySelector('[data-role="status"]')
+        if (statusSlot !== null) statusSlot.innerHTML = statusSlotHtml(server)
+        const toolSlot = card.querySelector('[data-role="toolCount"]')
+        if (toolSlot !== null) toolSlot.textContent = toolCountText(server)
+        const toggle = card.querySelector('[data-role="toggle"]')
+        if (toggle !== null) toggle.textContent = toggleLabel(server)
+      }
+      renderToast()
+    }
+
+    /**
+     * 已知工具数的合计（列表上方成本提示用）。
+     *
+     * 口径与 `scripts/mcp-tool-budget.mjs` 的 `summarizeServers` 逐条对齐：
+     *   · 停用的行不注册工具 → 不计入；
+     *   · `toolCount === undefined` = 宿主读不到注册表（或该行没连上）→ **不当作 0**，也不计入。
+     *
+     * 注意这里**没有阈值常量**：阈值由宿主下发（DTO 的 `toolBudget`，宿主侧 `AGENT_TOOL_BUDGET`），
+     * 客户端只负责比较——写死一个 80 就是同一件事的第二份真相，换阈值时两边必漂。
+     */
+    function knownToolTotal(servers) {
+      let total = 0
+      for (const server of servers) {
+        if (server.disabled === true) continue
+        if (typeof server.toolCount !== 'number' || !Number.isFinite(server.toolCount)) continue
+        total += server.toolCount
+      }
+      return total
+    }
+
+    /** 行上的工具数文案：缺失显示「未知」而不是 0（缺失是「读不到」，不是「没有」）。 */
+    function toolCountText(server) {
+      return typeof server.toolCount === 'number' && Number.isFinite(server.toolCount)
+        ? t('list.toolsCount', { count: server.toolCount })
+        : t('list.toolsUnknown')
     }
 
     /**
@@ -517,10 +669,18 @@ window.__ModuleLoader__.load({
       if (state.conflicts && state.conflicts.length) {
         parts.push('<div class="mX_banner" data-kind="warn">' + esc(t('banner.conflicts', { names: state.conflicts.map((c) => c.serverName).join(t('list.separator')) })) + '</div>')
       }
+      // 成本可见：MCP 工具的数量不由本仓决定，阈值也由宿主下发（DTO 的 toolBudget）——客户端
+      // 只比较、不留第二份数字。老宿主不下发就没有阈值，宁可不提示也不写死一个 80。
+      const toolTotal = knownToolTotal(state.servers)
+      if (!state.loading && typeof state.toolBudget === 'number' && toolTotal > state.toolBudget) {
+        parts.push('<div class="mX_banner" data-kind="warn">' + esc(t('list.agentBudget', { total: toolTotal, budget: state.toolBudget })) + '</div>')
+      }
       // 外部占用**不在这里**渲染：它是信息不是告警，放在列表下方当脚注（renderExternalNoteHtml），
       // 免得一条「不重名也常驻」的蓝框顶在列表前面被读成报错。
       parts.push('<div class="mX_list">')
-      if (state.loading) {
+      // 「加载中」只在整个列表还空着时占位：已经有行时刷新仍显示旧列表（按钮已置灰），
+      // 否则内容高度会瞬间塌掉，滚动位置跟着归零——那正是「点刷新跳回顶部」的另一半原因。
+      if (state.loading && state.servers.length === 0) {
         parts.push('<div class="mX_loading">' + t('list.loading') + '</div>')
       } else if (state.servers.length === 0) {
         parts.push('<div class="mX_empty">' + esc(t('list.empty')) + '<br>' + esc(t('list.emptyHint')) + '<br><br>' + esc(t('list.emptyReload')) + '</div>')
@@ -529,7 +689,8 @@ window.__ModuleLoader__.load({
       }
       parts.push('</div>')
       parts.push(renderExternalNoteHtml())
-      if (state.test) parts.push(renderTestHtml())
+      // 试连结果单独占一个槽：`runTest()` 只换这一块，不整块重绘（见 refreshTestPanel）。
+      parts.push('<div class="mX_testPanel" data-role="testPanel">' + (state.test ? renderTestHtml() : '') + '</div>')
       parts.push('<div class="mX_banner" data-kind="info">' + t('msg.hotReload') + '</div>')
       parts.push('</div>')
       return parts.join('')
@@ -537,28 +698,29 @@ window.__ModuleLoader__.load({
 
     function renderCardHtml(server) {
       const parts = []
-      parts.push('<div class="mX_card">')
+      // `data-id` + 三个 `data-role` 槽位是给 `syncLiveState()` 用的：状态 / 工具数 / 启停文案会
+      // 随宿主变化，那些变化**不必重建整张卡**（重建就是「闪」），原地改这几个点就够。
+      parts.push('<div class="mX_card" data-id="' + esc(server.id) + '">')
       parts.push('<div class="mX_cardRow">')
       parts.push(transportBadge(server.transport))
       parts.push('<span class="mX_cardName">' + esc(server.serverName) + '</span>')
-      // 「未连接」要顶掉绿色的「运行中」：fiber 是 ACTIVE 不代表连上了（见 notConnected），
-      // 两个徽标并排只会让人以为它既活着又没连上。
-      parts.push(notConnected(server) ? badge(t('list.notConnected'), 'warn', '') : statusBadge(server.status))
+      parts.push('<span data-role="status">' + statusSlotHtml(server) + '</span>')
       if (server.conflict) parts.push(badge(t('list.conflict'), 'warn', ''))
       parts.push('<span class="mX_cardActions">')
       parts.push('<button class="mX_linkBtn" data-action="test" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.test') + '</button>')
       parts.push('<button class="mX_linkBtn" data-action="edit" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.edit') + '</button>')
-      parts.push('<button class="mX_linkBtn" data-action="toggle" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + (server.disabled ? t('btn.enable') : t('btn.disable')) + '</button>')
+      parts.push('<button class="mX_linkBtn" data-action="toggle" data-role="toggle" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + toggleLabel(server) + '</button>')
+      // 危险动作与上面三个安全动作之间隔一条发丝线：靠位置分组，不靠换样式（删除必须用官方
+      // danger 配方，见脚本检查十一）。
+      parts.push('<span class="mX_actionSep" aria-hidden="true"></span>')
       parts.push('<button class="mX_btnGhost mX_btnDanger" data-action="remove" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.remove') + '</button>')
       parts.push('</span>')
       parts.push('</div>')
       parts.push('<div class="mX_cardSummary" title="' + esc(summaryOf(server)) + '">' + esc(summaryOf(server)) + '</div>')
-      // 问题行里再放一个「停用」：宿主那一行 `.cardActions` 里的同名按钮在右上角，
-      // 而人在读这段解释时手边正好该有个按钮——这就是「一键停用」。
-      if (notConnected(server)) {
-        parts.push('<div class="mX_cardWarn"><span class="mX_cardWarnText">' + esc(t('list.notConnectedDetail')) + '</span>'
-          + '<button class="mX_linkBtn" data-action="toggle" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.disable') + '</button></div>')
-      }
+      // 该行贡献的工具数：成本信息，单独一行（次级色）。
+      parts.push('<div class="mX_metaRow">')
+      parts.push('<span class="mX_toolCount" data-role="toolCount" title="' + esc(t('list.toolsCountHint')) + '">' + esc(toolCountText(server)) + '</span>')
+      parts.push('</div>')
       parts.push('</div>')
       return parts.join('')
     }
@@ -798,22 +960,114 @@ window.__ModuleLoader__.load({
       if (panelEl) renderAll(panelEl)
     }
 
-    async function load() {
+    /**
+     * 只重绘**试连结果**那一块（`[data-role="testPanel"]`），不整块重建。
+     *
+     * 为什么必须单开一条：试连结果渲染在卡片列表**下方**，而列表自己是可滚动的
+     * （`.mX_list`，max-height 420px）。整块 `innerHTML` 重建会把列表的滚动位置清零——用户滚到
+     * 某一行点「测试」，界面当场跳回顶部（2026-10-25 实测反馈）。这一块不在列表里，单独换它，
+     * 列表的滚动 / hover / 焦点全都留着。
+     */
+    function refreshTestPanel() {
+      if (panelEl === undefined || panelEl === null) return
+      const slot = panelEl.querySelector('[data-role="testPanel"]')
+      if (slot === null) {
+        // 当前不是主视图（编辑器打开 / 还没渲染过）：退回整块重绘。
+        refresh()
+        return
+      }
+      slot.innerHTML = state.test ? renderTestHtml() : ''
+      // 缓存要跟着走：否则下一次 refresh() 会以为 HTML 变了而整块重建，又把列表滚回顶部。
+      lastRenderedHtml = state.editor ? renderEditorHtml() : renderMainHtml()
+      renderToast()
+    }
+
+    /**
+     * 把宿主 DTO 写回 state。
+     *
+     * **GET 列表与 POST 保存的响应是同一份形状**，所以两边共用这一处：保存成功后不必再发一次
+     * GET 就能拿到权威的 `servers`（宿主现算的 status / toolCount 就在里面）与 `toolBudget`。
+     */
+    function applyServersDto(body) {
+      const dto = body !== undefined && body !== null ? body : {}
+      state.servers = Array.isArray(dto.servers) ? dto.servers : []
+      state.conflicts = Array.isArray(dto.conflicts) ? dto.conflicts : []
+      state.externalServers = Array.isArray(dto.externalServers) ? dto.externalServers : []
+      // 阈值只在宿主**真的下发**时才存（缺失 = 老宿主，不是 0：0 会让每一行都报警）。
+      state.toolBudget = typeof dto.toolBudget === 'number' ? dto.toolBudget : null
+      state.fileError = dto.fileError || ''
+      state.patchFile = dto.patchFile || ''
+    }
+
+    /**
+     * 拉一次列表。
+     *
+     * `quiet` = 轮询专用：不翻 `state.loading`、不自己主动重绘（由调用方决定何时 `refresh()`）。
+     * 不安静的话，等待收敛的那几秒里每次都要「置 loading → 重绘 → 复位 → 再重绘」，按钮与整块
+     * 列表跟着抖——这正是用户看到的「闪动」。
+     */
+    async function load(options) {
+      const quiet = options !== undefined && options.quiet === true
       if (state.loading) return
-      state.loading = true
-      refresh()
+      if (!quiet) {
+        state.loading = true
+        refresh()
+      }
       try {
-        const body = await apiList()
-        state.servers = Array.isArray(body.servers) ? body.servers : []
-        state.conflicts = Array.isArray(body.conflicts) ? body.conflicts : []
-        state.externalServers = Array.isArray(body.externalServers) ? body.externalServers : []
-        state.fileError = body.fileError || ''
-        state.patchFile = body.patchFile || ''
+        applyServersDto(await apiList())
       } catch (error) {
         state.fileError = error instanceof Error ? error.message : String(error)
       } finally {
-        state.loading = false
-        refresh()
+        if (!quiet) {
+          state.loading = false
+          refresh()
+        }
+      }
+    }
+
+    /**
+     * 每一行的**观测态**（loader 的 fiber 状态）是否已经追上了文件里的**期望态**（`disabled`）。
+     *
+     * 两者不是一回事：保存请求把 `disabled` 写进托管区块只需要一次写盘，而 `status` 要等宿主
+     * 重读补丁层、重挂 / 卸下那条 mcp-client 条目（HMR 约 1~2 秒）才会变。中间这段时间里
+     * 「点完停用仍显示运行中」不是没生效，只是还没重载完。
+     */
+    function statusSettled() {
+      return state.servers.every((server) => {
+        if (server.disabled === true) return server.status === 'disabled'
+        /*
+         * 启用方向必须等它**真的起来**：`loading` 是过渡态（宿主还在重挂那条 mcp-client、
+         * 或还在跟 server 握手，连不上时最长要等一次连接尝试）。只判 `!== 'disabled'` 会在
+         * status 刚变成 `loading` 的那一刻就收工、此后不再轮询——徽标就冻在「加载中 / 工具 0」，
+         * 而宿主上其实早就 active 了（实测：dbx 已是 active + 25 个工具，卡片还写着加载中）。
+         */
+        return server.status !== 'disabled' && server.status !== 'loading'
+      })
+    }
+
+    /**
+     * 保存之后**轮询到收敛**，而不是等一个固定延迟再读一次。
+     *
+     * 原来是 `setTimeout(() => load(), 800)`：800ms 通常**早于** HMR 完成，于是拿到的是旧
+     * `status`，而且只读这一次——徽标就永远停在「运行中」，直到用户手动点「刷新」（2026-10-25
+     * 实测反馈）。固定改成 2s 也只是把「永远不更新」换成「在慢机器上还是不更新」，所以这里按
+     * **收敛条件**轮询（有上限：8 秒后放弃，按真实状态渲染，不假装成功）。
+     */
+    async function reloadUntilSettled(timeoutMs = 20000) {
+      state.settling = true
+      // 只原地改状态徽标 / 工具数：不重建 DOM，所以点完按钮不会有整块刷新感。
+      syncLiveState()
+      const deadline = Date.now() + timeoutMs
+      try {
+        for (;;) {
+          await load({ quiet: true })
+          syncLiveState()
+          if (statusSettled() || Date.now() >= deadline) return
+          await new Promise((resolve) => setTimeout(resolve, 600))
+        }
+      } finally {
+        state.settling = false
+        syncLiveState()
       }
     }
 
@@ -855,16 +1109,18 @@ window.__ModuleLoader__.load({
       state.busy = true
       setEditorError('')
       try {
-        await apiSave(servers)
-        toast(t('msg.saved'), 'ok')
+        // 响应与 GET 是同一份 DTO：先落 state 再收尾，界面立刻是保存后的样子（不用等下一次轮询）。
+        const body = await apiSave(servers)
+        applyServersDto(body)
+        notifySaved(body, t('msg.saved'))
         state.editor = null
-        setTimeout(() => load(), 800)
+        void reloadUntilSettled()
       } catch (error) {
         setEditorError(error instanceof Error ? error.message : String(error))
         toast(t('msg.saveFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
       } finally {
+        // 不重绘：`reloadUntilSettled` 的 `syncLiveState()` 会按需原地更新 / 结构变了才整块重绘。
         state.busy = false
-        refresh()
       }
     }
 
@@ -878,47 +1134,55 @@ window.__ModuleLoader__.load({
         : t('msg.confirmRemove', { name: server.serverName })
       if (!window.confirm(question)) return
       const servers = state.servers.filter((item) => item.id !== id)
+      /*
+       * 只置忙、**不重绘**：整块 `innerHTML` 重建就是用户看到的「点一下卡片在闪」。
+       * 请求在本机是毫秒级返回的，按钮短暂仍可点（真要连点两下，第二次会以新 state 再算一次，
+       * 结果仍然是幂等的翻转）；换来的是点完只重绘一次（收敛时那一次，且内容没变就跳过）。
+       */
       state.busy = true
-      refresh()
       try {
-        await apiSave(servers, { clearAll: last })
-        toast(t('msg.deleted'), 'ok')
-        setTimeout(() => load(), 800)
+        const body = await apiSave(servers, { clearAll: last })
+        applyServersDto(body)
+        notifySaved(body, t('msg.deleted'))
+        void reloadUntilSettled()
       } catch (error) {
         toast(t('msg.removeFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
       } finally {
         state.busy = false
-        refresh()
       }
     }
 
     async function toggleServer(id) {
       const servers = state.servers.map((server) => (server.id === id ? { ...server, disabled: !server.disabled } : server))
+      /*
+       * 只置忙、**不重绘**：整块 `innerHTML` 重建就是用户看到的「点一下卡片在闪」。
+       * 请求在本机是毫秒级返回的，按钮短暂仍可点（真要连点两下，第二次会以新 state 再算一次，
+       * 结果仍然是幂等的翻转）；换来的是点完只重绘一次（收敛时那一次，且内容没变就跳过）。
+       */
       state.busy = true
-      refresh()
       try {
-        await apiSave(servers)
-        toast(t('msg.updated'), 'ok')
-        setTimeout(() => load(), 800)
+        const body = await apiSave(servers)
+        applyServersDto(body)
+        notifySaved(body, t('msg.updated'))
+        void reloadUntilSettled()
       } catch (error) {
         toast(t('msg.updateFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
       } finally {
         state.busy = false
-        refresh()
       }
     }
 
     async function runTest(server) {
       state.test = { serverName: server.serverName, running: true, result: null }
       state.editor = null
-      refresh()
+      refreshTestPanel()
       try {
         const body = await apiTest(server.config)
         state.test = { serverName: server.serverName, running: false, result: body.result || {} }
       } catch (error) {
         state.test = { serverName: server.serverName, running: false, result: { ok: false, error: error instanceof Error ? error.message : String(error), toolsCount: 0 } }
       }
-      refresh()
+      refreshTestPanel()
     }
 
     /**

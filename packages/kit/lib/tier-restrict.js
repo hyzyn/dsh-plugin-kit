@@ -30,6 +30,7 @@ export function tierRestrictedNames(registered, classify, prefixes = []) {
 /**
  * 这一档要不要裁剪。三条 `false` 与 `decideTierCall` 的 allow 硬分支**一一对应**
  * （服务未组合 / auto review / 完全权限）：那三支下工具本来就能用，藏起来是另一种行为。
+ *
  */
 export function shouldRestrictForTier(tier) {
     if (!tier.services.sandboxPolicy)
@@ -112,6 +113,11 @@ function messageOf(error) {
  * 生命周期：与工具注册同一个 `ctx.effect`（插件禁用 / 卸载时一起撤）。**不要放进
  * `registerAll`**：热应用配置会重注册工具，而重注册不该把已有 agent 的裁剪一并撤掉
  * （`agent/created` 不会为老 agent 再发一次，撤了就再也裁不回来）。
+ *
+ * 挂载时还会用 `ctx.inject(['agents'])` 把**在活的** agent 补进台账（`agents.list()`），
+ * 并立刻应用一次。原因：插件热重载 / 升级时，旧实例的 disposer 已经把所有限制撤掉了，而
+ * `agent/created` 不会为已存在的会话再发一次——不补这一步，升级后那些会话会一直看到全部
+ * 工具（A 的裁剪也一起失效），直到会话重开。服务缺失（老宿主）时退化成只依赖 `agent/created`。
  */
 export function attachTierRestrict(ctx, options) {
     const log = options.log ?? ((message) => {
@@ -187,27 +193,25 @@ export function attachTierRestrict(ctx, options) {
             log(`tier-restrict: 档位解析失败（${messageOf(error)}），跳过工具裁剪`);
             return;
         }
-        if (!shouldRestrictForTier(tier)) {
-            // 档位放开了（或服务没组合）：把之前那层撤掉，工具面回到宿主全局集。
-            lift(agent);
-            if (!tier.services.sandboxPolicy && !serviceMissingLogged) {
-                serviceMissingLogged = true;
-                log('tier-restrict: sandboxPolicy 未组合，按现状不裁剪');
-            }
-            return;
+        const restrictedByTier = shouldRestrictForTier(tier);
+        if (!restrictedByTier && !tier.services.sandboxPolicy && !serviceMissingLogged) {
+            serviceMissingLogged = true;
+            log('tier-restrict: sandboxPolicy 未组合，按现状不裁剪');
         }
         const id = agentIdOf(agent);
+        const names = globalToolNames(host);
+        const relevant = options.prefixes.length === 0 ? names : names.filter((name) => options.prefixes.some((prefix) => name.startsWith(prefix)));
+        const deny = restrictedByTier ? tierRestrictedNames(names, options.classify, options.prefixes) : [];
+        // 名单为空才 `lift`：这一支承担「档位放开了，把之前那层撤掉」的语义——`lift` 撤的是上一次
+        // 下发的限制，为空时正好回到宿主全局集。
+        if (deny.length === 0) {
+            lift(agent);
+            return;
+        }
         // **必须**从 agent 自己的 ctx 调（见文件头）：插件 ctx 上没有 scope，restrict 会直接抛。
         const target = toolsOf(agent.ctx);
         if (target === undefined || typeof target.restrict !== 'function') {
             log(`tier-restrict: agent ${id} 没有可用的 scoped tools（宿主太旧或缺 restrict），跳过工具裁剪`);
-            return;
-        }
-        const names = globalToolNames(host);
-        const relevant = options.prefixes.length === 0 ? names : names.filter((name) => options.prefixes.some((prefix) => name.startsWith(prefix)));
-        const deny = tierRestrictedNames(names, options.classify, options.prefixes);
-        if (deny.length === 0) {
-            lift(agent);
             return;
         }
         const current = applied.get(agent);
@@ -219,8 +223,11 @@ export function attachTierRestrict(ctx, options) {
         applied.set(agent, record);
         try {
             record.dispose = target.restrict({ deny });
+            // 数字口径：`kept` 只数**本插件前缀内**被留下的工具，别拿 `relevant.length - deny.length`
+            // ——deny 名单只由注册集投影，两者本应一致；用 includes 再数一遍是防分类表与注册集漂移。
+            const deniedInPrefixes = relevant.filter((name) => deny.includes(name)).length;
             log(`tier-restrict: agent ${id} mode=${tier.mode} → ${options.pkg} 工具 ${String(relevant.length)} → ` +
-                `${String(relevant.length - deny.length)}（裁掉 ${String(deny.length)} 个 write/exec：${deny.join(', ')}）`);
+                `${String(relevant.length - deniedInPrefixes)}（裁掉 ${String(deny.length)} 个 write/exec：${deny.join(', ')}）`);
         }
         catch (error) {
             applied.delete(agent);
@@ -270,16 +277,60 @@ export function attachTierRestrict(ctx, options) {
         seen.delete(agent);
         lift(agent);
     });
+    /*
+     * 把**已经在活的** agent 补进台账并应用一次。
+     *
+     * 这是「插件重载 / 升级」那条路径的唯一兜底：旧实例卸载时 disposer 已经把限制全撤了，而
+     * `agent/created` 不会为已存在的会话再发一次——不补的话，升级后那些会话一直看到全部工具
+     * （A 的裁剪同样失效），直到会话重开。`agents` 服务缺失（老宿主）时静默退化，只依赖事件。
+     */
+    try {
+        const dispose = injectable.inject(['agents'], (serviceCtx) => {
+            const agents = serviceCtx?.agents;
+            const list = agents?.list;
+            if (typeof list !== 'function') {
+                log('tier-restrict: agents 服务没有 list()，跳过在活 agent 的补算（只依赖 agent/created）');
+                return;
+            }
+            let live;
+            try {
+                live = list.call(agents);
+            }
+            catch (error) {
+                log(`tier-restrict: agents.list() 失败（${messageOf(error)}），只依赖 agent/created`);
+                return;
+            }
+            if (!Array.isArray(live))
+                return;
+            let hydrated = 0;
+            for (const agent of live) {
+                try {
+                    // 先记进 seen：这批 agent 之后没有 `agent/created`，工具集再变也还要重算。
+                    applyTo(agent);
+                    hydrated += 1;
+                }
+                catch (error) {
+                    log(`tier-restrict: 补算在活 agent 失败（${messageOf(error)}），保持原工具表`);
+                }
+            }
+            if (hydrated > 0)
+                log(`tier-restrict: 挂载时补算 ${String(hydrated)} 个在活 agent 的工具面`);
+        });
+        if (typeof dispose === 'function')
+            disposers.push(dispose);
+    }
+    catch (error) {
+        log(`tier-restrict: inject agents 失败（${messageOf(error)}），只依赖 agent/created`);
+    }
     /**
-     * 工具集变了就按**新注册集**重算：各插件的工具都是条件注册的（tty 配置加了连接簿 →
-     * `sftp_*` 才出现；docker 能力开关打开后 5 个写 / 执行工具才出现），
-     * 而 `restrict` 是静态名字集合——不重算的话「会话建立后才注册的 write 工具」会一直露着。
+     * 按**当前注册集**重算：各插件的工具都是条件注册的（tty 配置加了连接簿 → `sftp_*` 才出现；
+     * docker 能力开关打开后 5 个写 / 执行工具才出现），而 `restrict` 是静态名字集合——不重算的话
+     * 「会话建立后才注册的 write 工具」会一直露着。
      *
      * 重入是必然的：`restrict()` 自己也会发 `tools/change`。互斥标志挡住那一层嵌套（名单没变时
      * `applyTo` 本来就只做一次集合比较），而「先登记再下发」保证嵌套进来时看到的是新名单。
      */
-    /** 工具集变了就按**新注册集**重算（见 {@link scheduleResync} 的合并说明）。 */
-    const resync = () => {
+    const resyncNow = () => {
         if (resyncing)
             return;
         resyncing = true;
@@ -310,7 +361,7 @@ export function attachTierRestrict(ctx, options) {
             if (closed)
                 return;
             try {
-                resync();
+                resyncNow();
             }
             catch (error) {
                 log(`tier-restrict: tools/change 处理失败（${messageOf(error)}）`);

@@ -385,6 +385,20 @@ approval 服务面都已验证；代价是 ask 发生在调用已展示之后（
   (b) 把 `mcp__` 前缀收进某一家闸并定档（一律 `exec`？按 server 白名单？——前缀过滤机制上支持，
   但「谁替别人的工具声明档位」是策略问题）；(c) 推给宿主 / MCP 侧修，本仓只留这条记录与告警。
 
+  **2026-10-25 决议：走 (b)。** `packages/mcp` 把 `mcp__` 前缀接进 kit 的 `attachTierRestrict`，
+  `classify` 恒返回 `exec`——受限档（`read-only` / `workspace-write`，且非 Auto review、且宿主组合了
+  档位服务）下 agent 的工具表里一个 `mcp__*` 都没有；`danger-full-access` 不裁；宿主未组合档位服务时
+  也不裁（与 docker / tty 同口径）。为什么「一律 exec」而不是按名字猜读写：本仓无法判定任意第三方
+  MCP 工具的语义，**未知风险取最坏类**是可辩护的，按名字猜则会在命名变化时静默失效。
+
+  **同轮评估过、明确放弃的方案**：给每个 server 一个「不给 agent」开关（需要新配置字段 + DTO +
+  保存路径 + 卡片勾选 + 双语文案）。放弃理由：收益只在完全权限档（受限档已被前缀裁剪全覆盖），
+  而开关的热生效要依赖「重写 patch 文件 → 宿主重载 → `tools/change`」这条链（未验证），配置面与
+  收益不成比例。**真正的成本解法是 per-agent 按需挂载**：把某个 server 只挂进需要的 agent 的 scope，
+  工具以 `tool-addition` 出现（`packages/codegraph/src/scope.ts` 的 per-agent 路径是现成样板）。
+  等出现「这台机器的某个 server 不该被某个项目看到」的真实需求再做；在那之前用
+  `pnpm mcp-budget` 让成本可见即可。
+
 ---
 
 ## 附录 A：运行时证据清单（2026-10-07 实测，runtime `0.2.1-alpha.1`）
@@ -458,3 +472,6 @@ approval 服务面都已验证；代价是 ask 发生在调用已展示之后（
    的入参随之从 ctx 改为快照。服务是延迟启动的——捕获完成前闸保持「不闸」，捕获后打
    `tier-gate: <服务> composed` 并升到 `active`。真机复验：tty 与 docker 都打出
    `tier-gate: active`。
+
+- **补充（2026-10-25）**：`mcp__*` 已由 `mcp` 包在 `apply` 里按 `mcp__` 前缀接进**同一套**档位裁剪（kit 的 `attachTierRestrict`），分类**一律 `exec`**——读 / 写语义本仓判不了，未知风险取最坏类。
+- **补充（2026-10-25，同日第二轮）**：`attachTierRestrict` 挂载时会用 `ctx.inject(['agents'])` 的 `agents.list()` 把**在活** agent 补进台账并应用一次。修的是插件热重载 / 升级那条路径：旧实例卸载时 disposer 会把所有限制撤掉，而 `agent/created` 不会为已有会话重发——不补算，那些会话会一直看到全部工具，直到会话重开。

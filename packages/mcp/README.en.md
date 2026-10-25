@@ -19,6 +19,43 @@ Where the settings surface lives depends on the DSH version, but it is always th
 below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
 sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
 
+## Permission tiers and agent visibility
+
+One visibility rule, acting on the **agent tool surface** only: the session tier answers “can this
+tier see it”.
+
+- **Restricted tiers cut every `mcp__*`**: in `apply` the plugin hooks the `mcp__` prefix into the same
+  tool-surface cut that `docker` / `tty` use (the kit’s `attachTierRestrict`, via
+  `ctx.inject(['tools'])`). Under `read-only` / `workspace-write` (not Auto review, and with the tier
+  service composed by the host) the agent’s tool table contains **no `mcp__*` at all**;
+  `danger-full-access` is not cut; a host that has not composed the tier service cuts nothing either
+  (same rule as `docker` / `tty`).
+- **Everything is classified `exec` (the worst class)**: whether a given MCP tool reads or writes cannot
+  be decided by this repo (that is each server’s own semantics), so it errs strict — whenever a tier
+  cuts, every `mcp__*` goes on the deny list. What gets cut is the **tool surface** (a restricted
+  session simply does not see them; it is not a per-call refusal) and this plugin does not attach the
+  per-call gate (`attachTierGate`); the surface is recomputed on **agent creation / tool-set changes**,
+  not on a mid-session tier switch.
+- **Cost is visible**: each row shows how many tools it currently contributes (the DTO’s `toolCount`;
+  **an absent field reads “unknown” — that is an unreadable registry, not 0**), and once the known total
+  passes 80 (`AGENT_TOOL_BUDGET`) a one-line hint sits above the list (disabled rows and rows without a
+  readable count are left out of the total) — every added server costs that much resident tool surface,
+  so disable the rows you do not need (a disabled row registers no tools).
+- **Add up the bill before adding a server**: the repo-root `pnpm mcp-budget`
+  ([`scripts/mcp-tool-budget.mjs`](../../scripts/mcp-tool-budget.mjs)) sends one read-only GET to the
+  **running host** and reports each server’s registered `mcp__<server>__*` tool count plus the total;
+  `--budget N` exits 1 when exceeded, `--json` is machine-readable. It reads the **global registry**,
+  orthogonal to session tiers (a tier-cut tool is still registered); servers mounted in the per-agent
+  scope (codegraph) are **not counted** — a reported `0` means “not in the global layer”, not “no
+  tools”; full semantics live in the script header.
+- **The prefix cut only covers the inherited layer**: the restriction is installed on the agent scope
+  and covers the layer inherited from the plugin layer. Codegraph’s per-agent mounts live on the
+  agent’s own layer (they are not in the global `schemas()` view), so they are **not** affected by this
+  cut.
+
+The criteria and the runtime evidence are in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md),
+under the “`mcp__*`” item.
+
 ## Structure
 
 | File | Description |

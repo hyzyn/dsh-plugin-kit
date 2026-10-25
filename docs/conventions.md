@@ -87,8 +87,8 @@
 | 档 | 包 |
 |---|---|
 | 复杂 | `docker` · `tty` · `codegraph` · `kit` · `loglens` |
-| 中等 | `rss` · `search` |
-| 简单 | `profile` · `env` · `prompt` · `kit-settings` · `mcp` · `all` |
+| 中等 | `rss` · `search` · `mcp` |
+| 简单 | `profile` · `env` · `prompt` · `kit-settings` · `all` |
 
 > **本表是报告，不是判据**：档位由 [`scripts/docs-index.mjs`](../scripts/docs-index.mjs) 按实测行数**现算**
 > 并在每次跑时打出来（「`README.md N 行 / … → 复杂（…）」）。这里手抄一份只为让读文档的人一眼看到分布，
@@ -97,6 +97,9 @@
 > 2026-10-18 按脚本输出逐行对过一次：此前 `kit` 被列在中等档（它 `README.md` 286 行，判据是**复杂**）、
 > `mcp` 被列在中等档（97 行，判据是**简单**），而 `loglens` 根本没进表。三处都是手抄漂移——
 > 这正是本表上面那句「数字会漂」的实例：**判据在脚本里，表只是它的影子**。
+>
+> 2026-10-25 复核：`mcp` 的 README 涨到 157 行，越过 100 行线回到**中等**档
+> （成因：`3ceddae1d` 的渐进披露整改给 README 补了工具面说明），本表已同步。
 
 **三条纪律**：
 
@@ -105,6 +108,9 @@
    这与本文开头「每类知识只在且仅在一个层级展开」是同一条规矩：要收敛的是**重复**，不是篇幅。
    各包 README 的行数与档位由 `node scripts/docs-index.mjs` 现算报出（**只报告，不判红**）。
 2. **中英同结构**：有 `README.en.md` 的包，两版章节结构必须一致（不要求逐字对应）。
+   **守卫**：[`scripts/check-readme-structure.mjs`](../scripts/check-readme-structure.mjs)（`pnpm readme-structure:check`）
+   现算标题层级序列，只比层级不比文字；`pnpm test` 里由 `scripts/test/check-readme-structure.test.ts`
+   调 `checkRepo()` 兜同一道判据（CI 因此也会跑）。
    **简单包免英文**（当前 `kit` / `kit-settings` / `all` 无英文版，属已登记债务）。
 3. **不写死计数**：文档里不写「N 条路由」「N 个测试」这类会漂的数字，改成指向脚本 / CI 输出。
    阈值、命令、基线数字属**技术事实**，只增不改；发现过期或自相矛盾**只加标注，不擅自"修正"**。
@@ -115,7 +121,7 @@
 
 | 包 | 前缀 | 当前范围 |
 |---|---|---|
-| `docker` | `D` | `D01`–`D167` |
+| `docker` | `D` | `D01`–`D168` |
 | `tty` | `D` | `D01`–`D101` |
 | `codegraph` | `CG` | `CG01`–`CG73` |
 | `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D16` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
@@ -151,7 +157,7 @@
    审计时点的行号与 sha 同样只会误导。定位实现用
    `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 5. **台账自洽**：`DEFECTS.md` 的「现状」行数字必须与表内现算一致。
-   四包（`docker` / `tty` / `codegraph` / `kit`）都在
+   五包（`docker` / `tty` / `codegraph` / `kit` / `loglens`）都在
    [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) 的守卫范围内
    （本包自带的那份是 `packages/codegraph/test/defects-ledger.test.ts`，只管 codegraph）。
    新增包时：把它加进守卫的包清单，上表也补一行。
@@ -207,7 +213,7 @@
   `ci.yml` 两个 step 兜底（全仓 + 按推送区间扫消息）。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
   `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 依次扫 i18n、公网 IP、
-  内部标识与 README 常量一致性（`readme-facts`）。
+  内部标识、README 常量一致性（`readme-facts`）与中英 README 结构（`readme-structure`）。
   产物**只跟着「这一笔提交的源码」走**（2026-10-17 修）：只有 `src` / `client-src` 的改动
   已经躺在 index 里的包，它的产物才会被加进来；若某个包已暂存的源码在工作区**还有**未暂存
   改动（产物没法与「提交里的源码」同步），钩子**直接中止**并给出两条出路。为什么要有这条：
@@ -224,6 +230,12 @@
   ROADMAP 是台账，补一段几乎零成本；README 是对外门面，找对应那句要费力，于是它成了漏项。
   **`ROADMAP.md` 不能充当 `README.md` 的替代品**：前者记「这一刀改了什么」，后者答「现在是什么行为」，
   读者与口径都不同。
+  **写之前先判层级**：README 只放「使用 / 配置 / 工具」；**落点 + 门槛**（逐轮实测、测试清单、性能数字、
+  「验证到什么程度」）进 `ROADMAP.md` 的 `## 已完成`；**缺陷的症状 / 根因 / 修法**进 `DEFECTS.md`。
+  判据不是篇幅——复杂档 README 没有行数上界；是**同一事实是否在两处展开**（本仓对「债」的定义）。
+  这一条没有机器守卫（语义判断，写不成判据），靠提交自查：2026-10-23 首次按它做全仓对账，从 4 个包的
+  README 搬走约 600 行（codegraph 的 cohort 证据、docker 的测试清单与 D165 表格、rss 的过渡层落地记录、
+  tty 的 Windows 修复叙事），目的地是各自的 `ROADMAP.md` / `docs/`。
   **可判定的事实由守卫兜底**：README 里**一旦写了常量名**（`` `RESULT_COLUMN_MAX` ``），
   它旁边的那个数就必须与源码常量对得上——判据由 [`scripts/check-readme-facts.mjs`](../scripts/check-readme-facts.mjs)
   统一执行，**全仓所有包**共用一道闸，不需要按包登记：
@@ -561,10 +573,15 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   通用 UI）与公共隔离引导 `scripts/lib/live-harness.mjs` 由 `scripts/test/live-scripts-safety.test.ts`
   按同一口径断言——**包内的进包内用例、跨包的进 L0**）；真机脚本的正确性**只能靠跑一遍**。
 - **每个真机脚本都要有可粘贴入口**：`pnpm --filter <包名> run <条目>`（条目名照各包既有形态，
-  如 tty 的 `integration` / `ssh-smoke`），`pnpm verify:list` 只列不跑地摊开这 9 个脚本的
-  「所在包 / 需要什么 / 是否进 CI / 那条命令」——**不要**做成「一条命令全跑」：它们会起真宿主与
+  如 tty 的 `integration` / `ssh-smoke`），`pnpm verify:list` 只列不跑地摊开全部真机脚本的
+  「所在包 / 需要什么 / 是否进 CI / 那条命令」（个数由脚本现算，不写死）——**不要**做成「一条命令全跑」：它们会起真宿主与
   真 Chrome，半路失败会留下垃圾进程与临时目录。Runbook 见
   [agent-real-test.md § 各包真机入口](./agent-real-test.md#各包真机入口)。
+- **MCP 工具面成本报告（真机档，只读）**：`pnpm mcp-budget`
+  （[`scripts/mcp-tool-budget.mjs`](../scripts/mcp-tool-budget.mjs)）对**正在跑的宿主**发一个 GET，
+  按 server 报出 `mcp__*` 工具面的常驻成本——**加一个 server 之前先跑它**。它是报告工具、没有
+  断言要验，但同样要正在跑的宿主，按「真机脚本进不了 CI」的口径**刻意不进 CI**；已登记进
+  `verify:list` 清单。用法与语义见 [`packages/mcp/README.md`](../packages/mcp/README.md)。
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
 - **负载敏感型 flake 的复现与排查**（2026-10-03 立，起因是三条同型 flake：tty `D95` / `D57`、
@@ -628,7 +645,7 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   是空断言）。
 - **挂载车道（2026-10-03 起进 CI，**政策变更**）**：此前本节的结论是「CI 里没有 DSH」，
   所以 `live-host-smoke` 只在本地跑。那条判断被有意推翻，理由是**它留下了一个没人看的洞**：
-  本仓 9 道 CI 闸门全在验「这棵树自洽吗」，**没有一道会加载 `client.js`**，而 client.js 才是用户
+  本仓 9 道（当时）CI 闸门全在验「这棵树自洽吗」，**没有一道会加载 `client.js`**，而 client.js 才是用户
   实际运行的东西（[vitest.config.ts](../vitest.config.ts) 明写「打包后的 client.js 不在本层测」，
   留在里面的逻辑等于没有测试入口——**tty D61 就是这么漏掉的**）。「构建绿 + 单测绿 + 用户白屏」
   此前在 CI 里完全不可见。
@@ -682,10 +699,13 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   `cmd || { echo …; exit 1; }` 组语法在 Windows 的 cmd 下不成立，而闸门条目要三平台都能当粘贴入口；
   脚本里 `execFileSync` 的 argv 数组直传 git，`:(glob)` magic 与引号语义跨平台一致。
 - **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
-  **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。
-  已知的「相对的是别的仓库」的链接走脚本里的**精确白名单**（当前 3 条，属
+  **锚点**（跨文件与同文件都查），**2026-09-25 起已接进 CI**（ubuntu-only step，与其它发布
+  不变量检查同列）。已知的「相对的是别的仓库」的链接走脚本里的**精确白名单**（当前 3 条，属
   `docs/pr-body-dsh-market.md`——它是提给市场仓库的 PR 正文副本，详见其文件头注释）。
-  **2026-09-25 起已接进 CI**（ubuntu-only step，与其它发布不变量检查同列）。
+  白名单的**静态 3 条**与运行时输出的「另有 2 条在白名单里」是两个口径：3 条里的
+  `../AGENTS.md` 在本仓恰好可解析（本仓根有 AGENTS.md；另两条的目标 CONTRIBUTING.md 与
+  docs/plugins.md 本仓没有），故它从不落空、从不命中白名单——两个数字并排是口径差，非漂移；
+  根 AGENTS.md 若移除，第 3 条会自动生效。
 - **产物闸门：`lib/` 那半边必须带 `:(glob)`**。git 默认 pathspec 下 `*` **不递归目录内容**，
   而 `'packages/*/lib'` 这个模式要求路径以 `lib` 结尾——它**命中 0 个文件**，闸门恒绿。
   实测命中数（命令如下，可随时重算）：
@@ -937,7 +957,7 @@ publishable:check ✔ · dsh-peers:check ✔ · kit-pins:check ✔ · aggregate:
 
 | 车道 | 跑什么 | 频率 | 为什么是这个频率 |
 |---|---|---|---|
-| `ci.yml` 的 `build` 矩阵 | 构建 / 类型 / 1700 条用例 / 13 道不变量闸 / 端到端 smoke | **每次推送** | 正确性——红了就是这棵树有问题，必须立刻知道 |
+| `ci.yml` 的 `build` 矩阵 | 构建 / 类型 / 全量单测（条数以 vitest 输出为准）/ 全部 `*:check` 不变量闸（清单以 ci.yml 为准）/ 端到端 smoke | **每次推送** | 正确性——红了就是这棵树有问题，必须立刻知道 |
 | `ci.yml` 的 `mount-smoke` | 真 DSH + 真浏览器加载 `client.js`（挂载车道） | **每次推送** | 它验的是「用户实际运行的东西能不能跑」，这个洞曾经长期没人看（tty D61） |
 | `nightly.yml` 的 `flake` | 并发跑 N 份全量套件 | **每天一次 + 手动** | 争用型 flake（tty D95 / D57、codegraph CG65）**单跑永不复现**，而「红一次 → 定位 → 根治」的节奏天然按天 |
 | `nightly.yml` 的 `coverage` | coverage 棘轮（宿主半体覆盖率只许升不许降） | **每天一次 + 手动** | 它回答的是**趋势**（还有多少代码从没被执行过），不是正确性；红了不该挡任何人今天的合入 |

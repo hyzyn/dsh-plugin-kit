@@ -46,7 +46,7 @@
     "@hyzyn/dsh-env": "0.3.11",
     "@hyzyn/dsh-kit-settings": "0.2.7",
     "@hyzyn/dsh-loglens": "0.1.3",
-    "@hyzyn/dsh-mcp": "0.3.7",
+    "@hyzyn/dsh-mcp": "0.3.8",
     "@hyzyn/dsh-profile": "0.2.10",
     "@hyzyn/dsh-prompt": "0.2.10",
     "@hyzyn/dsh-rss": "0.4.10",

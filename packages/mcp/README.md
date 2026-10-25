@@ -18,6 +18,33 @@
 `plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
 （0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
 
+## 会话档位与 agent 可见性
+
+可见性规则只有一条，作用在 **agent 的工具面**上：会话档位回答「这一档能不能看见」。
+
+- **受限档裁掉全部 `mcp__*`**：本插件在 `apply` 里经 `ctx.inject(['tools'])` 把 `mcp__` 前缀接进
+  与 `docker` / `tty` 同一套裁剪（kit 的 `attachTierRestrict`）。`read-only` / `workspace-write`
+  （且非 Auto review、且宿主组合了档位服务）下，agent 的工具表里**一个 `mcp__*` 都没有**；
+  `danger-full-access` 不裁；宿主未组合档位服务时也不裁（与 `docker` / `tty` 同口径）。
+- **一律按 `exec`（最坏类）处理**：某个 MCP 工具到底读还是写，本仓判不了（那是各 server 自己的
+  语义），所以宁严勿松——只要这一档要裁，`mcp__*` 全部进裁剪名单。裁的是**工具面**（受限档的会话
+  根本看不见它们，不是调用时才拒），本插件不接逐调用闸（`attachTierGate`）；工具面在**建会话 /
+  工具集变化**时重算，不跟会话中途的档位切换。
+- **成本看得见**：卡片每行显示这一行当前贡献了几个工具（DTO 的 `toolCount`；**字段缺失时显示
+  「未知」——那是读不到注册表，不是 0**），已知工具数合计超过 80 个（`AGENT_TOOL_BUDGET`）时
+  在列表上方给一行提示（停用行与读不到数的行不计入合计）——每加一行 server 都要付这份常驻工具面
+  成本，用不上时停用（停用后不再注册工具）。
+- **加 server 前先算总账**：根仓的 `pnpm mcp-budget`（[`scripts/mcp-tool-budget.mjs`](../../scripts/mcp-tool-budget.mjs)）
+  对**正在跑的宿主**发一个只读 GET，按 server 报出各自注册的 `mcp__<server>__*` 工具数与合计；
+  `--budget N` 超了退出码 1；`--json` 机器可读。它读的是**全局注册表**，与会话档位无关（受限档
+  裁掉不代表没注册），per-agent 作用域挂载的 server（如 codegraph）**不计入**——报 `0` 是
+  「不在全局层」不是「没工具」；完整语义见脚本文件头。
+- **「按 prefix 裁」只裁继承层**：限制下在 agent 作用域上，覆盖的是从插件层继承下来的那一层。
+  codegraph 的 per-agent 挂载挂在 agent 自己的层（不在全局 `schemas()` 视图里），因此**不受**本
+  裁剪影响。
+
+判据与运行期实测见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) 的「`mcp__*`」条。
+
 ## 结构
 
 | 文件 | 说明 |

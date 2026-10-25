@@ -32,10 +32,10 @@
  * 1. **服务缺失 = 不裁剪**：与 `attachTierGate` 同一口径（沙箱服务没组合时「档位」无从谈起，
  *    这时 `resolveSessionTier` 会返回最严的 read-only，照做会把所有工具都裁掉——那是把
  *    「没有档位概念」误判成「只读档」）。
- * 2. **完全权限 / auto review 档不裁剪**：这两档在 `decideTierCall` 里是 allow 硬分支，
+ * 2. **完全权限 / auto review 档不按档位裁剪**：这两档在 `decideTierCall` 里是 allow 硬分支，
  *    工具本来就能用；把它们藏起来等于替用户改档。判据集中在 {@link shouldRestrictForTier}。
- * 3. **只在 `agent/created` 与 `tools/change` 上重算，不跟会话中途的档位切换**：切换后执行期闸
- *    立刻按新档判，但工具面要等下一次 `agent/created` / 工具集变化才重算。
+ * 3. **不跟会话中途的档位切换**：切换后执行期闸立刻按新档判，但工具面要等下一次重算。重算的
+ *    时机有三个：`agent/created`、`tools/change`、插件挂载（补算在活 agent）。
  * 4. **不碰非本插件的工具**：前缀 + 分类表双重过滤（`prefixes` 防同名跨插件误伤）。
  *
  * 第 3 条的取舍：为什么不顺手订 `session/event` 里的 `sandbox/mode`？档位是会话级旋钮，
@@ -91,6 +91,7 @@ export declare function tierRestrictedNames(registered: readonly string[], class
 /**
  * 这一档要不要裁剪。三条 `false` 与 `decideTierCall` 的 allow 硬分支**一一对应**
  * （服务未组合 / auto review / 完全权限）：那三支下工具本来就能用，藏起来是另一种行为。
+ *
  */
 export declare function shouldRestrictForTier(tier: TierContext): boolean;
 /**
@@ -101,6 +102,11 @@ export declare function shouldRestrictForTier(tier: TierContext): boolean;
  * 生命周期：与工具注册同一个 `ctx.effect`（插件禁用 / 卸载时一起撤）。**不要放进
  * `registerAll`**：热应用配置会重注册工具，而重注册不该把已有 agent 的裁剪一并撤掉
  * （`agent/created` 不会为老 agent 再发一次，撤了就再也裁不回来）。
+ *
+ * 挂载时还会用 `ctx.inject(['agents'])` 把**在活的** agent 补进台账（`agents.list()`），
+ * 并立刻应用一次。原因：插件热重载 / 升级时，旧实例的 disposer 已经把所有限制撤掉了，而
+ * `agent/created` 不会为已存在的会话再发一次——不补这一步，升级后那些会话会一直看到全部
+ * 工具（A 的裁剪也一起失效），直到会话重开。服务缺失（老宿主）时退化成只依赖 `agent/created`。
  */
 export declare function attachTierRestrict(ctx: Context, options: TierRestrictOptions): () => void;
 export {};

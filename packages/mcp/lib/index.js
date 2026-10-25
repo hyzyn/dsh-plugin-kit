@@ -10,7 +10,7 @@
  * 浏览器半体（./client）通过 /api/dsh-mcp/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, readManagedBlock, registerLiteralSection, spliceManagedBlock as spliceManagedBlockKit, spawnPortable, stripEmptyFlowSequenceRoot, terminateChild, } from '@hyzyn/dsh-kit';
+import { attachTierRestrict, createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, readManagedBlock, registerLiteralSection, spliceManagedBlock as spliceManagedBlockKit, spawnPortable, stripEmptyFlowSequenceRoot, terminateChild, } from '@hyzyn/dsh-kit';
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -31,6 +31,17 @@ const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 const PROBE_TIMEOUT_MS = 25_000;
 const MAX_JSON_BODY_BYTES = 512 * 1024;
 const MAX_TOOLS_REPORTED = 200;
+/**
+ * MCP 工具面的**成本阈值**（个）：卡片据此在「合计超过多少」时给一行提示。
+ *
+ * 为什么这个数在**宿主侧**而不是浏览器半体：它是「成本可见性」这条产品判据的取值，卡片只是
+ * 渲染器。放客户端等于同一件事两份真相（README 引用哪个都对不上另一个），而且换阈值要同时改
+ * 两个文件、漏一个就静默漂移。所以 DTO 带 `toolBudget`，客户端只负责比较。
+ *
+ * 也**刻意 `export`**：README 里写「超过 N 个（`AGENT_TOOL_BUDGET`）」时，`scripts/check-readme-facts.mjs`
+ * 只收集 `src/` 下的导出常量——私有常量会让这处引用恒绿（文档与代码一起漂也没人发现）。
+ */
+export const AGENT_TOOL_BUDGET = 80;
 /**
  * `reconnect` 的默认值——**具名常量而不是散在 validateReconnect 里的字面量**。
  *
@@ -472,6 +483,8 @@ export function externalNameClashes(rows, external) {
 function toolNamespacePrefix(serverName) {
     return ('mcp__' + serverName + '__').replace(INVALID_TOOL_NAME_CHARS, '_');
 }
+/** 把所有 `mcp__*` 工具归到「本插件接进档位裁剪」的同一族（见 apply 里的 attachTierRestrict）。 */
+export const MCP_TIER_PREFIXES = ['mcp__'];
 /**
  * 统计每个 serverName **当前**在工具注册表里注册了几个工具 —— 「连上没有」唯一零成本的证据。
  *
@@ -576,6 +589,7 @@ export function buildServersDto(ctx) {
         ...(managed.fileError !== undefined ? { fileError: managed.fileError } : {}),
         servers,
         patchFile: managed.patchFile,
+        toolBudget: AGENT_TOOL_BUDGET,
         // conflicts 只放交集（逐行 conflict 的同一份判据），外部清单另走 externalServers——
         // 曾经这里塞的是 external 原样，于是「没有任何重名」也会常驻一条冲突横幅（issue #5）。
         conflicts: externalNameClashes(managed.rows.map((row) => ({ id: row.id, serverName: row.config.serverName })), externalServers),
@@ -1256,6 +1270,7 @@ function makeRoutes(ctx) {
                     writeJson(res, 500, { error: '写入补丁文件失败: ' + (error instanceof Error ? error.message : String(error)) });
                     return;
                 }
+                // DTO 必须在**保存之后**读：它要反映刚落地的行集与工具数。
                 const dto = buildServersDto(ctx);
                 writeJson(res, 200, { ok: true, applied: true, ...dto });
             },
@@ -1281,11 +1296,12 @@ function makeRoutes(ctx) {
  * 插件本体
  * ------------------------------------------------------------------ */
 const MCP_GUIDANCE = '本机装有 dsh-mcp-config 插件（MCP 服务器配置）：用户提到「MCP 配置 / MCP 服务器」时，引导他打开 设置 → 插件配置 → MCP 服务器配置 卡片，别手改托管区块。';
-export function apply(ctx, config) {
-    if (config?.enabled === false)
+export function apply(ctx, rawConfig) {
+    const config = (rawConfig ?? {});
+    if (config.enabled === false)
         return;
     const routes = makeRoutes(ctx);
-    const announce = config?.announceToAgent !== false;
+    const announce = config.announceToAgent !== false;
     ctx.inject(['webServer'], (webCtx) => {
         webCtx.effect(() => {
             const server = webCtx.webServer;
@@ -1301,6 +1317,31 @@ export function apply(ctx, config) {
                 }
             };
         }, 'dsh-mcp-config: routes');
+    });
+    /*
+     * agent 工具面：**按会话档位裁掉全部 `mcp__*`**。
+     *
+     * 为什么 MCP 工具需要一个**本仓的**闸：宿主侧 `dsh-mcp-client` 用裸 `ctx.tools.register()` 注册
+     * 它们，没有任何档位 / 审批 / sandbox 代码，三个插件闸也只认各自的前缀（判据与运行期实测见
+     * docs/permission-tier-plan.md 的「`mcp__*`」条）——所以只读档下模型仍能直接调
+     * `mcp__jenkins__triggerBuild`。本插件是这些 server 的配置方，按 `mcp__` 前缀把它们接进同一套
+     * 档位裁剪；**读 / 写语义本仓判不了，一律按最坏的 `exec` 处理**（宁严勿松）。
+     *
+     * 位置：`ctx.inject(['tools'])` 的 effect 体里（本插件**没有**声明式 `inject: ['tools']`，
+     * 在插件 ctx 上读 `tools` 会撞 cordis 的 inject 守卫）。传 `toolsCtx` 而不是插件 `ctx`：
+     * `attachTierRestrict` 要用 tools 的全局 `schemas()` 现算 deny 名单，拿不到会**静默退化**成
+     * 不裁剪（与 docker `src/index.ts` 同款写法，原因逐行记在那里）。
+     *
+     * 零 server 时这里是**纯 no-op**：`schemas()` 里没有 `mcp__*` ⇒ deny 为空 ⇒ 一次
+     * `restrict()` 都不发生、一行日志都不打（订阅本身留着，否则「之后才加上的 server」要等重启）。
+     */
+    ctx.inject(['tools'], (toolsCtx) => {
+        toolsCtx.effect(() => attachTierRestrict(toolsCtx, {
+            pkg: 'mcp',
+            prefixes: MCP_TIER_PREFIXES,
+            // 前缀已经把它们限定在 `mcp__*`；分类恒为 exec，见上面的理由。
+            classify: () => 'exec',
+        }), 'dsh-mcp-config: agent tool visibility');
     });
     if (announce) {
         ctx.inject(['systemPrompt'], (promptCtx) => {

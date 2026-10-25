@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 十个**真机验证脚本**的清单（**只列不跑**）。
+ * **真机脚本**（验证脚本 + 成本报告工具）的清单（**只列不跑**；条数以 `VERIFY_SCRIPTS` 现算为准，不写死）。
  *
  * ## 为什么只列不跑
  *
  * [docs/conventions.md](../docs/conventions.md#真机脚本与-ci-接线) 写明「真机脚本进不了 CI」：
  * 它们要真实宿主、真实浏览器、真实 PTY。给它们补 CI 是错的方向——真正缺的是**可发现**：
  * 在 [`docs/agent-real-test.md`](../docs/agent-real-test.md) 之外，没人知道有哪几个脚本、
- * 各自要什么、入口叫什么。所以这里只做一件事：把 10 个脚本连同「所在包 / 需要什么 /
+ * 各自要什么、入口叫什么。所以这里只做一件事：把全部真机脚本连同「所在包 / 需要什么 /
  * 是否进 CI / 一条可粘贴命令」摊开。
  *
  * **刻意不做 `pnpm verify` 全跑**：这些脚本会起真宿主、真 Chrome，半路失败会留下垃圾进程与
@@ -20,7 +20,7 @@
  *     所以这份清单同时是「入口接线有没有漏」的现算核对（与 defects-table 的「现算 vs 手抄」
  *     同一套路）；
  *   - **需要什么**：来自 2026-09-30 那一轮逐脚本真跑分诊（结论与命令见该轮记录），
- *     每条都对应一次真实执行，不是读代码猜的。
+ *     每条都对应一次真实执行，不是读代码猜的（后补条目的实跑记录在各自行尾的 note 里）。
  *
  * 用法：
  *   node scripts/verify-list.mjs      # = pnpm verify:list（同一份实现）
@@ -32,12 +32,13 @@ import { fileURLToPath } from 'node:url'
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * 清单的**唯一正文**（10 条，按「谁维护」分组排列）。
+ * 清单的**唯一正文**（按「谁维护」分组排列；条数不写死，新增脚本就往数组加一行）。
  *
  * - `entry`：各包 `package.json` 里的脚本名；`undefined` = 通用脚本（不属于任何包），
  *   命令直接写成 `node scripts/<file>` 形态。
  * - `needs`：跑它之前必须有什么（分诊实测结论）。
  * - `note`：分诊里发现的、必须跟着脚本一起被看见的事（没有就不写）。
+ * - `noHost`：`true` = 不起宿主 / 浏览器（尾注的「其余 N 个会起真宿主」由它现算）。
  */
 export const VERIFY_SCRIPTS = [
   {
@@ -45,18 +46,21 @@ export const VERIFY_SCRIPTS = [
     pkg: 'codegraph',
     entry: 'agent-scope-smoke',
     needs: '无需宿主 / 浏览器（起真 MCP 子进程，隔离临时目录）',
+    noHost: true,
   },
   {
     file: 'verify-codegraph-agent-integration.mjs',
     pkg: 'codegraph',
     entry: 'agent-integration-smoke',
     needs: '无需宿主 / 浏览器（最小 Cordis 根 + 真插件）',
+    noHost: true,
   },
   {
     file: 'verify-cg69-real-cordis.mjs',
     pkg: 'codegraph',
     entry: 'cg69-real-cordis-smoke',
     needs: '无需宿主 / 浏览器（真 cordis + 真 agent 服务，隔离临时目录）',
+    noHost: true,
     note: 'CG69：把「agents 服务迟到」在真 cordis 上真实演一遍——单测用的是假 ctx，测不到 strict-get 语义',
   },
   {
@@ -112,6 +116,15 @@ export const VERIFY_SCRIPTS = [
     command: 'node scripts/verify-issue-13-14.mjs --from test',
     note: '✅ 2026-10-19 三腿实测：test 14 PASS / 2 WARN、logs-test 16/16、desktop 6 PASS / 8 WARN，0 FAIL',
   },
+  {
+    file: 'mcp-tool-budget.mjs',
+    pkg: '（通用）',
+    entry: undefined,
+    // 根 `package.json` 有别名条目 `pnpm mcp-budget`；通用脚本按本清单惯例渲染 node 直跑形态
+    command: 'node scripts/mcp-tool-budget.mjs',
+    needs: '正在跑的宿主（装了 dsh-mcp）；只发一个只读 GET /api/dsh-mcp/servers——**加 server 前先跑**的工具面成本报告（`--budget N` 超则退出码 1，`--json` 机器可读）',
+    note: '✅ 2026-10-25 实跑（127.0.0.1:3082）：合计 55 个工具；per-agent 挂载的行报 0——「不在全局层」不是「没工具」（见文件头三条语义）',
+  },
 ]
 
 /** 读一个包的 `scripts`（读不到 = 空对象）。 */
@@ -150,7 +163,7 @@ function ciText(repoRoot) {
  * 现算清单（供 CLI 与单测共用）。
  *
  * @param repoRoot - 仓库根。
- * @returns 每项 `{ file, pkg, entry, needs, note, exists, inCi, command, registered }`。
+ * @returns 每项 `{ file, pkg, entry, needs, note, noHost, exists, inCi, command, registered }`。
  */
 export function collectVerifyList(repoRoot = REPO_ROOT) {
   const ci = ciText(repoRoot)
@@ -179,7 +192,7 @@ export function collectVerifyList(repoRoot = REPO_ROOT) {
 /** 渲染成可粘贴的清单文本。 */
 export function formatVerifyList(items) {
   const lines = [
-    '[verify-list] 九个真机验证脚本（**只列不跑**；真机脚本进不了 CI，见 docs/conventions.md § 真机脚本与 CI 接线）',
+    `[verify-list] ${items.length} 个真机脚本（**只列不跑**；真机脚本进不了 CI，见 docs/conventions.md § 真机脚本与 CI 接线）`,
     '',
   ]
   const w = (text, width) => String(text).padEnd(width, ' ')
@@ -196,8 +209,10 @@ export function formatVerifyList(items) {
   lines.push('')
   if (missing.length > 0) lines.push(`  ✘ 清单里有 ${String(missing.length)} 个脚本不存在：${missing.map((item) => item.file).join('、')}`)
   if (unregistered.length > 0) lines.push(`  ✘ ${String(unregistered.length)} 个入口未登记到包 package.json：${unregistered.map((item) => `${item.pkg}/${String(item.entry)}`).join('、')}`)
+  const noHostCount = items.filter((item) => item.noHost === true).length
   lines.push('  # 可安全聚合的子集（**待批准，本轮刻意没接线**）：agent-scope-smoke + agent-integration-smoke')
-  lines.push('  #   —— 这两个不起宿主、不碰 ~/.dsh，跑完即回收；其余 7 个会起真宿主 / 真 Chrome。')
+  lines.push(`  #   —— 这两个不起宿主、不碰 ~/.dsh，跑完即回收；其余 ${items.length - noHostCount} 个要真宿主 / 真 Chrome（自起或外部正在跑）。`)
+  lines.push('  #   ——（verify-cg69-real-cordis 亦不起宿主，需真 cordis + 真 agent 服务，同样不在可聚合子集里。）')
   return lines.join('\n')
 }
 

@@ -8,6 +8,17 @@ export interface Config {
     announceToAgent?: boolean;
 }
 /**
+ * MCP 工具面的**成本阈值**（个）：卡片据此在「合计超过多少」时给一行提示。
+ *
+ * 为什么这个数在**宿主侧**而不是浏览器半体：它是「成本可见性」这条产品判据的取值，卡片只是
+ * 渲染器。放客户端等于同一件事两份真相（README 引用哪个都对不上另一个），而且换阈值要同时改
+ * 两个文件、漏一个就静默漂移。所以 DTO 带 `toolBudget`，客户端只负责比较。
+ *
+ * 也**刻意 `export`**：README 里写「超过 N 个（`AGENT_TOOL_BUDGET`）」时，`scripts/check-readme-facts.mjs`
+ * 只收集 `src/` 下的导出常量——私有常量会让这处引用恒绿（文档与代码一起漂也没人发现）。
+ */
+export declare const AGENT_TOOL_BUDGET = 80;
+/**
  * `reconnect` 的默认值——**具名常量而不是散在 validateReconnect 里的字面量**。
  *
  * 为什么单独提出来：这三个数在 README 的排障表里是**判据的一部分**（「`maxAttempts`
@@ -118,6 +129,8 @@ export declare function externalNameClashes(rows: Array<{
     id: string;
     serverName: string;
 }>;
+/** 把所有 `mcp__*` 工具归到「本插件接进档位裁剪」的同一族（见 apply 里的 attachTierRestrict）。 */
+export declare const MCP_TIER_PREFIXES: readonly string[];
 export declare function buildServersDto(ctx: Context): {
     servers: Array<Record<string, unknown>>;
     fileError?: string;
@@ -132,6 +145,8 @@ export declare function buildServersDto(ctx: Context): {
         id: string;
         serverName: string;
     }>;
+    /** 成本可见性的阈值（见 `AGENT_TOOL_BUDGET`）：卡片拿它跟已知工具数合计比较，自己不留第二份。 */
+    toolBudget: number;
 };
 interface ProbeResult {
     ok: boolean;
@@ -184,5 +199,5 @@ interface RouteLogger {
  * 都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
  */
 export declare function routeGate(req: ReqLike, res: ResLike, method: string, logger?: RouteLogger): Promise<boolean>;
-export declare function apply(ctx: Context, config?: Config): void;
+export declare function apply(ctx: Context, rawConfig?: Config): void;
 export {};
