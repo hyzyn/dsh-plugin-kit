@@ -50,7 +50,7 @@
     "@hyzyn/dsh-profile": "0.2.11",
     "@hyzyn/dsh-prompt": "0.2.11",
     "@hyzyn/dsh-rss": "0.4.11",
-    "@hyzyn/dsh-search": "0.4.12",
+    "@hyzyn/dsh-search": "0.4.13",
     "@hyzyn/dsh-tty": "0.33.0"
   },
   "devDependencies": {
