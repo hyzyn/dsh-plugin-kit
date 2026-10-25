@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-loglens",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "dsh 日志查询插件：把 Loki / Elasticsearch / OpenSearch 归一化成一个查询面（面板查询区 + loglens_* 工具）；Docker 走选项 0 的指路。",
   "type": "module",
   "engines": {
@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",
-    "@hyzyn/dsh-kit": "0.7.2"
+    "@hyzyn/dsh-kit": "0.7.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

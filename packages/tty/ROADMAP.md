@@ -1554,6 +1554,6 @@ scope，宿主第一句就抛）；③ 完全权限 / Auto review / 宿主未组
 enabled 开关 / agent 销毁 / 卸载撤销）。夹具新增 `test/fake-tools.ts`（宿主 `ToolRuntime` 的 restrict 语义逐条
 标注源码行号）与 `test/mount-plugin.ts` 的 agent / 档位 / 卸载三个面。
 
-**现状边界**：① 会话中途切档不重算工具面（下一次 `agent/created` 或工具集变化才对上；执行期闸逐调用读实时
-档位，安全不受影响）；② 三条 inject 服务快照在 tty 里自建了一份（kit 的 `attachTierGate` 私有），二期上收
+**现状边界**：① 会话中途切档当时不重算工具面（下一次 `agent/created` 或工具集变化才对上；执行期闸逐调用
+读实时档位，安全不受影响）——**2026-10-25 已收**（kit 侧实现，见根 [ROADMAP.md](../../ROADMAP.md) 第 10 项的状态段）；② 三条 inject 服务快照在 tty 里自建了一份（kit 的 `attachTierGate` 私有），二期上收
 到 `@hyzyn/dsh-kit` 并让 docker 复用——那一步要 bump kit 版本并按发布门槛走。

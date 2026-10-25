@@ -581,12 +581,19 @@ export function registerLoglensTools(deps: ToolDeps): void {
     name: 'loglens_facets',
     isConcurrencySafe: () => true,
     /*
-     * deferLoading（渐进披露 T6，小步试点）：请求宿主把 facets 挪出首屏工具表、用到再加载。
-     * 它是五个工具里最「按需」的一个（回答「谁在报错 / 时间分布」才用），而 dsh-tools 0.1.2-rc.1
-     * 已在 schema 投影里保留该标记。宿主是否真的执行（首屏不出现、激活路径可达）以真机验证为准——
-     * 验证不过就撤掉这一行（README.zh 明说这只是**请求**，提供方执行语义有上限）。
+     * 这里**刻意没有** `deferLoading: true`（loglens D10）。
+     *
+     * T6 试点把它当「省首屏」的手段，试点用例把「标记到底生不生效」明确推给「API 侧行为，要真
+     * LLM 轨迹才能观测」——而 2026-10-25 把宿主侧读穿了：**这条路由上基线里的 deferred 工具没有
+     * 激活路径**。`dsh-llm` 的 `projectToolUpdates` 里 offered 集合是
+     * `history.tools.filter(t => !t.deferLoading)`（显式排除了它们），而 `dsh-agent-loop` 只对
+     * 「上次 header 里没有的名字」发 `tool-addition`——基线里的名字永远不会被再点一次。于是
+     * 模型**从头到尾看不见 facets**，而公告还在教它用（只有工具集中途变化、它被算成「新增」时
+     * 才短暂可调）。
+     *
+     * 代价（明写）：它的定义回到首屏，≈1.2KB ≈340 token/请求。这是「工具真的存在」的价钱，
+     * 不是可以省的开销——真省必须走「注册面收窄」（按配置不注册），不是请求宿主藏起来。
      */
-    deferLoading: true,
     description: '聚合：按字段分组（terms）看「谁在报错」/  按时间分桶（date_histogram）看趋势。'
       + '这是回答「某个服务健不健康」的正确工具——拉一页行到本地数既慢又错。'
       + '返回里的 otherCount（没列出来的桶还有多少条）与 countErrorUpperBound（计数误差上界）是**截断与近似信号**，别当成精确值。'

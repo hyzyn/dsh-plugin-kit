@@ -42,6 +42,14 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
  */
 export const VERIFY_SCRIPTS = [
   {
+    file: 'verify-tier-restrict.mjs',
+    pkg: 'kit',
+    entry: 'tier-smoke',
+    needs: '无需宿主 / 浏览器（真 cordis 根 + 真 tools / sessions / sandboxPolicy 服务 + 真 kit 模块，隔离临时目录）',
+    noHost: true,
+    note: '受限档的 agent 侧实测：write/exec 与 mcp__* 不可见、升/降档都跟着重算；顺带实测 per-agent 挂载的 own-layer 豁免',
+  },
+  {
     file: 'verify-codegraph-agent-scope.mjs',
     pkg: 'codegraph',
     entry: 'agent-scope-smoke',
@@ -100,6 +108,14 @@ export const VERIFY_SCRIPTS = [
     pkg: 'mcp',
     entry: 'tools-smoke',
     needs: '正在跑的宿主（装了 dsh-mcp / dsh-search）；会写宿主 MCP 配置并**逐条写回**',
+  },
+  {
+    file: 'verify-mcp-on-demand.mjs',
+    pkg: 'mcp',
+    entry: 'on-demand-smoke',
+    needs: '无需宿主 / 浏览器（进程内真 cordis 根 + 真 dsh-mcp-client 挂一个真 stdio MCP 服务器 + 真插件，隔离临时 DSH_HOME）',
+    noHost: true,
+    note: '按需加载的工具面实测：on-demand 下可见面里没有 mcp__probe__*、mcp_servers / mcp_load 在、装载后工具出现且**真调用**拿得到回显、另一个 agent 不受影响——与 tier-smoke 分工（那条验档位契约，这条验按需装载）',
   },
   {
     file: 'verify-client-ui.mjs',

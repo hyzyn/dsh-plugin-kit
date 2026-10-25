@@ -1244,25 +1244,29 @@ describe('schema 文案守卫（渐进披露 T4：把实现手册从 schema 里�
     expect(texts.level).toContain('这一页')
   })
 
-  it('deferLoading 只在 loglens_facets 上（渐进披露 T6 的试点边界）', () => {
+  it('一个工具都不许带 deferLoading（loglens D10：这条路由上装了也调不到）', () => {
     /*
-     * 真宿主验证记录（2026-10-24，cohort 0.2.1-rc.3）：
-     *   · 宿主消费该标记——dsh-llm-deepseek 把它转成 `defer_loading: true` 发给 LLM API
-     *     （dsh-system-prompt 组装与 dsh-tools 的 schemaOf 都原样保留）；
-     *   · 起真宿主（隔离 DSH_HOME + 工作区符号链接）boot：注册无失败告警、section 无崩溃。
-     * 模型侧首屏是否隐藏定义是 API 侧行为（要真 LLM 会话的轨迹才能观测）；按任务口径先只
-     * 试点 facets、不推广（sources 恒常驻）。这条守卫钉住「标记只在 facets」——推广或撤销都要改这里。
+     * 曾经这里钉的是「标记**只在** facets 上」（渐进披露 T6 的小步试点）。2026-10-25 把它推翻了：
+     * 试点当时把「标记生不生效」推给「API 侧行为，要真 LLM 轨迹才能观测」，而实际是**宿主侧**就
+     * 已经决定了——
+     *   · `dsh-llm/lib/types/content.js` 的 `projectToolUpdates`：`offered = history.tools
+     *     .filter(t => !t.deferLoading)`，基线里的 deferred 工具**不进** offered 集合，只有
+     *     `tool-addition` 能把它们放进去；
+     *   · `dsh-agent-loop`：`additions = tools.filter(t => !previousNames.has(t.name))`，而
+     *     `previousNames` 就是上一条 `request/header` 的工具名——**基线里已有的名字永远不会**再
+     *     发一次 addition。
+     * 两条合起来：首屏就带 `deferLoading` 的工具，模型**从头到尾看不见**（只有工具集中途变化、
+     * 它被算成「新增」时才短暂可调）。而 loglens 的公告还在教模型用 `loglens_facets`。
+     *
+     * 所以断言从「只在 facets 上」翻成「一个都不许有」。要重新引入，前提是先有一条真的激活路径
+     * （宿主提供 tool search，或我们自己在会话中途重注册）——那时改这条用例，并写清路径。
      */
     const { add, captured } = capture()
     registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => fakeBackend(), add })
-    const flags = [...captured.entries()].map(([name, definition]) => [name, (definition as { deferLoading?: true }).deferLoading === true])
-    expect(Object.fromEntries(flags)).toEqual({
-      loglens_sources: false,
-      loglens_search: false,
-      loglens_fields: false,
-      loglens_facets: true,
-      loglens_context: false,
-    })
+    const flagged = [...captured.entries()]
+      .filter(([, definition]) => (definition as { deferLoading?: true }).deferLoading === true)
+      .map(([name]) => name)
+    expect(flagged, '带 deferLoading 的工具在基线里不可激活（D10），会变成模型看不见的死工具').toEqual([])
   })
 })
 

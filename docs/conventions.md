@@ -125,7 +125,7 @@
 | `tty` | `D` | `D01`–`D101` |
 | `codegraph` | `CG` | `CG01`–`CG73` |
 | `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D16` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
-| `loglens` | `D` | `D01`–`D09`（2026-10-11 建包当天开始记；`D02`/`D03` 是 P2 真机验收抓到的 Loki 分页缺陷，`D04` 是「来源」下拉显示与状态不一致，`D05`/`D06`/`D07` 是真机试用报的「聚合 → 命中 → 上下文」主链路三处卡壳，`D08` 是 facets 越过来源索引范围，`D09` 是真机验收抓到的「上下文重查在高密度窗口里取不到锚点」，见其 `DEFECTS.md`） |
+| `loglens` | `D` | `D01`–`D10`（2026-10-11 建包当天开始记；`D02`/`D03` 是 P2 真机验收抓到的 Loki 分页缺陷，`D04` 是「来源」下拉显示与状态不一致，`D05`/`D06`/`D07` 是真机试用报的「聚合 → 命中 → 上下文」主链路三处卡壳，`D08` 是 facets 越过来源索引范围，`D09` 是真机验收抓到的「上下文重查在高密度窗口里取不到锚点」，`D10` 是 `deferLoading` 把 `loglens_facets` 变成「基线里永不激活」的死工具，见其 `DEFECTS.md`） |
 | 其它包 | 需要时自定，从 `01` 起 | — |
 
 > 表里的上界数字（以及各包 `DEFECTS.md` 文件头自称的范围、「接在 `Dxx` 之后」、跨包互称的范围、
@@ -582,6 +582,15 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   按 server 报出 `mcp__*` 工具面的常驻成本——**加一个 server 之前先跑它**。它是报告工具、没有
   断言要验，但同样要正在跑的宿主，按「真机脚本进不了 CI」的口径**刻意不进 CI**；已登记进
   `verify:list` 清单。用法与语义见 [`packages/mcp/README.md`](../packages/mcp/README.md)。
+- **档位裁剪的宿主契约验收（真机档，进程内）**：`pnpm --filter @hyzyn/dsh-kit run tier-smoke`
+  （[`scripts/verify-tier-restrict.mjs`](../scripts/verify-tier-restrict.mjs)）。它在**进程内**搭一个最小
+  但真实的 cordis 根（真 `tools` / `sessions` / `sandboxPolicy` 服务 + 三个包的真实分档表），验
+  「受限档的 agent 到底看不看得见 `mcp__*` 与 write/exec」以及**升 / 降档都跟着重算**——单测用的是假
+  `tools` 服务，`restrict()` 的 scope 语义（只裁继承层、名单必须来自全局视图）只有真宿主能给。
+  **它不进 CI**（要装好的 DSH 运行时），静态形状（先隔离再挂 / 补丁比对被断言 / 只删 harness 的目录 /
+  不起宿主）由 `scripts/test/live-scripts-safety.test.ts` 的 `IN_PROCESS_SCRIPTS` 组钉住。
+  逐条判据与**这一层刻意不覆盖什么**见
+  [agent-real-test.md § 受限档的工具面（tier）：一条必跑清单](./agent-real-test.md#受限档的工具面tier一条必跑清单)。
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
 - **负载敏感型 flake 的复现与排查**（2026-10-03 立，起因是三条同型 flake：tty `D95` / `D57`、

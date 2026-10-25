@@ -5,8 +5,8 @@
 > 拿到任意一个 `（loglens Dxx）`：先查 [§1 编号索引表](#1-编号索引表) 知道**当年坏了什么**，
 > 再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D09` 是 `packages/loglens` 内部序列，与 `docker` / `tty` 的 `Dxx`
-> **不共享**；跨包引用请写「loglens D01 / docker D03」。新缺陷接在 `D09` 之后，
+> **编号是硬契约**：`D01–D10` 是 `packages/loglens` 内部序列，与 `docker` / `tty` 的 `Dxx`
+> **不共享**；跨包引用请写「loglens D01 / docker D03」。新缺陷接在 `D10` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 >
 > **本文不含**：逐条 postmortem（现场复现 / 回归 / 反向验证）。那是 commit message / PR
@@ -27,6 +27,7 @@
 | D07 | `loglens_facets` 在 0 桶时只原样回报，而 0 桶的两种成因（字段是空壳 / 窗口里压根没日志）指向**相反**的下一步；区分它们的唯一判据（窗口内命中数）当时根本没请求（`track_total_hits: false`） | src/backends/elastic.ts · src/execute.ts |
 | D08 | `loglens_facets` 的聚合请求打的是**裸 `/_search`**（`targetAccess()` 只回 origin、索引表达式被剥掉），而 `query` / `_count` / `_field_caps` 三条路都带着它——同一张卡片里「榜 / 时间分布」与「行」来自**不同的数据集**（`.kibana_*` 与别的应用索引被一起聚合进来），界面上看不出来 | src/backends/elastic.ts |
 | D09 | `loglens_context` 用「一个窗口 + `limit = before+after+1` + `backward`」取上下文，而 `backward` 取的是窗口里**最新**的那几条——高密度窗口里（实测 455 条/分钟，60s 窗 636 条只取 11 条）锚点根本没进这一页，连「`ts` 精确相等」那一档都命不中，工具报「锚点行没在这次重查里返回」 | src/tools.ts |
+| D10 | `loglens_facets` 首屏带 `deferLoading: true`，而这条路由上**基线里的 deferred 工具没有激活路径**（`dsh-llm` 的 offered 集合显式排除它们，`dsh-agent-loop` 只对「上次 header 里没有的名字」发 `tool-addition`）——模型从头到尾看不见 facets，而插件公告还在教模型用它；只有工具集中途变化、它被算成「新增」时才短暂可调 | src/tools.ts |
 
 ## 2. 编号字典（这段代码为什么长这样）
 
@@ -221,9 +222,39 @@ backward`」。`backward` 取的是窗口里**最新**的 11 条，而 `before` 
 **守卫**：新增一条**按窗口真过滤**的用例（锚点前后各铺 200 条、每 100ms 一条），它钉住的就是旧的
 坏形状；实测把实现退回单窗口 → 该用例立刻红，报的正是真机上那句「锚点行没在这次重查里返回」。
 
+### `D10` 基线里带 `deferLoading` 的工具，模型**永远**等不到它
+
+**症状**：`loglens_facets` 在模型侧根本不存在——不是「首屏省了、用到再加载」，是**一直不可用**。
+公告（`LOGLENS_GUIDANCE`）还在教模型「`loglens_facets` 看分组与时间分布」，于是模型要么看不见这个工具，
+要么按公告去调一个没声明的名字。偶发现象：打开一次设置保存（工具被重注册）之后它又能调了——因为那次
+重注册让它在下一份 header 里成了「新增」，而新增是有激活路径的。
+
+**根因**（两处源码，缺一不可）：
+- `dsh-llm/lib/types/content.js` 的 `projectToolUpdates`：`offered = history.tools.filter(t => !t.deferLoading)`。
+  基线里的 deferred 工具**不进** offered 集合——注释原文是「Explicitly deferred baseline tools become
+  available only after their first retained addition」；
+- `dsh-agent-loop`：`additions = tools.filter(t => !previousNames.has(t.name))`，而 `previousNames` 取自上一条
+  `request/header` 的工具名。**基线里已有的名字永远不会**再发一次 `tool-addition`。
+
+两条合起来的判据一句话：`deferLoading` 只对「会话中途新增的工具」有意义；放在**首屏**的工具上，
+它不是「延迟加载」，是「永不加载」。
+
+**为什么单测没抓到**：T6 的试点用例断言的是「标记**只在** facets 上」，并把「标记到底生不生效」明确
+推给「API 侧行为，要真 LLM 会话的轨迹才能观测」。那句话把判据推到了一个**不需要真机也能读出来**的
+地方——宿主自己的投影代码就写着排除规则。**「需要真机」有时是「没人去读那两行」的委婉说法。**
+
+**修法**：撤掉那一行 `deferLoading: true`（`src/tools.ts`），定义回到首屏。
+
+**代价（明写）**：facets 的定义 ≈1,195 B ≈340 token/请求 回到每次请求里。这是「工具真的存在」的价钱；
+真要省必须走**注册面收窄**（按配置不注册这个工具），而不是请求宿主把它藏起来——藏起来的工具模型调不到，
+省下的 token 买的是一个不存在的功能。
+
+**守卫**：`test/tools.test.ts` 的断言从「标记只在 facets 上」翻成「**一个工具都不许带** `deferLoading`」，
+并在注释里写明重新引入的前提（宿主提供 tool search，或我们自己在会话中途重注册出一条激活路径）。
+
 ## 现状
 
-**已修 9 / 待修 0**，编号至 `D09`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 10 / 待修 0**，编号至 `D10`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 ## 维护规则

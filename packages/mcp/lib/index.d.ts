@@ -6,6 +6,14 @@ export interface Config {
     enabled?: boolean;
     /** 是否向 agent 注入插件能力公告。默认开。 */
     announceToAgent?: boolean;
+    /**
+     * MCP 工具面怎么进 agent 的工具表。默认 `'eager'`（= 今天的行为：全部一次给出）。
+     *
+     * `'on-demand'` 时**工具仍由宿主注册**，但本插件给每个 agent 装一条限制把全部 `mcp__*`
+     * 摘掉，只留 `mcp_servers`（看有哪些 server）与 `mcp_load`（按需装载）——请求体里不再有那
+     * 几十 KB 的 MCP 工具定义，模型需要时自己装载。实现与判据见 `src/agent-surface.ts`。
+     */
+    agentToolLoading?: 'eager' | 'on-demand';
 }
 /**
  * MCP 工具面的**成本阈值**（个）：卡片据此在「合计超过多少」时给一行提示。
@@ -131,6 +139,15 @@ export declare function externalNameClashes(rows: Array<{
 }>;
 /** 把所有 `mcp__*` 工具归到「本插件接进档位裁剪」的同一族（见 apply 里的 attachTierRestrict）。 */
 export declare const MCP_TIER_PREFIXES: readonly string[];
+/**
+ * 本插件自己注册的两个 agent 工具（`agentToolLoading: 'on-demand'` 才有）。
+ *
+ * **必须 `export`** 并单独成表：档位接线要把它们一起交给 `attachTierRestrict`（否则受限档下
+ * 仍会露出它们——而 `mcp_load` 会改变工具面，等于把「只能看」的档位又开了一条装配通道）。
+ * 它们是**前缀之外**的独立名字：`mcp_servers` / `mcp_load` 都不以 `mcp__` 开头，不会被那条
+ * 宿主族前缀顺带覆盖，所以必须逐个列进 `prefixes`。
+ */
+export declare const MCP_OWN_TOOL_NAMES: readonly string[];
 export declare function buildServersDto(ctx: Context): {
     servers: Array<Record<string, unknown>>;
     fileError?: string;

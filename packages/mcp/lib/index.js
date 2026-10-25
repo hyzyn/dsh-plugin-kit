@@ -11,10 +11,12 @@
  * loopback-only 信任围栏。
  */
 import { attachTierRestrict, createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, readManagedBlock, registerLiteralSection, spliceManagedBlock as spliceManagedBlockKit, spawnPortable, stripEmptyFlowSequenceRoot, terminateChild, } from '@hyzyn/dsh-kit';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import yaml from 'js-yaml';
+import { attachAgentSurface } from './agent-surface.js';
 export const name = 'mcp-config';
 export const inject = [];
 /* ------------------------------------------------------------------ *
@@ -440,7 +442,29 @@ function liveStatus(ctx, id) {
  * `externalNameClashes()`。事故背景见 issue #5（把清单原样当冲突渲染，导致不重名也报警）。
  */
 function externalMcpEntries(ctx, managedIds) {
-    const loader = ctx.loader;
+    /*
+     * 取 loader 必须**两条路都试、都不许外抛**：`ctx.loader` 是宿主 loader 服务的属性读取，在
+     * 声明式 inject 缺失 / 最小宿主里会撞 cordis 的守卫直接抛，而这里的调用方（`buildServersDto`）
+     * 一旦被抛穿，「外部实例清单」会连带整张 DTO 一起失败——按需加载那一层把它吞成「一个 server
+     * 都没有」，于是 on-demand **静默退化**成「全都不给」。真机 harness 里就是这么撞上的
+     * （见 `scripts/verify-mcp-on-demand.mjs` 的 `loader` 提供那段注释）。
+     */
+    let loader;
+    try {
+        loader = ctx.loader;
+    }
+    catch {
+        loader = undefined;
+    }
+    if (loader === undefined) {
+        // 反射层取法：未声明的服务在这里返回 undefined，而不是抛。
+        try {
+            loader = ctx.get?.('loader');
+        }
+        catch {
+            loader = undefined;
+        }
+    }
     if (loader === undefined)
         return [];
     const out = [];
@@ -485,6 +509,15 @@ function toolNamespacePrefix(serverName) {
 }
 /** 把所有 `mcp__*` 工具归到「本插件接进档位裁剪」的同一族（见 apply 里的 attachTierRestrict）。 */
 export const MCP_TIER_PREFIXES = ['mcp__'];
+/**
+ * 本插件自己注册的两个 agent 工具（`agentToolLoading: 'on-demand'` 才有）。
+ *
+ * **必须 `export`** 并单独成表：档位接线要把它们一起交给 `attachTierRestrict`（否则受限档下
+ * 仍会露出它们——而 `mcp_load` 会改变工具面，等于把「只能看」的档位又开了一条装配通道）。
+ * 它们是**前缀之外**的独立名字：`mcp_servers` / `mcp_load` 都不以 `mcp__` 开头，不会被那条
+ * 宿主族前缀顺带覆盖，所以必须逐个列进 `prefixes`。
+ */
+export const MCP_OWN_TOOL_NAMES = ['mcp_servers', 'mcp_load'];
 /**
  * 统计每个 serverName **当前**在工具注册表里注册了几个工具 —— 「连上没有」唯一零成本的证据。
  *
@@ -1296,6 +1329,10 @@ function makeRoutes(ctx) {
  * 插件本体
  * ------------------------------------------------------------------ */
 const MCP_GUIDANCE = '本机装有 dsh-mcp-config 插件（MCP 服务器配置）：用户提到「MCP 配置 / MCP 服务器」时，引导他打开 设置 → 插件配置 → MCP 服务器配置 卡片，别手改托管区块。';
+/** 空配置的提示（契约固定文案；模型据此把用户引到卡片）。 */
+const SERVERS_EMPTY_NOTE = '本机还没有配置任何 MCP server。引导用户打开「设置 → 插件配置 → MCP 服务器配置」卡片添加';
+/** 一个都没装载时的提示（on-demand 的默认态）。 */
+const SERVERS_ON_DEMAND_NOTE = 'MCP 工具默认不加载：先用本工具看有哪些 server，再用 mcp_load({servers:[…]}) 装载需要的';
 export function apply(ctx, rawConfig) {
     const config = (rawConfig ?? {});
     if (config.enabled === false)
@@ -1319,7 +1356,9 @@ export function apply(ctx, rawConfig) {
         }, 'dsh-mcp-config: routes');
     });
     /*
-     * agent 工具面：**按会话档位裁掉全部 `mcp__*`**。
+     * agent 工具面：**两层**，各自独立、互不干扰。
+     *
+     * ## ① 档位层（`attachTierRestrict`）：受限档裁掉全部 `mcp__*`
      *
      * 为什么 MCP 工具需要一个**本仓的**闸：宿主侧 `dsh-mcp-client` 用裸 `ctx.tools.register()` 注册
      * 它们，没有任何档位 / 审批 / sandbox 代码，三个插件闸也只认各自的前缀（判据与运行期实测见
@@ -1327,21 +1366,244 @@ export function apply(ctx, rawConfig) {
      * `mcp__jenkins__triggerBuild`。本插件是这些 server 的配置方，按 `mcp__` 前缀把它们接进同一套
      * 档位裁剪；**读 / 写语义本仓判不了，一律按最坏的 `exec` 处理**（宁严勿松）。
      *
+     * 本插件自己的两个工具也一起接进这张表（`MCP_OWN_TOOL_NAMES`）：`mcp_servers` 是只读的索引，
+     * `mcp_load` 会**改变工具面**、按最坏类算 `exec` —— 受限档装不回来，安全边界因此不变。
+     *
+     * ## ② 按需加载层（`attachAgentSurface`，`agentToolLoading: 'on-demand'` 才有）
+     *
+     * 工具照旧注册，但给每个 agent 装一条限制把全部 `mcp__*` 摘掉，只留 `mcp_servers` / `mcp_load`；
+     * 两条限制在宿主 scope 层里**取交集**，所以「受限档 + 已装载」仍是零 `mcp__*`。
+     * `'eager'`（默认）时 `attachAgentSurface` 收到 `enabled: false`，不订阅、不注册工具、一次
+     * `restrict()` 都不额外发——默认档位的行为与改动前逐字节一致。
+     *
      * 位置：`ctx.inject(['tools'])` 的 effect 体里（本插件**没有**声明式 `inject: ['tools']`，
      * 在插件 ctx 上读 `tools` 会撞 cordis 的 inject 守卫）。传 `toolsCtx` 而不是插件 `ctx`：
-     * `attachTierRestrict` 要用 tools 的全局 `schemas()` 现算 deny 名单，拿不到会**静默退化**成
-     * 不裁剪（与 docker `src/index.ts` 同款写法，原因逐行记在那里）。
+     * 两条限制都要用 tools 的全局 `schemas()` 现算 deny 名单，拿不到会**静默退化**成不裁剪
+     * （与 docker `src/index.ts` 同款写法，原因逐行记在那里）。
      *
      * 零 server 时这里是**纯 no-op**：`schemas()` 里没有 `mcp__*` ⇒ deny 为空 ⇒ 一次
      * `restrict()` 都不发生、一行日志都不打（订阅本身留着，否则「之后才加上的 server」要等重启）。
      */
     ctx.inject(['tools'], (toolsCtx) => {
+        toolsCtx.effect(() => {
+            const mode = config.agentToolLoading === 'on-demand' ? 'on-demand' : 'eager';
+            const disposers = [];
+            let surface;
+            /**
+             * 托管行（`buildServersDto` 是唯一读取逻辑：卡片、路由、两个工具与装载白名单共用它）。
+             *
+             * 传 `toolsCtx` 而不是插件 `ctx`：它读得到工具注册表，`toolCount`（真实连接态的证据）才
+             * 有意义；插件 ctx 上读不到就只会一路 `null`。
+             */
+            const serverRows = () => {
+                try {
+                    return buildServersDto(toolsCtx).servers;
+                }
+                catch {
+                    return [];
+                }
+            };
+            /** 可装载的 server 名（顺序 = 托管行顺序）。 */
+            const serverNames = () => {
+                const names = [];
+                for (const row of serverRows()) {
+                    const name = row.serverName;
+                    if (typeof name === 'string' && name !== '')
+                        names.push(name);
+                }
+                return names;
+            };
+            /*
+             * 先挂按需加载、再注册两个工具：限制层要在「第一个 agent 出现」之前就在监听
+             * （`agent/created` 不会补发），而工具注册只是让模型有入口。
+             */
+            disposers.push(attachAgentSurface(toolsCtx, {
+                enabled: mode === 'on-demand',
+                log: (message) => console.log('[dsh-mcp-config] ' + message),
+                listServers: serverNames,
+                onReady: (control) => {
+                    surface = control;
+                },
+            }));
+            const tools = toolsCtx.tools;
+            if (mode === 'on-demand' && tools !== undefined && typeof tools.register === 'function') {
+                const definitions = [
+                    defineTool({
+                        name: 'mcp_servers',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占）。
+                        isConcurrencySafe: () => true,
+                        description: '列出本机配置的 MCP server（名称 / 传输方式 / 启用状态 / 工具数 / 当前会话是否已装载）。MCP 工具默认不加载：先用本工具看有哪些 server，再用 mcp_load({servers:[…]}) 装载需要的。',
+                        parameters: {},
+                        output: {
+                            schema: {
+                                type: 'object',
+                                additionalProperties: false,
+                                properties: {
+                                    mode: { type: 'string', enum: ['eager', 'on-demand'], required: true },
+                                    servers: {
+                                        type: 'array',
+                                        required: true,
+                                        items: {
+                                            type: 'object',
+                                            additionalProperties: false,
+                                            properties: {
+                                                server: { type: 'string', required: true },
+                                                transport: { type: 'string', required: true },
+                                                state: { type: 'string', enum: ['enabled', 'disabled'], required: true },
+                                                // null = 读不到工具注册表（不是 0）
+                                                tools: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                                                loaded: { type: 'boolean', required: true },
+                                            },
+                                        },
+                                    },
+                                    note: { type: 'string' },
+                                },
+                            },
+                            render: (_args, value) => {
+                                const result = value;
+                                const lines = [`MCP server（${result.mode}）：${String(result.servers.length)} 个`];
+                                for (const row of result.servers) {
+                                    const count = row.tools === null ? '工具数未知' : `${String(row.tools)} 个工具`;
+                                    lines.push(`- ${row.server}（${row.transport}，${row.state}，${count}，${row.loaded ? '已装载' : '未装载'}）`);
+                                }
+                                if (result.note !== undefined)
+                                    lines.push(result.note);
+                                return [{ type: 'text', text: lines.join('\n') }];
+                            },
+                        },
+                        async execute(_args, exec) {
+                            let rows = [];
+                            let fileError;
+                            try {
+                                const dto = buildServersDto(toolsCtx);
+                                rows = dto.servers;
+                                fileError = dto.fileError;
+                            }
+                            catch {
+                                fileError = '读取托管区块失败';
+                            }
+                            const loaded = new Set(mode === 'on-demand' ? (surface?.loadedServers(exec?.agent) ?? []) : []);
+                            const servers = rows.map((row) => {
+                                const server = typeof row.serverName === 'string' ? row.serverName : '';
+                                return {
+                                    server,
+                                    transport: typeof row.transport === 'string' ? row.transport : '',
+                                    state: row.disabled === true ? 'disabled' : 'enabled',
+                                    tools: typeof row.toolCount === 'number' ? row.toolCount : null,
+                                    loaded: loaded.has(server),
+                                };
+                            });
+                            let note;
+                            if (fileError !== undefined)
+                                note = `读不到托管区块：${fileError}`;
+                            else if (servers.length === 0)
+                                note = SERVERS_EMPTY_NOTE;
+                            else if (mode === 'on-demand' && servers.every((row) => !row.loaded))
+                                note = SERVERS_ON_DEMAND_NOTE;
+                            return { mode, servers, ...(note === undefined ? {} : { note }) };
+                        },
+                    }),
+                    defineTool({
+                        name: 'mcp_load',
+                        // 会改变当前会话的工具面（写操作）：不适合同轮并发，保持默认的独占调度。
+                        description: '装载（或卸载）MCP server 的工具到当前会话：参数是该 server 的 serverName 列表（来自 mcp_servers），传空数组 = 全部卸掉。只装载认识的 server，未知名字会被忽略并回报；返回装载后当前会话真正能调用的 MCP 工具名。',
+                        parameters: {
+                            servers: {
+                                type: 'array',
+                                required: true,
+                                items: { type: 'string' },
+                                description: '要装载的 serverName 列表；传空数组 = 全部卸掉',
+                            },
+                        },
+                        output: {
+                            schema: {
+                                type: 'object',
+                                additionalProperties: false,
+                                properties: {
+                                    loaded: { type: 'array', required: true, items: { type: 'string' } },
+                                    tools: { type: 'array', required: true, items: { type: 'string' } },
+                                    unknown: { type: 'array', required: true, items: { type: 'string' } },
+                                    note: { type: 'string' },
+                                },
+                            },
+                            render: (_args, value) => {
+                                const result = value;
+                                const lines = [];
+                                if (result.loaded.length === 0) {
+                                    lines.push('当前会话没有装载任何 MCP server：工具表里没有任何 MCP 工具。');
+                                }
+                                else {
+                                    lines.push(`已装载：${result.loaded.join(', ')}（当前会话可见 ${String(result.tools.length)} 个 MCP 工具）`);
+                                }
+                                if (result.tools.length > 0)
+                                    lines.push('可调用：' + result.tools.join(', '));
+                                if (result.note !== undefined)
+                                    lines.push(result.note);
+                                return [{ type: 'text', text: lines.join('\n') }];
+                            },
+                        },
+                        async execute(args, exec) {
+                            const input = (args ?? {});
+                            const requested = Array.isArray(input.servers)
+                                ? input.servers.filter((name) => typeof name === 'string')
+                                : [];
+                            const agent = exec?.agent;
+                            if (agent === undefined || agent === null) {
+                                return { loaded: [], tools: [], unknown: [], note: '这个工具需要会话上下文' };
+                            }
+                            if (surface === undefined) {
+                                return { loaded: [], tools: [], unknown: [], note: '按需加载没有挂载（宿主缺少 tools 服务），MCP 工具保持原样' };
+                            }
+                            const result = surface.load(agent, requested);
+                            const note = result.unknown.length === 0
+                                ? undefined
+                                : `未知 server：${result.unknown.join(', ')}；可用：${serverNames().join(', ') || '(无)'}`;
+                            return {
+                                loaded: result.loaded,
+                                tools: result.tools,
+                                unknown: result.unknown,
+                                ...(note === undefined ? {} : { note }),
+                            };
+                        },
+                    }),
+                ];
+                for (const definition of definitions) {
+                    try {
+                        disposers.push(tools.register(definition));
+                    }
+                    catch (error) {
+                        // 单个工具注册失败不该把整批带下去（与 docker 的 add 同一口径）。
+                        console.warn(`[dsh-mcp-config] agent 工具注册失败：${error instanceof Error ? error.message : String(error)}`);
+                    }
+                }
+                console.log('[dsh-mcp-config] agent tool loading: on-demand（' + MCP_OWN_TOOL_NAMES.join(', ') + '）');
+            }
+            return () => {
+                // 先撤按需加载的限制、再撤工具（撤销走的是 agent scope 上的 disposer，工具还挂着时最干净）。
+                for (const dispose of disposers.splice(0).reverse()) {
+                    try {
+                        dispose();
+                    }
+                    catch {
+                        /* 已注销 */
+                    }
+                }
+                surface = undefined;
+            };
+        }, 'dsh-mcp-config: agent tool visibility');
+        /*
+         * 档位层：与上面同一个 effect 体，但**独立**于按需加载（eager 档也照旧生效）。
+         *
+         * 两处分工见函数头 `①`：档位裁的是「按当前档位不可能成功」的 write / exec 与全部 `mcp__*`；
+         * 按需加载裁的是「这个会话还没说要」的 `mcp__*`。交集语义由宿主的 scope 层保证。
+         */
         toolsCtx.effect(() => attachTierRestrict(toolsCtx, {
             pkg: 'mcp',
-            prefixes: MCP_TIER_PREFIXES,
-            // 前缀已经把它们限定在 `mcp__*`；分类恒为 exec，见上面的理由。
-            classify: () => 'exec',
-        }), 'dsh-mcp-config: agent tool visibility');
+            // 「mcp__*」是宿主族（一律按最坏类 exec）；两个自有工具单独列名，`mcp_servers` 只读、
+            // `mcp_load` 改工具面（exec）。前缀外的工具一个都不裁。
+            prefixes: [...MCP_TIER_PREFIXES, ...MCP_OWN_TOOL_NAMES],
+            classify: (tool) => (tool === 'mcp_servers' ? 'read' : 'exec'),
+        }), 'dsh-mcp-config: agent tool visibility (tier)');
     });
     if (announce) {
         ctx.inject(['systemPrompt'], (promptCtx) => {

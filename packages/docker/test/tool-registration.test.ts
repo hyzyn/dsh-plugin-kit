@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.js'
+import { MAX_RESULT_LINES } from '../src/docker.js'
 
 /*
  * 隔离 DSH_HOME：`apply()` 会按 dshHome() 拼能力授权存储的路径（kit 的 capabilityPaths）。
@@ -86,6 +87,8 @@ interface FakeSchemaProperty {
 
 interface FakeToolDef {
   name: string
+  /** 模型看到的工具描述（`docker_logs_grep` 的返回行上限从这里读，见下面那条用例）。 */
+  description?: string
   output?: {
     schema?: {
       type?: string
@@ -214,6 +217,18 @@ describe('有目标：只读工具全部注册', () => {
     // 返回侧行闸的两个字段必须在 properties 里，否则「结果里有未声明字段」会被宿主校验拒掉
     expect(schema?.properties?.truncatedForSize).toMatchObject({ type: 'boolean' })
     expect(schema?.properties?.notes).toMatchObject({ type: 'array', items: { type: 'string' } })
+  })
+
+  /*
+   * 返回侧行上限的**运行时**一面：模型看到的 description 必须带着 MAX_RESULT_LINES 的实际值。
+   * 它与 test/result-limit-single-source.test.ts 的源码形状断言是一对——那条防「又硬编码回去」，
+   * 这条防「描述漂了」（例如常量改了、描述还留在旧值上）。
+   */
+  it('docker_logs_grep 的 description 带出 MAX_RESULT_LINES 的实际值（返回行上限只有一份真相源）', () => {
+    const harness = mountPlugin({ dockerBin: 'docker', allowMutations: false, allowExec: false, targets: [{ name: '本机', kind: 'local' }] })
+    const tool = harness.registry.find((item) => item.name === 'docker_logs_grep')
+    expect(tool, 'docker_logs_grep 未注册').toBeDefined()
+    expect(tool?.description, 'description 没有把返回行上限带进模型可见文本').toContain(String(MAX_RESULT_LINES))
   })
 })
 

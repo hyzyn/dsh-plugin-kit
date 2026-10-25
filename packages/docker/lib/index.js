@@ -4,7 +4,7 @@ import z from '@deepseek-ai/schemastery';
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { auditCapabilityUse, audited } from './audit.js';
-import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
+import { DockerApi, MAX_RESULT_LINES, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
 import { auditLoadedGrants, attachTierGate, attachTierRestrict, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGranted, capabilityGrantVia, capabilityPaths, createElevationManager, dshHome, sharedGrantStore, } from '@hyzyn/dsh-kit';
 /*
@@ -2519,7 +2519,9 @@ const plugin = definePlugin({
                 name: 'docker_logs_grep',
                 // 只读工具：与同轮其它工具并发执行（同 docker_logs）
                 isConcurrencySafe: () => true,
-                description: '在容器日志里做**服务端检索**：扫全部历史（可用 since/until 圈时间窗），返回命中行及其前后 context 行。与 docker_logs 的分工：报错就在最近尾部 → docker_logs（更便宜）；埋在大量日志深处 / 找关键词、异常码、请求 ID / 特定时间段 → 本工具。默认字面子串匹配（grep -F 语义，零 ReDoS）；regexp=true 才按 JS 正则解释。返回如实报告 matched（总命中数，即使没返回）/ scanned（扫描行数）/ limited / truncated——「只扫到这些」与「扫完了没更多」是可区分的。返回行数另有上限（4000）：超了截到上限并给 truncatedForSize 与 notes（缩小 limit / 减小 context / 加 since·until），matched 仍报全量。',
+                // 返回侧行上限只认 src/docker.ts 的 MAX_RESULT_LINES：描述里用插值，别再写字面量
+                // （这里曾把上限写死在描述里，改常量时描述不跟着变；守卫见 test/result-limit-single-source.test.ts）
+                description: `在容器日志里做**服务端检索**：扫全部历史（可用 since/until 圈时间窗），返回命中行及其前后 context 行。与 docker_logs 的分工：报错就在最近尾部 → docker_logs（更便宜）；埋在大量日志深处 / 找关键词、异常码、请求 ID / 特定时间段 → 本工具。默认字面子串匹配（grep -F 语义，零 ReDoS）；regexp=true 才按 JS 正则解释。返回如实报告 matched（总命中数，即使没返回）/ scanned（扫描行数）/ limited / truncated——「只扫到这些」与「扫完了没更多」是可区分的。返回行数另有上限（${String(MAX_RESULT_LINES)}）：超了截到上限并给 truncatedForSize 与 notes（缩小 limit / 减小 context / 加 since·until），matched 仍报全量。`,
                 parameters: {
                     target: targetParam,
                     id: { type: 'string', required: true, description: '容器名或 ID' },

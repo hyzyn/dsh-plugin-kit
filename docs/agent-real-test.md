@@ -132,22 +132,29 @@ dsh --profile <测试 profile> --patch <port.yml>
 
 ## 各包真机入口
 
-**入口一律写成一条可粘贴命令**（包的脚本条目在各自 `package.json` 里）。仓库根那 10 个
-`scripts/verify-*.mjs` 也能被一条命令列全：`pnpm verify:list`——它现算「脚本 / 所在包 /
-需要什么 / 是否进 CI / 那条命令」，且**只列不跑**（它们会起真宿主与真 Chrome，聚合执行会把
-垃圾进程与临时目录留在机器上）。
+**入口一律写成一条可粘贴命令**（包的脚本条目在各自 `package.json` 里）。仓库根**每个**
+`scripts/verify-*.mjs`（条数由目录现算，不在本文写死）也能被一条命令列全：`pnpm verify:list`
+——它现算「脚本 / 所在包 / 需要什么 / 是否进 CI / 那条命令」，且**只列不跑**（它们会起真宿主与
+真 Chrome，聚合执行会把垃圾进程与临时目录留在机器上）。
 
 | 包 | 一条可粘贴命令 | 需要什么 |
 |---|---|---|
 | `tty` | `pnpm --filter @hyzyn/dsh-tty run integration`（真实 PTY 全链路）、`… run ssh-smoke`（内存 sshd）、`… run probe-smoke`、`… run probe-route-smoke`、`… run sftplimits-smoke`、`… run preview`（Chrome，**mock** 宿主，界面场景）、`… run windows-smoke`（仅 Windows 有意义）；「真宿主 + 真浏览器驱动面板」见 [§ 驱动真宿主的面板](#驱动真宿主的面板浏览器半体的真机验证） | 真实 PTY / Chrome / Windows |
 | `codegraph` | `pnpm --filter @hyzyn/dsh-codegraph run agent-scope-smoke`（最小 Cordis 根）、`… run agent-integration-smoke`（真 `AgentRegistry` 驱动真 `agent/created`）、`… run indexforce-smoke`、`… run host-contract-smoke`（真宿主路由与开关）、`… run client-ui-smoke`（自起隔离宿主 + 真 Chrome） | 真 DSH 宿主 / 真 CLI / Chrome |
-| `mcp` | `pnpm --filter @hyzyn/dsh-mcp run http-smoke`（streamable-http 的三种响应模式；只打 `/api/dsh-mcp/test`，不写配置）、`… run tools-smoke`（保存 → 热加载 → 工具真的进注册表；会写宿主 MCP 配置并**逐条写回**） | 正在跑的宿主（装了 `dsh-mcp`；`tools-smoke` 的 L2 那半还需 `dsh-search` 与一次 agent 回合） |
+| `kit` | `pnpm --filter @hyzyn/dsh-kit run tier-smoke`（= [`verify-tier-restrict.mjs`](../scripts/verify-tier-restrict.mjs)：真 cordis 根 + 真 `tools` / `sessions` / `sandboxPolicy` 服务 + **三个包的真实分档表**，逐条打宿主契约） | 装好的 DSH 运行时（`pnpm link-dsh-runtime` 之后解析到宿主那一份）；**不要**宿主在跑、不要浏览器 |
+| `mcp` | `pnpm --filter @hyzyn/dsh-mcp run http-smoke`（streamable-http 的三种响应模式；只打 `/api/dsh-mcp/test`，不写配置）、`… run tools-smoke`（保存 → 热加载 → 工具真的进注册表；会写宿主 MCP 配置并**逐条写回**）、`… run on-demand-smoke`（= [`verify-mcp-on-demand.mjs`](../scripts/verify-mcp-on-demand.mjs)：进程内真 cordis 根 + 真 `dsh-mcp-client` 挂真 stdio 探针服务器 + 真插件，验 `agentToolLoading: 'on-demand'` 的工具面） | 正在跑的宿主（装了 `dsh-mcp`；`tools-smoke` 的 L2 那半还需 `dsh-search` 与一次 agent 回合）；`on-demand-smoke` **不要**宿主在跑、不要浏览器，只要装好的 DSH 运行时 |
 | `rss` | `pnpm --filter @hyzyn/dsh-rss run opml-smoke`（OPML 导入 / 导出 / 回环；先存基线，收尾写回并重刷 digest） | 正在跑的宿主 + token + 真 Chrome（受限沙箱加 `--chrome-arg --no-sandbox`） |
 | `docker` | `pnpm --filter @hyzyn/dsh-docker run smoke`（`smoke.mjs` + `route-smoke.mjs` + `client-smoke.mjs`，hermetic，能进 CI）；真机项需真 docker daemon | 真 docker |
 | 通用（L0） | `node scripts/verify-client-ui.mjs --url <宿主> --token <token>`（应用壳 + 逐插件配置页；`--mode boot` 只验壳；**token 从哪来见 [§ 驱动真宿主的面板](#驱动真宿主的面板浏览器半体的真机验证）**）、`pnpm verify:list`（只列不跑） | 正在跑的宿主 + token + 真 Chrome |
 | 通用（L0） | `pnpm verify:issue-13-14`（= `node scripts/verify-issue-13-14.mjs --from test`）：外部测评 issue #13/#14 那 11 条的**真机**验收，**自起**隔离 home + 真宿主，逐条打真路由；`--from <profile>` 换模板、`--as <名>` 绕开 CLI 独占的 `desktop` | 装了 DSH 的任意机器（不需要外部宿主，也不碰真实 `~/.dsh`） |
 | 全部 | `pnpm live-smoke`（= `node scripts/live-host-smoke.mjs`；干净机器 `node scripts/live-host-smoke.mjs --bootstrap --strict`）（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
 | 全部 | `node scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
+
+> **`tier-smoke` 与 `on-demand-smoke` 的分工**：两者都**不进 CI、不 spawn 宿主**（进程内挂真模块 +
+> 隔离 `DSH_HOME`），但验的是两件事——`tier-smoke`（kit）验**档位契约**：`tools.restrict()` 的投影
+> 让受限档看见什么、升 / 降档怎么重算、per-agent 挂载为什么不受前缀裁剪；`on-demand-smoke`（mcp）验
+> **按需加载**：`on-demand` 下 agent 默认看不见 `mcp__*`、`mcp_servers` / `mcp_load` 装回来之后
+> **真调用**拿到结果、且只影响那一个 agent。改档位实现看前者，改按需加载看后者。
 
 > ✅ **2026-09-30 真机分诊 → 复跑 → 修复的结论**：
 > `… run client-ui-smoke` 与 `node scripts/verify-client-ui.mjs --mode full` 当时**全红**（UI8/UI9/UI11/UI12），
@@ -353,6 +360,41 @@ Windows 侧则是 junction，必须建成 junction（建目录符号链接要特
 > **撤销** `~/.dsh/cordis.patch.yml` 里 `dsh-codegraph mcp managed` 那条全局托管行。
 > 所以「真机跑完发现真实补丁少了一条」**未必是脚本泄漏**——先看是不是有 `per-agent`
 > 的宿主正在跑（本轮就是）。判定方法：受控实验（隔离宿主跑一轮，看真实补丁哈希变不变）。
+
+## 受限档的工具面（tier）：一条必跑清单
+
+档位裁剪（`tools.restrict`）是**唯一一处「模型看不看得见」由宿主投影决定**的机制：名单由我们算，
+但「从 agent 的工具表里真的消失」是宿主的行为。所以它的验收必须落在宿主那一侧，单测（求交、去重、
+退化、撤销、切档重算逻辑）**不能**代替。
+
+一条命令（`pnpm verify:list` 把它列在 `kit` 行）：
+
+```sh
+pnpm --filter @hyzyn/dsh-kit run tier-smoke
+```
+
+逐条判据（脚本是 10 条 `PASS`；**任一条 FAIL 就是宿主契约变了**，先去看 `dsh-tools` 的
+`restrict` / `view` 语义，别先怀疑分类表）：
+
+| # | 断言 | 通过长什么样 | 为什么这条必须在真机验 |
+|---|---|---|---|
+| 1 | 服务组合 | `PASS 真宿主服务组合起来了（tools / sessions / sandboxPolicy / agents）` | 缺 `sessionProjections` 时 `sandboxPolicy` 整个不发布，裁剪会**静默退化**成不裁 |
+| 2 | 受限档的 agent 视图 | 视图只剩分类表里 `read` 的那批，`docker_action` / `tty_open` / `sftp_write` / `mcp__probe__*` **一个都不在** | 名单对不对是我们的事，「真的消不消失」是 `restrict()` 的 scope 语义 |
+| 3 | **升档** | 会话日志追加 `sandbox/mode=danger-full-access` → 视图回到注册面全体 | 这条是 2026-10-25 那次改动的验收：改动前**纹丝不动** |
+| 4 | **降档** | 再追加 `workspace-write` → 视图回到 `read` 那批、exec 类全消失（**前置是第 3 条真的成立**） | 与 ③ 相反的方向，两个方向都要收 |
+| 5 | 会话隔离 | 只切 A 的档位，B 的视图**一个名字都没变** | 档位是会话级旋钮；重算越界在行为上不可见，只在 `resolve()` 次数上可见 |
+| 6 | per-agent 挂载的边界 | 挂进 agent 自己那一层的工具**仍然可见**，且把它的名字写进 `deny` 会被整体拒绝 | 宿主只裁**继承层**（own-layer 豁免）；这条此前只有散文，没有实测 |
+| 7 | 收尾自证 | 真实 `~/.dsh/cordis.patch.yml` **逐字节未变** | `docs/agent-real-test.md` § 三条硬约束 ① 的「必须自证」 |
+
+**这一层刻意不覆盖什么**（别把 PASS 读大）：
+
+- **不是真 DSH 宿主**：脚本在进程内挂真 cordis 根与真服务（与 `verify-codegraph-agent-integration.mjs`
+  同一条腿），所以它证明的是**宿主契约**，不是「用户的 GUI 点一下切档菜单会怎样」——那一层要真宿主
+  与真页面，且 GUI 的档位菜单不在任何插件手里。
+- **没有真 agent 回合**：断言读的是 `tools.schemas(agent)` 的投影（模型请求拿的就是它），但不是
+  「模型真的看见了」的端到端——那要一次 LLM 调用，不进任何自动化。
+- **`mcp__*` 是探针名**：真实的 `mcp__<server>__<tool>` 由第三方 server 的 `tools/list` 决定，
+  脚本用 `mcp__probe__*` 与 `mcp__peragent__*` 两个名字覆盖「前缀族」与「own-layer」两种形状。
 
 ## 什么算「真机验证通过」
 

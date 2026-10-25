@@ -211,8 +211,11 @@ or a tool registered after the session started, only affects what the model can 
 still denies those calls). **Full access / Auto review**, and a host that has not composed the tier services,
 **are not trimmed** (the same allow branches as the gate). The log carries
 `tier-restrict: agent <id> mode=… → tty tools 19 → 10 (denied N write/exec: …)`.
-**Current limitation**: switching tiers mid-session does not recompute the tool surface immediately (it catches up
-on the next `agent/created` or tool-set change); the per-call gate reads the live tier on every call.
+**A mid-session tier switch does recompute** (since 2026-10-25): the host records the tier as session events
+(`sandbox/mode` / `approval/policy` / `permission/preset`), and kit maps the session back to its agent and
+recomputes once — upgrading puts the tools back, downgrading drops them again, both before the next model
+request (the tool table is projected when the request is built). **Current limits**: other sessions are
+unaffected, and a single switch's up-to-three knob events coalesce into one recompute.
 
 Typical agent flow (recommended): for a command that simply runs to completion, use `tty_run` to get its
 output + exit code in one call; for a **long-lived** session, `tty_open` opens one (pass `persistName` for tmux

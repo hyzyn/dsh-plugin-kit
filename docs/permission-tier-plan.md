@@ -473,5 +473,6 @@ approval 服务面都已验证；代价是 ask 发生在调用已展示之后（
    `tier-gate: <服务> composed` 并升到 `active`。真机复验：tty 与 docker 都打出
    `tier-gate: active`。
 
-- **补充（2026-10-25）**：`mcp__*` 已由 `mcp` 包在 `apply` 里按 `mcp__` 前缀接进**同一套**档位裁剪（kit 的 `attachTierRestrict`），分类**一律 `exec`**——读 / 写语义本仓判不了，未知风险取最坏类。
+- **补充（2026-10-25）**：`mcp__*` 已由 `mcp` 包在 `apply` 里按 `mcp__` 前缀接进**同一套**档位裁剪（kit 的 `attachTierRestrict`），分类**一律 `exec`**——读 / 写语义本仓判不了，未知风险取最坏类。同日第三轮起，本插件自己的两个工具也进同一张表（`MCP_OWN_TOOL_NAMES`：`mcp_servers` 判 `read`、`mcp_load` 判 `exec`），否则受限档里 `mcp_load` 仍可把 `mcp__*` 装回视图。
 - **补充（2026-10-25，同日第二轮）**：`attachTierRestrict` 挂载时会用 `ctx.inject(['agents'])` 的 `agents.list()` 把**在活** agent 补进台账并应用一次。修的是插件热重载 / 升级那条路径：旧实例卸载时 disposer 会把所有限制撤掉，而 `agent/created` 不会为已有会话重发——不补算，那些会话会一直看到全部工具，直到会话重开。
+- **补充（2026-10-25，同日第三轮）**：`attachTierRestrict` 现在**跟会话中途的档位切换**——订阅 `session/event` 的三个旋钮事件（`sandbox/mode` / `approval/policy` / `permission/preset`），按会话 id 找回 agent 重算一次。三处刻意的选择：**只按 `event.type` 过滤、不读载荷**（档位由 `resolveSessionTier` 从服务现读；读 `event.data.mode` 是造第二份真相，也正是 codegraph `CG66` 栽的信封坑）、**合并到 microtask**（一次切档最多三条事件）、**只重算这个会话**。两个方向都收：升档把工具放回来（否则用户刚授权、模型仍面对旧工具面），降档重新摘掉（否则模型反复试已被拒的工具）。接线形状由真机脚本 `pnpm --filter @hyzyn/dsh-kit run tier-smoke` 验收——它用**真插件形状**（带 `inject: ['tools']` 的 fiber）挂 `attachTierRestrict`，因为 `session/event` 的派发按 scope 过滤，「根 ctx 收得到」证明不了生产里的插件 ctx 也收得到。

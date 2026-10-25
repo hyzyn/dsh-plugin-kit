@@ -1,6 +1,14 @@
 /**
- * **跨包真机脚本**的安全守卫（L0）——`scripts/` 根下那 4 个不属于任何单个包的验证脚本，
+ * **跨包真机脚本**的安全守卫（L0）——`scripts/` 根下不属于任何单个包的验证脚本，
  * 外加公共隔离引导 [`scripts/lib/live-harness.mjs`](../lib/live-harness.mjs)。
+ *
+ * 三组，判据不同是因为**它们碰宿主的方式不同**：
+ *
+ * | 组 | 形状 | 判据 |
+ * | --- | --- | --- |
+ * | `SCRIPTS` | 打**已经在跑**的外部宿主 | 自己绝不碰真实 `~/.dsh`；临时资源带前缀；写宿主配置必须能复位 |
+ * | `SELF_HOSTED_SCRIPTS` | **自己 spawn** 宿主 | 必须隔离（`DSH_HOME` + `DSH_KIT_HOME`）；收尾自证；只删自己记下的目录 |
+ * | `IN_PROCESS_SCRIPTS` | **进程内挂真模块**（不 spawn） | 必须在 import 插件前隔离 home；补丁比对结果必须被断言；只认 harness 的清理；不许自己 spawn 宿主 |
  *
  * ## 为什么与 `packages/codegraph/test/verify-scripts-safety.test.ts` 分家
  *
@@ -10,7 +18,7 @@
  * 分工与仓库既有的「`packages/codegraph/test/defects-ledger.test.ts`（包内）+
  * `scripts/test/defects-table.test.ts`（跨包）」完全同构，不新造结构。
  *
- * ## 这 4 个脚本与 codegraph 那 5 个的**关键区别**
+ * ## `SCRIPTS` 那组与 codegraph 那 5 个的**关键区别**
  *
  * 它们打的是**已经跑着的外部宿主**（`--host` / `--url`），所以「隔离 DSH_HOME」这条对它们
  * **不适用**——它们既不起宿主、也不推导 home。对应的性质换成三条：
@@ -90,6 +98,68 @@ const SELF_HOSTED_SCRIPTS = [
     cleanupMarkers: ['createdDirs.push(isoHome)', 'for (const dir of createdDirs)'],
   },
 ]
+
+/**
+ * **进程内**真机脚本（挂真宿主模块，不 spawn 宿主）——`verify-tier-restrict.mjs`（档位契约）与
+ * `verify-mcp-on-demand.mjs`（工具面按需加载）。
+ *
+ * 为什么单列一组：它们既不像 `SCRIPTS` 那样「打外部宿主所以不该推导 home」（它们**必须**隔离），
+ * 也不像 `SELF_HOSTED_SCRIPTS` 那样 spawn 宿主（所以没有 `DSH_KIT_HOME` 那类环境变量要覆盖）。
+ * 判据只剩三条硬的：**隔离在 import 插件之前**、**补丁比对被真的断言**、**只删 harness 给的目录**；
+ * 外加一条反向的：**不许自己起宿主**（串了就变成「真机里再起真机」，慢一倍还多一处要收）。
+ *
+ * 这一组的必要性与 `SELF_HOSTED` 同源：进程内挂 `apply()` 一样会落盘（`codegraph` 第一版就写进了
+ * 真实 `~/.dsh/cordis.patch.yml`），而它没有 spawn 这个显眼动作，更容易被当成「只是跑了个函数」。
+ *
+ * 两个脚本的判据**故意完全相同**：它们碰宿主的方式一样（进程内挂真插件 + 隔离 home），
+ * 只是验的功能不同——判据跟着「怎么碰宿主」走，不跟着功能走（按功能分叉就会给下一个脚本留口子）。
+ */
+const IN_PROCESS_SCRIPTS = [
+  {
+    file: 'verify-tier-restrict.mjs',
+    /** 不许出现的 spawn 形态（真机分层：这一组只在进程内挂模块）。 */
+    forbidSpawn: ["execFileSync('dsh'", 'spawn(\'dsh\'', 'spawnSync(\'dsh\''],
+  },
+  {
+    file: 'verify-mcp-on-demand.mjs',
+    /** 同上：它自己拉的是 MCP **探针服务器**子进程（由 `dsh-mcp-client` 管），不是 DSH 宿主。 */
+    forbidSpawn: ["execFileSync('dsh'", 'spawn(\'dsh\'', 'spawnSync(\'dsh\''],
+  },
+]
+
+/**
+ * 进程内脚本的检查（**纯函数**，喂 fixture 就能造反例）。
+ *
+ * @param source - 脚本源码。
+ * @param spec - `IN_PROCESS_SCRIPTS` 里的一项。
+ * @returns 违规描述数组（空 = 通过）。
+ */
+export function inProcessViolationsOf(source, spec) {
+  const problems = []
+  // ① 隔离必须在 import 插件**之前**：`dshHome()` 读 `process.env`，而 `apply()` 就会落盘。
+  if (!/process\.env\.DSH_HOME\s*=\s*isolatedHome/.test(source)) {
+    problems.push('没有把 DSH_HOME 指向隔离 home：进程内挂真插件时 apply() 会写进真实 ~/.dsh')
+  }
+  // ② 一次性目录必须带可识别前缀（与另两组同一条规矩）。
+  if (!/createLiveHarness\(\{\s*prefix:\s*'[a-z][a-z0-9-]*-'\s*\}\)/.test(source)) {
+    problems.push("没有用带可识别前缀的 createLiveHarness：临时目录失去「是谁的」这条线索")
+  }
+  // ③ 真实补丁的比对结果必须**被断言**：只声明快照比不比对更糟（indexforce 的实测教训）。
+  // `[^)\n]` 而不是 `[^)]`：后者会跨行匹配到下一行的 `realPatchCheck.unchanged`（三元式的分支），
+  // 于是「把 record 里的比对结果换成 true」这个反例仍然命中——第一次就是这么假绿的。
+  if (!/record\([^)\n]*realPatchCheck\.unchanged/.test(source)) {
+    problems.push('verifyRealPatchUnchanged 的结果没有被断言（只声明快照等于不证明隔离）')
+  }
+  // ④ 清理只能走 harness 交给它的那个目录。
+  if (!/harness\.cleanup\(\)/.test(source)) {
+    problems.push('收尾没有调用 harness.cleanup()：临时资源会留在机器上')
+  }
+  // ⑤ 反向：这一组不许自己起宿主（那是 SELF_HOSTED 的活）。
+  for (const marker of spec.forbidSpawn ?? []) {
+    if (source.includes(marker)) problems.push(`进程内脚本不该自己 spawn 宿主：${marker}`)
+  }
+  return problems
+}
 
 /**
  * 自起宿主脚本的检查（**纯函数**）。
@@ -233,6 +303,13 @@ describe('跨包真机脚本：形状现算（真实仓库必须零违规）', (
       expect(selfHostedViolationsOf(source, spec).join('\n')).toBe('')
     })
   }
+
+  for (const spec of IN_PROCESS_SCRIPTS) {
+    it(`${spec.file}（进程内）：先隔离再挂 + 补丁比对被断言 + 只删 harness 的目录 + 不起宿主`, () => {
+      const source = read(`../${spec.file}`)
+      expect(inProcessViolationsOf(source, spec).join('\n')).toBe('')
+    })
+  }
 })
 
 describe('反例 1：碰了真实 home → 必须报出来', () => {
@@ -333,5 +410,60 @@ describe('反例 5：自起宿主脚本把隔离抽掉 → 必须报出来', () 
   it('隔离目录前缀失去「是谁的」线索 → 报', () => {
     const fixture = mutate(real, '`.dsh-verify-${pid}`', '`${pid}`')
     expect(selfHostedViolationsOf(fixture, spec).join('\n')).toContain('隔离目录前缀不可识别')
+  })
+})
+
+describe('反例 6：进程内脚本把隔离 / 自证抽掉 → 必须报出来', () => {
+  const real = read('../verify-tier-restrict.mjs')
+  const spec = IN_PROCESS_SCRIPTS[0]
+
+  it('不设隔离 DSH_HOME（真机里 apply() 会写真实 ~/.dsh）→ 报', () => {
+    const fixture = mutate(real, 'process.env.DSH_HOME = isolatedHome', 'void 0')
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('没有把 DSH_HOME 指向隔离 home')
+  })
+
+  it('临时目录前缀不可识别 → 报', () => {
+    const fixture = mutate(real, "createLiveHarness({ prefix: 'tier-restrict-' })", "createLiveHarness({ prefix: 'x' })")
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('带可识别前缀')
+  })
+
+  it('补丁比对退化（结果不再被断言）→ 报', () => {
+    const fixture = mutate(real, 'realPatchCheck.unchanged,', 'true,')
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('没有被断言')
+  })
+
+  it('忘了 harness.cleanup() → 报', () => {
+    const fixture = mutate(real, 'harness.cleanup()', 'void 0')
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('没有调用 harness.cleanup()')
+  })
+
+  it('进程内脚本偷偷 spawn 宿主 → 报', () => {
+    const fixture = mutate(real, "const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')",
+      "const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')\nconst child = spawn('dsh', ['web'])")
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('不该自己 spawn 宿主')
+  })
+})
+
+describe('反例 6b：按需加载脚本把隔离 / 自证抽掉 → 必须报出来', () => {
+  /*
+   * 与反例 6 同形，但对象换成 `verify-mcp-on-demand.mjs`：判据是**同一个纯函数**，
+   * 所以这里证明的是「新登记的那一条真的接在同一条判据上」，而不是另写了一套更松的检查。
+   */
+  const real = read('../verify-mcp-on-demand.mjs')
+  const spec = IN_PROCESS_SCRIPTS[1]
+
+  it('不设隔离 DSH_HOME（真机里 apply() 会写真实 ~/.dsh）→ 报', () => {
+    const fixture = mutate(real, 'process.env.DSH_HOME = isolatedHome', 'void 0')
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('没有把 DSH_HOME 指向隔离 home')
+  })
+
+  it('补丁比对退化（结果不再被断言）→ 报', () => {
+    const fixture = mutate(real, 'realPatchCheck.unchanged,', 'true,')
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('没有被断言')
+  })
+
+  it('忘了 harness.cleanup() → 报', () => {
+    const fixture = mutate(real, 'harness.cleanup()', 'void 0')
+    expect(inProcessViolationsOf(fixture, spec).join('\n')).toContain('没有调用 harness.cleanup()')
   })
 })

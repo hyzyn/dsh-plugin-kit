@@ -34,8 +34,9 @@ tier see it”.
   be decided by this repo (that is each server’s own semantics), so it errs strict — whenever a tier
   cuts, every `mcp__*` goes on the deny list. What gets cut is the **tool surface** (a restricted
   session simply does not see them; it is not a per-call refusal) and this plugin does not attach the
-  per-call gate (`attachTierGate`); the surface is recomputed on **agent creation / tool-set changes**,
-  not on a mid-session tier switch.
+  per-call gate (`attachTierGate`); the surface is recomputed on **agent creation / tool-set changes**
+  **and** on a mid-session tier switch (since 2026-10-25 kit subscribes to the three knob events on
+  `session/event`; upgrading brings the `mcp__*` tools back, downgrading drops them again).
 - **Cost is visible**: each row shows how many tools it currently contributes (the DTO’s `toolCount`;
   **an absent field reads “unknown” — that is an unreadable registry, not 0**), and once the known total
   passes 80 (`AGENT_TOOL_BUDGET`) a one-line hint sits above the list (disabled rows and rows without a
@@ -55,6 +56,96 @@ tier see it”.
 
 The criteria and the runtime evidence are in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md),
 under the “`mcp__*`” item.
+
+## On-demand tool surface (`agentToolLoading`)
+
+Tools are **still registered by the host** (no patch change, no process-model change, no card change);
+only the model-facing layer is dropped. The `agentToolLoading` option has two settings and **defaults
+to `eager`**:
+
+| Mode | `mcp__*` the model can see |
+|---|---|
+| `eager` (default) | Everything. Exactly as before this feature existed: no own tools registered, not a single extra `restrict()` |
+| `on-demand` | **None by default**: one restriction is installed when an agent opens a session (`deny` = every registered `mcp__*`), and the model loads what it needs through two own tools |
+
+The two tools under `on-demand` (fixed names; the model calls them exactly like this):
+
+- **`mcp_servers`** (read, no parameters): lists the configured servers — `server` / `transport` /
+  `state` (enabled / disabled) / `tools` / `loaded`. `tools: null` means the **tool registry cannot be
+  read**, not 0; an empty configuration and an “all unloaded” state each carry a `note` pointing at the
+  next step.
+- **`mcp_load`** (exec, `{ servers: string[] }`): loads the named servers and returns `loaded` (what
+  was actually installed) / `tools` (the `mcp__*` names in that agent's view, computed on the spot) /
+  `unknown` (names it does not recognise — **not loaded, not thrown**; the `note` lists the available
+  ones). `servers: []` unloads everything. Without a session context it answers only “this tool needs
+  a session context” and loads nothing.
+
+Four boundaries:
+
+- **Only servers from this plugin's managed block are cut**: rows outside that block (hand-written, or
+  owned by another plugin) keep their tools **untouched** — we do not know their read/write semantics
+  and have no way to load them, so hiding them would silently remove functionality from the user
+  (`mcp_servers` likewise reports managed rows only).
+- **A new server stays “unloaded” by default**: a server that connects later, or a `tools/change`
+  caused by a plugin hot reload, recomputes `deny` from the new registered set, so tools that appear
+  later on an already-loaded server become visible with it.
+- **The tier rule is unchanged**: a restricted tier still has every `mcp__*` cut by
+  `attachTierRestrict`, and the two restrictions **intersect** — `on-demand` opens no back door, and a
+  restricted tier does not pass just because something was “loaded”.
+- **Clean teardown**: `agent/disposed` and plugin unload remove that agent's restriction and clear the
+  ledger.
+
+### Why it is worth it: one real measurement
+
+On 2026-10-25 we measured one real session's `request/header` event snapshot on this machine (that is
+the verbatim `tools` array of the request body): **149 tools = 130,439 B, of which MCP's 70 tools =
+66,362 B (≈50.9%)**, ≈948 B per tool, ≈**17k tokens per request** after a CJK-aware conversion — and
+the agent loop resends all of it on every step.
+
+`on-demand` drops that from the model view, so the request body no longer carries those 66 KB — the
+token saving is equivalent to “never registering” them. Cache hits only affect **billing**, not the
+context window, so the saving holds for the window too.
+
+> This is a single measurement from one local session, **not a promise**: tool counts follow the
+> servers you configure, and the token conversion follows the tokenizer. Its purpose is an order of
+> magnitude, not a price quote.
+
+### Why not per-agent process mounting
+
+That is codegraph's **isolation** route: one MCP child process per session (≈40 MB), which buys “each
+session only sees its own context” at the cost of changing the patch row format and the card. It
+solves process and context isolation; **this round solves the token bill**, not process isolation —
+tools are still registered by the host, and only the model-facing layer is dropped. The two do not
+replace each other: real isolation still needs per-agent mounting, and on-demand loading still pays
+off on that route too.
+
+### Configuration and rollback
+
+Override it by id in the profile patch (an install-level knob, separate from the server list on the
+card):
+
+```yaml
+- id: mcp-config
+  config:
+    agentToolLoading: on-demand
+```
+
+Rollback has **zero side effects**: delete that line (or write `eager` back) and restart the host —
+the tool surface is exactly what it is today. The `eager` branch registers no own tools and sends no
+extra `restrict()`, so there is no resident state to clean up.
+
+### What is still missing before `on-demand` becomes the default
+
+**One real model turn's acceptance**: with `mcp_servers` / `mcp_load` in view, the model **first
+calls `mcp_servers`, then `mcp_load({ servers: […] })` to assemble the tools it needs, instead of
+detouring through `bash` to read config / run a CLI**. Only a real model can verify that (the script
+proves the surface and the load action are correct; it cannot prove the model's **choice**). Until
+then the default stays `eager`: changing the default re-routes every session that does not set this
+option, and the rollback cost is asymmetric.
+
+Real-machine regression: [`scripts/verify-mcp-on-demand.mjs`](../../scripts/verify-mcp-on-demand.mjs)
+(in-process real host, no host spawn, isolated temporary `DSH_HOME`, and it asserts the real patch is
+byte-identical on exit).
 
 ## Structure
 

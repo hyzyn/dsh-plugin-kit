@@ -292,6 +292,20 @@ bash / fs 工具；插件工具完全不受档位约束——`tty_run` / `tty_se
 [docs/permission-tier-plan.md](./docs/permission-tier-plan.md)。编号未动（实施中挖出的缺陷按
 各包序列、动手时先问）。
 
+**2026-10-25 增量（会话中途切档 + 受限档真机验收）**：此前工具面只在 `agent/created` / `tools/change`
+时重算，**中途切档纹丝不动**（执行期闸立刻按新档判，所以安全没问题，但那正是「用户刚升档、模型却还
+面对旧工具面」和「降档后模型反复试已被拒的工具」的来源）。现在 kit 的 `attachTierRestrict` 订阅
+`session/event` 的三个旋钮事件（`sandbox/mode` / `approval/policy` / `permission/preset`），按会话 id
+找回 agent 重算一次，**两个方向都收**，合并到 microtask、只按 `event.type` 过滤（档位从服务现读，
+不读载荷——`codegraph CG66` 的信封坑）。落点：`packages/kit/src/tier-restrict.ts`（7 → 17 条单测，
+四个变异各杀 1-6 条）。**门槛**：真机脚本 `pnpm --filter @hyzyn/dsh-kit run tier-smoke`
+（[scripts/verify-tier-restrict.mjs](./scripts/verify-tier-restrict.mjs)，真 cordis 根 + 真
+`tools`/`sessions`/`sandboxPolicy` 服务 + **三个包的真实分档表**，10/10 通过——受限档 23 个工具里
+一个 write/exec 与 `mcp__*` 都没有、升档回到 39、降档再回 23、另一个会话一个名字都没变）。
+同轮实测了此前只有散文的一条边界：**per-agent 挂载进 agent 自己那一层的工具不受前缀裁剪**
+（宿主只裁继承层），且把这类名字写进 `deny` 会被整体拒绝（`unknown global tool`）——所以未来
+「MCP 按需挂载」的档位执行只能是**卸载**，不能是 `restrict`。
+
 ### 11. ✅ kit elevation 的审计行改走 stdout（与 docker D162 同一课）
 
 **真机发现（2026-10-07，DSH 0.2.1-alpha.1）**：插件经 `ctx.logger.info` 打的行**既不出现在
@@ -829,6 +843,37 @@ build / i18n（11/11 客户端半体）/ doc-links（644 条）/ 公网 IP 闸�
 
 **没做的（如实记下）**：历史未处理（用户明确「历史记录先不处理了」——本仓是公开仓，已公开的
 内容不做重写；清理历史只能重写，代价远高于入口拦一次）。
+
+### 2026-10-25：MCP 工具面按需加载（`agentToolLoading`）
+
+**落点**：`packages/mcp` 新增配置项 `agentToolLoading: 'eager' | 'on-demand'`（**默认 `eager`**，
+零行为变化）；宿主半体新文件 `src/agent-surface.ts`（纯函数 `planSurfaceDeny` +
+`attachAgentSurface`，结构照 kit 的 `tier-restrict`：`agent/created` / `agent/disposed` /
+`tools/change` 三条订阅、microtask 合并、全程不抛），`apply` 里注册两个自有工具
+`mcp_servers`（read：列 server、工具数、是否已装载）/ `mcp_load`（exec：装 / 卸并回报该 agent
+视图里真实的 `mcp__*` 名字）。档位那条不变（自有工具接进同一套裁剪，两条限制是**交集**）。
+README 中英、[`docs/agent-real-test.md`](./docs/agent-real-test.md) 的入口表与
+`scripts/verify-list.mjs` 同步。
+
+**为什么不做 per-agent 进程挂载**：那是 codegraph 的隔离路线（每会话一个子进程 ≈40MB、要动
+patch 行格式与卡片）。本轮要解决的是 **token 账单**：真机会话的 `request/header` 快照实测
+149 个工具 130,439 B，其中 MCP 70 个 66,362 B（≈50.9%、≈1.7 万 token/请求，**本机单次测量、
+不是承诺值**）。所以工具照旧由宿主注册，`restrict()` 只把它们从该 agent 的**模型视图**里摘掉
+——请求体收益与「不注册」等价，**不解决进程隔离**（那是另一个问题，别混为一谈）。也不走
+`deferLoading`：这条路由上基线工具没有激活路径（实测见当轮调查记录）。
+
+**门槛**：`packages/mcp/test/agent-surface.test.ts` 14 条（含两条变异反例：把「属于已装载 server」的
+判据去掉、把「只裁托管行」的收口去掉，各自对应的用例必须红）；`pnpm --filter @hyzyn/dsh-mcp exec tsc --noEmit`、
+`… build`、`pnpm vitest run packages/mcp/test`；真机
+[`scripts/verify-mcp-on-demand.mjs`](./scripts/verify-mcp-on-demand.mjs)（进程内真宿主 + 真
+`dsh-mcp-client` 挂真 stdio 探针服务器 + 真插件）：`on-demand` 初始视面无 `mcp__probe__*` 且
+装载前真调用被拒、`mcp_servers` 报 `on-demand` / `tools: 2` / `loaded: false`、
+`mcp_load(['probe'])` 后**真调用** `probe_echo` 拿到回显、另一个 agent 的工具面逐名未变、
+`mcp_load([])` 卸干净 + 未知 server 不装不抛、`eager` 第二宿主零副作用、真实补丁逐字节未变。
+
+**边界（明确不做 / 还没做）**：默认**仍 `eager`**——切成默认之前还需要**一次真模型回合的
+验收**（模型会先 `mcp_servers` 再 `mcp_load` 装配自己要用的工具，而不是绕去 `bash`）；脚本能
+证明工具面与装载动作对，证明不了模型的**选择**。也不改动 `mcp__*` 的宿主注册方式与 patch 行。
 
 ## 已由 L0 资产承接（不再是待办）
 

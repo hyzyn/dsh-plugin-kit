@@ -101,6 +101,24 @@ function agentIdOf(agent) {
     }
     return '(unnamed)';
 }
+/**
+ * agent 的**会话** id —— 与 {@link agentIdOf} 刻意分开。
+ *
+ * 比对的对象是 `session/event` 带来的那个 session，所以这里只认 `agent.session.id`，不拿
+ * `agent.id` 顶替：两者今天同值，但同值是**宿主实现**的约定，不是本模块的判据。顶替的坏处是
+ * 某天它们分叉时，重算会静默落到**错误的会话**上（既不报错、也不裁错人，只是裁了别人）。
+ */
+function sessionIdOf(agent) {
+    const session = agent.session;
+    return typeof session?.id === 'string' && session.id !== '' ? session.id : undefined;
+}
+/**
+ * 档位旋钮对应的**会话事件**类型（`permission/preset` 是 preset 自己，另外两个是它展开的旋钮）。
+ *
+ * 为什么三个都订：`shouldRestrictForTier` 同时看 `mode` 与 `auto`（`auto` 来自 preset），只订
+ * `sandbox/mode` 会让「切到 / 切离 Auto review」不重算——而 Auto review 档是不裁的。
+ */
+const TIER_KNOB_EVENTS = new Set(['sandbox/mode', 'approval/policy', 'permission/preset']);
 /** 错误文案（日志用；`unknown` 收窄只做一次）。 */
 function messageOf(error) {
     return error instanceof Error ? error.message : String(error);
@@ -132,6 +150,9 @@ export function attachTierRestrict(ctx, options) {
     const seen = new Map();
     let resyncing = false;
     let pendingResync = false;
+    /** 等着重算的**会话** id（一次切档最多三条旋钮事件，合并成一次重算）。 */
+    const pendingSessions = new Set();
+    let sessionResyncQueued = false;
     let closed = false;
     let serviceMissingLogged = false;
     let toolsMissingLogged = false;
@@ -371,8 +392,72 @@ export function attachTierRestrict(ctx, options) {
     subscribe('tools/change', () => {
         scheduleResync();
     });
+    /**
+     * 只重算**一个会话**的 agent：档位是会话级旋钮，别的会话的工具面不该被这一次切换碰一下。
+     *
+     * 名单仍然走 `applyTo` 里的 `schemas()` 现算（与 `agent/created` / `tools/change` 同一条路径、
+     * 同一份判据），所以「切档之后才条件注册的工具」也一并落进这次重算，不另立一套。
+     */
+    const resyncSessions = (ids) => {
+        const wanted = new Set(ids);
+        for (const agent of [...seen.values()]) {
+            const id = sessionIdOf(agent);
+            if (id === undefined || !wanted.has(id))
+                continue;
+            applyTo(agent);
+        }
+    };
+    /**
+     * 把一串旋钮事件合并成**一次**重算（理由与 {@link scheduleResync} 同源：工具表在请求构建时
+     * 才投影给模型，microtask 一定跑在下一次请求之前）。
+     *
+     * 为什么按会话 id 而不是直接重算全部：一次切档只影响一个会话，而每个 agent 的重算都要读一次
+     * 全局 `schemas()` 并可能下发一次 `restrict()`；多会话宿主里那是白花的钱。
+     */
+    const scheduleSessionResync = (sessionId) => {
+        if (closed)
+            return;
+        pendingSessions.add(sessionId);
+        if (sessionResyncQueued)
+            return;
+        sessionResyncQueued = true;
+        queueMicrotask(() => {
+            sessionResyncQueued = false;
+            const ids = [...pendingSessions];
+            pendingSessions.clear();
+            if (closed)
+                return;
+            try {
+                resyncSessions(ids);
+            }
+            catch (error) {
+                log(`tier-restrict: 档位切换后重算失败（${messageOf(error)}），保持当前限制`);
+            }
+        });
+    };
+    /*
+     * 会话中途的档位切换：宿主把旋钮写成**会话事件**，派发时第一个参数就是 session（签名
+     * `(session, event)`，见 `dsh-session` 的 `session/event`），所以「按 session 找回 agent」
+     * 只是拿 `agent.session.id` 比一下，不需要反查机制。
+     *
+     * 两个方向都收：升档时 `deny` 变空 → `lift()` 把工具放回来；降档时重新算出一份非空名单 →
+     * 重新下发。不订阅的话，升档会话的模型会一直面对旧工具面（看着像「授权没生效」），降档会话
+     * 则会反复去试已经不可能成功的工具。
+     */
+    subscribe('session/event', (...args) => {
+        /* 信封是 `{ type, seq, time, data }`——只看顶层 `type`，载荷一个字不读（见文件头第 3 条）。 */
+        const event = args[1];
+        if (typeof event?.type !== 'string' || !TIER_KNOB_EVENTS.has(event.type))
+            return;
+        const session = args[0];
+        const id = typeof session?.id === 'string' ? session.id : undefined;
+        if (id === undefined || id === '')
+            return;
+        scheduleSessionResync(id);
+    });
     return () => {
         closed = true;
+        pendingSessions.clear();
         for (const agent of [...applied.keys()])
             lift(agent);
         seen.clear();
