@@ -105,6 +105,8 @@ window.__ModuleLoader__.load({
       'placeholder.secretSaved': '已保存，留空保存＝保持不变',
       'msg.saved': '已保存',
       'msg.savedApplied': '已保存，并已写入 process.env',
+      'msg.fileNeedsRepair': '暂时无法保存：托管区块缺少结束标记，无法判定哪些内容属于区块。请先在文件里补齐 `# --- end dsh-env-manager managed ---`（当前：{error}）。',
+      'msg.fileWarning': '配置文件有告警：{error}。保存会重写托管区块并顺带自愈。',
     }
     const I18N_EN = {
       'card.name': 'Environment & secrets',
@@ -121,6 +123,8 @@ window.__ModuleLoader__.load({
       'placeholder.secretSaved': 'Saved; leave blank to keep it',
       'msg.saved': 'Saved',
       'msg.savedApplied': 'Saved and written to process.env',
+      'msg.fileNeedsRepair': 'Cannot save yet: the managed block has no end marker, so the block boundary is unknown. Add `# --- end dsh-env-manager managed ---` to the file first ({error}).',
+      'msg.fileWarning': 'Config file warning: {error}. Saving rewrites the managed block and repairs it in passing.',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -182,6 +186,8 @@ window.__ModuleLoader__.load({
       const [file, setFile] = React.useState('')
       const [error, setError] = React.useState('')
       const [ok, setOk] = React.useState('')
+      const [fileError, setFileError] = React.useState('')
+      const [needsRepair, setNeedsRepair] = React.useState(false)
       const [loading, setLoading] = React.useState(false)
       const [saving, setSaving] = React.useState(false)
 
@@ -189,10 +195,16 @@ window.__ModuleLoader__.load({
         setLoading(true)
         setError('')
         setOk('')
+        setFileError('')
+        setNeedsRepair(false)
         try {
           const data = await api('/api/dsh-env/list')
           setEntries(data.entries || [])
           setFile(data.file || '')
+          // 读侧报的区块损坏要让人看见：只在 list 里回 fileError 的话，卡片上什么都看不到，
+          // 用户会对着一个「看起来正常」的空列表点保存（issue #13 第 5 条）。
+          setFileError(data.fileError || '')
+          setNeedsRepair(data.needsRepair === true)
         } catch (err) {
           setError(err.message)
         } finally {
@@ -228,6 +240,8 @@ window.__ModuleLoader__.load({
           })
           setEntries(data.entries || entries)
           setFile(data.file || file)
+          setFileError(data.fileError || '')
+          setNeedsRepair(data.needsRepair === true)
           setOk(data.applied ? t('msg.savedApplied') : t('msg.saved'))
           if (Array.isArray(data.warnings) && data.warnings.length > 0) setError(data.warnings.join('\n'))
         } catch (err) {
@@ -289,13 +303,17 @@ window.__ModuleLoader__.load({
                     jsx('button', {
                       type: 'button',
                       className: 'env_btn',
-                      disabled: saving,
+                      disabled: saving || needsRepair,
                       onClick: save,
                       children: saving ? t('btn.saving') : t('btn.save'),
                     }),
                   ],
                 }),
                 loading ? jsx('div', { className: 'env_loading', children: t('list.loading') }) : null,
+                fileError ? jsx('p', {
+                  className: 'env_error',
+                  children: t(needsRepair ? 'msg.fileNeedsRepair' : 'msg.fileWarning', { error: fileError }),
+                }) : null,
                 error ? jsx('p', { className: 'env_error', children: error }) : null,
                 ok ? jsx('p', { className: 'env_ok', children: ok }) : null,
                 entries.length === 0 && !loading ? jsx('div', { className: 'env_empty', children: t('list.empty') }) : null,

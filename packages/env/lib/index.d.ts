@@ -23,6 +23,12 @@ interface EnvEntry {
 interface ManagedRead {
     entries: EnvEntry[];
     fileError?: string;
+    /**
+     * 区块边界不可判定（起始标记在、结束标记丢）：此时**不能写**——写侧无法知道标记之后
+     * 哪一段还属于托管区块，任何「重写」都是在赌。保存路由据此拒绝，让用户先修文件
+     * （2026-10-19 外部测评 issue #13 第 5 条）。
+     */
+    needsRepair?: boolean;
     file: string;
 }
 export declare function readManagedEntries(): ManagedRead;

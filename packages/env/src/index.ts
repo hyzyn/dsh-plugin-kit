@@ -30,7 +30,7 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { dshHome, registerLiteralSection, stripEmptyFlowSequenceRoot } from '@hyzyn/dsh-kit'
+import { dshHome, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit'
 import type { Context } from '@deepseek-ai/cordis'
 import yaml from 'js-yaml'
 
@@ -135,6 +135,12 @@ function evalValue(value: string | JsExpr): string {
 interface ManagedRead {
   entries: EnvEntry[]
   fileError?: string
+  /**
+   * 区块边界不可判定（起始标记在、结束标记丢）：此时**不能写**——写侧无法知道标记之后
+   * 哪一段还属于托管区块，任何「重写」都是在赌。保存路由据此拒绝，让用户先修文件
+   * （2026-10-19 外部测评 issue #13 第 5 条）。
+   */
+  needsRepair?: boolean
   file: string
 }
 
@@ -151,6 +157,8 @@ export function readManagedEntries(): ManagedRead {
   const end = lines.findIndex((line, index) => index > start && line.trimEnd() === MARK_END)
   if (end === -1) {
     result.fileError = '托管区块缺少结束标记（# --- end dsh-env-manager managed ---）'
+    // 边界不可判定：读侧只报错不够，写侧必须据此拒写（见 ManagedRead.needsRepair）。
+    result.needsRepair = true
     return result
   }
   const block = lines.slice(start + 1, end).join('\n')
@@ -204,24 +212,23 @@ export function writeManagedEntries(entries: EnvEntry[]): void {
   const file = envFilePath()
   const existed = existsSync(file)
   const raw = existed ? readFileSync(file, 'utf8') : '# dsh env managed file\n'
-  // CG67 同源（codegraph）：根位置上的 `[]` 是**完整**的 YAML 文档（flow 序列根），
-  // 往它后面追加托管区块会让整份文件非法（env.yml 也有别的消费者按 YAML 读）。先摘掉
-  // 这个根，文件就回到「无区块」的形状，下面的追加分支才是安全的。
-  const text = stripEmptyFlowSequenceRoot(raw) ?? raw
-  const lines = text.split('\n')
-  // 同 readManagedEntries：标记整行精确匹配（仅容忍尾部空白），值内的标记
-  // 文本（缩进 literal block 渲染）不得被当作区块边界，否则托管区块被截断。
-  const start = lines.findIndex((line) => line.trimEnd() === MARK_START)
-  const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.trimEnd() === MARK_END)
-  const block = MARK_START + '\n' + renderManagedBlock(entries) + MARK_END + '\n'
-  let next: string
-  if (start === -1) {
-    next = text.replace(/\s*$/, '') + (text.trim() === '' ? '' : '\n') + '\n' + block
-  } else if (end === -1) {
-    next = lines.slice(0, start).join('\n') + '\n' + block
-  } else {
-    next = [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n')
-  }
+  /*
+   * 拼接走 kit 的 `spliceManagedBlock`（托管区块的**单一实现**，mcp / prompt 同源）。
+   *
+   * 旧实现是本包自己手写的一份 splice，最要命的是 `end === -1` 分支写成
+   * `lines.slice(0, start) + block`——结束标记一旦丢失（用户手改误删），起始标记之后的
+   * **全部内容**（包括区块外的用户配置与注释）都会被静默删掉，而接口仍回 200
+   * （2026-10-19 外部测评 issue #13 第 5 条）。kit 版的语义相反：悬空起始标记只重写
+   * 标记行本身，其后内容逐字节保留。
+   *
+   * 顺带把两件早先各写一遍的事收进 kit：根位置上的裸 `[]`（flow 序列根）会被换掉而不是
+   * 追加（CG67 同源）；标记按整行相等匹配，值内出现标记文本时不会被误判成边界。
+   */
+  const next = spliceManagedBlock(raw, {
+    beginMarker: MARK_START,
+    endMarker: MARK_END,
+    body: renderManagedBlock(entries),
+  })
   // 文件承载明文密钥，不继承既有宽松权限：writeFileSync 的 mode 只会被 umask
   // 进一步收紧、不会放宽，rename 后即为 0600。
   const tmp = join(dirname(file), '.env.yml.' + process.pid + '.tmp')
@@ -602,6 +609,7 @@ function makeRoutes(ctx: Context, applyOnSave: boolean, store: SeamHolder): Arra
         writeJson(res, 200, {
           ok: true,
           ...(managed.fileError !== undefined ? { fileError: managed.fileError } : {}),
+          ...(managed.needsRepair === true ? { needsRepair: true } : {}),
           entries: toDtoEntries(managed.entries),
           file: managed.file,
         })
@@ -618,6 +626,23 @@ function makeRoutes(ctx: Context, applyOnSave: boolean, store: SeamHolder): Arra
           return
         }
         const current = readManagedEntries()
+        /*
+         * 边界不可判定时**拒绝保存**（2026-10-19 外部测评 issue #13 第 5 条）。
+         *
+         * 起始标记在、结束标记丢，意味着「托管区块到哪结束」已经无法从文件推出来：此时
+         * 写侧无论怎么拼都有两种坏结果——按旧实现会删掉起始标记之后的一切（区块外用户
+         * 内容一起没），按「只换标记行」又会把旧区块正文留成区块外的孤儿条目。两种都不该
+         * 在一次「保存」里替用户决定，所以先让他把文件修好（补回结束标记），再回来保存。
+         */
+        if (current.needsRepair === true) {
+          writeJson(res, 400, {
+            error: '未保存：env 文件的托管区块缺少结束标记，无法判定哪些内容属于区块。'
+              + '请先在文件里补齐 `# --- end dsh-env-manager managed ---`，再回到卡片保存。',
+            ...(current.fileError !== undefined ? { fileError: current.fileError } : {}),
+            needsRepair: true,
+          })
+          return
+        }
         const validated = validateEntries(body.entries, current.entries)
         if (validated.error !== undefined) {
           writeJson(res, 400, { error: validated.error })

@@ -634,6 +634,47 @@ async function main() {
     stopHost(epipeHost)
   }
 
+  /* ============ 13E env 悬空结束标记：保存必须拒写，且文件一个字节都不动 ============ */
+  {
+    /*
+     * 本仓 issue #13 第 5 条（注意：**不是**外部测评报告里 13.5 的 codegraph 条目——
+     * 两套编号撞号，正是这条当初被漏掉的原因）。判据两条缺一不可：
+     *   ① 保存被拒（400）；
+     *   ② 文件逐字节未变——旧实现回 200 并把起始标记之后的全部内容删掉，
+     *      只看状态码会把真正的事故判成 PASS。
+     */
+    const envFile = path.join(isoHome, 'env.yml')
+    const MARK_ENV_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---'
+    const MARK_ENV_END = '# --- end dsh-env-manager managed ---'
+    const dangling = [
+      '# 区块外用户内容',
+      MARK_ENV_START,
+      '- key: KEEP',
+      "  value: '1'",
+      '  secret: false',
+      '# 这一行与下一行曾经被保存整段删掉',
+      'OTHER: keep',
+      '',
+    ].join('\n')
+    fs.writeFileSync(envFile, dangling)
+    const res = await request(host, '/api/dsh-env/save', {
+      method: 'POST',
+      body: { entries: [{ key: 'NEW', value: '2', secret: false }] },
+    })
+    // 无论成功失败，都先把文件还原成合法的空区块：后面的用例不该看到损坏文件
+    const after = fs.readFileSync(envFile, 'utf8')
+    fs.writeFileSync(envFile, [MARK_ENV_START, '[]', MARK_ENV_END, ''].join('\n'))
+    if (res.status === 404) {
+      record('13E', 'env 悬空结束标记：保存 400 且文件逐字节未动（不再删掉标记之后的内容）', false,
+        `本 profile（${sourceProfile}）没装 @hyzyn/dsh-env → 这条**未被覆盖**；用 --from test 重跑`, 'warn')
+    } else {
+      const unchanged = after === dangling
+      record('13E', 'env 悬空结束标记：保存 400 且文件逐字节未动（不再删掉标记之后的内容）',
+        res.status === 400 && unchanged,
+        `save=${String(res.status)} 文件未动=${String(unchanged)} fileError=${JSON.stringify(res.json?.fileError ?? null)}\n        响应：${res.text.slice(0, 200)}`)
+    }
+  }
+
   /* ============ 收尾：真实配置逐字节未变 ============ */
   const changed = []
   for (const rel of REAL_FILES) {

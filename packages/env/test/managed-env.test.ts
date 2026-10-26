@@ -119,6 +119,47 @@ describe('writeManagedEntries + readManagedEntries 往返', () => {
     expect(text.split(MARK_START)).toHaveLength(2) // 只出现一次
     expect(readManagedEntries().entries).toStrictEqual([{ key: 'A', value: '2', secret: false }])
   })
+
+  /*
+   * 守卫（issue #13 第 5 条）：结束标记被误删时，旧写侧走
+   * `lines.slice(0, start) + block`，把起始标记之后的**全部内容**删掉——包括区块外的
+   * 用户配置与注释，接口还回 200。写侧现在走 kit 的 spliceManagedBlock：悬空标记只重写
+   * 标记行本身，其后内容逐字节保留。
+   */
+  it('缺结束标记时写侧不删内容：只重写起始标记行，区块后的用户内容保留', () => {
+    const before = [
+      '# 用户自己的说明',
+      MARK_START,
+      '- key: OLD',
+      "  value: '1'",
+      '  secret: false',
+      '# 结束标记被误删：这一行和下一行曾经整段消失',
+      'OTHER: keep',
+      '',
+    ].join('\n')
+    writeFileSync(file, before)
+    expect(readManagedEntries().needsRepair).toBe(true)
+
+    writeManagedEntries([{ key: 'NEW', value: '2', secret: false }])
+    const text = readFileSync(file, 'utf8')
+    expect(text).toContain('# 结束标记被误删：这一行和下一行曾经整段消失')
+    expect(text).toContain('OTHER: keep')
+    expect(text).toContain('# 用户自己的说明')
+    // 新区块完整且标记各只一次：不会写出「两个区块」。
+    expect(text).toContain('key: NEW')
+    expect(text.split(MARK_START)).toHaveLength(2)
+    expect(text.split(MARK_END)).toHaveLength(2)
+  })
+
+  it('损坏的区块（标记齐全）仍可自愈：整体替换为合法区块，区块外内容保留', () => {
+    writeFileSync(file, `# 说明\n${MARK_START}\n- key: [unclosed\n${MARK_END}\n`)
+    expect(readManagedEntries().fileError).toContain('解析失败')
+    writeManagedEntries([{ key: 'A', value: '1', secret: false }])
+    const read = readManagedEntries()
+    expect(read.fileError).toBeUndefined()
+    expect(read.entries).toStrictEqual([{ key: 'A', value: '1', secret: false }])
+    expect(readFileSync(file, 'utf8')).toContain('# 说明')
+  })
 })
 
 describe('readManagedEntries 容错', () => {
@@ -133,6 +174,8 @@ describe('readManagedEntries 容错', () => {
     const read = readManagedEntries()
     expect(read.entries).toEqual([])
     expect(read.fileError).toContain('缺少结束标记')
+    // 边界不可判定：只报错不够，保存路由据此**拒写**（issue #13 第 5 条）。
+    expect(read.needsRepair).toBe(true)
   })
 
   it('损坏 YAML：报解析失败', () => {
