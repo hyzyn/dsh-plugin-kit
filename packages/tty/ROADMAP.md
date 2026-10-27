@@ -318,6 +318,16 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 > 标记都统一到 `0.30.0`（`0.28` / `0.29` 在 npm 上不存在，留着会指向没发生过的版本）。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
 
+### 2026-10-27：两条 smoke 的假红与假绿（`integration` / `probe-smoke`）
+
+发版前跑「全面测试」时，`integration` 在**本机**红两条（B25b / B26a），而 CI 一直是绿的。查下来**两条都不是产品行为**，是脚本自己的两个出口缺陷 —— 顺手修了：
+
+- **假红：`integration` 不隔离 `DSH_PROFILE`。** 插件把 tmux socket 名按 profile 分段（`tmuxSocketName()` → `dshProfileSegment()` 在调用时读 `process.env.DSH_PROFILE`，理由见 D60），而断言查的是历史名 `dsh-tty`。从 **DSH 宿主起的 shell** 里跑（带着 `DSH_PROFILE=desktop`）→ 插件建在 `dsh-tty-desktop`、断言去 `dsh-tty` 里找 → B25b/B26a 恒红。判据：`env -u DSH_PROFILE … run integration` → 0 FAIL；基线 `7d2fdd15b` 红得一模一样。修法：脚本入口摘掉 `DSH_PROFILE` / `DSH_PROFILE_DIR`。
+- **假绿：`probe-smoke` 不打印汇总也可能 exit 0。** `server.close(cb)` 的回调要等所有连接结束，P7 的探针连接被抛下后一直挂着 ⇒ `main()` 悬在那个 `await` 上 ⇒ 事件循环排空、node **以 0 自然退出、汇总一行都没打**（`--trace-exit` 无退出栈可证）。也就是「没打出汇总」会被读成「通过」—— 与「0 命中 ≠ 没跑」同一条道理的另一个出口。修法：那个临时 server 只尽力关（不 await）+ 加一道 `beforeExit` 护栏（没汇总就判失败）。
+- 顺带：`P5 DNS 解析失败` 在本机不可达（DNS 劫持把 `no-such-host.invalid` 解到 `198.18.0.204`，fake-ip 网段），按「环境限制不算代码回归」改成 **SKIP**（既不冒充 PASS，也不判红）；CI 上照旧执行断言。
+
+**门槛**：`integration` 在**带** `DSH_PROFILE=desktop` 的环境下 exit 0 / 0 FAIL（修前 2 FAIL）；`probe-smoke` 打出「全部 PASS（1 条 SKIP）」并 exit 0；基线对照与 `env -u` 对照见上。
+
 ### 2026-10-27（0.34.0）：终端外观进配置（字体 / 光标 / 行高 / 侧栏对齐 → [issue #17](https://github.com/hyzyn/dsh-plugin-kit/issues/17)）
 
 **为什么做**（用户原话）：「想要在终端支持 nerd 字体。现状：光标的高度过高，可能和字体适配相关。

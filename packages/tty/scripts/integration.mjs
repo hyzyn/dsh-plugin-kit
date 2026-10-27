@@ -70,6 +70,28 @@ import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
  */
 const SAME_ORIGIN = { 'sec-fetch-site': 'same-origin' }
 
+/*
+ * 隔离 profile 环境（2026-10-27 实测的假红）：
+ *
+ * 插件把 tmux 专用 socket 名按 profile 分段（`tmuxSocketName()` → `dshProfileSegment()`
+ * 在**调用时**读 `process.env.DSH_PROFILE`，理由见 tty D60：shell 集成/持久化是 per-profile 的）。
+ * 于是从 **DSH 宿主起的 shell** 里跑本脚本时（`DSH_PROFILE=desktop` 之类会一路继承），
+ * 插件把会话建在 `dsh-tty-desktop` 上，而 B25/B26 的断言去历史名 `dsh-tty` 里找：
+ *
+ *   ✘ FAIL  B25b ... persist=true listed=["dsh-45kfqozki0t7","dsh-yzu0yblsd5vg"]
+ *
+ * 两条断言红，而**产品行为完全正常**（会话确实建了、也确实持久）；CI 一直是绿的，只是
+ * 因为 CI 里没有这个环境变量。同机复跑对照：`env -u DSH_PROFILE ... run integration`
+ * → 0 FAIL；合并前的基线（7d2fdd15b）红得一模一样，所以这不是哪次改动的回归。
+ *
+ * 判据：本脚本断言的是**历史 socket 名**下的可见行为，所以先把 profile 段摘掉。
+ * 本脚本是独立进程，删掉不会影响跑它的那个 shell；`savedProfileEnv` 只用于把
+ * 「本来是什么」记在报错里（见下面的看门狗），不参与还原。
+ */
+const PROFILE_ENV_KEYS = ['DSH_PROFILE', 'DSH_PROFILE_DIR']
+const savedProfileEnv = new Map(PROFILE_ENV_KEYS.map((key) => [key, process.env[key]]))
+for (const key of PROFILE_ENV_KEYS) delete process.env[key]
+
 
 
 /* 全局看门狗：任何环节卡死时留痕退出（正常路径会先 process.exit）。 */

@@ -21,8 +21,15 @@ import { probeSsh } from '../lib/probe.js'
 import { TEST_PASSWORD, TEST_USER } from './lib/test-sshd.mjs'
 
 const RESULTS = []
+/** 汇总打出来过没有（`beforeExit` 护栏据此区分「真的跑完了」与「挂死了」）。 */
+let verdictPrinted = false
 function pass(name) { RESULTS.push(['PASS', name]); console.log('  ✔ PASS  ' + name) }
 function fail(name, detail) { RESULTS.push(['FAIL', name, detail]); console.error('  ✘ FAIL  ' + name + (detail ? ' — ' + detail : '')) }
+/*
+ * SKIP 与 PASS、FAIL 都不同：**断言在本机不可达**（环境限制），既不算过也不算回归。
+ * 依据是 docs/agent-real-test.md § B0 第 2 条「不把环境限制当成代码回归」。
+ */
+function skip(name, why) { RESULTS.push(['SKIP', name, why]); console.log('  … SKIP  ' + name + (why ? ' — ' + why : '')) }
 
 /* 一次性内存 sshd（password 认证）；只认证不开 shell（probe 不需要） */
 function startSshd(hostKey, listenPort) {
@@ -121,6 +128,13 @@ async function main() {
   // P5 DNS 失败
   const p5 = await probeSsh({ ...spec, host: 'no-such-host.invalid' }, undefined)
   if (p5.tcp.ok === false && /DNS/.test(p5.tcp.error || '')) pass('P5 DNS 解析失败 → tcp DNS')
+  /*
+   * `.invalid` 按 RFC 2606 必须 NXDOMAIN；它若连上了，说明**本机的解析器在劫持**
+   * （路由器 / 运营商 / Clash 式 fake-ip 会给任何名字一个假地址，2026-10-27 实测
+   * `dig no-such-host.invalid` → 198.18.0.204）。此时「DNS 失败」这条断言在本机
+   * 根本不可达 —— 跳过而不是判红：判红会把环境限制写成代码回归，下一次真红就淹在里面。
+   */
+  else if (p5.tcp.ok === true) skip('P5 DNS 解析失败 → tcp DNS', '本机 DNS 把 no-such-host.invalid 解析成功了（fake-ip / 劫持），这条断言在本机不可达')
   else fail('P5 DNS 解析失败', JSON.stringify(p5))
 
   // P7 TCP 通但无 SSH banner（裸 TCP 服务）
@@ -130,12 +144,39 @@ async function main() {
   const p7 = await probeSsh({ ...spec, port: plainPort }, undefined)
   if (p7.tcp.ok === true && p7.auth.ok === false) pass('P7 裸 TCP（无 SSH）→ tcp 通 + auth 失败')
   else fail('P7 裸 TCP', JSON.stringify(p7))
-  await new Promise((resolve) => plain.close(resolve))
+  /*
+   * `server.close(cb)` 的回调要等**所有连接都结束**才来。P7 的探针连上后不等 banner
+   * 就被我们抛下，那条 socket 可能一直挂着 ⇒ 回调永不到来 ⇒ `main()` 悬在这个 await 上，
+   * 事件循环排空后 node **以 0 自然退出、连汇总都不打**（2026-10-27 实测：`--trace-exit`
+   * 没有任何退出栈，日志停在 P7 之后）。这正是本仓最忌讳的「闸门静默恒绿」。
+   * 这个临时 server 关不关都不影响后面的断言，所以**不 await**：先踢残留连接，尽力关掉，
+   * 紧接着就出汇总并 `process.exit()`。下面 `beforeExit` 那道护栏兜的是别的挂死形状。
+   */
+  plain.closeAllConnections?.()
+  plain.close()
 
   const failedCount = RESULTS.filter(([kind]) => kind === 'FAIL').length
-  console.log(failedCount === 0 ? '\nprobe smoke: 全部 PASS' : `\nprobe smoke: ${failedCount} 个 FAIL`)
+  const skippedCount = RESULTS.filter(([kind]) => kind === 'SKIP').length
+  verdictPrinted = true
+  console.log(
+    failedCount === 0
+      ? `\nprobe smoke: 全部 PASS${skippedCount === 0 ? '' : `（${String(skippedCount)} 条 SKIP：本机环境不可达，见上）`}`
+      : `\nprobe smoke: ${String(failedCount)} 个 FAIL${skippedCount === 0 ? '' : `，${String(skippedCount)} 条 SKIP`}`,
+  )
   process.exit(failedCount === 0 ? 0 : 1)
 }
+
+/*
+ * 兜底：**没有汇总就不算通过**（0 命中 ≠ 没跑，同一条道理的另一个出口）。
+ *
+ * 正常路径在 `main()` 末尾 `process.exit()`，不会走到这里；只有「挂在某个 await 上、
+ * 事件循环排空后自然退出」这种形状会触发（上面 P7 那处就是实例，已修根因，这条是护栏）。
+ */
+process.on('beforeExit', (code) => {
+  if (verdictPrinted) return
+  console.error('\n[probe-smoke] 没走到汇总就退出了（挂在某个 await 上）——按失败处理；这不是「通过」')
+  process.exitCode = code === 0 ? 1 : code
+})
 
 main().catch((error) => {
   console.error('[probe-smoke] 未捕获错误: ' + (error && error.stack ? error.stack : error))
