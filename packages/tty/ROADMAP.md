@@ -339,13 +339,21 @@ npm 包整包替换 —— 改动静默丢失。
   （`[data-host-align]`），默认关时一行样式都不生效。
 - **默认值逐项等于 0.33 的硬编码值**：不配这几项时观感与升级前完全一致（`test/terminal-look.test.ts`
   把五项默认值与内置字体栈逐字钉住）。
+- **光标形状 / 闪烁由配置项说了算**（2026-10-27 真机复现后补）：xterm 里 `cursorBlink` 与
+  `cursorStyle` **各只有一个变量**，终端里的程序能直接写（`CSI ? 12 h/l`、`CSI <n> SP q`），
+  而 zsh 的 `zle` **每画一次提示符就写一遍** —— 配置项「创建/保存时写一次」的值活不过第一条提示符，
+  表现就是「勾着光标闪烁，开个新终端也不闪」（真机实测：敲一条 `echo hi` 后 600ms 的闪烁定时器被
+  `clearInterval`；发 `printf '\033[?12h'` 立刻恢复）。修法：`client-src/terminal-look.js` 的
+  `terminalLookDrift()` 给判据，客户端在每批 PTY 输出解析完（`onWriteParsed`）纠回；
+  **备用屏幕让位**（vim / less / htop / fzf 对自己的光标有真实语义）。
 
 **门槛**（2026-10-27 复核，PR #18）：
 - `pnpm -r typecheck`（含 `client-lint` 的六条硬规矩）与 `pnpm build` 通过；重建后 `client.js` / `lib/`
   **无 diff**（产物闸门干净）。
 - `pnpm test`：`packages/tty/test/terminal-look.test.ts`（字体栈顺序、空串回内置栈、缺项/越界逐字段
-  保留上一份、值没变不重排）与 `config-roundtrip.test.ts` 的外观往返（POST → 快照原样反映，
-  含「字体栈允许清空」与 7 种越界/未知值点名拒绝）全绿；全仓 vitest 全绿。
+  保留上一份、值没变不重排、**程序写掉后纠偏（含只纠一项 / 备用屏幕让位）**）与
+  `config-roundtrip.test.ts` 的外观往返（POST → 快照原样反映，含「字体栈允许清空」与 7 种
+  越界/未知值点名拒绝）全绿；全仓 vitest 全绿。
 - `scripts/preview.mjs settings` 渲染通过：新小节版式与既有「SFTP 传输限制」同款（`tt_limitGrid`）。
 - `pnpm i18n:check` / `readme-facts:check` / `readme-structure:check` / `doc-links:check` / `artifacts:check`
   通过；`pnpm aggregate` 无脏产物。

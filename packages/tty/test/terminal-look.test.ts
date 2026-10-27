@@ -28,6 +28,7 @@ import {
   readTerminalLook,
   terminalFontFamilyValue,
   terminalLookChanged,
+  terminalLookDrift,
 } from '../client-src/terminal-look.js'
 
 describe('终端外观：默认值等于 0.34.0 之前的硬编码值（零回归）', () => {
@@ -154,5 +155,40 @@ describe('要不要重排：值没变就不动', () => {
   it('首次到达（还没有上一份）算变化，让已开的终端立刻套上配置', () => {
     expect(terminalLookChanged(undefined, base)).toBe(true)
     expect(terminalLookChanged(TERMINAL_LOOK_DEFAULTS, { ...TERMINAL_LOOK_DEFAULTS })).toBe(false)
+  })
+})
+
+describe('程序写掉光标外观 → 纠回配置值（全屏 TUI 让位）', () => {
+  /*
+   * 现场（2026-10-27 真机）：配了 `cursorBlink: true` + `cursorStyle: 'block'`，但新开的
+   * 终端也不闪、光标还是竖线 —— zsh 的 zle 每画一次提示符就发 `?12l` 与 `\e[6 q`，
+   * 而 xterm 里这两个各只有一个变量，程序写在配置之后。所以客户端在每批输出解析完纠回。
+   */
+  const want = { cursorStyle: 'block', cursorBlink: true }
+  const normal = 'normal'
+
+  it('两项都被程序改掉 → 两项都写回', () => {
+    expect(terminalLookDrift(want, { cursorStyle: 'bar', cursorBlink: false }, normal))
+      .toEqual({ cursorStyle: 'block', cursorBlink: true })
+  })
+
+  it('只差一项就只写一项（别顺手改另一项，那会多触发一次重绘）', () => {
+    expect(terminalLookDrift(want, { cursorStyle: 'block', cursorBlink: false }, normal))
+      .toEqual({ cursorBlink: true })
+    expect(terminalLookDrift(want, { cursorStyle: 'bar', cursorBlink: true }, normal))
+      .toEqual({ cursorStyle: 'block' })
+  })
+
+  it('已经被程序改回配置值 → 空对象（不重绘）', () => {
+    expect(terminalLookDrift(want, { cursorStyle: 'block', cursorBlink: true }, normal)).toEqual({})
+  })
+
+  it('备用屏幕（vim / less / htop / fzf）一律让位：程序对自己的光标有真实语义', () => {
+    expect(terminalLookDrift(want, { cursorStyle: 'bar', cursorBlink: false }, 'alternate')).toEqual({})
+  })
+
+  it('程序写成非法值也照样纠回（配置是 TypedLiteral 的联合，不会被它带偏）', () => {
+    expect(terminalLookDrift(want, { cursorStyle: 'underline', cursorBlink: false }, normal))
+      .toEqual({ cursorStyle: 'block', cursorBlink: true })
   })
 })

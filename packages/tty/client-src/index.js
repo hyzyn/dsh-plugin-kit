@@ -99,7 +99,7 @@ import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { SEARCH_CLOSED_DISPLAY, nextSearchOpen, searchDisplayFor } from './search-state.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
-import { TERMINAL_LOOK_DEFAULTS, readTerminalLook, terminalFontFamilyValue, terminalLookChanged } from './terminal-look.js'
+import { TERMINAL_LOOK_DEFAULTS, readTerminalLook, terminalFontFamilyValue, terminalLookChanged, terminalLookDrift } from './terminal-look.js'
 
 /* ================================ CSS ================================ */
 
@@ -503,7 +503,7 @@ const I18N_ZH = {
   'option.cursorBar': '竖线（bar）',
   'option.cursorBlock': '方块（block）',
   'option.cursorUnderline': '下划线（underline）',
-  'hint.terminalAppearance': '方块光标配行高 1 最贴字：大于 1 会把单元格撑高，光标看起来比字形高一截',
+  'hint.terminalAppearance': '方块光标配行高 1 最贴字：大于 1 会把单元格撑高，光标看起来比字形高一截。形状与闪烁由这里说了算——终端里的程序（zsh 的 zle、vi 模式等）每画一次提示符都会自己设定，本插件在输出解析完后纠回；全屏程序（vim / less / htop）除外，那类程序对自己的光标有真实语义',
   'check.terminalCursorBlink': '光标闪烁',
   'check.sidebarHostAlign': '侧栏「终端」入口与宿主其它入口对齐（宽度 / 内边距 / 字号 / 图标）',
   'hint.sidebarHostAlign': '宿主换版式后本插件入口可能比邻居窄或矮；打开即按宿主侧栏行的几何对齐（宽度让出左右各 2px）。默认关，关着时完全用插件自带尺寸',
@@ -968,7 +968,7 @@ const I18N_EN = {
   'option.cursorBar': 'Bar',
   'option.cursorBlock': 'Block',
   'option.cursorUnderline': 'Underline',
-  'hint.terminalAppearance': 'A block cursor sits best on line height 1: above 1 the cell grows and the cursor towers over the glyphs',
+  'hint.terminalAppearance': 'A block cursor sits best on line height 1: above 1 the cell grows and the cursor towers over the glyphs. Shape and blink are owned here: programs in the terminal (zsh’s zle, vi mode, …) reset them on every prompt, so they are re-asserted once each output batch is parsed — full-screen programs (vim / less / htop) are left alone, since they use the cursor meaningfully',
   'check.terminalCursorBlink': 'Blinking cursor',
   'check.sidebarHostAlign': 'Align the sidebar “Terminal” entry with the host’s other sidebar rows (width / padding / font size / icon)',
   'hint.sidebarHostAlign': 'After a host layout change this entry can end up narrower or shorter than its neighbours; turning this on matches the host sidebar row geometry (2px side insets). Off by default — when off the plugin keeps its own sizing',
@@ -2327,6 +2327,12 @@ function createTerminal(tab) {
     // 用户自己动手了：旧徽标作废（否则修好之后那枚「命令失败」会一直挂在那儿）
     if (assistHints.delete(tab.sid)) syncAssistBadge()
   })
+  /*
+   * 光标外观的最终话语权在配置项（0.34.0）：zle 之类每画一次提示符都会发
+   * `?12l` / `\e[6 q` 把 cursorBlink、cursorStyle 写掉（xterm 里这两个各只有一个
+   * 变量，见 terminalLookDrift 的注释），所以每批输出解析完纠回一次。
+   */
+  term.onWriteParsed(() => enforceTerminalLook(term))
   // 持久（tmux）标签尺寸自愈：SSH↔本地标签切换会改变终端区高度（连接栏
   // 显隐），xterm 收缩的瞬间多出的行被推进 scrollback——幽灵滚动条 + 视口
   // 停在顶部。onResize 时检测缓冲超出视口即 reset + refresh 重画
@@ -3752,6 +3758,28 @@ function syncEntryFromConfig(config) {
     // 热生效：关闭即退订 + 收起（宿主侧同时停表）；打开即重新订阅（幂等）
     syncStatsSubscription()
     applyStatsBar()
+  }
+}
+
+/**
+ * 把被程序写掉的光标外观纠回配置值（判据在 `terminalLookDrift`，全屏 TUI 让位）。
+ *
+ * 抓的时机是**每批 PTY 输出解析完**（`onWriteParsed`）：zle 的 `?12l` / `\e[6 q` 就在
+ * 提示符那一批输出里，同一批解析完立刻写回，用户看不到闪断。
+ */
+function enforceTerminalLook(term) {
+  if (term === undefined || term === null) return
+  try {
+    const buffer = term.buffer === undefined ? null : term.buffer.active
+    const patch = terminalLookDrift(
+      { cursorStyle: terminalLookCache.cursorStyle, cursorBlink: terminalLookCache.cursorBlink },
+      { cursorStyle: term.options.cursorStyle, cursorBlink: term.options.cursorBlink },
+      buffer === null || buffer === undefined ? 'normal' : String(buffer.type),
+    )
+    if (patch.cursorStyle !== undefined) term.options.cursorStyle = patch.cursorStyle
+    if (patch.cursorBlink !== undefined) term.options.cursorBlink = patch.cursorBlink
+  } catch {
+    /* 已 dispose 的终端：忽略 */
   }
 }
 

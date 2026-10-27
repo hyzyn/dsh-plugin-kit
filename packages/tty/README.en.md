@@ -875,8 +875,8 @@ sub-page under the Plugins sidebar.
 | `statsEnabled` | true | Server status bar (0.17.0): collects and pushes CPU / memory / disk / uptime / TCP connections / network speed / CPU temperature by tab visibility; turning it off stops the meter at once (the remote exec channel is closed too), and saving takes effect immediately |
 | `terminalFontFamily` | `''` | Terminal font stack (0.34.0): comma-separated CSS family names, placed **before** the built-in monospace stack (JetBrains Mono → SF Mono → ui-monospace → …). Empty string = built-in stack only. Rendering only, never the PTY; quotes/backslashes/angle brackets are stripped and each name is double-quoted (CSS generics excepted). Existing terminals re-layout immediately |
 | `terminalFontSize` | 13 | Terminal font size in px (8~32) |
-| `terminalCursorStyle` | `bar` | Cursor shape: `bar` / `block` / `underline` (0.34.0) |
-| `terminalCursorBlink` | true | Whether the cursor blinks |
+| `terminalCursorStyle` | `bar` | Cursor shape: `bar` / `block` / `underline` (0.34.0). Programs write this too (DECSCUSR `\e[N q`; zsh’s zle does it on every prompt), so the value is re-asserted once each output batch is parsed — **full-screen programs (vim / less / htop / fzf, alternate screen) are left alone** |
+| `terminalCursorBlink` | true | Whether the cursor blinks. Same story: a program’s `?12h` / `?12l` overrides it; the normal buffer is re-asserted, full-screen programs are left alone |
 | `terminalLineHeight` | 1.35 | Line-height multiplier (1~2). A block cursor usually wants `1`: 1.35 inflates the cell and the cursor towers over the glyphs |
 | `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host `.panelRow` (0.34.0): width `calc(100% - 4px)`, `margin 0 2px`, `min-height 36`, `padding 7px 8px`, 14px font, 16px icon. Default false = the plugin's own sizing (pure additive CSS, no change to the default look) |
 

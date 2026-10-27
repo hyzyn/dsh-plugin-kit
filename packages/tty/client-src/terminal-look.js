@@ -150,3 +150,33 @@ export function terminalLookChanged(previous, next) {
     || previous.cursorBlink !== next.cursorBlink
     || previous.lineHeight !== next.lineHeight
 }
+
+/**
+ * 程序把光标外观写掉之后，要写回哪些项（**空对象 = 不用动**）。
+ *
+ * 为什么需要这一层：xterm 里 `cursorBlink` 与 `cursorStyle` **各只有一个变量**，终端里的
+ * 程序可以直接写它们 —— `CSI ? 12 h/l`（DECSET/DECRST 12）写 `cursorBlink`，
+ * `CSI <n> SP q`（DECSCUSR）写 `cursorStyle`。而 **zsh 的 `zle` 每画一次提示符就写一遍**
+ * （vi 插入模式 → 竖线，同时 `?12l` 关闪烁），于是配置项「只在创建/保存时写一次」的那个值
+ * 活不过第一条提示符 —— 表现就是用户报的「勾了光标闪烁，开个新终端也不闪」。
+ * 2026-10-27 在 test profile 实测：敲一条 `echo hi` 之后 600ms 的闪烁定时器被
+ * `clearInterval` 了一次；在同一会话里发 `printf '\033[?12h'` 立刻恢复闪 —— 两个方向
+ * 都指向「程序和配置在写同一个变量」。
+ *
+ * **备用屏幕让位**：vim / less / htop / fzf 这类全屏程序对自己的光标有真实语义
+ * （`less` 靠光标驻留、`vim` 用它表达模式），抢过来等于破坏交互；只纠正普通缓冲区里
+ * 「提示符顺手改掉」这一种。
+ *
+ * @param {{cursorStyle: TerminalCursorStyle, cursorBlink: boolean}} want - 配置里想要的
+ * @param {{cursorStyle: unknown, cursorBlink: unknown}} current - 终端现在的
+ * @param {string} bufferType - `term.buffer.active.type`（`normal` | `alternate`）
+ * @returns {{cursorStyle?: TerminalCursorStyle, cursorBlink?: boolean}} 需要写回的项
+ */
+export function terminalLookDrift(want, current, bufferType) {
+  /** @type {{cursorStyle?: TerminalCursorStyle, cursorBlink?: boolean}} */
+  const patch = {}
+  if (bufferType === 'alternate') return patch
+  if (current.cursorStyle !== want.cursorStyle) patch.cursorStyle = want.cursorStyle
+  if (current.cursorBlink !== want.cursorBlink) patch.cursorBlink = want.cursorBlink
+  return patch
+}
