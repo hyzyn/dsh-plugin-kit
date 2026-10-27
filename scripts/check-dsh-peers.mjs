@@ -156,8 +156,35 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    包集合 306 → 306：只多一个 `dsh-client-ui-entry-customization`（宿主自带、本仓不引用），
  *    同时少掉的 `dsh` 是打包形状差异（rc.2 那份带 CLI 包、rc.3 的不带），不是删除。
  *    ⇒ 结论：这一档对宿主行为**零影响**，加档只是把「适配到哪一档就写到哪一档」落全。
+ *  - 0.2.1-rc.4 vs 0.2.1-rc.3（2026-10-27）：**仍是纯显式声明**——`^0.2.1-rc.3` 展开是
+ *    `>=0.2.1-rc.3 <0.3.0-0`，官方判定器对运行时 `0.2.1-rc.4` 实测放行；**不改任何插件运行代码**
+ *    （`pnpm -r build` 之后 `lib/` 与 `client.js` 产物零 diff）。边界性证据：把**九段**范围直接喂给
+ *    rc.4 的 `evaluatePluginCompatibility` 也判 compatible，**新段没有移动任何接受/拒绝边界**。
+ *    逐文件比对（rc.3 用 `npm install` 装一份完整依赖树 + 本机全局 rc.4，307 个宿主包逐个 `lib/`）：
+ *    本仓引用的 **27 个**宿主包（16 个代码引用 + 11 个仅文档提及）里 **26 个 `lib/` 逐字节相同**
+ *    （含判定器 `dsh-app-boot` 25/25、`dsh-tools` 21/21、`dsh-session` 21/21、`cordis` 19/19、
+ *    `dsh-client-ui-theme` 18/18、`schemastery` 4/4）；**唯一有改动的是 `dsh-mcp-client`
+ *    （`lib/index.js` +148 B）**，而改动落在本仓**零引用**的路径上——MCP **resources** 处理器新增
+ *    `listable = getServerCapabilities()?.resources !== undefined` 守卫（`resources/list` /
+ *    `resources/templates/list` 在宿主未声明 resources 能力时直接返回空列表，不再打给 server）。
+ *    本仓用的是 MCP **tools**（`mcp__*`），对 `listResources` / `readResource` / `resources/*`
+ *    全仓零引用，且该包导出面只有 `{Config, apply, createMcpToolDefinition, inject, name}`。
+ *    全量 307 个包里只有 **8 个**有真实内容差异，另外 7 个**全部本仓零引用**：`dsh-client-modules`
+ *    （commit 戳）、`dsh-client-ui-conversation`（View 页 tooltip 与一个宿主 locale 键）、
+ *    `-settings-account` / `-settings-general` / `-sidebar`（版本串）、`dsh-llm-deepseek-account`
+ *    （`console.info` → `console.error`）、`dsh-mcp-resources`（仅 README）；**没有任何文件被增删**。
+ *    客户端槽面**完全没动**：`dsh-cordis-client-runner` 的 slot 目录 **103 → 103**、顺序一致、
+ *    0 增 0 删 0 改名（本仓注册的槽全在，且 `lib/client.js` 逐字节相同）。
+ *    `cordis` / `schemastery` 仍是 **4.0.5 / 3.18.5**，且两个包**整个目录（含 `package.json`）
+ *    逐字节相同**——比前几档「除 `package.json` 外相同」更强。包集合 **307 → 307**：无增无删。
+ *    ⇒ 结论：这一档对宿主行为**零影响**，加档只是把「适配到哪一档就写到哪一档」落全。
+ *    真机复核（本机 `test` profile / 端口 3082）：宿主起在 `http://127.0.0.1:3082/`，
+ *    **10/10 个 `@hyzyn` 插件 mounted、0 行 `skipping profile bundle`、0 行 `disabling profile
+ *    plugin row`**；`pnpm live-smoke`（模板 profile 即本机 `test`）**18/18 PASS**；
+ *    主题令牌快照重新生成后 403 个令牌与 rc.4 逐字一致（只有 `dshVersion` / `generatedAt`
+ *    两个元数据位变化）。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
