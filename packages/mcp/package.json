@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-mcp",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "DSH Web GUI 的 MCP 服务器配置插件：托管 ~/.dsh/cordis.patch.yml 的 MCP 区块，支持 stdio / streamable-http、连接测试与启用停用，保存后经 HMR 热加载为 mcp__<server>__<tool> 工具。",
   "type": "module",
   "engines": {
