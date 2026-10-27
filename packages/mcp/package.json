@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-mcp",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "DSH Web GUI 的 MCP 服务器配置插件：托管 ~/.dsh/cordis.patch.yml 的 MCP 区块，支持 stdio / streamable-http、连接测试与启用停用，保存后经 HMR 热加载为 mcp__<server>__<tool> 工具。",
   "type": "module",
   "engines": {
@@ -35,8 +35,8 @@
     "js-yaml": "^4.1.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
-    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
     "react": "^18.2.0"
   },
   "devDependencies": {

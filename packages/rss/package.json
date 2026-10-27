@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-rss",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "description": "DSH Web GUI 的 RSS / 新闻聚合插件：订阅多个 RSS/Atom 源，每天自动汇总一篇「今日值得读」并注入 systemPrompt 供模型直接引用。",
   "type": "module",
   "engines": {
@@ -34,7 +34,7 @@
     "@hyzyn/dsh-kit": "0.7.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
     "react": "^18.2.0"
   },
   "devDependencies": {

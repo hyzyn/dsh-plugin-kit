@@ -112,9 +112,9 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 系统要求
 
-- 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配九档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
-  `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2` 与 `0.2.1-rc.3`**；
-  `0.1.6-alpha.2` 及更早不再支持（最新三档 `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` 都是纯显式声明：对宿主零差异；
+- 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配十档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
+  `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3` 与 `0.2.1-rc.4`**；
+  `0.1.6-alpha.2` 及更早不再支持（最新四档 `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` 都是纯显式声明：对宿主零差异；
   第六档 `0.2.1-alpha.5` 才带着真实的宿主行为变化，
   逐条证据见 [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs) 头部的 cohort 说明）。
 - 兼容性由每个可安装插件在 `peerDependencies` 里声明的 `@deepseek-ai/dsh` 范围保证，DSH 在**安装前**

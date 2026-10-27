@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-codegraph",
-  "version": "0.6.16",
+  "version": "0.6.17",
   "description": "DSH Web GUI 的 Codegraph 集成插件：提供 Codegraph 状态、符号搜索、callers/callees/impact 查看与一键 sync/index，托管 codegraph MCP 服务器项目目录并向 agent 注入能力提示。",
   "type": "module",
   "engines": {
@@ -35,8 +35,8 @@
     "js-yaml": "^4.1.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
-    "@deepseek-ai/dsh-mcp-client": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {

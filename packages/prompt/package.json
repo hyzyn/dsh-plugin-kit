@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-prompt",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "DSH Web GUI 的 Prompt 管理插件：可视化编辑 systemPrompt，带版本管理与 A/B 分流，可导出 / 导入 / 复制分享，配置存于 ~/.dsh/prompts.yml 的托管区块。",
   "type": "module",
   "engines": {
@@ -35,7 +35,7 @@
     "@hyzyn/dsh-kit": "0.7.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
     "react": "^18.2.0"
   },
   "devDependencies": {

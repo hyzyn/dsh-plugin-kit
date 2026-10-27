@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-tty",
-  "version": "0.33.1",
+  "version": "0.33.2",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」提供 xterm.js + PTY 全交互终端与 ssh2 原生 SSH 远程连接（连接簿、主机指纹 TOFU、跳板机），支持 tmux 会话持久化、SFTP 文件传输、端口转发与服务器状态条，并向其他插件开放 ttyTerminal / ttyPanel / ttyConnbar 扩展点；Windows 宿主同样可用。",
   "keywords": [
     "dsh",
@@ -52,8 +52,8 @@
     "ws": "^8.18.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3",
-    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3"
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

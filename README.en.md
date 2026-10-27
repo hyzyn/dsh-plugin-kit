@@ -115,10 +115,10 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek-Harness installed and `dsh web` starts normally. **Nine DSH cohorts are currently
+- DeepSeek-Harness installed and `dsh web` starts normally. **Ten DSH cohorts are currently
   supported: `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.1`, `0.2.1-alpha.2`,
-  `0.2.1-alpha.5`, `0.2.1-rc.1`, `0.2.1-rc.2` and `0.2.1-rc.3`**; `0.1.6-alpha.2` and earlier are no longer
-  supported (the newest three cohorts, `0.2.1-rc.1`, `0.2.1-rc.2` and `0.2.1-rc.3`, are pure explicit
+  `0.2.1-alpha.5`, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3` and `0.2.1-rc.4`**; `0.1.6-alpha.2` and earlier are no longer
+  supported (the newest four cohorts, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3` and `0.2.1-rc.4`, are pure explicit
   declarations with zero difference for a host;
   the sixth one, `0.2.1-alpha.5`, is the one that arrived with **real host behaviour changes** —
   the per-item evidence is in the cohort notes at the top of
