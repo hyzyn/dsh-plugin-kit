@@ -121,6 +121,21 @@ export interface Config {
     /** 服务器状态条（0.17.0）：是否采集并推送会话资源指标（CPU/内存/磁盘/uptime/TCP/网速/温度）。默认开。 */
     statsEnabled?: boolean;
     /**
+     * 终端字体栈（0.34.0）：逗号分隔的 CSS 字体名，排在内置等宽栈之前。
+     * 空串 = 只用内置栈（JetBrains Mono → SF Mono → ui-monospace → …）。
+     */
+    terminalFontFamily?: string;
+    /** 终端字号（px，8~32）。默认 13。 */
+    terminalFontSize?: number;
+    /** 光标形态：bar（默认）/ block / underline。 */
+    terminalCursorStyle?: 'bar' | 'block' | 'underline';
+    /** 光标是否闪烁。默认 true。 */
+    terminalCursorBlink?: boolean;
+    /** 行高倍数（1~2）。默认 1.35；方块光标通常配 1，否则光标比字形高一截。 */
+    terminalLineHeight?: number;
+    /** 侧栏「终端」入口与宿主 `.panelRow` 对齐（宽度 / 内边距 / 字号 / 图标）。默认 false = 插件自带尺寸。 */
+    sidebarHostAlign?: boolean;
+    /**
      * AI 辅助「失败即解释」（0.24.0）：**默认关**（见下方 assistProvider 的成对规则）。
      *
      * 打开后，命令以非零状态结束时宿主会把**那条命令的输出尾部**（经清洗、去重、截断
@@ -472,6 +487,18 @@ declare class LiveConfig {
     endOnPageClose: boolean;
     /** 服务器状态条：是否采集并推送会话资源指标（默认 true）。 */
     statsEnabled: boolean;
+    /** 终端字体栈（排在内置等宽栈之前；空串 = 只用内置栈）。 */
+    terminalFontFamily: string;
+    /** 终端字号（px）。 */
+    terminalFontSize: number;
+    /** 光标形态。 */
+    terminalCursorStyle: 'bar' | 'block' | 'underline';
+    /** 光标是否闪烁。 */
+    terminalCursorBlink: boolean;
+    /** 行高倍数。 */
+    terminalLineHeight: number;
+    /** 侧栏入口是否与宿主 `.panelRow` 对齐。 */
+    sidebarHostAlign: boolean;
     /** AI 辅助「失败即解释」：默认关（见 Config.assistEnabled）。 */
     assistEnabled: boolean;
     /** AI 辅助的模型路由（provider / model 成对；都空 = 跟随宿主默认模型）。 */
@@ -502,6 +529,12 @@ declare class LiveConfig {
         assistEnabled?: boolean;
         assistProvider?: string;
         assistModel?: string;
+        terminalFontFamily?: string;
+        terminalFontSize?: number;
+        terminalCursorStyle?: 'bar' | 'block' | 'underline';
+        terminalCursorBlink?: boolean;
+        terminalLineHeight?: number;
+        sidebarHostAlign?: boolean;
     });
     /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
     apply(partial: Partial<{
@@ -523,6 +556,12 @@ declare class LiveConfig {
         assistEnabled: boolean;
         assistProvider: string;
         assistModel: string;
+        terminalFontFamily: string;
+        terminalFontSize: number;
+        terminalCursorStyle: 'bar' | 'block' | 'underline';
+        terminalCursorBlink: boolean;
+        terminalLineHeight: number;
+        sidebarHostAlign: boolean;
     }>): void;
     findSshHost(name: string): SshHostEntry | undefined;
 }

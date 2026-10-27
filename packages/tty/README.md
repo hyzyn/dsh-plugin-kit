@@ -776,6 +776,12 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `assistProvider` | `''` | AI 辅助的模型路由 provider；与 `assistModel` **成对**（都留空 = 跟随宿主默认模型）。只填一个既不生效、也**不会**静默回落到默认模型 |
 | `assistModel` | `''` | AI 辅助的模型路由 model；与 `assistProvider` 成对 |
 | `statsEnabled` | true | 服务器状态条（0.17.0）：按标签可见性采集并推送 CPU / 内存 / 磁盘 / 在线时长 / TCP 连接数 / 网速 / CPU 温度；关闭即停表（远端 exec channel 一并关闭），保存即热生效 |
+| `terminalFontFamily` | `''` | 终端字体栈（0.34.0）：逗号分隔的 CSS 字体名，**排在内置等宽栈之前**（内置栈 JetBrains Mono → SF Mono → ui-monospace → …）。空串 = 只用内置栈。只影响渲染，不碰 PTY；值里的引号/反斜杠/尖括号会被清洗掉，每个名字会补上双引号（CSS 通用族除外）。改了即时重排已有终端 |
+| `terminalFontSize` | 13 | 终端字号（px，8~32） |
+| `terminalCursorStyle` | `bar` | 光标形态：`bar` / `block` / `underline`（0.34.0）。终端里的程序也写这个值（DECSCUSR `\e[N q`，zsh 的 zle 每次画提示符都写），所以本插件在每批输出解析完后把被改掉的纠回；**全屏程序（vim / less / htop / fzf，备用屏幕）让位** |
+| `terminalCursorBlink` | true | 光标是否闪烁。同上：程序发的 `?12h` / `?12l` 会覆盖它，普通缓冲区里会被纠回，全屏程序让位 |
+| `terminalLineHeight` | 1.35 | 行高倍数（1~2）。方块光标通常配 `1`：1.35 会把单元格撑高，光标比字形高出一截 |
+| `sidebarHostAlign` | false | 侧栏「终端」入口与宿主 `.panelRow` 对齐（0.34.0）：宽度 `calc(100% - 4px)`、`margin 0 2px`、`min-height 36`、`padding 7px 8px`、14px 字号、16px 图标。默认 false = 插件自带尺寸（纯增量样式，不动默认观感） |
 
 ## 连接栏扩展点（客户端服务 `ttyConnbar`，0.13.0）
 

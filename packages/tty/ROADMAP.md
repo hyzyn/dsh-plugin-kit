@@ -318,6 +318,56 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 > 标记都统一到 `0.30.0`（`0.28` / `0.29` 在 npm 上不存在，留着会指向没发生过的版本）。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
 
+### 2026-10-27（0.34.0）：终端外观进配置（字体 / 光标 / 行高 / 侧栏对齐 → [issue #17](https://github.com/hyzyn/dsh-plugin-kit/issues/17)）
+
+**为什么做**（用户原话）：「想要在终端支持 nerd 字体。现状：光标的高度过高，可能和字体适配相关。
+另外字体显示异常……代价：为字体和光标开发配置入口。」期望行为是「配置界面增加字体和光标的配置入口」：
+① 支持自定义字体设置；② 支持光标设置（类型 block 等、高度比例默认为 1.0）。
+
+改之前这五项目只有 `client.js` 里的硬编码值（`cursorStyle: 'bar'` / `fontSize: 13` / `lineHeight: 1.35` /
+`cursorBlink: true` / `JetBrains Mono` 开头的内置栈），用户想改只能改**构建产物**，而插件一升级就是
+npm 包整包替换 —— 改动静默丢失。
+
+**落点**：
+- `src/index.ts`：`Config` 新增 6 项（`terminalFontFamily` / `terminalFontSize` / `terminalCursorStyle` /
+  `terminalCursorBlink` / `terminalLineHeight` / `sidebarHostAlign`，全部 `volatile`）；`sanitizeTerminalFontFamily`
+  按宿主 ui-theme 的口径逐个剥引号/反斜杠/尖括号并**补双引号**（通用族除外）；`normalizePatch` 逐项校验并点名报错。
+- 客户端：`createTerminal` 从 `terminalLookCache` 读外观；`applyTerminalLook()` 就地写 options → refit →
+  按 D79 那条 `usableFitSize` 闸重报 PTY 尺寸（隐藏标签的退化尺寸照旧不发）。字体栈拼接与「要不要重排」
+  的判据抽进 `client-src/terminal-look.js`（纯模块，见门槛）。
+- 设置卡片新增「外观（终端字体 / 光标）」小节，中英文案同步；`sidebarHostAlign` 是**纯增量 CSS**
+  （`[data-host-align]`），默认关时一行样式都不生效。
+- **默认值逐项等于 0.33 的硬编码值**：不配这几项时观感与升级前完全一致（`test/terminal-look.test.ts`
+  把五项默认值与内置字体栈逐字钉住）。
+- **光标形状 / 闪烁由配置项说了算**（2026-10-27 真机复现后补）：xterm 里 `cursorBlink` 与
+  `cursorStyle` **各只有一个变量**，终端里的程序能直接写（`CSI ? 12 h/l`、`CSI <n> SP q`），
+  而 zsh 的 `zle` **每画一次提示符就写一遍** —— 配置项「创建/保存时写一次」的值活不过第一条提示符，
+  表现就是「勾着光标闪烁，开个新终端也不闪」（真机实测：敲一条 `echo hi` 后 600ms 的闪烁定时器被
+  `clearInterval`；发 `printf '\033[?12h'` 立刻恢复）。修法：`client-src/terminal-look.js` 的
+  `terminalLookDrift()` 给判据，客户端在每批 PTY 输出解析完（`onWriteParsed`）纠回；
+  **备用屏幕让位**（vim / less / htop / fzf 对自己的光标有真实语义）。
+
+**门槛**（2026-10-27 复核，PR #18）：
+- `pnpm -r typecheck`（含 `client-lint` 的六条硬规矩）与 `pnpm build` 通过；重建后 `client.js` / `lib/`
+  **无 diff**（产物闸门干净）。
+- `pnpm test`：`packages/tty/test/terminal-look.test.ts`（字体栈顺序、空串回内置栈、缺项/越界逐字段
+  保留上一份、值没变不重排、**程序写掉后纠偏（含只纠一项 / 备用屏幕让位）**）与
+  `config-roundtrip.test.ts` 的外观往返（POST → 快照原样反映，含「字体栈允许清空」与 7 种
+  越界/未知值点名拒绝）全绿；全仓 vitest 全绿。
+- `scripts/preview.mjs settings` 渲染通过：新小节版式与既有「SFTP 传输限制」同款（`tt_limitGrid`）。
+- `pnpm i18n:check` / `readme-facts:check` / `readme-structure:check` / `doc-links:check` / `artifacts:check`
+  通过；`pnpm aggregate` 无脏产物。
+- 真机（挂载车道 `pnpm live-smoke --bootstrap --strict --render`）由 CI 兜：本项只动渲染、不碰 PTY、
+  不改尺寸协议，PR 侧未单独跑真机。
+
+**刻意不做 / 边界**：
+- **不改 `lineHeight` 的默认值**：issue 写的「光标高度比例默认为 1.0」在 xterm 里就是 `lineHeight`
+  （方块光标的单元格高 = `lineHeight × fontSize`），所以给的是配置项、默认仍留 1.35——改默认会动到
+  所有已有用户的观感；卡片 hint 写明「方块光标配行高 1 最贴字」。
+- 不加新依赖、不碰 PTY、不改尺寸协议。
+- `sidebarHostAlign` 的几何（`min-height 36` / `padding 7px 8px` / 14px 字号 / 16px 图标）是对宿主
+  `.panelRow` 现有值的**快照**：宿主换版式它会漂，所以默认关、且只在开关打开时生效。
+
 ### 2026-10-26（0.33.1）：连接簿条目全挂（→ [D102](./DEFECTS.md)）——**schema 会填默认值，不只是校验**
 
 **为什么做**：用户截图上报——终端面板里点连接簿条目 `CDC_TEST_KB`，标签立刻转红，浮层只有

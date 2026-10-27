@@ -254,6 +254,50 @@
 [data-sidebar-collapsed] .tt_sidebarEntryLabel {
   display: none;
 }
+/*
+ * 与宿主侧栏条目 .panelRow 对齐（0.34.0，配置项 `sidebarHostAlign`）。
+ *
+ * 只在入口带 `data-host-align` 时套用：默认（不配）保持上面的自带尺寸，所以这是一层
+ * **纯增量**的样式，不改任何已有观感。几何取自宿主行实际值——min-height 36 / padding
+ * 7px 8px / margin 0 2px / line-height 22 / 14px 字号 / 16px 图标；宽度让出左右各 2px
+ * 外边距（宿主不做全局 box-sizing reset，这里必须显式 border-box，见上面那条注释）。
+ * 悬停/激活态跟着改用插件令牌 --tt-hover：宿主 sidebar-nav-item-* 那两个令牌的底色
+ * 与本站其它入口不同族，对齐后反而更显突兀。
+ */
+.tt_sidebarEntry[data-host-align] {
+  gap: 8px;
+  width: calc(100% - 4px);
+  margin: 0 2px;
+  min-height: 36px;
+  height: auto;
+  padding: 7px 8px;
+  color: var(--tt-label);
+  font-size: 14px;
+  line-height: 22px;
+}
+.tt_sidebarEntry[data-host-align]:hover {
+  background: var(--tt-hover);
+}
+.tt_sidebarEntry[data-host-align][data-active],
+.tt_sidebarEntry[data-host-align][data-minimized] {
+  background: var(--tt-hover);
+  color: var(--tt-label);
+  font-weight: 400;
+}
+.tt_sidebarEntry[data-host-align] .tt_sidebarEntryIcon {
+  width: 16px;
+  height: 16px;
+}
+.tt_sidebarEntry[data-host-align] .tt_sidebarEntryIcon svg {
+  width: 16px;
+  height: 16px;
+}
+[data-sidebar-collapsed] .tt_sidebarEntry[data-host-align] {
+  width: 100%;
+  margin: 0;
+  height: 36px;
+  padding: 0;
+}
 .tt_sidebarEntryBadge {
   display: none;
   align-items: center;

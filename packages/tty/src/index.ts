@@ -161,6 +161,21 @@ export interface Config {
   /** 服务器状态条（0.17.0）：是否采集并推送会话资源指标（CPU/内存/磁盘/uptime/TCP/网速/温度）。默认开。 */
   statsEnabled?: boolean
   /**
+   * 终端字体栈（0.34.0）：逗号分隔的 CSS 字体名，排在内置等宽栈之前。
+   * 空串 = 只用内置栈（JetBrains Mono → SF Mono → ui-monospace → …）。
+   */
+  terminalFontFamily?: string
+  /** 终端字号（px，8~32）。默认 13。 */
+  terminalFontSize?: number
+  /** 光标形态：bar（默认）/ block / underline。 */
+  terminalCursorStyle?: 'bar' | 'block' | 'underline'
+  /** 光标是否闪烁。默认 true。 */
+  terminalCursorBlink?: boolean
+  /** 行高倍数（1~2）。默认 1.35；方块光标通常配 1，否则光标比字形高一截。 */
+  terminalLineHeight?: number
+  /** 侧栏「终端」入口与宿主 `.panelRow` 对齐（宽度 / 内边距 / 字号 / 图标）。默认 false = 插件自带尺寸。 */
+  sidebarHostAlign?: boolean
+  /**
    * AI 辅助「失败即解释」（0.24.0）：**默认关**（见下方 assistProvider 的成对规则）。
    *
    * 打开后，命令以非零状态结束时宿主会把**那条命令的输出尾部**（经清洗、去重、截断
@@ -295,6 +310,16 @@ export const Config: z = z.object({
   persistence: z.union([z.const('off'), z.const('tmux')]).default('off').volatile(),
   endOnPageClose: z.boolean().default(false).volatile(),
   statsEnabled: z.boolean().default(true).volatile(),
+  /*
+   * 终端外观（0.34.0）：只影响渲染，不碰 PTY。默认值刻意等于 0.33 的硬编码值，
+   * 因此不写这几项时行为与升级前完全一致（零回归）。
+   */
+  terminalFontFamily: z.string().default('').volatile(),
+  terminalFontSize: z.natural().min(8).max(32).default(13).volatile(),
+  terminalCursorStyle: z.union([z.const('bar'), z.const('block'), z.const('underline')]).default('bar').volatile(),
+  terminalCursorBlink: z.boolean().default(true).volatile(),
+  terminalLineHeight: z.number().min(1).max(2).default(1.35).volatile(),
+  sidebarHostAlign: z.boolean().default(false).volatile(),
   assistEnabled: z.boolean().default(false).volatile(),
   assistProvider: z.string().default('').volatile(),
   assistModel: z.string().default('').volatile(),
@@ -885,6 +910,40 @@ function sanitizeTermValue(value: string, fallback: string): string {
   return TERM_RE.test(trimmed) ? trimmed : fallback
 }
 
+/**
+ * 终端字体栈清洗（0.34.0）：逗号分隔的字体名，逐个去掉引号 / 反斜杠 / 尖括号 / 控制字符，
+ * 再给**每个名字补上双引号**（CSS 通用族除外）。
+ *
+ * 为什么必须补引号：字体名里常有空格，甚至就以数字开头（`3270 Nerd Font`）；裸写只有
+ * 「空格分隔的标识符序列」这一种合法形态，数字开头的名字会整条 `font-family` 失效。
+ * 与宿主 ui-theme 的字体规范化同一口径。空串 = 只用内置栈。
+ */
+function sanitizeTerminalFontFamily(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const generic = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-monospace', 'ui-serif', 'ui-sans-serif', 'ui-rounded', 'emoji', 'math', 'fangsong'])
+  const names = value
+    .slice(0, 300)
+    .split(',')
+    .map((part) => part.replace(/["'\\<>\u0000-\u001f\u007f]/g, '').trim())
+    .filter((part) => part !== '')
+  if (names.length === 0) return ''
+  return names.map((name) => (generic.has(name.toLowerCase()) ? name : '"' + name + '"')).join(', ')
+}
+
+/** 终端字号：整数 8~32，越界夹回边界；非数字回落 13。 */
+function sanitizeTerminalFontSize(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number.NaN
+  if (!Number.isFinite(numeric)) return 13
+  return Math.min(32, Math.max(8, Math.round(numeric)))
+}
+
+/** 行高倍数：1~2，越界夹回边界；非数字回落 1.35。 */
+function sanitizeTerminalLineHeight(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number.NaN
+  if (!Number.isFinite(numeric)) return 1.35
+  return Math.min(2, Math.max(1, numeric))
+}
+
 /** 可热更新的运行时配置（loader 的 volatile 更新事件动态应用）。 */
 class LiveConfig {
   shell: string
@@ -905,6 +964,18 @@ class LiveConfig {
   endOnPageClose: boolean
   /** 服务器状态条：是否采集并推送会话资源指标（默认 true）。 */
   statsEnabled: boolean
+  /** 终端字体栈（排在内置等宽栈之前；空串 = 只用内置栈）。 */
+  terminalFontFamily: string
+  /** 终端字号（px）。 */
+  terminalFontSize: number
+  /** 光标形态。 */
+  terminalCursorStyle: 'bar' | 'block' | 'underline'
+  /** 光标是否闪烁。 */
+  terminalCursorBlink: boolean
+  /** 行高倍数。 */
+  terminalLineHeight: number
+  /** 侧栏入口是否与宿主 `.panelRow` 对齐。 */
+  sidebarHostAlign: boolean
   /** AI 辅助「失败即解释」：默认关（见 Config.assistEnabled）。 */
   assistEnabled: boolean
   /** AI 辅助的模型路由（provider / model 成对；都空 = 跟随宿主默认模型）。 */
@@ -917,7 +988,7 @@ class LiveConfig {
   /** 允许 ProxyCommand（本机命令执行）：默认关（见 Config.allowProxyCommand）。 */
   allowProxyCommand: boolean
 
-  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; statsEnabled?: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand?: boolean; persistSessions?: string[]; assistEnabled?: boolean; assistProvider?: string; assistModel?: string }) {
+  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; statsEnabled?: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand?: boolean; persistSessions?: string[]; assistEnabled?: boolean; assistProvider?: string; assistModel?: string; terminalFontFamily?: string; terminalFontSize?: number; terminalCursorStyle?: 'bar' | 'block' | 'underline'; terminalCursorBlink?: boolean; terminalLineHeight?: number; sidebarHostAlign?: boolean }) {
     this.shell = init.shell
     this.term = sanitizeTermValue(init.term, 'xterm-256color')
     this.colorTerm = sanitizeTermValue(init.colorTerm, 'truecolor')
@@ -939,10 +1010,17 @@ class LiveConfig {
     this.assistEnabled = init.assistEnabled === true
     this.assistProvider = typeof init.assistProvider === 'string' ? init.assistProvider.trim() : ''
     this.assistModel = typeof init.assistModel === 'string' ? init.assistModel.trim() : ''
+    // 终端外观：缺省值等于 0.33 的硬编码值，未配置时零回归
+    this.terminalFontFamily = sanitizeTerminalFontFamily(init.terminalFontFamily)
+    this.terminalFontSize = sanitizeTerminalFontSize(init.terminalFontSize)
+    this.terminalCursorStyle = init.terminalCursorStyle === 'block' || init.terminalCursorStyle === 'underline' ? init.terminalCursorStyle : 'bar'
+    this.terminalCursorBlink = init.terminalCursorBlink !== false
+    this.terminalLineHeight = sanitizeTerminalLineHeight(init.terminalLineHeight)
+    this.sidebarHostAlign = init.sidebarHostAlign === true
   }
 
   /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
-  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; statsEnabled: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand: boolean; persistSessions: string[]; assistEnabled: boolean; assistProvider: string; assistModel: string }>): void {
+  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; statsEnabled: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand: boolean; persistSessions: string[]; assistEnabled: boolean; assistProvider: string; assistModel: string; terminalFontFamily: string; terminalFontSize: number; terminalCursorStyle: 'bar' | 'block' | 'underline'; terminalCursorBlink: boolean; terminalLineHeight: number; sidebarHostAlign: boolean }>): void {
     if (typeof partial.shell === 'string' && partial.shell.trim() !== '') this.shell = partial.shell.trim()
     if (typeof partial.term === 'string' && partial.term.trim() !== '') this.term = sanitizeTermValue(partial.term, this.term)
     if (typeof partial.colorTerm === 'string' && partial.colorTerm.trim() !== '') this.colorTerm = sanitizeTermValue(partial.colorTerm, this.colorTerm)
@@ -967,6 +1045,16 @@ class LiveConfig {
      */
     if (typeof partial.assistProvider === 'string') this.assistProvider = partial.assistProvider.trim()
     if (typeof partial.assistModel === 'string') this.assistModel = partial.assistModel.trim()
+    /*
+     * 终端外观（0.34.0）：字体栈允许被清空（空串 = 回到内置栈），所以不能走上面
+     * 「空串保持原值」的惯例——那会让字体一旦填上就再也删不掉。
+     */
+    if (typeof partial.terminalFontFamily === 'string') this.terminalFontFamily = sanitizeTerminalFontFamily(partial.terminalFontFamily)
+    if (partial.terminalFontSize !== undefined) this.terminalFontSize = sanitizeTerminalFontSize(partial.terminalFontSize)
+    if (partial.terminalCursorStyle === 'bar' || partial.terminalCursorStyle === 'block' || partial.terminalCursorStyle === 'underline') this.terminalCursorStyle = partial.terminalCursorStyle
+    if (typeof partial.terminalCursorBlink === 'boolean') this.terminalCursorBlink = partial.terminalCursorBlink
+    if (partial.terminalLineHeight !== undefined) this.terminalLineHeight = sanitizeTerminalLineHeight(partial.terminalLineHeight)
+    if (typeof partial.sidebarHostAlign === 'boolean') this.sidebarHostAlign = partial.sidebarHostAlign
   }
 
   findSshHost(name: string): SshHostEntry | undefined {
@@ -4370,6 +4458,14 @@ interface ConfigSnapshot {
   endOnPageClose: boolean
   /** 服务器状态条开关（客户端据此隐藏/显示状态条）。 */
   statsEnabled: boolean
+  /** 终端外观（0.34.0）：字体栈 / 字号 / 光标 / 行高；只影响渲染。 */
+  terminalFontFamily: string
+  terminalFontSize: number
+  terminalCursorStyle: 'bar' | 'block' | 'underline'
+  terminalCursorBlink: boolean
+  terminalLineHeight: number
+  /** 侧栏入口是否与宿主 `.panelRow` 对齐。 */
+  sidebarHostAlign: boolean
   /**
    * AI 辅助「失败即解释」开关（0.24.0，**默认关**）。客户端据此决定要不要摆失败徽标；
    * 关着时宿主侧也拒绝 `/api/dsh-tty/assist`（两道闸，不靠客户端自觉）。
@@ -4465,6 +4561,12 @@ const plugin = definePlugin<Config>({
       assistEnabled: config?.assistEnabled === true,
       assistProvider: typeof config?.assistProvider === 'string' ? config.assistProvider : '',
       assistModel: typeof config?.assistModel === 'string' ? config.assistModel : '',
+      terminalFontFamily: sanitizeTerminalFontFamily(config?.terminalFontFamily),
+      terminalFontSize: sanitizeTerminalFontSize(config?.terminalFontSize),
+      terminalCursorStyle: config?.terminalCursorStyle === 'block' || config?.terminalCursorStyle === 'underline' ? config.terminalCursorStyle : 'bar',
+      terminalCursorBlink: config?.terminalCursorBlink !== false,
+      terminalLineHeight: sanitizeTerminalLineHeight(config?.terminalLineHeight),
+      sidebarHostAlign: config?.sidebarHostAlign === true,
     })
     /*
      * 闸门在**挂载时先初始化一次**（tty D70）。
@@ -4556,6 +4658,12 @@ const plugin = definePlugin<Config>({
       persistence: live.persistence,
       endOnPageClose: live.endOnPageClose,
       statsEnabled: live.statsEnabled,
+      terminalFontFamily: live.terminalFontFamily,
+      terminalFontSize: live.terminalFontSize,
+      terminalCursorStyle: live.terminalCursorStyle,
+      terminalCursorBlink: live.terminalCursorBlink,
+      terminalLineHeight: live.terminalLineHeight,
+      sidebarHostAlign: live.sidebarHostAlign,
       assistEnabled: live.assistEnabled,
       assistProvider: live.assistProvider,
       assistModel: live.assistModel,
@@ -4630,7 +4738,7 @@ const plugin = definePlugin<Config>({
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
     const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
       const patch: Record<string, unknown> = {}
-      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'sftpLimits', 'allowProxyCommand', 'assistEnabled', 'assistProvider', 'assistModel'])
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'sftpLimits', 'allowProxyCommand', 'assistEnabled', 'assistProvider', 'assistModel', 'terminalFontFamily', 'terminalFontSize', 'terminalCursorStyle', 'terminalCursorBlink', 'terminalLineHeight', 'sidebarHostAlign'])
       for (const key of Object.keys(input)) {
         if (!known.has(key)) return { error: '未知配置项: ' + key }
       }
@@ -4743,6 +4851,38 @@ const plugin = definePlugin<Config>({
           next[key] = value
         }
         patch.sftpLimits = next
+      }
+      /*
+       * 终端外观（0.34.0）。字体栈**允许清空**（空串 = 回到内置栈），因此这里不能套用
+       * 上面「空串跳过」的写法，否则字体一旦填上就再也删不掉。
+       */
+      if (input.terminalFontFamily !== undefined) {
+        if (typeof input.terminalFontFamily !== 'string') return { error: 'terminalFontFamily 必须是字符串' }
+        patch.terminalFontFamily = sanitizeTerminalFontFamily(input.terminalFontFamily)
+      }
+      if (input.terminalFontSize !== undefined) {
+        const value = Number(input.terminalFontSize)
+        if (!Number.isInteger(value) || value < 8 || value > 32) return { error: 'terminalFontSize 必须是 8~32 的整数' }
+        patch.terminalFontSize = value
+      }
+      if (input.terminalCursorStyle !== undefined) {
+        if (input.terminalCursorStyle !== 'bar' && input.terminalCursorStyle !== 'block' && input.terminalCursorStyle !== 'underline') {
+          return { error: 'terminalCursorStyle 必须是 bar、block 或 underline' }
+        }
+        patch.terminalCursorStyle = input.terminalCursorStyle
+      }
+      if (input.terminalCursorBlink !== undefined) {
+        if (typeof input.terminalCursorBlink !== 'boolean') return { error: 'terminalCursorBlink 必须是布尔值' }
+        patch.terminalCursorBlink = input.terminalCursorBlink
+      }
+      if (input.terminalLineHeight !== undefined) {
+        const value = Number(input.terminalLineHeight)
+        if (!Number.isFinite(value) || value < 1 || value > 2) return { error: 'terminalLineHeight 必须是 1~2 的数字' }
+        patch.terminalLineHeight = value
+      }
+      if (input.sidebarHostAlign !== undefined) {
+        if (typeof input.sidebarHostAlign !== 'boolean') return { error: 'sidebarHostAlign 必须是布尔值' }
+        patch.sidebarHostAlign = input.sidebarHostAlign
       }
       return { patch }
     }

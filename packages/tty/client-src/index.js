@@ -99,6 +99,7 @@ import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { SEARCH_CLOSED_DISPLAY, nextSearchOpen, searchDisplayFor } from './search-state.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
+import { TERMINAL_LOOK_DEFAULTS, readTerminalLook, terminalFontFamilyValue, terminalLookChanged, terminalLookDrift } from './terminal-look.js'
 
 /* ================================ CSS ================================ */
 
@@ -491,6 +492,21 @@ const I18N_ZH = {
   'placeholder.cwd': '留空使用宿主进程启动目录',
   'field.grace': '断线保活（秒，0 = 立即结束）',
   'hint.grace': '刷新页面/网络抖动后会话保活等待重连，超时后结束；保存即热生效',
+  'section.appearance': '外观（终端字体 / 光标）',
+  'field.terminalFontFamily': '终端字体栈（逗号分隔，排在内置等宽字体之前）',
+  'placeholder.terminalFontFamily': '例如 MesloLGL Nerd Font Mono, Sarasa Term SC Nerd',
+  'hint.terminalFontFamily': '只影响渲染，不碰 PTY；留空 = 内置 JetBrains Mono → SF Mono → …。每个名字会自动补双引号（写错一个名字只会让那个名字失效，后面的照常回退）。保存即热生效，已开的标签就地重排',
+  'field.terminalAppearance': '字号 / 行高 / 光标形态',
+  'field.terminalFontSize': '字号 (px, 8~32)',
+  'field.terminalLineHeight': '行高倍数 (1~2)',
+  'field.terminalCursorStyle': '光标形态',
+  'option.cursorBar': '竖线（bar）',
+  'option.cursorBlock': '方块（block）',
+  'option.cursorUnderline': '下划线（underline）',
+  'hint.terminalAppearance': '方块光标配行高 1 最贴字：大于 1 会把单元格撑高，光标看起来比字形高一截。形状与闪烁由这里说了算——终端里的程序（zsh 的 zle、vi 模式等）每画一次提示符都会自己设定，本插件在输出解析完后纠回；全屏程序（vim / less / htop）除外，那类程序对自己的光标有真实语义',
+  'check.terminalCursorBlink': '光标闪烁',
+  'check.sidebarHostAlign': '侧栏「终端」入口与宿主其它入口对齐（宽度 / 内边距 / 字号 / 图标）',
+  'hint.sidebarHostAlign': '宿主换版式后本插件入口可能比邻居窄或矮；打开即按宿主侧栏行的几何对齐（宽度让出左右各 2px）。默认关，关着时完全用插件自带尺寸',
   'section.assist': 'AI 辅助',
   'check.assistEnabled': '失败即解释（命令非零退出时问模型「为什么 / 下一步」）',
   'hint.assistEnabled': '默认关。开启后，命令以非零状态结束时终端右下角会出现一枚徽标；点它才把那条命令的「输出尾部」（剥离颜色与进度条、折掉重复行、密钥/token 已遮盖）连同当前屏幕发给模型，不发 scrollback。模型给的命令只会「填入」命令行，永不替你回车。',
@@ -941,6 +957,21 @@ const I18N_EN = {
   'placeholder.cwd': 'Leave empty to use the host process start directory',
   'field.grace': 'Disconnect keepalive (seconds, 0 = end immediately)',
   'hint.grace': 'Sessions are kept alive for reconnect after a page refresh or network hiccup and end on timeout; applies live on save',
+  'section.appearance': 'Appearance (terminal font / cursor)',
+  'field.terminalFontFamily': 'Terminal font stack (comma-separated, placed before the built-in monospace fonts)',
+  'placeholder.terminalFontFamily': 'e.g. MesloLGL Nerd Font Mono, Sarasa Term SC Nerd',
+  'hint.terminalFontFamily': 'Rendering only, never the PTY; empty = built-in JetBrains Mono → SF Mono → … . Each name is double-quoted automatically (a bad name only drops itself, the rest still fall back). Applies live on save and re-lays out open tabs',
+  'field.terminalAppearance': 'Font size / line height / cursor shape',
+  'field.terminalFontSize': 'Font size (px, 8~32)',
+  'field.terminalLineHeight': 'Line height (1~2)',
+  'field.terminalCursorStyle': 'Cursor shape',
+  'option.cursorBar': 'Bar',
+  'option.cursorBlock': 'Block',
+  'option.cursorUnderline': 'Underline',
+  'hint.terminalAppearance': 'A block cursor sits best on line height 1: above 1 the cell grows and the cursor towers over the glyphs. Shape and blink are owned here: programs in the terminal (zsh’s zle, vi mode, …) reset them on every prompt, so they are re-asserted once each output batch is parsed — full-screen programs (vim / less / htop) are left alone, since they use the cursor meaningfully',
+  'check.terminalCursorBlink': 'Blinking cursor',
+  'check.sidebarHostAlign': 'Align the sidebar “Terminal” entry with the host’s other sidebar rows (width / padding / font size / icon)',
+  'hint.sidebarHostAlign': 'After a host layout change this entry can end up narrower or shorter than its neighbours; turning this on matches the host sidebar row geometry (2px side insets). Off by default — when off the plugin keeps its own sizing',
   'section.assist': 'AI assist',
   'check.assistEnabled': 'Explain failures (ask the model "why / what next" when a command exits non-zero)',
   'hint.assistEnabled': 'Off by default. When on, a chip appears in the corner of the terminal after a command exits non-zero; clicking it sends that command\'s output tail (colors and progress bars stripped, repeated lines collapsed, keys/tokens masked) together with the current screen to the model — never the scrollback. A suggested command is only ever typed into the prompt line, never submitted for you.',
@@ -2227,14 +2258,15 @@ function createTerminal(tab) {
   theme.brightCyan = cssVar('--tt-an-bright-cyan')
   theme.brightWhite = cssVar('--tt-an-bright-white')
   const term = new Terminal({
-    cursorBlink: true,
-    cursorStyle: 'bar',
+    // 外观（0.34.0 起可配）：缓存来自 /api/dsh-tty/config，默认值 = 0.33 的硬编码值
+    cursorBlink: terminalLookCache.cursorBlink,
+    cursorStyle: terminalLookCache.cursorStyle,
     cursorInactiveStyle: 'outline',
-    fontSize: 13,
-    fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: terminalLookCache.fontSize,
+    fontFamily: terminalFontFamilyValue(terminalLookCache.fontFamily),
     fontWeight: 400,
     fontWeightBold: 600,
-    lineHeight: 1.35,
+    lineHeight: terminalLookCache.lineHeight,
     scrollback: 5000,
     convertEol: false,
     // 搜索高亮装饰（SearchAddon decorations）依赖提案 API
@@ -2295,6 +2327,12 @@ function createTerminal(tab) {
     // 用户自己动手了：旧徽标作废（否则修好之后那枚「命令失败」会一直挂在那儿）
     if (assistHints.delete(tab.sid)) syncAssistBadge()
   })
+  /*
+   * 光标外观的最终话语权在配置项（0.34.0）：zle 之类每画一次提示符都会发
+   * `?12l` / `\e[6 q` 把 cursorBlink、cursorStyle 写掉（xterm 里这两个各只有一个
+   * 变量，见 terminalLookDrift 的注释），所以每批输出解析完纠回一次。
+   */
+  term.onWriteParsed(() => enforceTerminalLook(term))
   // 持久（tmux）标签尺寸自愈：SSH↔本地标签切换会改变终端区高度（连接栏
   // 显隐），xterm 收缩的瞬间多出的行被推进 scrollback——幽灵滚动条 + 视口
   // 停在顶部。onResize 时检测缓冲超出视口即 reset + refresh 重画
@@ -3685,6 +3723,17 @@ let allowProxyCommandCache = false
 /** 这条能力是否**获宿主授权**（只读快照）。未授权时界面上那个开关点不动，要说明怎么授权。 */
 let allowProxyCommandGrantedCache = false
 let liveSessionCount = null
+/**
+ * 终端外观缓存（0.34.0）：`/api/dsh-tty/config` 的 terminal* / sidebarHostAlign，createTerminal
+ * 读取；值变了就地重绘已有终端。默认值等于宿主 schema 的默认值（= 0.33 的硬编码值），
+ * 所以 config 还没到时界面不会跳变。
+ *
+ * 「字体栈怎么拼」「新快照要不要重排」这两条判据在 `terminal-look.js`（纯模块 + 单测，
+ * 客户端规则 ②）；这里只留缓存与作用到 xterm 的那一步。
+ */
+let terminalLookCache = { ...TERMINAL_LOOK_DEFAULTS }
+/** 侧栏入口是否与宿主 `.panelRow` 对齐（宽度 / 内边距 / 字号 / 图标）。 */
+let sidebarHostAlignCache = false
 /* ============================ 入口显隐闸门 ============================ */
 
 /**
@@ -3709,6 +3758,55 @@ function syncEntryFromConfig(config) {
     // 热生效：关闭即退订 + 收起（宿主侧同时停表）；打开即重新订阅（幂等）
     syncStatsSubscription()
     applyStatsBar()
+  }
+}
+
+/**
+ * 把被程序写掉的光标外观纠回配置值（判据在 `terminalLookDrift`，全屏 TUI 让位）。
+ *
+ * 抓的时机是**每批 PTY 输出解析完**（`onWriteParsed`）：zle 的 `?12l` / `\e[6 q` 就在
+ * 提示符那一批输出里，同一批解析完立刻写回，用户看不到闪断。
+ */
+function enforceTerminalLook(term) {
+  if (term === undefined || term === null) return
+  try {
+    const buffer = term.buffer === undefined ? null : term.buffer.active
+    const patch = terminalLookDrift(
+      { cursorStyle: terminalLookCache.cursorStyle, cursorBlink: terminalLookCache.cursorBlink },
+      { cursorStyle: term.options.cursorStyle, cursorBlink: term.options.cursorBlink },
+      buffer === null || buffer === undefined ? 'normal' : String(buffer.type),
+    )
+    if (patch.cursorStyle !== undefined) term.options.cursorStyle = patch.cursorStyle
+    if (patch.cursorBlink !== undefined) term.options.cursorBlink = patch.cursorBlink
+  } catch {
+    /* 已 dispose 的终端：忽略 */
+  }
+}
+
+/** 外观改了：把新选项写进每个已存在的终端，重排行列并把新尺寸报给 PTY（热生效）。 */
+function applyTerminalLook() {
+  for (const tab of tabs.values()) {
+    const term = tab.term
+    if (term === undefined || term === null) continue
+    try {
+      term.options.fontFamily = terminalFontFamilyValue(terminalLookCache.fontFamily)
+      term.options.fontSize = terminalLookCache.fontSize
+      term.options.cursorStyle = terminalLookCache.cursorStyle
+      term.options.cursorBlink = terminalLookCache.cursorBlink
+      term.options.lineHeight = terminalLookCache.lineHeight
+    } catch {
+      continue // 已 dispose 的终端
+    }
+    refitTerminal(tab)
+    sendResize(tab)
+  }
+}
+
+/** 侧栏入口对齐开关：入口是动态挂载的，按 DOM 查一遍再写属性（热生效）。 */
+function applySidebarHostAlign() {
+  for (const entry of document.querySelectorAll('[data-dsh-tty-entry]')) {
+    if (sidebarHostAlignCache) entry.dataset.hostAlign = '1'
+    else delete entry.dataset.hostAlign
   }
 }
 
@@ -3743,6 +3841,20 @@ function syncSshHostsCache(config) {
   }
   if (config !== null && typeof config === 'object' && typeof config.allowProxyCommandGranted === 'boolean') {
     allowProxyCommandGrantedCache = config.allowProxyCommandGranted
+  }
+  /*
+   * 终端外观（0.34.0）：字体栈 / 字号 / 光标 / 行高 / 侧栏对齐。只改渲染，热生效；
+   * 值没变就不重排（避免每次配置轮询都让终端闪一下、把视口顶走）。
+   */
+  if (config !== null && typeof config === 'object') {
+    const previous = terminalLookCache
+    terminalLookCache = readTerminalLook(config, previous)
+    // 值没变就不重排：配置是每轮轮询都到的，无条件 apply 会让终端每隔几秒闪一下、把视口顶走
+    if (terminalLookChanged(previous, terminalLookCache)) applyTerminalLook()
+    if (typeof config.sidebarHostAlign === 'boolean' && config.sidebarHostAlign !== sidebarHostAlignCache) {
+      sidebarHostAlignCache = config.sidebarHostAlign
+      applySidebarHostAlign()
+    }
   }
 }
 
@@ -8828,6 +8940,8 @@ function createSidebarEntry() {
   const entry = document.createElement('div')
   entry.dataset.dshTtyEntry = ''
   entry.className = 'tt_sidebarEntry'
+  // 与宿主 .panelRow 对齐（0.34.0 可配）：属性在，CSS 才套对齐几何
+  if (sidebarHostAlignCache) entry.dataset.hostAlign = '1'
   entry.setAttribute('role', 'button')
   entry.setAttribute('aria-label', t('panel.title'))
   // 键盘可达（0.19.0，WCAG 2.1.1）：纯键盘用户此前进不了面板
@@ -10441,6 +10555,59 @@ function TtySettingsCard(props) {
                       ],
                     })
                   : boolField(t('check.shellIntegrationWindows'), 'shellIntegration'),
+                sectionTitle(t('section.appearance')),
+                // 字体栈：留空 = 内置等宽栈；填了就排在内置栈之前（issue #17）
+                textField(t('field.terminalFontFamily'), 'terminalFontFamily', t('placeholder.terminalFontFamily'), t('hint.terminalFontFamily')),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: t('field.terminalAppearance') }),
+                    jsxs('div', { className: 'tt_limitGrid', children: [
+                      jsxs('label', { className: 'tt_sshRow', children: [
+                        jsx('span', { className: 'tt_cardLabel', children: t('field.terminalFontSize') }),
+                        jsx('input', {
+                          className: 'tt_cardInput',
+                          type: 'number',
+                          min: 8,
+                          max: 32,
+                          step: 1,
+                          value: String(Number.isFinite(Number(form?.terminalFontSize)) ? Number(form.terminalFontSize) : 13),
+                          onChange: (event) => set('terminalFontSize', Number(event.target.value) || 13),
+                        }),
+                      ] }),
+                      jsxs('label', { className: 'tt_sshRow', children: [
+                        jsx('span', { className: 'tt_cardLabel', children: t('field.terminalLineHeight') }),
+                        jsx('input', {
+                          className: 'tt_cardInput',
+                          type: 'number',
+                          min: 1,
+                          max: 2,
+                          step: 0.05,
+                          value: String(Number.isFinite(Number(form?.terminalLineHeight)) ? Number(form.terminalLineHeight) : 1.35),
+                          onChange: (event) => set('terminalLineHeight', Number(event.target.value) || 1),
+                        }),
+                      ] }),
+                      jsxs('label', { className: 'tt_sshRow', children: [
+                        jsx('span', { className: 'tt_cardLabel', children: t('field.terminalCursorStyle') }),
+                        jsxs('select', {
+                          className: 'tt_cardInput',
+                          // 兜底与宿主 schema 一致：非法/缺省一律 bar
+                          value: form?.terminalCursorStyle === 'block' || form?.terminalCursorStyle === 'underline' ? form.terminalCursorStyle : 'bar',
+                          onChange: (event) => set('terminalCursorStyle', event.target.value),
+                          children: [
+                            jsx('option', { value: 'bar', children: t('option.cursorBar') }),
+                            jsx('option', { value: 'block', children: t('option.cursorBlock') }),
+                            jsx('option', { value: 'underline', children: t('option.cursorUnderline') }),
+                          ],
+                        }),
+                      ] }),
+                    ] }),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.terminalAppearance') }),
+                    boolField(t('check.terminalCursorBlink'), 'terminalCursorBlink'),
+                  ],
+                }),
+                boolField(t('check.sidebarHostAlign'), 'sidebarHostAlign'),
+                jsx('span', { className: 'tt_cardHint', children: t('hint.sidebarHostAlign') }),
                 sectionTitle(t('section.sftp')),
                 jsxs('div', {
                   className: 'tt_cardField',
