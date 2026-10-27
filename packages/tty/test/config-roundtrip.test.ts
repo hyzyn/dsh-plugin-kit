@@ -298,3 +298,73 @@ describe('/config 的端口探测：**只警告、不拒绝**（tty D60 前半�
     expect(configOf(res.json).tunnels).toHaveLength(1)
   })
 })
+
+/* ------------------- 终端外观：字体 / 光标 / 行高（issue #17） ------------------- */
+
+describe('/config 的终端外观：字体栈 / 光标 / 行高', () => {
+  /*
+   * 现场：这几项此前只有 client.js 的硬编码值，用户改不了；想改只能改构建产物，插件一升级
+   * 就被 npm 包整包替换。做成配置后的不变量与 D91 同一条——**POST 的值必须原样出现在快照里**，
+   * 否则卡片保存成功、外观却没变（静默）。
+   */
+  it('往返：字体栈 / 光标形态 / 行高 / 字号 / 闪烁都落到快照里', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', {
+      terminalFontFamily: 'MesloLGL Nerd Font Mono, Sarasa Term SC Nerd',
+      terminalFontSize: 15,
+      terminalCursorStyle: 'block',
+      terminalCursorBlink: false,
+      terminalLineHeight: 1,
+    })
+    expect(res.status, String(res.json.error ?? '')).toBe(200)
+    expect(configOf(res.json)).toMatchObject({
+      terminalFontFamily: '"MesloLGL Nerd Font Mono", "Sarasa Term SC Nerd"',
+      terminalFontSize: 15,
+      terminalCursorStyle: 'block',
+      terminalCursorBlink: false,
+      terminalLineHeight: 1,
+    })
+    const again = await h.callPath(CONFIG_PATH, 'GET')
+    expect(configOf(again.json)).toMatchObject({ terminalCursorStyle: 'block', terminalLineHeight: 1 })
+  })
+
+  it('字体名逐个补双引号：数字开头 / 带空格的名字不会让整条 font-family 失效', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', { terminalFontFamily: '3270 Nerd Font, monospace' })
+    expect(res.status, String(res.json.error ?? '')).toBe(200)
+    // monospace 是 CSS 通用族，不能加引号
+    expect(configOf(res.json).terminalFontFamily).toBe('"3270 Nerd Font", monospace')
+  })
+
+  it('字体栈允许清空：空串 = 回到内置栈（不能「填上就删不掉」）', async () => {
+    const h = mount({ terminalFontFamily: 'Meslo' })
+    const res = await h.callPath(CONFIG_PATH, 'POST', { terminalFontFamily: '' })
+    expect(res.status, String(res.json.error ?? '')).toBe(200)
+    expect(configOf(res.json).terminalFontFamily).toBe('')
+  })
+
+  it('越界或未知值被点名拒绝（不是静默夹回边界）', async () => {
+    const h = mount()
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ terminalFontSize: 64 }, 'terminalFontSize'],
+      [{ terminalFontSize: 4 }, 'terminalFontSize'],
+      [{ terminalCursorStyle: 'blink' }, 'terminalCursorStyle'],
+      [{ terminalLineHeight: 3 }, 'terminalLineHeight'],
+      [{ terminalCursorBlink: 'yes' }, 'terminalCursorBlink'],
+      [{ sidebarHostAlign: 'yes' }, 'sidebarHostAlign'],
+      [{ terminalFontFamily: 42 }, 'terminalFontFamily'],
+    ]
+    for (const [patch, key] of cases) {
+      const res = await h.callPath(CONFIG_PATH, 'POST', patch)
+      expect(res.status, key).toBe(400)
+      expect(String(res.json.error), key).toContain(key)
+    }
+  })
+
+  it('侧栏对齐开关往返（默认关，开着保存后仍是开着）', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', { sidebarHostAlign: true })
+    expect(res.status, String(res.json.error ?? '')).toBe(200)
+    expect(configOf(res.json).sidebarHostAlign).toBe(true)
+  })
+})
