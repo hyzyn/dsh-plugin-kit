@@ -99,6 +99,7 @@ import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { SEARCH_CLOSED_DISPLAY, nextSearchOpen, searchDisplayFor } from './search-state.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
+import { TERMINAL_LOOK_DEFAULTS, readTerminalLook, terminalFontFamilyValue, terminalLookChanged } from './terminal-look.js'
 
 /* ================================ CSS ================================ */
 
@@ -2262,7 +2263,7 @@ function createTerminal(tab) {
     cursorStyle: terminalLookCache.cursorStyle,
     cursorInactiveStyle: 'outline',
     fontSize: terminalLookCache.fontSize,
-    fontFamily: terminalFontFamilyValue(),
+    fontFamily: terminalFontFamilyValue(terminalLookCache.fontFamily),
     fontWeight: 400,
     fontWeightBold: 600,
     lineHeight: terminalLookCache.lineHeight,
@@ -3720,9 +3721,11 @@ let liveSessionCount = null
  * 终端外观缓存（0.34.0）：`/api/dsh-tty/config` 的 terminal* / sidebarHostAlign，createTerminal
  * 读取；值变了就地重绘已有终端。默认值等于宿主 schema 的默认值（= 0.33 的硬编码值），
  * 所以 config 还没到时界面不会跳变。
+ *
+ * 「字体栈怎么拼」「新快照要不要重排」这两条判据在 `terminal-look.js`（纯模块 + 单测，
+ * 客户端规则 ②）；这里只留缓存与作用到 xterm 的那一步。
  */
-const TERMINAL_FONT_STACK = '"JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
-let terminalLookCache = { fontFamily: '', fontSize: 13, cursorStyle: 'bar', cursorBlink: true, lineHeight: 1.35 }
+let terminalLookCache = { ...TERMINAL_LOOK_DEFAULTS }
 /** 侧栏入口是否与宿主 `.panelRow` 对齐（宽度 / 内边距 / 字号 / 图标）。 */
 let sidebarHostAlignCache = false
 /* ============================ 入口显隐闸门 ============================ */
@@ -3752,19 +3755,13 @@ function syncEntryFromConfig(config) {
   }
 }
 
-/** 内置栈 + 用户字体栈（用户列表在前）：xterm 的 fontFamily 字符串。 */
-function terminalFontFamilyValue() {
-  const custom = typeof terminalLookCache.fontFamily === 'string' ? terminalLookCache.fontFamily.trim() : ''
-  return custom === '' ? TERMINAL_FONT_STACK : custom + ', ' + TERMINAL_FONT_STACK
-}
-
 /** 外观改了：把新选项写进每个已存在的终端，重排行列并把新尺寸报给 PTY（热生效）。 */
 function applyTerminalLook() {
   for (const tab of tabs.values()) {
     const term = tab.term
     if (term === undefined || term === null) continue
     try {
-      term.options.fontFamily = terminalFontFamilyValue()
+      term.options.fontFamily = terminalFontFamilyValue(terminalLookCache.fontFamily)
       term.options.fontSize = terminalLookCache.fontSize
       term.options.cursorStyle = terminalLookCache.cursorStyle
       term.options.cursorBlink = terminalLookCache.cursorBlink
@@ -3822,18 +3819,10 @@ function syncSshHostsCache(config) {
    * 值没变就不重排（避免每次配置轮询都让终端闪一下、把视口顶走）。
    */
   if (config !== null && typeof config === 'object') {
-    const nextLook = {
-      fontFamily: typeof config.terminalFontFamily === 'string' ? config.terminalFontFamily : terminalLookCache.fontFamily,
-      fontSize: Number.isInteger(config.terminalFontSize) && config.terminalFontSize >= 8 && config.terminalFontSize <= 32 ? config.terminalFontSize : terminalLookCache.fontSize,
-      cursorStyle: config.terminalCursorStyle === 'bar' || config.terminalCursorStyle === 'block' || config.terminalCursorStyle === 'underline' ? config.terminalCursorStyle : terminalLookCache.cursorStyle,
-      cursorBlink: typeof config.terminalCursorBlink === 'boolean' ? config.terminalCursorBlink : terminalLookCache.cursorBlink,
-      lineHeight: typeof config.terminalLineHeight === 'number' && config.terminalLineHeight >= 1 && config.terminalLineHeight <= 2 ? config.terminalLineHeight : terminalLookCache.lineHeight,
-    }
     const previous = terminalLookCache
-    terminalLookCache = nextLook
-    if (previous.fontFamily !== nextLook.fontFamily || previous.fontSize !== nextLook.fontSize || previous.cursorStyle !== nextLook.cursorStyle || previous.cursorBlink !== nextLook.cursorBlink || previous.lineHeight !== nextLook.lineHeight) {
-      applyTerminalLook()
-    }
+    terminalLookCache = readTerminalLook(config, previous)
+    // 值没变就不重排：配置是每轮轮询都到的，无条件 apply 会让终端每隔几秒闪一下、把视口顶走
+    if (terminalLookChanged(previous, terminalLookCache)) applyTerminalLook()
     if (typeof config.sidebarHostAlign === 'boolean' && config.sidebarHostAlign !== sidebarHostAlignCache) {
       sidebarHostAlignCache = config.sidebarHostAlign
       applySidebarHostAlign()
