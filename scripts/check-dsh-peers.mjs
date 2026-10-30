@@ -183,8 +183,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    plugin row`**；`pnpm live-smoke`（模板 profile 即本机 `test`）**18/18 PASS**；
  *    主题令牌快照重新生成后 403 个令牌与 rc.4 逐字一致（只有 `dshVersion` / `generatedAt`
  *    两个元数据位变化）。
+ *  - **0.2.1-rc.5（2026-10-30 实测）**：同样是**纯显式声明**，对宿主行为零影响。
+ *    `@deepseek-ai/dsh` 的依赖集合 **86 → 86，0 增 0 删**，只有版本串从 rc.4 抬到 rc.5；
+ *    本仓唯一 import 的两个宿主运行时包 `@deepseek-ai/cordis`（仍 `~4.0.5`）与
+ *    `@deepseek-ai/schemastery`（仍 `~3.18.5`）两档声明一致。本仓引用面逐文件比对：
+ *    `dsh-tools`（28 个文件）、`dsh-mcp-client`（11 个文件）**除 `package.json` 外逐字节相同**；
+ *    `dsh-cordis-client-runner/lib/client.js` 的槽定义 **104 → 104**、`name` 集合 **368 → 368**
+ *    一致，归一化 `source` 行号后**唯一**的语义差异是 `ReasoningBodyOwnerProps` 多了 `rawText`
+ *    （reasoning 正文槽改成「原始 + 展示态」双字段）——**本仓不注册该槽**（本仓注册的是
+ *    `plugins.bundle.config` / `plugins.row.config` / `sessions` / `settings.kit.item` /
+ *    `settings.plugin.item` / `sidebar.right.pane.tab`），零引用。
+ *    真机复核（本机 `test` profile / 端口 3082）：宿主起在 `http://127.0.0.1:3082/`，
+ *    **10/10 个 `@hyzyn` 插件 mounted、0 行 `skipping profile bundle`、0 行 `disabling profile
+ *    plugin row`**；`pnpm live-smoke --bootstrap --strict`（模板 profile 即本机 `test`）
+ *    **18/18 PASS**；`dsh plugin add` 不需要任何 `compatibility.json` 豁免；
+ *    `node scripts/check-dsh-peers.mjs --app-boot` 用 rc.5 的官方判定器逐包核对通过；
+ *    主题令牌快照与 rc.5 逐字一致（403 个令牌，只有 `dshVersion` 元数据位变化）。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

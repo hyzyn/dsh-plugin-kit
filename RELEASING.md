@@ -119,8 +119,8 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
 5. 可安装插件必须用 `peerDependencies` 声明 DSH 兼容范围。DSH 0.1.7-rc.1 起
    **安装前与启动时**都强制校验，且只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`
    的 peer（预发布参与范围匹配）。写法统一为**逐 cohort 写全**：
-   `"@deepseek-ai/dsh": "^<cohort-1> || … || ^<cohort-N>"`（当前十档是
-   `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4`；单 cohort 时就是 `^<cohort>`），
+   `"@deepseek-ai/dsh": "^<cohort-1> || … || ^<cohort-N>"`（当前十一档是
+   `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4 || ^0.2.1-rc.5`；单 cohort 时就是 `^<cohort>`），
    并在 `peerDependenciesMeta` 里标 `optional`——只压 pnpm 的 unmet-peer 噪音，
    DSH 判定器不看它，照旧强制。
    被判定不兼容的插件安装时抛 `incompatible-version`、启动时整行 `disabled`

@@ -315,7 +315,7 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
   引起的**（HEAD 版同样失败）：隔离宿主没有 API key → `MISSING_CREDENTIAL`（比失败早 15ms）→ agent 被
   回收，connection 在 pending 中途被 dispose。塞一个占位 `DEEPSEEK_API_KEY` 后挂载即成功。
 
-### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.1-rc.4）
+### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.1-rc.5）
 
 > 从 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli) 搬入（2026-10-23）：README 只留「支持哪些档 + 为什么这么声明」，
 > 逐轮实测的落点 / 门槛 / 「未跑」清单归这里。原文保留，只把「见上条」补成明确指向。
@@ -343,6 +343,7 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
 
   - **`0.2.1-rc.3`（第九档基线，2026-10-24 实测）**：**纯显式声明，本包运行代码未动**（`lib/` 零 diff）。`^0.2.1-rc.2` 展开是 `>=0.2.1-rc.2 <0.3.0-0`，官方判定器实测放行。逐文件比对（rc.2 装一份完整依赖树，306 个宿主包逐个 `lib/`）：**本仓 import 的 22 个宿主包 `lib/` 全部逐字节相同**，17 个有差异的包全部落在本仓零引用面内；`cordis` / `schemastery` 仍是 4.0.5 / 3.18.5；包集合 306 → 306（只多一个宿主自带包 `dsh-client-ui-entry-customization`，少掉的 `dsh` 是打包形状差异，不是删除）。⇒ 对宿主行为零影响，加档只是把「适配到哪一档就写到哪一档」落全。逐条证据另见 `scripts/check-dsh-peers.mjs` 头部 cohort 说明（本条此前只落在那里，而 README 指向本文件——2026-10-27 补入）。
   - **`0.2.1-rc.4`（第十档基线，2026-10-27 实测）**：**纯显式声明，本包运行代码未动**（`pnpm -r build` 之后 `lib/` 与 `client.js` 产物零 diff）。`^0.2.1-rc.3` 展开是 `>=0.2.1-rc.3 <0.3.0-0`，官方判定器实测放行；把**九段**范围直接喂给 rc.4 的判定器也判 compatible——**新段没有移动任何接受/拒绝边界**。逐文件比对（rc.3 装完整依赖树 + 本机 rc.4，307 个宿主包逐个 `lib/`）：本仓引用的 27 个宿主包里 **26 个 `lib/` 逐字节相同**；唯一有改动的 `dsh-mcp-client`（`lib/index.js` +148 B）是 MCP **resources** 处理器新增 `getServerCapabilities()?.resources !== undefined` 守卫，而本仓只用 `mcp__*` 的 tools、对 `resources/*` 全仓零引用。客户端槽目录 **103 → 103**、顺序一致、0 增 0 删 0 改名（本仓注册的槽全在）。`cordis` / `schemastery` 仍是 4.0.5 / 3.18.5，且两个包**整个目录逐字节相同**；包集合 307 → 307。⇒ 对宿主行为零影响。真机：本机 `test` profile / 端口 3082 起宿主，**10/10 个 `@hyzyn` 插件 mounted、0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**；主题令牌快照重新生成后 403 个令牌与 rc.4 逐字一致（只有 `dshVersion` / `generatedAt` 两个元数据位变化）。另有 `pnpm live-smoke`（模板 profile 就是本机 `test`）**18/18 全部 PASS**——两实例（无授权 / 带授权）各起在一次性端口上，授权阶梯、路由门控、agent 工具清单与宿主正在服务的 `client.js` 全打了一遍。**未跑**：`verify-client-ui` / `verify-rss-opml` / `verify-codegraph-host-contract`（本轮无任何代码改动，沿用既有记录）。
+  - **`0.2.1-rc.5`（第十一档基线，2026-10-30 实测）**：**纯显式声明，本包运行代码未动**（`pnpm -r build` 之后 `lib/` 与 `client.js` 产物零 diff）。`^0.2.1-rc.4` 展开是 `>=0.2.1-rc.4 <0.3.0-0`，rc.5 的官方判定器（`--app-boot`，自报运行时 rc.5）逐包 × 逐档核对通过。逐文件比对：`@deepseek-ai/dsh` 的依赖集合 **86 → 86（0 增 0 删）**；`dsh-tools`（28 文件）、`dsh-mcp-client`（11 文件）除 `package.json` 外**逐字节相同**；`dsh-cordis-client-runner/lib/client.js` 槽定义 **104 → 104**、`name` 集合 **368 → 368** 一致，归一化 `source` 行号后唯一语义差异是 `ReasoningBodyOwnerProps` 新增 `rawText`——本包不注册该槽（本仓注册的是 `plugins.bundle.config` / `plugins.row.config` / `sessions` / `settings.kit.item` / `settings.plugin.item` / `sidebar.right.pane.tab`），零引用。真机：本机 `test` profile / 端口 3082 起来后**10/10 `@hyzyn` 插件 mounted、0 行 `skipping profile bundle`**；`pnpm live-smoke --bootstrap --strict` **18/18 PASS**；主题令牌快照重新生成后 403 个令牌与 rc.4 逐字一致（只有 `dshVersion` / `generatedAt` 两个元数据位变化）。**未跑**：`verify-client-ui` / `verify-rss-opml` / `verify-codegraph-host-contract`（本轮无任何代码改动，沿用既有记录）。
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
 一次性能解决五个问题，是唯一改到「上限」的项：
