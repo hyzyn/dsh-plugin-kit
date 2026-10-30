@@ -15,37 +15,37 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.17
+        specifier: 0.6.18
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.13.6
+        specifier: 0.13.7
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.14
+        specifier: 0.3.15
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.2.8
+        specifier: 0.2.9
         version: link:packages/kit-settings
       '@hyzyn/dsh-loglens':
-        specifier: 0.1.5
+        specifier: 0.1.6
         version: link:packages/loglens
       '@hyzyn/dsh-mcp':
-        specifier: 0.3.10
+        specifier: 0.3.11
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.12
+        specifier: 0.2.13
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.12
+        specifier: 0.2.13
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.12
+        specifier: 0.4.13
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.14
+        specifier: 0.4.15
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.34.0
+        specifier: 0.35.0
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -67,37 +67,37 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.17
+        specifier: 0.6.18
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.13.6
+        specifier: 0.13.7
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.14
+        specifier: 0.3.15
         version: link:../env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.2.8
+        specifier: 0.2.9
         version: link:../kit-settings
       '@hyzyn/dsh-loglens':
-        specifier: 0.1.5
+        specifier: 0.1.6
         version: link:../loglens
       '@hyzyn/dsh-mcp':
-        specifier: 0.3.10
+        specifier: 0.3.11
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.12
+        specifier: 0.2.13
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.12
+        specifier: 0.2.13
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.12
+        specifier: 0.4.13
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.14
+        specifier: 0.4.15
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.34.0
+        specifier: 0.35.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':

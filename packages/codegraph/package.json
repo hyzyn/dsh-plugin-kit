@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-codegraph",
-  "version": "0.6.17",
+  "version": "0.6.18",
   "description": "DSH Web GUI 的 Codegraph 集成插件：提供 Codegraph 状态、符号搜索、callers/callees/impact 查看与一键 sync/index，托管 codegraph MCP 服务器项目目录并向 agent 注入能力提示。",
   "type": "module",
   "engines": {
