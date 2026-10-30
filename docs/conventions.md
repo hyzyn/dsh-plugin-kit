@@ -318,6 +318,27 @@
   （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
   多一个少一个都报）
 
+## 工具面：长等待的工具必须转发 `exec.signal`
+
+`defineTool` 的 `execute(args, exec)` 第二参里带着 `exec.signal`，SDK 契约原文是
+「Async work must observe or forward `exec.signal` and settle only after its owned work reaches
+quiescence」。**判据**：一个工具的等待上限（自己的 `timeoutSec` / `timeoutMs` / 自己的循环）
+**达到 30 秒**，就必须：
+
+1. `execute(args, exec)` 接第二个参数，并把 `signal` 传进等待处；
+2. 等待里的睡眠 / 竞速要能被 abort **唤醒**（不是「等这一轮睡完再看」）；
+3. 取消**自成一档**（既不是超时，也不是业务失败）：报告与渲染里说清「调用方不等了」，
+   并交代「怎么接着用」（会话 / 页面 / 数据还在不在）；
+4. 声明协作式预算 `timeoutMs`（略大于自己的上限）——声明了就等于承诺可取消，1–3 一起做。
+
+**为什么要有这条**：取消不生效的代价是**静默的**——调用方已经走了，工具还在每 N 秒打一次 SSH /
+开一个页面 / 挂一个监听器。2026-10-30 现算：全仓只有 `tty_expect` / `tty_run` 这两个长等待接了它
+（`docker` 的日志工具是一次性快照，长活在面板 SSE 流上，不在判据内）。
+
+**执行点是 runtime 用例，不是静态扫描**：判「这个 `execute` 有没有接第二个参数」需要 AST 级提取，
+而用例直接验「取消之后多久返回」——没接线时它会一直等到自己的上限（或测试超时），
+两边的差距是数量级。
+
 ## 客户端半体：六条硬规矩
 
 ### ① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`

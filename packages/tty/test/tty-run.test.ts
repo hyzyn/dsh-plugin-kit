@@ -130,6 +130,44 @@ async function runWithOutput(mounted: Mounted, output: string, outcome: { exitCo
   return await started
 }
 
+describe('tty_run：调用方取消（conventions § 工具面「长等待的工具必须转发 exec.signal」）', () => {
+  it('★ 立刻返回 `cancelled`，且**不关会话**——取消的是这次调用，不是那条命令', async () => {
+    const mounted = mountPlugin()
+    const controller = new AbortController()
+    const started = Date.now()
+    const promise = (mounted.tools.get('tty_run')?.execute as (args: unknown, exec?: unknown) => Promise<RunResult & { cancelled?: boolean }>)(
+      { command: 'sleep 999', cwd: tmpdir(), timeoutSec: 600 },
+      { signal: controller.signal },
+    )
+    await wait(30)
+    mounted.ptys[0].output.write('工作还在继续\r\n')
+    await wait(30) // 越过合并窗口
+    controller.abort()
+    const result = await promise
+
+    // 不取消的话这里要等满 600 秒。
+    expect(Date.now() - started).toBeLessThan(3000)
+    expect(result).toMatchObject({ running: true, cancelled: true, closed: false })
+    expect(result.tail).toContain('工作还在继续')
+    // **会话没有被杀**：命令还在里面跑，人/agent 都能接着处理。
+    const listed = (await mounted.tools.get('tty_list')?.execute({})) as { sessions: Array<Record<string, unknown>> }
+    expect(listed.sessions.some((session) => session.sid === result.sid), '取消不关会话').toBe(true)
+  })
+
+  it('已经取消的信号 → 立即结算（不再等命令）', async () => {
+    const mounted = mountPlugin()
+    const controller = new AbortController()
+    controller.abort()
+    const started = Date.now()
+    const result = (await (mounted.tools.get('tty_run')?.execute as (args: unknown, exec?: unknown) => Promise<RunResult & { cancelled?: boolean }>)(
+      { command: 'sleep 999', cwd: tmpdir(), timeoutSec: 600 },
+      { signal: controller.signal },
+    )) as RunResult & { cancelled?: boolean }
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(result.cancelled).toBe(true)
+  })
+})
+
 describe('tty_run：一条命令一次调用（0.23.0）', () => {
   it('命令结束：返回尾部输出 + 退出码，并默认关掉会话', async () => {
     const mounted = mountPlugin()

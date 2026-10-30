@@ -1000,28 +1000,48 @@ function runningOf(session) {
     return { running: state.inCommand, ...lastInfo };
 }
 /**
- * 等一个命令型会话的进程结束（tty_run 用；超时返回 false，不抛错、不杀会话）。
+ * 等一个命令型会话的进程结束（tty_run 用；超时 / 被调用方取消都不抛错、不杀会话）。
+ *
+ * 三态而不是 boolean：`exited` 是命令真的结束了，`timeout` 是到点，`cancelled` 是**调用方不等了**
+ * （`exec.signal`）——三者的下一步不同，合并成一个 `false` 会让「取消」被当成「超时」处理。
  *
  * 为什么用 `handle.done` 而不是轮询 `session.exited`：`watchDone` 在同一 promise 上
  * **先**注册（spawn 时就挂上了），promise 回调按注册顺序跑，所以本函数的 then 一定
  * 排在 `finishSession` 之后——回来时缓冲已 force 冲刷（D76 的终局尾巴）、
  * `session.exited` 已就位。命令瞬间跑完也不会白等：done 早已 resolve，then 立刻跑。
+ *
+ * 取消这一档是 2026-10-30 移植时补的（原提交 `4784f6ac1`，废弃分支 `feat/dev-data-suite`；
+ * 规矩见 `docs/conventions.md` § 工具面：长等待的工具必须转发 `exec.signal`）：
+ * `tty_run` 的上限是 600 秒，此前调用方取消了这里还在等。取消**不关会话**（见调用点）。
  */
-async function waitForSessionExit(session, timeoutMs) {
+async function waitForSessionExit(session, timeoutMs, signal) {
     if (session.exited !== null)
-        return true;
+        return 'exited';
+    if (signal?.aborted === true)
+        return 'cancelled';
     let timer = null;
+    let onAbort = null;
     try {
         return await Promise.race([
-            session.handle.done.then(() => true, () => true),
+            session.handle.done.then(() => 'exited', () => 'exited'),
             new Promise((resolve) => {
-                timer = setTimeout(() => { resolve(false); }, timeoutMs);
+                timer = setTimeout(() => { resolve('timeout'); }, timeoutMs);
             }),
+            ...(signal === undefined
+                ? []
+                : [
+                    new Promise((resolve) => {
+                        onAbort = () => { resolve('cancelled'); };
+                        signal.addEventListener('abort', onAbort, { once: true });
+                    }),
+                ]),
         ]);
     }
     finally {
         if (timer !== null)
             clearTimeout(timer);
+        if (onAbort !== null && signal !== undefined)
+            signal.removeEventListener('abort', onAbort);
     }
 }
 /** 一次解释请求的超时（毫秒）。用户正盯着屏幕等，30s 是「还能忍」的上限。 */
@@ -5498,11 +5518,17 @@ const plugin = definePlugin({
                                     closed: { type: 'boolean', required: true },
                                     exitCode: { type: 'number' },
                                     signal: { type: 'string' },
+                                    cancelled: { type: 'boolean' },
                                 },
                             },
                             render: (_args, value) => {
                                 const v = value;
                                 const sid = v.sid ?? '?';
+                                if (v.cancelled === true) {
+                                    // 「调用方不等了」与「到点还没结束」是两件事：后者是环境的事实，前者只是你走了。
+                                    // 两者都**不关会话**（理由见 execute 里那段注释）。
+                                    return [{ type: 'text', text: `被调用方取消（**不是**超时，也不是命令结束）：这条命令还在会话 ${sid} 里跑着，会话也留着——内容没有丢。要接着等用 tty_expect，要看现在的输出用 tty_capture，要停掉它用 tty_close（或 tty_send 发送 C-c）。尾部输出：\n\n${v.tail ?? ''}` }];
+                                }
                                 if (v.running === true) {
                                     return [{ type: 'text', text: `终端会话 ${sid} 里这条命令到点还没结束（它就是面板里的普通标签，用户看得见、可接管）：用 tty_expect 等它的就绪标记、tty_capture 读尾部，或 tty_close 关掉。\n\n${v.tail ?? ''}` }];
                                 }
@@ -5513,7 +5539,9 @@ const plugin = definePlugin({
                                 return [{ type: 'text', text: `终端会话 ${sid} 的命令已结束（${how}）。${note}\n\n${v.tail ?? ''}` }];
                             },
                         },
-                        async execute(args) {
+                        /* 协作式预算：本工具自己最久等 600s（timeoutSec 的钳位上限），声明略大于它。 */
+                        timeoutMs: 660_000,
+                        async execute(args, exec) {
                             const input = args;
                             if (typeof input.command !== 'string' || input.command.trim() === '')
                                 throw new Error('command 必须是非空字符串');
@@ -5530,10 +5558,24 @@ const plugin = definePlugin({
                                 throw new Error(`会话创建后立刻退役了: ${opened.sid}`);
                             // 命令型会话的进程**就是**那条命令（D78 的 exec 链）：进程退出 = 命令结束，
                             // 与 shell 集成无关（这类会话不注入钩子，等 133;D 是等不到的）
-                            const finished = await waitForSessionExit(session, timeoutSec * 1000);
+                            const finished = await waitForSessionExit(session, timeoutSec * 1000, exec?.signal);
                             const tail = cleanAnsiTail(tailLines(session, lines));
-                            if (!finished)
-                                return { sid: opened.sid, running: true, closed: false, tail };
+                            /*
+                             * 到点 / 被取消 → 都为 `running: true`，而且**都不关会话**。
+                             *
+                             * 「取消」这一档是刻意的：`exec.signal` 取消的是**这次工具调用**，不是那条命令——
+                             * 关掉会话等于「因为调用方不等了，就把人家跑着的构建杀了」。决定权交回调用方
+                             * （tty_close / 发送 C-c），与 `timeoutSec` 到点那条路同一处置。
+                             */
+                            if (finished !== 'exited') {
+                                return {
+                                    sid: opened.sid,
+                                    running: true,
+                                    closed: false,
+                                    tail,
+                                    ...(finished === 'cancelled' ? { cancelled: true } : {}),
+                                };
+                            }
                             const exited = session.exited;
                             const result = {
                                 sid: opened.sid,
@@ -5793,10 +5835,16 @@ const plugin = definePlugin({
                                     matchedFrom: { type: 'string' },
                                     echoOnly: { type: 'boolean' },
                                     exited: { type: 'boolean' },
+                                    cancelled: { type: 'boolean' },
                                 },
                             },
                             render: (_args, value) => {
                                 const v = value;
+                                if (v.cancelled === true) {
+                                    // 「调用方不等了」既不是超时、也不是命令结束：会话照旧在跑，输出也没被消费
+                                    // （水位线没动），所以再发一次 expect 还能回溯到同一段缓冲。
+                                    return [{ type: 'text', text: `被调用方取消（**不是**超时，也不是命令结束）：这段等待没有结论，会话照旧在跑、输出也还在。要接着等就再发一次 tty_expect（回溯仍然有效），要看现在有什么就 tty_capture。现有输出：\n\n${v.text ?? ''}` }];
+                                }
                                 if (v.matched === true) {
                                     const from = v.matchedFrom === 'last'
                                         ? '（回溯自「上一条命令」的输出）'
@@ -5819,7 +5867,9 @@ const plugin = definePlugin({
                                 return [{ type: 'text', text: `${why}。尾部输出：\n\n${v.text ?? ''}` }];
                             },
                         },
-                        async execute(args) {
+                        /* 协作式预算：本工具自己最久等 600s（timeoutSec 的钳位上限），声明略大于它。 */
+                        timeoutMs: 630_000,
+                        async execute(args, exec) {
                             const input = args;
                             if (typeof input.sid !== 'string' || input.sid === '')
                                 throw new Error('sid 必须是非空字符串');
@@ -5863,6 +5913,8 @@ const plugin = definePlugin({
                                  *    未读输出没被读过，而且下一次换个 pattern 还要靠它回溯——吞掉
                                  *    它等于「等一次没等到，这段输出就作废了」。
                                  */
+                                /** 调用方取消时挂上的那个监听器（结算时摘掉；没挂就是 null）。 */
+                                let onAbort = null;
                                 const finish = (result, consumeBacklog = true) => {
                                     if (settled)
                                         return;
@@ -5870,6 +5922,8 @@ const plugin = definePlugin({
                                     if (timer !== null)
                                         clearTimeout(timer);
                                     output.off('data', onData);
+                                    if (onAbort !== null && exec?.signal !== undefined)
+                                        exec.signal.removeEventListener('abort', onAbort);
                                     expectCounts.set(session, Math.max(0, (expectCounts.get(session) ?? 1) - 1));
                                     if (consumeBacklog)
                                         advanceReadMark(session);
@@ -5919,6 +5973,29 @@ const plugin = definePlugin({
                                         finish({ matched: true, timedOut: false, matchedFrom: 'buffered', text: cleanAnsiTail(backlog.slice(-6 * 1024)) });
                                         return;
                                     }
+                                }
+                                /*
+                                 * 取消（`docs/conventions.md` § 工具面：长等待的工具必须转发 `exec.signal`）：
+                                 * `timeoutSec` 上限 600 秒，而此前这里完全不看 `exec.signal`——调用方取消了，
+                                 * expect 还挂着一个 data 监听器等满超时。
+                                 *
+                                 * 位置在**回溯那份同步工作之后**：上面那些检查是即时完成的（不等待），所以让取消
+                                 * 先走一遍不是拖延；反过来，如果「答案已经躺在缓冲里」，那一次取消反而拿到的是更有用的
+                                 * 结论。真正要保证的是**之后不再挂着等**。
+                                 *
+                                 * 取消与超时同一处置：**不消费未读区**（`finish(..., false)`）——这段输出没被任何人读过，
+                                 * 下一次 expect 还要靠它回溯（D72 的语义不能因为「调用方走了」而变）。
+                                 */
+                                if (exec?.signal?.aborted === true) {
+                                    finish({ matched: false, timedOut: false, cancelled: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) }, false);
+                                    return;
+                                }
+                                if (exec?.signal !== undefined) {
+                                    const signal = exec.signal;
+                                    onAbort = () => {
+                                        finish({ matched: false, timedOut: false, cancelled: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) }, false);
+                                    };
+                                    signal.addEventListener('abort', onAbort, { once: true });
                                 }
                                 timer = setTimeout(() => {
                                     finish({ matched: false, timedOut: true, ...(sawEchoOnly ? { echoOnly: true } : {}), text: cleanAnsiTail(acc.slice(-6 * 1024)) }, false);

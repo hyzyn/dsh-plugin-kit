@@ -1653,3 +1653,29 @@ enabled 开关 / agent 销毁 / 卸载撤销）。夹具新增 `test/fake-tools.
 **现状边界**：① 会话中途切档当时不重算工具面（下一次 `agent/created` 或工具集变化才对上；执行期闸逐调用
 读实时档位，安全不受影响）——**2026-10-25 已收**（kit 侧实现，见根 [ROADMAP.md](../../ROADMAP.md) 第 10 项的状态段）；② 三条 inject 服务快照在 tty 里自建了一份（kit 的 `attachTierGate` 私有），二期上收
 到 `@hyzyn/dsh-kit` 并让 docker 复用——那一步要 bump kit 版本并按发布门槛走。
+
+### 2026-10-30：长等待转发 `exec.signal`——`tty_expect` / `tty_run`
+
+**来源**：这是废弃分支 `feat/dev-data-suite`（归档 tag `archive/feat-dev-data-suite`）里唯一被摘回来的
+遗产（原提交 `4784f6ac1` 的 tty 部分；该分支的 devdata / devenv / devfront 三包整条放弃）。规则本身
+进了 [docs/conventions.md § 工具面](../../docs/conventions.md#工具面长等待的工具必须转发-execsignal)。
+
+**落点**：
+
+| 工具 | 上限 | 改法 | 门槛 |
+|---|---|---|---|
+| `tty_expect` | 600s | abort 监听 + 「已经取消」的快路径；结果多一档 `cancelled`；取消**不消费未读区** | `test/expect-backlog.test.ts` 2 条：等待期间取消 / 已取消的信号；**并断言取消之后同一段未读缓冲还能被下一次 expect 回溯到** |
+| `tty_run` | 600s | `waitForSessionExit` 三态化（exited / timeout / cancelled）；取消**不关会话** | `test/tty-run.test.ts` 2 条：取消立即返回且会话仍在 / 已取消的信号立即结算 |
+
+**移植时修掉的一处**：原提交的取消路径调 `finish(...)` 用的是默认 `consumeBacklog = true`，与它自己
+写在注释与提交信息里的「取消不消费未读区（水位线不动）」**相反**——那会让「再发一次 expect」回溯不到
+同一段缓冲。这里改成 `finish(..., false)`（与超时同档），并用上面那条回溯断言钉住；去掉这一处修正，
+`expect-backlog` 的新用例会红。
+
+**两条语义上的取舍**（写在这里，免得下次被改回去）：
+
+- **取消 ≠ 杀命令**：`tty_run` 到点（`timeoutSec`）与取消都返回 `running:true` 且**都不关会话**。
+  取消的是**这次工具调用**——因为调用方不等了就把人家跑着的构建杀掉，是拿工具的便利去动别人的东西。
+  决定权交回调用方（`tty_close` / 发 `C-c`）。
+- **取消 ≠ 超时，也不消费未读区**：`tty_expect` 取消时不推进已读水位线，所以「再发一次 expect」
+  还能回溯到同一段缓冲（D72 那套语义不变）。报告里也把「不是超时」写出来——否则下一步会去查环境。
