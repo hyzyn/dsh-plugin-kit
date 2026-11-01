@@ -5623,6 +5623,25 @@ const plugin = definePlugin({
                                     txRate: { type: 'number' },
                                     tempC: { type: 'number' },
                                     uptimeSec: { type: 'number' },
+                                    /*
+                                     * 每核使用率与 Top 进程：宿主帧里的**可选**字段，`execute` 把它整帧摊平进返回值，
+                                     * 所以这里必须声明——否则违反 `additionalProperties: false`（B33 那条端到端断言
+                                     * 就是被 0.36.0 的漏声明拦下的：工具返回里多了 `procs`，schema 里没有）。
+                                     */
+                                    cpuCores: { type: 'array', items: { type: 'number' } },
+                                    procs: {
+                                        type: 'array',
+                                        items: {
+                                            type: 'object',
+                                            additionalProperties: false,
+                                            properties: {
+                                                pid: { type: 'number', required: true },
+                                                cmd: { type: 'string', required: true },
+                                                cpuPct: { type: 'number', required: true },
+                                                memPct: { type: 'number', required: true },
+                                            },
+                                        },
+                                    },
                                 },
                             },
                             render: (_args, value) => {
@@ -5637,6 +5656,9 @@ const plugin = definePlugin({
                                     v.rxRate !== undefined ? `网速 ↓${humanFileSize(v.rxRate)}/s ↑${humanFileSize(v.txRate ?? 0)}/s` : null,
                                     v.tempC !== undefined ? `温度 ${v.tempC.toFixed(0)}°C` : null,
                                     v.uptimeSec !== undefined ? `在线 ${humanDuration(v.uptimeSec)}` : null,
+                                    v.procs !== undefined && v.procs.length > 0
+                                        ? 'Top 进程 ' + v.procs.slice(0, 3).map((proc) => `${proc.cmd} ${proc.cpuPct.toFixed(0)}%`).join(' / ')
+                                        : null,
                                 ].filter((x) => x !== null);
                                 const head = `会话 ${v.sid ?? '?'}${v.target !== undefined && v.target !== '' ? `（${v.target}）` : ''} 指标：`;
                                 return [{ type: 'text', text: head + (parts.length > 0 ? parts.join(' · ') : '（无可用字段）') }];
