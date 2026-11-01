@@ -607,11 +607,20 @@ describe('远端采集脚本 / 命令拼接', () => {
       expect(frames.length).toBe(6)
       const first = frames[0]
       expect(typeof first.diskTotal).toBe('number')
-      for (const frame of frames) {
+      /*
+       * 只断言**沿用拍**（第 2~5 拍）：第 6 拍（tick 6）本来就该重跑 `df`（`tick % 5 == 1`）。
+       * 原来这里遍历全部 6 帧、要求磁盘字段与第 1 拍逐字段相等——本机盘一秒内不变时恒过，
+       * 一到 CI 上就赌运气：0.36.1 的 Release 流水就是这么红的（64606900224 → 64607076352，
+       * 两次 `df` 之间盘上真写了 172 KB）。判据要落在「非刷新拍必须沿用」，而不是
+       * 「整条循环磁盘永不变」。
+       */
+      for (const frame of frames.slice(1, 5)) {
         expect(frame.diskTotal).toBe(first.diskTotal)
         expect(frame.diskUsed).toBe(first.diskUsed)
         expect(frame.diskPct).toBe(first.diskPct)
       }
+      // 第 6 拍是刷新拍：只要求字段还在（值可能已经变了，那是真实读数）
+      expect(typeof frames[5].diskTotal).toBe('number')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
