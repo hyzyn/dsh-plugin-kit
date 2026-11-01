@@ -13,7 +13,7 @@
 - **Two client services exposed to other plugins**: `ttyConnbar` (connection-bar actions) and `ttyTerminal` (open a terminal in place); dsh-docker’s “Containers / Terminal” buttons go through them.
 - **AI assist: explain failures (0.24.0, off by default)**: when a command exits non-zero a chip appears in the corner; clicking it sends **that command's output tail** (cleaned / truncated / secrets masked) plus the current screen to the model and renders a short "what happened / next step". A suggested command is only typed into the prompt line — never submitted for you. See [AI assist](#ai-assist-explain-failures-0240-off-by-default).
 
-![Terminal panel: a multi-tab xterm modal; the header toolbar has the search box expanded (hint “Search (Enter ↓ / Shift+Enter ↑)”) plus clear, and the title bar has the minimize “—” and close ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
+![Terminal panel: xterm modal + server status bar + resource dashboard. Above the terminal is the full-mode monitor bar (CPU percentage with a mini meter / cores / memory used-of-total / disk used-of-total / uptime / TCP / CPU temperature / network up-down); below right is the expanded resource dashboard (per-core bars / up-down lines / top processes)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
 ## Installation
 
@@ -447,7 +447,9 @@ references one connection-book entry (host and authentication come with it), in 
   settings card. Folding it into “⋯” adds a discovery path without occupying permanent width (the connbar
   gives its width to the tab strip first). Note a tunnel must reference a connection-book entry, so only
   book-backed connections get this entry; an unsaved ad-hoc connection from the “new connection” dialog
-  cannot have tunnels.
+  cannot have tunnels. **Since 2026-10-31 “⋯” is always present** — it no longer exists only as the tunnel
+  fallback, it also carries “copy connection info / copy ssh command”. See “Connection bar: identity and
+  copy” below.
 - **Form layout (0.20.0)**: direction uses a **segmented control** (local -L / remote -R — two values do
   not deserve a dropdown); the two ends are shown in pairs as **host:port**, with an **arrow** between them
   showing the data flow (it flips when you switch to -R). Each direction has **exactly one fixed end**
@@ -760,15 +762,99 @@ and the agent tools all reuse the same scheduling.
 
 ## Server status bar (0.17.0)
 
-![Terminal panel (with the server status bar): a thin monitor bar above the terminal showing CPU / memory / disk / cores / uptime / TCP / network speed](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-stats.png)
+![Minimal-mode server status bar with the same dashboard: CPU / memory / network, each with a last-60-seconds trend line and a large number](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-stats.png)
 
-(The screenshot shows a **local session**; an SSH session’s status bar is the same bar with the same fields — see the single-pane SFTP screenshot below, where the bar above the terminal shows the remote host’s metrics.)
+(The full-mode bar is the screenshot at the top of this README; the **three-state button** at the right end of the panel header switches between the two forms. Both screenshots are **SSH sessions** — local sessions use the same fields.)
 
 Every **visible** tab gets a thin status bar above the terminal showing the resource metrics of the host the
 session belongs to (visually aligned with FinalShell’s session monitor bar):
 
-    CPU ▮▮▯▯ 6% │ Mem ▮▮▮▮ 78% │ Disk ▮▮▮ 63% │ Cores 16 │ Mem 49.6G/62.3G │
-    Uptime 2w4d7h16m │ TCP 570 │ Disk 40.8G/68.8G │ CPU Temp n/a │ Network ↓92.3K/s ↑93.1K/s
+    CPU ▮▮▯▯ 6% │ Cores 16 │ Mem ▮▮▮▮ 78% (49.6/62.3 GB) │ Disk ▮▮▮ 63% (40.8/68.8 GB) │
+    Uptime 2w4d7h16m │ TCP 570 │ CPU Temp n/a │ Network ↓92.3K/s ↑93.1K/s
+
+- **One item per resource** (2026-10-31, aligned with FinalShell’s session monitor bar): the percentage,
+  the mini meter and used/total share one group (`Mem 78% (49.6/62.3 GB)`), so the `Mem` / `Disk` label
+  appears only once and a shared unit is written once. Previously it was `Mem 78%` next to a separate
+  `Mem 49.6 GB/62.3 GB` item — duplicate labels with the eye bouncing between them.
+- **Minimal mode** (2026-10-31): a **three-state button** in the top-right of the panel header (next to
+  search / clear) cycles **full → minimal → hidden → full** (the preference lives in the browser’s
+  `localStorage`, not in the profile — it is a display form, not configuration; “hidden” also stops
+  collection for the current tab, so the host collector and the remote exec channel stop too). The
+  minimal bar keeps only **CPU / memory / network**, each as “small label +
+  last-60-seconds trend line + large number”: a sparkline also tells you whether the value is *climbing*
+  or *jittering*, which a momentary meter cannot, and under the line sits an **area fill that fades
+  downward** (the gradient is anchored to the chart height rather than the curve’s bounding box — anchored
+  to the box, a nearly flat line (memory sitting at 80%±1) collapses into a solid band that reads as a
+  progress bar). The **line itself is a horizontal “time flow” gradient** (38% opacity on the left rising to
+  full on the right — the past is dim, the present is bright, so the eye is pulled to the newest sample),
+  wrapped in a **very faint glow of its own colour**: a 2px line on a dark bar otherwise floats instead of
+  sitting on it (2026-11-01). The CPU and memory cells (0–100) also carry an **80% warning line** — a
+  sparkline has no axis, so you cannot tell “30%” from “80%” by eye; the network cell does not (its Y axis
+  follows the byte-rate range, where “80%” means nothing). Line and fill change colour by level: **<80 green
+  / 80–90 amber / ≥90 red** (`STATS_WARN_LIMIT`, one value shared with the dashed line’s position — let the
+  threshold and the line drift apart and a 72% curve turns amber while sitting *below* the marker), drawn
+  from the terminal’s fixed dark palette instead of theme semantic colours (a light theme’s dark green
+  loses half its contrast on the dark bar). The network cell colours **↓ down
+  traffic light blue / ↑ up traffic teal**, each side on its own. The minimal bar is slightly taller (36px) to
+  give the lines room, and the terminal re-fits its rows accordingly. Network uses a **log scale with a
+  64 KB/s floor** (rates span orders of magnitude; linear scaling flattens idle traffic into a line at the
+  bottom), and dropped frames leave a **gap** instead of a made-up point. Disk / uptime / TCP / temperature
+  stay in full mode.
+- **Resource details (floating dashboard, 2026-10-31)**: the **▾** at the far right of the bar opens a
+  floating card with three cells — **CPU** (one bar per core, turning amber/red at the 80/90 thresholds,
+  with an **80% dashed guide line** above the bars because a bar chart without a Y axis cannot tell 50%
+  from 80% — and that line sits at exactly the value where the bars turn amber; the header reports the
+  *worst* core right next to the title, because an average flattens “one of 16 cores is pinned at 95%”),
+  **Network I/O** (one-minute up/down lines: **the downlink is thicker, glowing and carries a gradient area,
+  while the uplink is one step thinner, dimmer and glow-free** — the two hues sit next to each other
+  (blue / teal) so colour alone cannot separate them where they cross; dashing them was tried and rejected
+  (a dashed sawtooth reads badly at this size), hence weight / brightness / glow instead. A legend sits
+  between the title and “Last minute” with swatches matching the lines in colour and weight. Both lines carry a horizontal
+  “time flow” gradient — dim on the left, bright on the right — plus a very faint glow, and an area whose
+  first stop dropped from .40 to .30 since a full-height wash reads far heavier than the bars next to it; a gradient area under
+  the downlink; the x-axis is **fixed** at 60 seconds, so the blank left side early on is history that has
+  not been collected yet instead of five points stretched to look like a full minute. **The Y axis is a
+  1-2-5 range with 15% headroom and a square-root scale**: linear scaling flattens a minute of normal
+  traffic into a line at the bottom as soon as one burst arrives, while a pure log scale erases variation
+  inside one order of magnitude (58 KB/s vs 163 KB/s differ by only 8% of the height); the 0.5 power keeps
+  both, so a spike never touches the border. The two reference lines are **low-opacity dashes painted
+  under the curves**), and **Processes** (top 5 by CPU, sampled by the host with `ps` every 5 seconds; the
+  frame carries the **union of the CPU top 5 and the memory top 5** (deduped by pid, at most 10) — sending
+  only the CPU top 5 meant “sort by memory” could merely reshuffle those five, so a 1.2 GB process sitting
+  at 1% CPU (WeChat) was never even a candidate and the memory ranking led with a Chrome helper. The
+  memory column is `ps`'s `%mem` (= RSS) while Activity Monitor shows the footprint (compressed and GPU
+  memory included), so WindowServer-style processes rank higher there; trust the ordering, not byte-for-byte
+  equality. Each row shows the **executable name** only — macOS `ps comm` reports a full path, and long paths keep their
+  **tail** (`…/Contents/MacOS/Google Chrome`) before the basename is taken, so the cell always shows a
+  recognisable name instead of a path fragment like `Ecosystem.fra…`; the process column is the widest of
+  the three (1.45fr), the full path and pid live in the tooltip, and the `CPU ▼` / `内存` header cells share
+  the column-width variables with the rows below so their right edges line up). For **local** sessions
+  `%CPU` is an **instantaneous** figure: macOS `ps %cpu` is a decaying average over up to a minute (per
+  `man ps`) and can never line up with Activity Monitor's instantaneous sampling, so the host reads `ps`'s
+  **cumulative CPU time** instead and divides the delta between two samples (5s) by elapsed wall time —
+  falling back to `ps`'s average on first sight, counter rollback, or a too-short interval. The SSH remote
+  loop still uses the remote `ps`'s `%cpu` (collection happens remotely; the two-sample context lives on
+  the host). **Clicking a header cell
+  re-sorts the list**: the same column toggles direction (▼ descending / ▲ ascending), switching columns
+  starts at descending again, and both the footer line and the active-column highlight follow along
+  (the sort lives in memory only — reopening the popover is back to CPU-descending). Names that do not fit
+  are **truncated in the middle** (`com.appl…ontent (Renderer)`): a plain trailing ellipsis turns a family
+  of same-prefix XPC helpers into one indistinguishable `com.apple.WebK…`, while head+tail keeps the
+  distinguishing bracket suffix — the width is measured for real with Canvas `measureText`, and the tail
+  may take at most 70% of it. Once open, **the caret flips
+  to ▴** (its tooltip and `aria-label` change to “hide” along with it) — an unchanged glyph makes the
+  click look like it did nothing; Esc or a click outside closes it and the caret turns back into ▾.
+  The three cells are **equal height** (96px bodies) and
+  the footer line is locked at 16px and never flex-compressed — its `overflow: hidden` is there for the
+  horizontal ellipsis, and a compressed row would slice the bottom off the glyphs. Contents refresh with the
+  per-second stats frame and the client makes no extra requests. Per-core and process data are **optional
+  frame fields** (local sessions use `os.cpus()` + `ps`, SSH remotes piggyback on the resident awk loop);
+  older hosts / Windows remotes / failed collection just show “no data” in that cell. **Frames that omit a
+  low-cadence field reuse the previous value** (the remote awk runs `ps` only every 5th tick, and
+  `cpuCores` needs a second sample before it has a delta window) — “not in this frame” is not “collection
+  failed”, otherwise the process cell flips between the list and “no data” once per second. The merge only
+  covers `cpuCores` / `procs` (unit-tested, guarded by the `stats-sparse` preview scenario); per-second
+  measurements such as CPU / memory / network are never carried over.
 
 - **Two collection paths, one frame shape**: for an SSH session a second **non-PTY exec channel** is opened
   on **the same ssh2 connection**, running a resident loop on the remote that emits one line of JSON per
@@ -786,11 +872,14 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   failure silently stops the meter and hides the whole status bar (it collapses after **8s** without a new
   frame — not 3s: when a sampling subprocess on the host occasionally slows down, frames get further apart,
   and too tight a window makes the whole bar blink) — it never writes to the PTY and never raises an error.
-  Progress-bar thresholds: <70 normal / 70~90 yellow / >90 red.
-- **A slow command cannot stall the cadence**: subprocess-backed fields (df / netstat / vm_stat) are awaited
-  only on the very first sample; afterwards the sampler uses the last known value and refreshes in the
-  background, so a command that hangs on some machine only leaves that one field briefly stale instead of
-  stretching the one-frame-per-second timeline (measured: 3000ms → 3~12ms per frame).
+  Progress-bar thresholds: <70 normal / 70~90 yellow / ≥90 red.
+- **A slow command cannot stall the cadence**: subprocess-backed fields (df / netstat / vm_stat / ps) are
+  awaited only on the very first sample; afterwards the sampler uses the last known value and refreshes in
+  the background (a `SLOW_TTL_MS = 5000` slot locally, a `REMOTE_SLOW_EVERY = 5`-tick phase gate inside
+  the resident SSH loop), so a command that hangs on some machine only leaves that one field stale for a
+  few seconds instead of stretching the one-frame-per-second timeline (measured: 3000ms → 3~12ms per
+  frame). It also means `df` / `ps` are not forked every second — disk and the top-process list refresh
+  every 5 seconds and reuse the previous reading in between, so they never blink to “no data”.
 - **Hot effect**: turning `statsEnabled` off stops collection at once (the status bar disappears and no more
   stats frames go over the WS), and turning it back on restores automatically from the subscriptions still in
   place — no restart and no need to reopen tabs.
@@ -880,12 +969,33 @@ sub-page under the Plugins sidebar.
 | `terminalLineHeight` | 1.35 | Line-height multiplier (1~2). A block cursor usually wants `1`: 1.35 inflates the cell and the cursor towers over the glyphs |
 | `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host `.panelRow` (0.34.0): width `calc(100% - 4px)`, `margin 0 2px`, `min-height 36`, `padding 7px 8px`, 14px font, 16px icon. Default false = the plugin's own sizing (pure additive CSS, no change to the default look) |
 
+## Connection bar: identity and copy
+
+On SSH tabs the connection bar also shows **who this connection is** (read-only; editing still goes through
+the settings card):
+
+- **Clickable address**: the `user@host:port` pill on the left opens a “connection details” popover (mouse
+  click, or Enter / Space when focused): target, host-book entry, authentication method, jump host, proxy
+  command, **persistence** (tmux-hosted / requested but tmux unavailable) and the **last status** (SSH
+  failure reason, exit code…). It reads the session’s `spawnSpec` plus the tab state — no extra request.
+- **Jump-host badge**: when the connection goes through a jump host, a “Jump” badge appears next to the
+  address; its title is the full `[user@]host[:port]`. A connection through a bastion otherwise looks
+  exactly like a direct one, which is the easiest thing to misread while troubleshooting.
+- **Two copy items in “⋯”** (neither includes any credential):
+  - **Copy connection info** — target / entry / auth / jump host / proxy command, one `label: value` per line;
+  - **Copy ssh command** — a ready-to-paste command that carries the port / jump host / proxy command the
+    OpenSSH way (`ssh -p 2222 -J jump@bastion:2200 -o ProxyCommand='…' ops@host`). Passwords, key paths and
+    passphrases **never** reach the clipboard — that would be “leak it more conveniently”, not “connect
+    more conveniently”.
+
 ## Connection-bar extension point (client service `ttyConnbar`, 0.13.0)
 
 Other plugins can append their own contextual buttons to the SSH connection bar (the row with the SFTP /
 tunnel buttons) without tty knowing about them — tty only exposes one generic client service. **The built-in
 actions (reopen / SFTP / tunnel) go through the same registration channel**, and display order = registration
-order; with no extension registered the behavior is exactly as before.
+order; with no extension registered the behavior is exactly as before. The one exception is **“⋯ More”**: it is
+the action area’s overflow entry and always sits **last** (after every third-party action), so a new plugin
+cannot push it into the middle where it would look like it only covers the buttons before it.
 
 ```js
 // Optional injection in a consumer's own client half (e.g. dsh-docker): it never fires when tty is absent

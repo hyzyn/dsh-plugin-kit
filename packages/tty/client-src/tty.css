@@ -131,6 +131,14 @@
   --tt-term-stats-label: rgba(255, 255, 255, .5);
   --tt-term-stats-value: rgba(255, 255, 255, .86);
   --tt-term-stats-track: rgba(255, 255, 255, .14);
+  /* 极简条趋势线 / 网络双色：**必须取终端域的固定深色系**，不能借 --tt-success 等宿主
+     语义色——宿主浅色主题下那些是「深绿 / 深红」，压在 #0b0e14 上对比度掉一半。
+     值直接引用上面那块 ANSI 调色板，避免同一批十六进制值登记两遍。 */
+  --tt-term-stats-ok: var(--tt-an-green);
+  --tt-term-stats-warn: var(--tt-an-yellow);
+  --tt-term-stats-danger: var(--tt-an-red);
+  --tt-term-stats-rx: var(--tt-an-blue);
+  --tt-term-stats-tx: var(--tt-an-cyan);
   /* 退出提示条（issue #7①）：终端域固定深色，与状态条同族的浅白系 */
   --tt-term-exit-bg: rgba(255, 255, 255, .06);
   --tt-term-exit-border: rgba(255, 255, 255, .10);
@@ -359,6 +367,7 @@
 .tt_sftpDualCard,
 .tt_addMenu,
 .tt_tunnelPop,
+.tt_connPop,
 .tt_dock,
 .tt_toast {
   background-color: var(--tt-surface-solid);
@@ -367,6 +376,7 @@
 /* 菜单类浮层用「菜单底色」而不是面板底色 */
 .tt_addMenu,
 .tt_tunnelPop,
+.tt_connPop,
 .tt_dock {
   background-image: linear-gradient(var(--tt-menu), var(--tt-menu));
 }
@@ -1000,6 +1010,73 @@
   gap: var(--tt-gap-md);
   min-width: 0;
 }
+/*
+ * 地址胶囊是「连接详情」的入口。**没有这几档样式它看起来就是一段普通文字**——用户不会去点，
+ * 点了也没反馈（2026-11-01 实机：详情弹层的 JS 与文案都在，唯独少了这份 CSS，
+ * 于是弹层被 append 到 body 末尾、离视口几千像素，表现成「点了没反应」）。
+ *
+ * 它刻意是 `role=button` 的 span 而不是真 `<button>`：真按钮会带宿主的按钮内边距，
+ * 把这枚「输入框形状」的胶囊撑变形（见 index.js 的 onConnTargetActivate 注释）。
+ * 类名也**不带 btn**：client-style-spec 的按钮族只认带 btn 的类，这枚胶囊不是那一档
+ * （与进程列头 `.tt_statsDashSort` 同一个理由）。
+ */
+.tt_connTargetOpen {
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
+}
+.tt_connTargetOpen:hover {
+  background: var(--tt-hover);
+  color: var(--tt-label);
+}
+.tt_connTargetOpen:focus-visible {
+  outline: none;
+  box-shadow: var(--tt-ring);
+}
+/* 连接详情弹层：与隧道弹层同一套表面与投影，行是「标签 + 值」两列 */
+.tt_connPop {
+  position: fixed;
+  z-index: 1350;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tt-gap-sm);
+  min-width: 300px;
+  max-width: 420px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--tt-r-xl);
+  color: var(--tt-label);
+  box-shadow: var(--dsw-elevation-panel);
+  animation: ttPopIn .16s var(--tt-ease);
+}
+.tt_connPopTitle {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--tt-label);
+}
+/*
+ * 两列：标签定宽、值吃剩余。值可能是长主机名或一条带引号的代理命令——`anywhere` 让它换行
+ * 而不是把弹层撑破（`max-width` 已经封顶）。
+ */
+.tt_connPopRow {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  column-gap: var(--tt-gap-md);
+  align-items: baseline;
+}
+.tt_connPopLabel {
+  color: var(--tt-label-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+.tt_connPopValue {
+  color: var(--tt-label);
+  font-family: var(--tt-mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
 @keyframes ttPopIn {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: none; }
@@ -1313,14 +1390,7 @@
   z-index: 4; /* 高于 .tt_term(1)、低于 .tt_overlay(5)：出错浮层仍能盖住 */
   display: flex;
   align-items: center;
-  /* 窄窗口（0.19.0）：条目可横向滚动到达（滚动条隐藏，滚轮/触控板横扫），
-  不再静默裁掉右侧；条目同时带 title。不换行——条高是终端 top 偏移的基准 */
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
   height: var(--tt-statsbar-h);
-  padding: 0 var(--tt-gap-lg);
-  white-space: nowrap;
   font-family: var(--tt-mono);
   font-size: 11px;
   line-height: 1;
@@ -1328,15 +1398,34 @@
   background: var(--tt-term-stats-bg);
   border-bottom: 1px solid var(--tt-term-stats-border);
 }
-.tt_statsBar::-webkit-scrollbar {
+/*
+ * 条目滚动区（完整模式可能溢出；窄窗口下横向滚动，0.19.0 的 D33 口径不变）。
+ * 滚动条隐藏，滚轮/触控板横扫到达右侧；条目同时带 title。
+ */
+.tt_statsScroll {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--tt-gap-lg);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+.tt_statsScroll::-webkit-scrollbar {
   display: none;
 }
-/*
- * 显式兜底：上面的 display:flex 是作者样式，而 [hidden] 的 display:none 来自
- * UA 表——新引擎用 !important 实现（量过 bounding box 为 0），但老引擎/内嵌
- * WebView 不保证。这条规则让「隐藏」在任何引擎下都真的不占位：残留 24px 会
- * 盖住终端第一行（界面变形）。
- */
+.tt_statsFull,
+.tt_statsMin {
+  display: flex;
+  align-items: center;
+}
+/* 显式兜底：display:flex 是作者样式，而 [hidden] 的 display:none 来自 UA 表——
+   新引擎用 !important 实现，但老引擎/内嵌 WebView 不保证；残留 24px 会盖住终端第一行 */
+.tt_statsFull[hidden],
+.tt_statsMin[hidden],
 .tt_statsBar[hidden] {
   display: none;
 }
@@ -1377,20 +1466,507 @@
   overflow: hidden;
   background: var(--tt-term-stats-track);
 }
+/*
+ * 进度条填充：与趋势线同一套终端域语义色（**不借 --tt-success 等宿主令牌**——终端区固定
+ * 深色，宿主浅色主题下的深绿/深红压在这条 #0b0e14 上对比度只剩一半）。
+ */
 .tt_statsMeterFill {
   display: block;
   height: 100%;
   border-radius: var(--dsw-radius-xs);
-  background: var(--tt-success);
+  background: var(--tt-term-stats-ok);
   transition: width var(--tt-dur) var(--tt-ease);
 }
 /* 阈值配色：<70 正常（绿）/ 70~90 黄 / >90 红 */
 .tt_statsMeter[data-level="warn"] .tt_statsMeterFill {
-  background: var(--tt-warn);
+  background: var(--tt-term-stats-warn);
 }
 .tt_statsMeter[data-level="danger"] .tt_statsMeterFill {
-  background: var(--tt-danger);
+  background: var(--tt-term-stats-danger);
 }
+/* ---------------- 极简模式：CPU / 内存 / 网络 + 趋势线 ---------------- */
+
+/*
+ * 极简条的条高更大（36px）：趋势线与大数字需要呼吸空间。终端 top 偏移、退出提示条
+ * 的偏移都读同一个 `--tt-statsbar-h`，所以只需要在这里改一次——`refitActiveTab()`
+ * 会让终端重算行数（toggle 时调用，见 index.js 的 onStatsToggleClick）。
+ */
+.tt_body[data-stats][data-stats-style="minimal"] {
+  --tt-statsbar-h: 36px;
+}
+.tt_statsMin {
+  gap: 16px;
+}
+.tt_statsMinItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.tt_statsMinItem + .tt_statsMinItem::before {
+  content: '';
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin-right: 4px;
+  background: var(--tt-term-stats-divider);
+}
+.tt_statsMinLabel {
+  color: var(--tt-term-stats-label);
+  font-size: 11px;
+  line-height: 16px;
+}
+.tt_statsSpark {
+  display: block;
+  width: 112px;
+  height: 24px;
+  color: var(--tt-term-stats-ok);
+}
+/* 填充面：颜色与透明度由 SVG 的 linearGradient（stop-color=currentColor）给，
+   这里只兜底「不要描边」——CSS mask 在 SVG 子元素上支持不一致，别把渐变放这里 */
+.tt_statsSparkArea {
+  stroke: none;
+}
+/* 折线：颜色由 `stroke="url(#…)"` 给（横向「时间流向」渐变，id 是动态的，写不进 CSS），
+   这一条负责**光晕**与粗细——16px 高的缩略线在深底上只有 2px，不加光晕会「飘」 */
+.tt_statsSparkLine {
+  fill: none;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 1.5px color-mix(in srgb, currentColor 55%, transparent));
+}
+/* 80% 警戒线（只在 CPU / 内存两项上）：缩略线里的「天花板」暗示，比网格还淡一档 */
+.tt_statsSparkLimit {
+  stroke: color-mix(in srgb, var(--tt-term-fg) 22%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+.tt_statsMinItem[data-kind="net"] .tt_statsSpark {
+  color: var(--tt-term-stats-ok);
+}
+.tt_statsMinItem[data-level="warn"] .tt_statsSpark {
+  color: var(--tt-term-stats-warn);
+}
+.tt_statsMinItem[data-level="danger"] .tt_statsSpark {
+  color: var(--tt-term-stats-danger);
+}
+/* 折线与数值之间补 4px（条目内 gap 8px → 12px）：网络那格的面积块很亮，紧贴数字会读成
+   一个字块；只给「趋势线后紧跟的值」加，标签与趋势线之间的间距不动 */
+.tt_statsSpark + .tt_statsMinValue {
+  margin-left: 4px;
+}
+.tt_statsMinValue {
+  color: var(--tt-term-stats-value);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tt_statsMinDown {
+  color: var(--tt-term-stats-rx);
+}
+.tt_statsMinUp {
+  color: var(--tt-term-stats-tx);
+}
+
+/* ---------------- 明细仪表盘（状态条最右端的 ▴ 展开） ---------------- */
+
+/*
+ * 展开按钮：挂在 .tt_statsScroll **外面**（条的最右端），不随条目滚动。
+ * 颜色走终端域令牌——它就长在深色条上，主题切换不该让它变灰。
+ */
+.tt_statsExpand {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tt-r-xs);
+  background: 0 0;
+  color: var(--tt-term-stats-label);
+  cursor: pointer;
+  transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
+}
+.tt_statsExpand:hover {
+  background: var(--tt-term-stats-track);
+  color: var(--tt-term-stats-value);
+}
+.tt_statsExpand:focus-visible {
+  outline: none;
+  box-shadow: var(--tt-ring);
+}
+.tt_statsExpand[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--tt-term-stats-ok) 16%, transparent);
+  color: var(--tt-term-stats-ok);
+}
+
+/*
+ * 悬浮卡片：深色终端卡片（不是宿主主题卡片）。它悬在终端区上、由深色状态条展开，
+ * 用终端域令牌才和条连成一体；与连线详情那种「面板内的浅色浮层」不是一类东西。
+ */
+.tt_statsDash {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 1350;
+  display: grid;
+  /*
+   * 列数按卡片宽度分档（JS 写 data-cols）：固定模板在窄卡片上会横向溢出，
+   * 三档分别给 3 / 2 / 1 列。
+   *
+   * 宽档的比例按「谁能把信息显示全」分：进程那列最吃横向空间（可执行文件名 + 两个百分比
+   * 列），网络曲线只要有起伏就够，每核柱本来就是窄条。2026-10-31 按实测调过一次：
+   * 原来的 1 / 1.05 / 1.3 下进程名普遍只剩 `Framew…` 这种同前缀截断，三个不同的
+   * Framework 进程在卡片上完全一样。
+   */
+  --tt-proc-cpu-w: 44px;
+  --tt-proc-mem-w: 40px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--tt-gap-lg);
+  width: min(720px, calc(100vw - 24px));
+  padding: 12px 14px;
+  border: .5px solid var(--tt-term-card-border);
+  border-radius: var(--tt-r-lg);
+  background: var(--tt-term-card-bg);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--dsw-elevation-panel);
+  color: var(--tt-term-fg);
+  font-family: var(--tt-mono);
+  animation: ttPopIn .16s var(--tt-ease);
+}
+.tt_statsDash[data-cols="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.tt_statsDash[data-cols="3"] {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.45fr);
+}
+.tt_statsDashCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tt-gap-md);
+  min-width: 0;
+}
+.tt_statsDashHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tt-gap-md);
+}
+/*
+ * 每核那格的标题与档位（「正常 / 偏高 / 过载」）**挨在一起**：它修饰的是本卡片的每核柱，
+ * 原来是右上角右对齐，正好落在网络卡片左边，读起来像是在说网络。
+ */
+.tt_statsDashHead--tight {
+  justify-content: flex-start;
+  gap: var(--tt-gap-sm);
+}
+.tt_statsDashTitle {
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: .02em;
+  color: var(--tt-term-stats-label);
+}
+.tt_statsDashMeta {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--tt-term-stats-label);
+  font-variant-numeric: tabular-nums;
+}
+/*
+ * 进程卡片的列头：两列各占一行、宽度与下面的数据列**同一套变量**（--tt-proc-cpu-w /
+ * --tt-proc-mem-w），右对齐。原先是一整串「CPU / 内存」右对齐，分隔符的位置与下面
+ * 两列的间距对不上，看上去是散的。
+ */
+.tt_statsDashCols {
+  display: grid;
+  grid-template-columns: var(--tt-proc-cpu-w) var(--tt-proc-mem-w);
+  column-gap: var(--tt-gap-sm);
+  flex: none;
+}
+.tt_statsDashColLabel {
+  text-align: right;
+  white-space: nowrap;
+}
+/*
+ * 可点的列头（切排序）：**不是一个 Button 原语**，是贴在图表列头上的文本控件——
+ * 所以把 UA 的按钮皮肤整条抹掉（背景/边框/内边距/字体全继承），只保留行为与焦点环。
+ * 类名不带 `btn` 是有意的：client-style-spec 的按钮族只认带 btn 的类。
+ */
+.tt_statsDashSort {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: 0 0;
+  color: inherit;
+  font: inherit;
+  line-height: 16px;
+  text-align: right;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--tt-dur) var(--tt-ease);
+}
+.tt_statsDashSort:hover {
+  color: var(--tt-term-stats-value);
+}
+.tt_statsDashSort:focus-visible {
+  outline: none;
+  box-shadow: var(--tt-ring);
+  border-radius: var(--dsw-radius-xs);
+}
+/* 当前排序列：比另一列亮一档（箭头也在这一列上） */
+.tt_statsDashSort[data-active="true"] {
+  color: var(--tt-term-stats-value);
+}
+.tt_statsDashMeta[data-level="warn"] {
+  color: var(--tt-term-stats-warn);
+}
+.tt_statsDashMeta[data-level="danger"] {
+  color: var(--tt-term-stats-danger);
+}
+/*
+ * 三张卡片的主体等高（96px）：底部脚注才会在同一水平线上。核数多时柱状不变形
+ * （柱高撑满 96px），进程列表放 5 行（5×16 + 4×4 = 96）刚好。
+ */
+.tt_statsDashBody {
+  min-width: 0;
+  height: 96px;
+}
+.tt_statsDashEmpty {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--tt-term-stats-label);
+}
+/* 显式兜底：display 是作者样式，[hidden] 的 display:none 来自 UA 表（见 .tt_statsBar[hidden]） */
+.tt_statsDashBody[hidden],
+.tt_statsDashEmpty[hidden],
+.tt_statsDashFoot[hidden] {
+  display: none;
+}
+/*
+ * 脚注：**不许被 flex 压扁**（`flex: none`）。它是三张卡片底部唯一用来对齐的那一行；
+ * 而 `overflow: hidden`（横向省略号的代价，两个方向一起切）一旦遇到被压短的行盒，
+ * 就会把字的下半截也切掉——卡片高度被算短时 flex 会把它从 16px 压到 10px，
+ * 只剩上面 2/3 的字看得见（用户报的「文字被遮挡」，2026-10-31）。等高由
+ * `.tt_statsDashBody` 的 96px 保证，这里只锁住自己这一行不被压缩。
+ */
+.tt_statsDashFoot {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--tt-term-stats-label);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * 每核柱：柱宽随核心数均分（16 核 ≈ 12px，64 核 ≈ 3px 仍看得见）。
+ *
+ * **这三条（cores / chartWrap / procs）不要再写 `height: 100%`**：它们与
+ * `.tt_statsDashBody` 是**同一个元素**（JS 只换 className），同优先级的百分比高度会盖掉
+ * 上面那条 `height: 96px`；而父级（卡片）高度不定，百分比退化成 auto，于是三张卡片
+ * 不再等高、整张卡片被压短，脚注行跟着被压扁（见 `.tt_statsDashFoot` 的注释）。
+ */
+.tt_statsDashCores {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+/*
+ * 80% 警戒线：柱状图没有 Y 轴刻度，用户看不出「一半高」到底是 50% 还是 80%。一条极细虚线
+ * 就够了——它画在柱子之上、但不抢眼（虚线 + 低透明度），让「哪几根柱子过了警戒线」一眼可见。
+ *
+ * 位置（`bottom`）**由 JS 按 `STATS_WARN_LIMIT` 写**，不在这里写死：这条线的位置就是柱子
+ * 变橙的那一档，两处各写一个 80 迟早会漂。
+ */
+.tt_statsDashGuide {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: .5px dashed color-mix(in srgb, var(--tt-term-fg) 26%, transparent);
+  pointer-events: none;
+}
+.tt_statsDashCore {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 3px;
+  max-width: 14px;
+  height: 100%;
+  border-radius: var(--tt-r-xs);
+  background: var(--tt-term-stats-border);
+  overflow: hidden;
+}
+.tt_statsDashCoreFill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: var(--tt-r-xs);
+  background: var(--tt-term-stats-ok);
+  transition: height var(--tt-dur) var(--tt-ease), background var(--tt-dur) var(--tt-ease);
+}
+.tt_statsDashCore[data-level="warn"] .tt_statsDashCoreFill {
+  background: var(--tt-term-stats-warn);
+}
+.tt_statsDashCore[data-level="danger"] .tt_statsDashCoreFill {
+  background: var(--tt-term-stats-danger);
+}
+/* 网络图：上行线在下、下行面积在上；色相取 SVG 的 currentColor / `[data-hue]`（见下方渐变） */
+.tt_statsDashChartWrap {
+  /* 高度来自同一个元素上的 `.tt_statsDashBody`（见上，别再写 height:100%） */
+  min-width: 0;
+}
+.tt_statsDashChart {
+  display: block;
+  width: 100%;
+  height: 100%;
+  color: var(--tt-term-stats-rx);
+  overflow: visible;
+}
+/*
+ * 网格线：两条横向参考线（1/3、2/3 高，纯视觉刻度）。**虚线 + 压暗**——实线横穿折线时
+ * 读起来像数据的一部分，会把曲线切碎；`z-index` 不用管，它们在 SVG 里排在折线之前，
+ * 本来就画在下面。
+ */
+.tt_statsDashGrid {
+  stroke: color-mix(in srgb, var(--tt-term-stats-label) 22%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  vector-effect: non-scaling-stroke;
+}
+/*
+ * 80% 警戒线：比网格亮一档——它是一条**有语义的阈值**（越过就该看一眼），不是刻度。
+ * 但仍然只是「隐约一条灰虚线」：亮到抢眼就会把波形的形状压下去。
+ */
+.tt_statsDashArea {
+  stroke: none;
+}
+.tt_statsDashLine {
+  fill: none;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 1.5px color-mix(in srgb, currentColor 45%, transparent));
+}
+/* 线的颜色由 `stroke="url(#…)"` 给（渐变 id 是动态的，不能写死在 CSS 里），
+   这两条只负责光晕与面积要用的 `color` */
+.tt_statsDashLine[data-kind="rx"] {
+  color: var(--tt-term-stats-rx);
+}
+/*
+ * 上行：**细一档、压暗一档、不发光**——2026-11-01 试过虚线，用户嫌虚线的观感不好
+ * （小尺寸锯齿线配虚线像「虚线框」），所以换回实线，用三个维度分主次：
+ *   ① 粗细（下行 2px / 上行 1.5px）；② 亮度（上行 .82）；③ 只有下行带渐变面积。
+ * 颜色仍然一个蓝一个青，图例标着 ↓/↑，交叉处靠粗细与光晕的有无也分得开。
+ */
+.tt_statsDashLine[data-kind="tx"] {
+  color: var(--tt-term-stats-tx);
+  stroke-width: 1.5px;
+  opacity: .82;
+  filter: none;
+}
+/*
+ * 网络卡片的图例：色条 + 箭头。色条与曲线**同色同虚实**（实线/虚线），贴在标题与
+ * 「近 1 分钟」之间——它是给「认不出哪条是哪条」的人准备的，不是一个统计量。
+ */
+.tt_statsDashLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  flex: none;
+  color: var(--tt-term-stats-label);
+  font-size: 11px;
+  line-height: 16px;
+}
+.tt_statsDashKey {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+/* 色条：不用 border（发丝线/虚线粗细那条规矩只管边框），2px 高的背景块就能表达实线 */
+.tt_statsDashKey::before {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 2px;
+  background: currentColor;
+}
+.tt_statsDashKey[data-kind="down"] {
+  color: var(--tt-term-stats-rx);
+}
+.tt_statsDashKey[data-kind="up"] {
+  color: var(--tt-term-stats-tx);
+}
+/* 上行那条色条跟着压暗一档：图例要和曲线一个观感。**不跟着改高度**——1.5px 在这个缩放
+   下会被浏览器吸到 2px（实测两者渲染都是 4 个设备像素），写了也是假承诺 */
+.tt_statsDashKey[data-kind="up"]::before {
+  opacity: .82;
+}
+/*
+ * 折线的「时间流向」渐变 + 面积的纵向褪色：**颜色一律走 `currentColor` / `[data-hue]`，
+ * JS 只写不透明度阶梯**——换色时只需要改一处 `color`（网络线的 `[data-kind]`、极简条的
+ * `[data-level]`），折线、面积、光晕三处自动同色，不必在 JS 里维护第二套色值。
+ *
+ * `stop-color` 不是继承属性，所以规则必须直接落在 `<stop>` 上。
+ */
+.tt_statsDashFlow stop,
+.tt_statsDashFade stop {
+  stop-color: currentColor;
+}
+.tt_statsDashFlow[data-hue="rx"] stop {
+  stop-color: var(--tt-term-stats-rx);
+}
+.tt_statsDashFlow[data-hue="tx"] stop {
+  stop-color: var(--tt-term-stats-tx);
+}
+/* Top 进程：命令名吃剩余宽度，两个百分比各占固定列（小数位对齐，不抖） */
+.tt_statsDashProcs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* 高度来自同一个元素上的 `.tt_statsDashBody`（见上，别再写 height:100%） */
+  overflow: hidden;
+}
+.tt_statsDashProc {
+  display: grid;
+  /* 两个百分比列的宽度与列头（.tt_statsDashCols）共用同一对变量，改一处两边一起动 */
+  grid-template-columns: minmax(0, 1fr) var(--tt-proc-cpu-w) var(--tt-proc-mem-w);
+  column-gap: var(--tt-gap-sm);
+  align-items: baseline;
+}
+.tt_statsDashProcCmd {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--tt-term-stats-value);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt_statsDashProcCpu {
+  font-size: 12px;
+  line-height: 16px;
+  text-align: right;
+  color: var(--tt-term-stats-warn);
+  font-variant-numeric: tabular-nums;
+}
+.tt_statsDashProcCpu[data-level="danger"] {
+  color: var(--tt-term-stats-danger);
+}
+.tt_statsDashProcMem {
+  font-size: 12px;
+  line-height: 16px;
+  text-align: right;
+  color: var(--tt-term-stats-rx);
+  font-variant-numeric: tabular-nums;
+}
+
 .tt_overlay {
   position: absolute;
   inset: 0;

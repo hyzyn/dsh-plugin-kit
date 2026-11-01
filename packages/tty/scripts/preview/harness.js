@@ -397,6 +397,404 @@
         return null
       }
     },
+    /* 极简模式（2026-10-31）：条上切换按钮 → 只留 CPU / 内存 / 网络 三项 + 趋势线 */
+    async 'stats-minimal'() {
+      await openPanel()
+      // 状态条要等 stats 帧；再等几帧让趋势线有起伏可画
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(6500)
+      const toggle = () => q('[data-act=stats]')
+      if (toggle() === null) {
+        window.__previewAssert = async () => '头部缺少状态条切换按钮（data-act=stats）'
+        return
+      }
+      toggle().click() // 完整 → 极简
+      await sleep(300)
+      window.__previewAssert = async () => {
+        const style = () => window.localStorage.getItem('dsh-tty:stats-style')
+        const bar = q('.tt_statsBar')
+        const min = q('.tt_statsMin')
+        const full = q('.tt_statsFull')
+        if (min === null || full === null) return '极简 / 完整容器缺失'
+        if (min.hidden === true) return '切到极简后极简容器仍隐藏'
+        if (full.hidden !== true) return '极简模式下完整容器仍然可见'
+        const items = qa('.tt_statsMinItem')
+        if (items.length !== 3) return '极简模式应只有 CPU / 内存 / 网络 3 项，实得 ' + String(items.length)
+        const paths = qa('.tt_statsSparkLine')
+        const areas = qa('.tt_statsSparkArea')
+        if (paths.length !== 3) return '趋势线路径应有 3 条，实得 ' + String(paths.length)
+        if (areas.length !== 3) return '趋势线填充面应有 3 块，实得 ' + String(areas.length)
+        if (paths.filter((path) => (path.getAttribute('d') || '') !== '').length < 2) return '趋势线无数据（d 为空）'
+        if (areas.filter((area) => (area.getAttribute('d') || '') !== '').length < 2) return '填充面无几何（d 为空）'
+        /*
+         * 趋势线配色走**终端域固定色**（--tt-term-stats-*），不是宿主语义色：
+         * 终端条恒定深色，宿主浅色主题的深绿/深红在这条底上对比度不够。
+         * 这里按「值 ↔ 档位 ↔ 颜色」三者的对应关系验，顺带钉住 80 / 90 两个阈值
+         * （2026-11-01 起 warn 从 70 收到 80：折线上那条虚线与换色阈值必须是同一个数）。
+         */
+        const sparkColor = (item) => getComputedStyle(item.querySelector('.tt_statsSpark')).color
+        const levelColor = { '': 'rgb(126, 198, 153)', warn: 'rgb(230, 182, 115)', danger: 'rgb(240, 113, 120)' }
+        const levelOf = (pct) => (pct >= 90 ? 'danger' : pct >= 80 ? 'warn' : '')
+        for (let i = 0; i < 2; i += 1) {
+          const item = items[i]
+          const pct = parseFloat(item.querySelector('.tt_statsMinValue').textContent)
+          const want = levelOf(pct)
+          const got = item.getAttribute('data-level') || ''
+          if (want !== got) return '第 ' + String(i + 1) + ' 项 ' + String(pct) + '% 的档位应为「' + want + '」，实得「' + got + '」'
+          if (sparkColor(item) !== levelColor[want]) return '第 ' + String(i + 1) + ' 项趋势线颜色与档位不符：' + sparkColor(item)
+        }
+        /*
+         * 阈值必须与那条 80% 虚线是同一个数（2026-11-01 从 70 收到 80）：把总量钉在
+         * 79 / 80 / 90 三个点上逐档验 `data-level`。常态夹具的 18~96 锯齿只是「偶尔路过」
+         * 这些区间，直接断言会随时序随机红。
+         */
+        const probeLevel = async (load) => {
+          window.__PREVIEW_STATS_LOAD = load
+          await sleep(700)
+          return items[0].getAttribute('data-level') || ''
+        }
+        const belowWarn = await probeLevel(79)
+        if (belowWarn !== '') return '79% 不该告警（80% 才是警戒线），实得「' + belowWarn + '」'
+        const atWarn = await probeLevel(80)
+        if (atWarn !== 'warn') return '80% 应转橙，实得「' + atWarn + '」'
+        const atDanger = await probeLevel(90)
+        if (atDanger !== 'danger') return '90% 应转红，实得「' + atDanger + '」'
+        window.__PREVIEW_STATS_LOAD = undefined
+        /*
+         * 缩略线的三条视觉契约（2026-11-01）：① 折线走**横向时间流向**渐变（左暗右亮），
+         * 不是一条死板的实色；② 线带光晕；③ CPU / 内存两项（0~100）有 80% 警戒虚线，
+         * 网络那条（字节速率）没有——它的纵轴随量程走，「80%」在上面没有含义。
+         */
+        for (const path of paths) {
+          const ref = /^url\(#(.+)\)$/.exec(path.getAttribute('stroke') || '')
+          if (ref === null) return '缩略线没有用渐变描边：' + String(path.getAttribute('stroke'))
+          const flow = document.getElementById(ref[1])
+          if (flow === null) return '缩略线的渐变 id 找不到：' + ref[1]
+          if (Number(flow.getAttribute('x2')) !== 100 || Number(flow.getAttribute('y2')) !== 0) return '时间流向不是横向满幅渐变'
+          const stops = Array.from(flow.querySelectorAll('stop')).map((stop) => Number(stop.getAttribute('stop-opacity')))
+          if (!(stops[stops.length - 1] > stops[0])) return '时间流向不是「左暗右亮」：' + stops.join('/')
+          if (getComputedStyle(path).filter === 'none') return '缩略线没有光晕（filter 为空）'
+        }
+        for (const [index, want] of [[0, true], [1, true], [2, false]]) {
+          const limit = items[index].querySelector('.tt_statsSparkLimit')
+          if (want !== (limit !== null)) return '第 ' + String(index + 1) + ' 项' + (want ? '缺少' : '不该有') + ' 80% 警戒线'
+          if (limit === null) continue
+          if (Math.abs(Number(limit.getAttribute('y1')) - 3.2) > 0.05) return '80% 警戒线不在 80% 高度（y=' + String(limit.getAttribute('y1')) + '）'
+          if (getComputedStyle(limit).strokeDasharray === 'none') return '80% 警戒线不是虚线'
+        }
+        // 网络双向数值分色（浅蓝 / 青绿）——两条都必须能独立分辨
+        const down = q('.tt_statsMinDown')
+        const up = q('.tt_statsMinUp')
+        if (down === null || up === null) return '网络双向数值缺失'
+        if (getComputedStyle(down).color !== 'rgb(122, 162, 247)') return '下行数值应为浅蓝，实得 ' + getComputedStyle(down).color
+        if (getComputedStyle(up).color !== 'rgb(127, 219, 202)') return '上行数值应为青绿，实得 ' + getComputedStyle(up).color
+        // 填充面渐变锚在「图表高度」上（userSpaceOnUse）：锚包围盒时，一条几乎水平的线
+        // 会把首档压成整条实色带，看着像进度条
+        const gradient = document.getElementById(areas[0].getAttribute('fill').replace(/^url\(#|\)$/g, ''))
+        if (gradient === null) return '填充面渐变缺失'
+        if (gradient.getAttribute('gradientUnits') !== 'userSpaceOnUse') return '填充面渐变未锚定图表高度（gradientUnits）'
+        // 趋势线与数值之间留出 4px 额外间距：贴着读成一块色块
+        const spark = items[2].querySelector('.tt_statsSpark')
+        const value = items[2].querySelector('.tt_statsMinValue')
+        const gap = Math.round(value.getBoundingClientRect().left - spark.getBoundingClientRect().right)
+        if (gap < 10) return '趋势线与数值间距过窄（应 ≥10px），实得 ' + String(gap) + 'px'
+        // 极简条比完整条高（36px 内容 + 1px 边框 = 37）：终端 top 偏移要跟着它
+        const barHeight = Math.round(bar.getBoundingClientRect().height)
+        if (barHeight < 36 || barHeight > 38) return '极简条高度应约 36px（含边框 37），实得 ' + String(barHeight)
+        if (getComputedStyle(q('.tt_term')).top !== '36px') return '极简模式下终端 top 应为 36px，实得 ' + getComputedStyle(q('.tt_term')).top
+        if (style() !== 'minimal') return '极简偏好未写入 localStorage'
+        // 极简 → 隐藏：条消失、终端偏移归还、订阅停掉
+        toggle().click()
+        await sleep(300)
+        if (bar.hidden !== true) return '切到隐藏后状态条仍显示'
+        if (q('.tt_body') !== null && q('.tt_body').hasAttribute('data-stats')) return '隐藏态仍保留终端状态条偏移'
+        if (Math.round(bar.getBoundingClientRect().height) !== 0) return '隐藏态状态条仍占位'
+        if (getComputedStyle(q('.tt_term')).top !== '0px') return '隐藏态终端 top 应回到 0，实得 ' + getComputedStyle(q('.tt_term')).top
+        if (style() !== 'off') return '隐藏偏好未写入 localStorage'
+        // 隐藏 → 完整
+        toggle().click()
+        await sleep(300)
+        if (q('.tt_statsBar').hidden === true) return '恢复后状态条仍未显示'
+        if (q('.tt_statsFull').hidden === true) return '恢复后完整容器仍隐藏'
+        if (style() !== 'full') return '恢复后偏好未写回 full'
+        // 完整 → 极简，截图停在极简态（截图在断言之后拍）
+        toggle().click()
+        await sleep(300)
+        if (q('.tt_statsMin').hidden === true) return '再次切到极简后极简容器仍隐藏'
+        if (style() !== 'minimal') return '最终档位不是极简'
+        return null
+      }
+    },
+    /* 明细仪表盘（2026-10-31）：状态条最右端的 ▴ 展开悬浮卡片（每核 / 网络 / 进程） */
+    async 'stats-dashboard'() {
+      /*
+       * 历史窗口按 1s/帧攒（真实是 60 秒）。夹具里把帧间隔压到 300ms，截图才等得起：
+       * 等 9 秒 ≈ 30 个采样，曲线铺开一半以上，不用为了截图空等一分钟。
+       */
+      window.__PREVIEW_STATS_INTERVAL_MS = 300
+      await openPanel()
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(9000) // 攒够历史，网络曲线才有形状（300ms/帧 → 约 30 个采样）
+      const expand = q('[data-act=stats-expand]')
+      if (expand === null) {
+        window.__previewAssert = async () => '状态条缺少展开按钮（data-act=stats-expand）'
+        return
+      }
+      /*
+       * 箭头方向：**收起态 ▾、展开态 ▴**。两段 path 的坐标是硬契约（用户提的就是这一条：
+       * 「展开/折叠面板图标应有变化 ^ 和倒 ^」）——只验「变了」不够，变了之后必须真的是
+       * 那一段，否则旋转 / 换错图标都能让「变了」成立。
+       */
+      const ICON_UP = 'M4 10l4-4 4 4'
+      const ICON_DOWN = 'M4 6l4 4 4-4'
+      const iconPath = () => {
+        const path = expand.querySelector('path')
+        return path === null ? '' : (path.getAttribute('d') || '')
+      }
+      const openLabel = expand.getAttribute('title')
+      if (iconPath() !== ICON_DOWN) {
+        window.__previewAssert = async () => '收起态箭头应为 ▾（' + ICON_DOWN + '），实得 ' + iconPath()
+        return
+      }
+      expand.click()
+      await sleep(600)
+      window.__previewAssert = async () => {
+        const dash = q('.tt_statsDash')
+        if (dash === null) return '点上 ▾ 之后没有出现明细仪表盘'
+        if (expand.getAttribute('aria-expanded') !== 'true') return '展开后 aria-expanded 应为 true'
+        // 箭头 / tooltip / aria-label 三件套一起翻：只翻 aria 的话看得见的人还是对着同一颗箭头猜
+        if (iconPath() !== ICON_UP) return '展开态箭头应为 ▴（' + ICON_UP + '），实得 ' + iconPath()
+        if (expand.getAttribute('title') === openLabel) return '展开后 tooltip 没换成「收起」'
+        if (expand.getAttribute('aria-label') !== expand.getAttribute('title')) return '展开后 aria-label 与 tooltip 不一致'
+        const cards = qa('.tt_statsDashCard')
+        if (cards.length !== 3) return '仪表盘应有 3 张卡片（每核 / 网络 / 进程），实得 ' + String(cards.length)
+        /*
+         * 三张卡片等高 + 主体 96px + 脚注 16px：脚注那一行**被 flex 压扁就会把字切掉**
+         * （`overflow: hidden` 两个方向一起切，压到 10px 时只剩上面 2/3 的字）。
+         * 所以这里量的是几何，不是「文字有没有溢出」——溢出量不出来，几何总量得出来。
+         */
+        const cardHeights = cards.map((card) => Math.round(card.getBoundingClientRect().height))
+        if (new Set(cardHeights).size !== 1) return '三张卡片高度不一致：' + cardHeights.join(' / ')
+        const bodyHeight = Math.round(q('.tt_statsDashBody').getBoundingClientRect().height)
+        if (bodyHeight !== 96) return '卡片主体应为等高 96px，实得 ' + String(bodyHeight) + 'px'
+        for (const foot of qa('.tt_statsDashFoot')) {
+          if (foot.hidden) continue // 没数据的那一格脚注整行隐藏（display:none），不参与等高
+          const rect = foot.getBoundingClientRect()
+          if (Math.round(rect.height) !== 16) return '脚注行被压扁（应 16px，实得 ' + String(Math.round(rect.height)) + 'px）：' + foot.textContent
+          // 压扁时 scrollHeight 会大于 clientHeight——那就是「文字被切掉」的判据
+          if (foot.scrollHeight > foot.clientHeight) return '脚注内容溢出被切：' + foot.textContent
+        }
+        const coreBars = qa('.tt_statsDashCore')
+        if (coreBars.length < 2) return '每核柱状应有多个核心，实得 ' + String(coreBars.length)
+        const filled = coreBars.filter((bar) => {
+          const fill = bar.querySelector('.tt_statsDashCoreFill')
+          return fill !== null && parseFloat(fill.style.height) > 0
+        })
+        if (filled.length !== coreBars.length) return '有空的核心柱（每核都应有高度）'
+        /*
+         * 每核柱的 80% 警戒线：位置必须是主体的 80%（柱状图唯一的刻度参照），而且必须与
+         * 「柱子变橙」的那一档是同一个数——`STATS_WARN_LIMIT` 一处取值，虚线画在它上面。
+         */
+        const coresBody = q('[data-card=cores] .tt_statsDashCores')
+        const guide = q('[data-card=cores] .tt_statsDashGuide')
+        if (coresBody === null || guide === null) return '每核卡片缺少 80% 警戒线'
+        const bodyRect = coresBody.getBoundingClientRect()
+        const guideRect = guide.getBoundingClientRect()
+        const guideRatio = (bodyRect.bottom - guideRect.top) / bodyRect.height
+        if (Math.abs(guideRatio - 0.8) > 0.03) return '警戒线不在 80% 高度（实得 ' + guideRatio.toFixed(2) + '）'
+        // 网络：两条线 + 一块面积，且都有几何
+        const lines = qa('.tt_statsDashLine')
+        if (lines.length !== 2) return '网络图应有上行/下行两条线，实得 ' + String(lines.length)
+        if (lines.some((line) => (line.getAttribute('d') || '') === '')) return '网络曲线没有几何（d 为空）'
+        if ((q('.tt_statsDashArea')?.getAttribute('d') || '') === '') return '网络面积没有几何（d 为空）'
+        /*
+         * 网络那两条线是 2026-11-01 视觉改造里**保留下来**的部分：横向「时间流向」渐变
+         * （左暗右亮）+ 一圈很弱的光晕。判据落在真实几何上，不是「类名在不在」。
+         */
+        for (const line of lines) {
+          const flowRef = /^url\(#(.+)\)$/.exec(line.getAttribute('stroke') || '')
+          if (flowRef === null) return '网络线没有用渐变描边：' + String(line.getAttribute('stroke'))
+          const flowEl = document.getElementById(flowRef[1])
+          if (flowEl === null) return '网络线的渐变 id 找不到：' + flowRef[1]
+          if (Number(flowEl.getAttribute('x1')) !== 0 || Number(flowEl.getAttribute('x2')) !== 240 || Number(flowEl.getAttribute('y2')) !== 0) {
+            return '网络线的时间流向不是横向满幅渐变'
+          }
+          const flowStops = Array.from(flowEl.querySelectorAll('stop')).map((stop) => Number(stop.getAttribute('stop-opacity')))
+          if (flowStops.length < 2) return '网络线的时间流向渐变没有至少两个色标'
+          if (!(flowStops[flowStops.length - 1] > flowStops[0])) return '网络线的时间流向不是「左暗右亮」：' + flowStops.join('/')
+        }
+        /*
+         * 两条线必须分得开——但不能靠虚线（用户试过后嫌虚线观感差）。这里量的是三层
+         * 主次信号：**粗细 / 亮度 / 光晕**，加上「只有下行带面积」：
+         *   ① 下行更粗（≥0.4px 差）；② 上行压暗（opacity < 1）；③ 只有下行发光。
+         * 图例的色条必须与对应那条线同色，否则「图例」只是两块装饰。
+         */
+        const rxLine = lines.find((line) => line.getAttribute('data-kind') === 'rx')
+        const txLine = lines.find((line) => line.getAttribute('data-kind') === 'tx')
+        if (rxLine === undefined || txLine === undefined) return '网络线缺少 rx / tx 标记'
+        const rxStyle = getComputedStyle(rxLine)
+        const txStyle = getComputedStyle(txLine)
+        if (rxStyle.strokeDasharray !== 'none' || txStyle.strokeDasharray !== 'none') {
+          return '网络线用了虚线（用户明确否决了虚线的观感，改用粗细 / 亮度分层）'
+        }
+        if (!(parseFloat(rxStyle.strokeWidth) - parseFloat(txStyle.strokeWidth) >= 0.4)) {
+          return '下行与上行的线宽差太小（' + rxStyle.strokeWidth + ' vs ' + txStyle.strokeWidth + '），交叉处分不出主次'
+        }
+        if (!(parseFloat(txStyle.opacity) < 1)) return '上行线没有压暗（opacity=1 时两条实线的分量一样重）'
+        if (txStyle.filter !== 'none') return '上行线不该发光（发光那条应该是带面积的下行）'
+        if (rxStyle.filter === 'none') return '下行线没有光晕（filter 为空）'
+        const netKeys = qa('.tt_statsDashLegend .tt_statsDashKey')
+        if (netKeys.length !== 2) return '网络图例应有两格（↓ 下行 / ↑ 上行），实得 ' + String(netKeys.length)
+        const keyColor = (kind) => {
+          const key = q('.tt_statsDashLegend .tt_statsDashKey[data-kind=' + kind + ']')
+          return key === null ? '' : getComputedStyle(key).color
+        }
+        if (keyColor('down') !== getComputedStyle(rxLine).color) return '图例下行的颜色与下行线不一致：' + keyColor('down')
+        if (keyColor('up') !== getComputedStyle(txLine).color) return '图例上行的颜色与上行线不一致：' + keyColor('up')
+        /*
+         * Y 轴：对数刻度，且**最高点不贴顶**（画布 16 单位高，峰值映射到 y>0）。
+         * 量的是「所有 y 都在 (0, height] 里」——贴顶（y=0）就是用户说的「尖刺被切在边框上」。
+         */
+        for (const line of lines) {
+          const values = (line.getAttribute('d') || '').split(' ').map((token) => Number(token)).filter((n) => Number.isFinite(n))
+          const ys = values.filter((_n, index) => index % 2 === 1)
+          if (ys.some((y) => y <= 0.01)) return '网络曲线贴到了图表上边框（y=' + String(Math.min(...ys)) + '）'
+        }
+        // 列头两格必须与下面两列数据右对齐（列宽共用一套变量），且都是可点的排序控件
+        const labels = qa('.tt_statsDashCols .tt_statsDashSort')
+        if (labels.length !== 2) return '进程列头应有两格（CPU / 内存），实得 ' + String(labels.length)
+        if (labels[0].tagName !== 'BUTTON') return '列头不是 button（键盘不可达）：' + labels[0].tagName
+        if (labels[0].textContent.trim().endsWith('▼') !== true) return 'CPU 列头没有排序方向标记：' + labels[0].textContent
+        if (labels[0].getAttribute('data-active') !== 'true') return '降序时 CPU 列头没标成活跃列'
+        const firstRow = q('.tt_statsDashProc')
+        const cpuCell = firstRow === null ? null : firstRow.querySelector('.tt_statsDashProcCpu')
+        const memCell = firstRow === null ? null : firstRow.querySelector('.tt_statsDashProcMem')
+        if (cpuCell === null || memCell === null) return '进程行缺少 CPU / 内存单元格'
+        const rightOf = (el) => Math.round(el.getBoundingClientRect().right)
+        if (Math.abs(rightOf(labels[0]) - rightOf(cpuCell)) > 1) return 'CPU 列头与数据列没对齐（' + String(rightOf(labels[0])) + ' vs ' + String(rightOf(cpuCell)) + '）'
+        if (Math.abs(rightOf(labels[1]) - rightOf(memCell)) > 1) return '内存列头与数据列没对齐（' + String(rightOf(labels[1])) + ' vs ' + String(rightOf(memCell)) + '）'
+        /*
+         * 进程名：一串同前缀的 XPC 服务在 CSS 尾部省略号下会变成同一个 `com.apple.WebK…`，
+         * 认不出是哪一个。首尾截断必须保住能区分的尾部（`(Renderer)` / `(GPU)`）。
+         */
+        const longCells = qa('.tt_statsDashProcCmd').filter((el) => (el.getAttribute('title') || '').includes('WebContent'))
+        if (longCells.length < 2) return '夹具里应有两个同前缀的长进程名，实得 ' + String(longCells.length)
+        for (const cell of longCells) {
+          const text = cell.textContent || ''
+          if (text.includes('…') !== true) return '长进程名没有截断（应带 …）：' + text
+          const tail = cell.getAttribute('title').includes('(Renderer)') ? '(Renderer)' : '(GPU)'
+          if (text.includes(tail) !== true) return '首尾截断把能区分的尾部切掉了（应为 ' + tail + '）：' + text
+        }
+        /*
+         * 点列头切排序：内存降序 → 第一行应是内存最高的那条（Chrome 7.8%），
+         * 再点一次变升序 → 第一行换成最低的那条；脚注跟着说「按内存 …」。
+         */
+        const firstProcName = () => (q('.tt_statsDashProcCmd')?.textContent || '')
+        const footText = () => (q('[data-card=procs] .tt_statsDashFoot')?.textContent || '')
+        const memHeader = labels[1]
+        memHeader.click()
+        await sleep(120)
+        if (firstProcName() !== 'Google Chrome') return '点「内存」后第一行应为内存最高的 Google Chrome，实得 ' + firstProcName()
+        if (memHeader.textContent.trim().endsWith('▼') !== true) return '按内存降序时列头没显示 ▼：' + memHeader.textContent
+        if (memHeader.getAttribute('data-active') !== 'true') return '按内存排序时该列没标成活跃列'
+        if (labels[0].getAttribute('data-active') === 'true') return '按内存排序时 CPU 列仍标着活跃'
+        if (footText().includes('内存') !== true) return '脚注没跟着报到内存：' + footText()
+        memHeader.click()
+        await sleep(120)
+        if (memHeader.textContent.trim().endsWith('▲') !== true) return '再点「内存」应变升序（▲），实得 ' + memHeader.textContent
+        if (firstProcName() === 'Google Chrome') return '升序后第一行仍是内存最高的那条'
+        // 换列 = 回到该列的降序（CPU 降序 → node）
+        labels[0].click()
+        await sleep(120)
+        if (firstProcName() !== 'node') return '点「CPU」后应为 CPU 降序（node），实得 ' + firstProcName()
+        if (footText().includes('CPU') !== true) return '脚注没跟着回到 CPU：' + footText()
+        // 进程：至少 3 行，CPU 列是百分比
+        const rows = qa('.tt_statsDashProc')
+        if (rows.length < 3) return '进程卡片应至少列 3 行，实得 ' + String(rows.length)
+        if (!/%$/.test(q('.tt_statsDashProcCpu').textContent)) return '进程 CPU 列不是百分比：' + q('.tt_statsDashProcCpu').textContent
+        // 卡片里只放可执行文件名：完整路径（macOS 的 ps comm）在这一列里只会显示成 `/Applications/G…`
+        const firstProc = q('.tt_statsDashProcCmd')
+        if (firstProc.textContent.startsWith('/')) return '进程名没取文件名，仍显示完整路径：' + firstProc.textContent
+        if (firstProc.getAttribute('title').includes('pid') !== true) return '进程行的 tooltip 里没有完整路径 / pid'
+        // 卡片在状态条下方（悬浮在终端区上，不参与布局）
+        const barRect = q('.tt_statsBar').getBoundingClientRect()
+        const dashRect = dash.getBoundingClientRect()
+        if (dashRect.top < barRect.bottom) return '仪表盘没有落在状态条下方'
+        if (getComputedStyle(dash).position !== 'fixed') return '仪表盘应为悬浮层（position: fixed）'
+        // 边界是面板而不是视口：越出去的那截没有卡片底，压着终端文字像「被盖掉一块」
+        const panelRect = q('.tt_modal').getBoundingClientRect()
+        if (dashRect.right > panelRect.right + 1) return '仪表盘越出面板右边缘（' + String(Math.round(dashRect.right - panelRect.right)) + 'px）'
+        if (dashRect.left < panelRect.left - 1) return '仪表盘越出面板左边缘（' + String(Math.round(panelRect.left - dashRect.left)) + 'px）'
+        // Esc 收起
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        await sleep(200)
+        if (q('.tt_statsDash') !== null) return 'Esc 没有收起仪表盘'
+        if (expand.getAttribute('aria-expanded') !== 'false') return '收起后 aria-expanded 应为 false'
+        // 收起后箭头必须转回朝下，tooltip 也要回到「展开」
+        if (iconPath() !== ICON_DOWN) return '收起后箭头没有转回 ▾，实得 ' + iconPath()
+        if (expand.getAttribute('title') !== openLabel) return '收起后 tooltip 没有回到「展开」：' + expand.getAttribute('title')
+        // 再展开，截图停在这里
+        expand.click()
+        await sleep(400)
+        if (q('.tt_statsDash') === null) return '再次展开失败'
+        if (iconPath() !== ICON_UP) return '再次展开后箭头没有转成 ▴，实得 ' + iconPath()
+        return null
+      }
+    },
+    /* 低频字段（2026-10-31）：宿主每 5 拍才带一次 `procs`（SSH 远端 awk 的真实节奏），
+       缺席的帧**不能**把进程卡片打回「暂无进程数据」——那会让卡片每秒翻一次 */
+    async 'stats-sparse'() {
+      window.__PREVIEW_STATS_INTERVAL_MS = 300
+      window.__PREVIEW_STATS_SPARSE = 5
+      await openPanel()
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(700) // 等至少一帧带 procs 的帧进来
+      const expand = q('[data-act=stats-expand]')
+      if (expand === null) {
+        window.__previewAssert = async () => '状态条缺少展开按钮（data-act=stats-expand）'
+        return
+      }
+      expand.click()
+      await sleep(400)
+      /*
+       * 采 4 秒（300ms/帧 ≈ 13 帧，其中只有 2~3 帧带 procs）：每一次采样都必须看到
+       * 进程列表 + 脚注，且「暂无进程数据」是隐藏的。判据按**采样**算而不是按结束态算——
+       * 闪一下再恢复，结束态的断言看不出来。
+       */
+      const samples = []
+      const timer = setInterval(() => {
+        const card = q('[data-card=procs]')
+        if (card === null) {
+          samples.push({ rows: 0, emptyShown: true, footShown: false })
+          return
+        }
+        const empty = card.querySelector('.tt_statsDashEmpty')
+        const foot = card.querySelector('.tt_statsDashFoot')
+        samples.push({
+          rows: card.querySelectorAll('.tt_statsDashProc').length,
+          emptyShown: empty !== null && empty.hidden !== true,
+          footShown: foot !== null && foot.hidden !== true,
+        })
+      }, 100)
+      await sleep(4000)
+      clearInterval(timer)
+      window.__previewAssert = async () => {
+        const blank = samples.filter((s) => s.rows === 0 || s.emptyShown || !s.footShown)
+        if (blank.length > 0) {
+          return '进程卡片在 ' + String(blank.length) + '/' + String(samples.length) + ' 次采样里被打回「暂无进程数据」（低频字段缺席被当成没数据）'
+        }
+        return null
+      }
+    },
     /* 坏数据兜底：宿主发来的 stats 帧是垃圾（字符串/数组/null/越界值/缺字段），
        面板必须既不抛异常也不出现非法渲染——最多整条隐藏 */
     async 'stats-broken'() {
@@ -1819,6 +2217,59 @@
         const text = pop.textContent ?? ''
         if (!text.includes('暂无启用') && !text.includes('No enabled tunnels')) return '弹层没有说明「该连接暂无启用的隧道」：' + text
         if (!/插件配置|设置|Settings/.test(text)) return '弹层没有告诉用户去哪配置'
+        return null
+      }
+    },
+    /*
+     * 连接详情（2026-10-31）：连接栏左侧的 `user@host:port` 是一枚可点胶囊，点开一张只读弹层；
+     * 「⋯」里还有两个复制项（都不含凭据）。
+     *
+     * 这条守卫是 2026-11-01 补的：JS / 文案 / README 都在，唯独**缺了弹层的 CSS**——
+     * 于是弹层被 append 到 body 末尾、离视口几千像素，用户看到的是「点了没反应」。
+     * 所以判据落在几何上（真的在视口里、真的有宽度、真的是 fixed），不是「节点存在」。
+     */
+    async 'conn-detail'() {
+      await openPanel()
+      await clickAdd()
+      await clickMenuItem('bastion-jump') // 配了跳板机 + 代理命令 + 密钥认证的那条
+      await waitFor(() => tabs().length === 2)
+      await sleep(500)
+      const target = q('.tt_connTarget')
+      if (target === null) throw new Error('连接栏缺少地址胶囊')
+      target.click()
+      await waitFor(() => q('.tt_connPop'))
+      await sleep(250)
+      window.__previewAssert = async () => {
+        const pop = q('.tt_connPop')
+        if (pop === null) return '点地址后没有出现连接详情弹层'
+        const rect = pop.getBoundingClientRect()
+        if (rect.width < 200) return '详情弹层没有宽度（缺样式）：' + String(Math.round(rect.width))
+        if (getComputedStyle(pop).position !== 'fixed') return '详情弹层不是悬浮层（position=' + getComputedStyle(pop).position + '）'
+        if (rect.bottom <= 0 || rect.top >= window.innerHeight) return '详情弹层跑到视口外（缺定位样式）：top=' + String(Math.round(rect.top))
+        const text = pop.textContent ?? ''
+        for (const want of ['连接详情', '目标', '跳板机', '代理命令', '认证方式']) {
+          if (!text.includes(want)) return '详情弹层缺少「' + want + '」：' + text
+        }
+        if (!text.includes('bastion.corp')) return '详情弹层没写跳板机地址：' + text
+        // 再点一次收起（同一枚按钮兼作开关）
+        target.click()
+        await sleep(200)
+        if (q('.tt_connPop') !== null) return '再点地址没有收起详情弹层'
+        // 「⋯」里的两个复制项
+        const more = qa('.tt_connAct').find((el) => says(el, '更多', 'More'))
+        if (more === undefined) return '连接栏缺少「⋯ 更多」入口'
+        more.click()
+        await waitFor(() => q('.tt_connMore'))
+        await sleep(200)
+        const items = qa('.tt_connMore .tt_addMenuItem').map((el) => el.textContent || '')
+        if (!items.some((item) => item.includes('复制连接信息'))) return '「⋯」里没有「复制连接信息」：' + items.join(' / ')
+        if (!items.some((item) => item.includes('复制 SSH 命令'))) return '「⋯」里没有「复制 SSH 命令」：' + items.join(' / ')
+        // 截图停在弹层打开的样子
+        more.click()
+        await sleep(150)
+        target.click()
+        await waitFor(() => q('.tt_connPop'))
+        await sleep(300)
         return null
       }
     },

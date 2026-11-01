@@ -407,6 +407,31 @@
         this._statsSid = sid
         this._statsTick = 0
         if (this._statsTimer) clearInterval(this._statsTimer)
+        // 每核：16 个核各有相位，截图里能看出「有的忙、有的闲」
+        const makeCores = (tick) => {
+          const list = []
+          for (let i = 0; i < 16; i += 1) {
+            const wave = Math.abs(Math.sin((tick + i * 2.7) / 3.4))
+            list.push(Math.max(1, Math.round(8 + wave * 84)))
+          }
+          return list
+        }
+        // 路径写成 macOS 的形状：真实 `ps comm` 给的是完整可执行文件路径，
+        // 卡片要显示文件名（夹具里也这么写，预览才验得到截断逻辑）
+        /*
+         * 两条**同前缀、只有尾部不同**的超长名字：真实 macOS 上一串
+         * `Framework Helper (Renderer) / (GPU) / (Plugin)` 就是这样，纯尾部省略号会把它们
+         * 截成同一个 `Framew…`，而首尾截断要保住能区分它们的 `(GPU)` / `(Renderer)`。
+         * 名字刻意给到 60+ 字符，保证在 720px 卡片里一定放不下（预览才验得到截断）。
+         */
+        const makeProcs = (tick) => ([
+          { pid: 431, cmd: '/opt/homebrew/bin/node', cpuPct: Math.round((12.4 + (tick % 4) * 1.7) * 10) / 10, memPct: 4.2 },
+          { pid: 88, cmd: '/usr/local/bin/dockerd', cpuPct: Math.round((5.1 + (tick % 3) * 0.9) * 10) / 10, memPct: 2.8 },
+          { pid: 1022, cmd: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', cpuPct: 3.4, memPct: 7.8 },
+          { pid: 76, cmd: '/opt/homebrew/opt/postgresql@16/bin/postgres', cpuPct: 0.9, memPct: 6.4 },
+          { pid: 2201, cmd: '/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent (Renderer)', cpuPct: 2.2, memPct: 3.1 },
+          { pid: 2202, cmd: '/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent (GPU)', cpuPct: 1.4, memPct: 1.9 },
+        ])
         const push = () => {
           this._statsTick += 1
           const tick = this._statsTick
@@ -416,8 +441,25 @@
             this._deliver({ t: 'stats', sid, stats: junk[(tick - 1) % junk.length] })
             return
           }
-          this._deliver({ t: 'stats', sid, stats: {
-            cpuPct: 18 + (tick % 5) * 9,
+          /*
+           * 低频字段（2026-10-31）：真实宿主**不是每帧都带** `cpuCores` / `procs`——
+           * SSH 远端的常驻 awk 把 `ps` 压到 5 拍一次（`tick % 5 == 1`），本地 `os.cpus()`
+           * 的差值窗口也是第二帧才有。`__PREVIEW_STATS_SPARSE = 5` 复现「每 5 帧才带一次
+           * procs」，用来验「缺席的帧不能把进程卡片打回『暂无进程数据』」（用户报的
+           * 「一闪一闪」）。
+           */
+          const sparse = Number(window.__PREVIEW_STATS_SPARSE) || 0
+          const withProcs = sparse <= 1 || tick % sparse === 1
+          /*
+           * 常态 18~54%，每 9 帧来一次尖峰（78% → 橙，96% → 红）：截图里能看出
+           * 「超过阈值换色」这条档位逻辑真的在跑，而不是只有一条绿线。
+           * `__PREVIEW_STATS_LOAD` 把总量钉死在一个值上（stats-alert 场景要验 80% 那条
+           * 虚线两侧的换色 + 跌回绿，用自动上下的曲线断言不了时序）。
+           */
+          const forcedLoad = Number(window.__PREVIEW_STATS_LOAD)
+          const cpuPct = Number.isFinite(forcedLoad) ? forcedLoad : tick % 9 === 0 ? 96 : tick % 5 === 0 ? 78 : 18 + (tick % 5) * 9
+          const frame = {
+            cpuPct,
             cores: 16,
             memUsed: Math.round(53.3e9 + (tick % 3) * 0.9e9),
             memTotal: 64e9,
@@ -427,10 +469,14 @@
             diskPct: 59.3,
             uptimeSec: 2 * 604800 + 4 * 86400 + 7 * 3600 + 16 * 60 + tick,
             tcpConns: 570 + (tick % 7),
-            rxRate: 92.3 * 1024,
-            txRate: 93.1 * 1024,
+            rxRate: (58 + (tick % 7) * 17.5) * 1024,
+            txRate: (34 + (tick % 5) * 11.5) * 1024,
             // tempC 缺席：走「CPU温度 无」的降级渲染（与 macOS 本机一致）
-          } })
+            // 明细仪表盘：每核 + Top 进程（宿主真实采集是可选字段，这里给 16 核的形状）
+            cpuCores: makeCores(tick),
+          }
+          if (withProcs) frame.procs = makeProcs(tick)
+          this._deliver({ t: 'stats', sid, stats: frame })
         }
         push()
         // 推送间隔可调（stats-slow 场景用 4s 复现「宿主采样慢」：D50 里那台 macOS

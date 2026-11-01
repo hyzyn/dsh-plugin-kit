@@ -83,6 +83,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
 import { formatJumpShorthand, parseJumpShorthand } from './jump-field.js'
+import { connCopyText, connDetailRows, jumpLabelOf, resolveConnSpec, sshCommandOf } from './conn-info.js'
 import { checkedForBookName, nameForBookChecked } from './save-book.js'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
 import { deriveWsUrl } from './ws-url.js'
@@ -98,7 +99,7 @@ import { planResume } from './download-resume.js'
 import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { SEARCH_CLOSED_DISPLAY, nextSearchOpen, searchDisplayFor } from './search-state.js'
-import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
+import { PROC_SORT_DEFAULT, STATS_WARN_LIMIT, chartCeiling, coresLevel, formatBytes, formatRate, hasUsableStats, mergeOptionalStats, netScaleCeiling, nextProcSort, nextStatsStyle, procRows, sparklineArea, sparklinePath, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel, statsNum, statsRateCompact, truncateMiddle } from './stats-bar.js'
 import { TERMINAL_LOOK_DEFAULTS, readTerminalLook, terminalFontFamilyValue, terminalLookChanged, terminalLookDrift } from './terminal-look.js'
 
 /* ================================ CSS ================================ */
@@ -147,7 +148,29 @@ const I18N_ZH = {
   'btn.tunnels': '隧道 {count}',
   'btn.tunnelsTitle': '查看该连接的端口转发隧道',
   'btn.more': '更多',
-  'btn.moreTitle': '更多操作（端口转发…）',
+  'btn.moreTitle': '更多操作（端口转发 / 复制连接信息…）',
+  'btn.copyConn': '复制连接信息',
+  'btn.copyConnTitle': '把目标 / 跳板机 / 认证方式复制到剪贴板（不含任何凭据）',
+  'btn.copySshCommand': '复制 SSH 命令',
+  'btn.copySshCommandTitle': '复制一条可直接执行的 ssh 命令（含端口 / 跳板机 / 代理命令，不含凭据）',
+  'msg.connCopied': '已复制连接信息',
+  'connDetail.title': '连接详情',
+  'connDetail.clickHint': '点击查看连接详情（目标 / 跳板机 / 认证 / 持久化）',
+  'connDetail.target': '目标',
+  'connDetail.book': '连接簿条目',
+  'connDetail.auth': '认证方式',
+  'connDetail.jump': '跳板机',
+  'connDetail.proxy': '代理命令',
+  'connDetail.persist': '持久化',
+  'connDetail.persistTmux': 'tmux 已托管 — 断线 / 宿主重启后按名接回现场',
+  'connDetail.persistPlain': '请求了持久会话，但 tmux 不可用 — 当前为普通会话',
+  'connDetail.status': '最近状态',
+  'connDetail.hint': '数据来自这条会话的连接规格；要改连接请到 设置 → 插件配置 → 终端面板',
+  'connDetail.authKey': '密钥',
+  'connDetail.authPassword': '密码',
+  'connDetail.authAgent': 'SSH Agent',
+  'connDetail.jumpBadge': '跳板机',
+  'connDetail.jumpBadgeTitle': '经跳板机 {label} 连接',
   'btn.reopenSession': '重新打开会话',
   'status.exited': '会话已退出',
   'status.ended': '会话已结束',
@@ -422,7 +445,7 @@ const I18N_ZH = {
   'msg.tunnelUpdated': '隧道「{name}」已更新',
   'error.nameHostUserRequired': '名称、主机、用户名必填',
   'msg.hostEdited': '已修改条目「{name}」— 随「保存」写入配置',
-  'error.probeFailed': '❌ 连接失败：{error}',
+  'error.probeFailed': '❌ 连接失败：{detail}',
   'error.hostKeyDeleteFailed': '删除主机密钥记录失败',
   'msg.hostKeyDeleted': '已删除主机密钥记录（下次连接重新记录指纹）',
   'error.sshConfigReadFailed': '读取 ~/.ssh/config 失败',
@@ -583,6 +606,32 @@ const I18N_ZH = {
   'meta.uptime': '在线',
   'meta.temp': 'CPU温度',
   'meta.net': '网络',
+  'stats.fullTitle': '状态条：完整模式（点击切到极简）',
+  'stats.minimalTitle': '状态条：极简模式（点击隐藏）',
+  'stats.offTitle': '状态条：已隐藏（点击恢复完整）',
+  'statsDash.open': '资源明细（展开悬浮仪表盘）',
+  'statsDash.close': '收起资源明细',
+  'statsDash.title': '资源明细',
+  'statsDash.cores': 'CPU',
+  'statsDash.net': '网络 I/O',
+  'statsDash.procs': '进程',
+  'statsDash.lastMin': '近 1 分钟',
+  'statsDash.colCpu': 'CPU',
+  'statsDash.colMem': '内存',
+  'statsDash.normal': '正常',
+  'statsDash.busy': '偏高',
+  'statsDash.critical': '过载',
+  'statsDash.noCores': '暂无每核数据',
+  'statsDash.noProcs': '暂无进程数据',
+  'statsDash.coresFoot': '{cores} 核 · 平均 {pct}%',
+  'statsDash.netFoot': '↓ {rx} · ↑ {tx} · 峰值 ↓ {peak}',
+  'statsDash.netNone': '暂无速率数据',
+  'statsDash.procsFoot': '按{key} {dir} · 5 秒刷新',
+  'statsDash.sortDesc': '降序',
+  'statsDash.sortAsc': '升序',
+  'statsDash.coreTip': '第 {index} 核 {pct}%',
+  'statsDash.noCoresHint': '宿主还没上报每核占用：多半是宿主进程仍是旧版本（需重启），或该远端平台不提供每核数据',
+  'statsDash.noProcsHint': '宿主还没上报进程列表：多半是宿主进程仍是旧版本（需重启），或该远端平台不支持 ps',
   'error.tunnelNoBook': '请先在连接簿里添加 SSH 条目',
   'error.tunnelRemotePortRequired': '远程监听端口与本地目标端口必填（1~65535）',
   'error.tunnelLocalRequired': '本地端口、远程主机、远程端口必填',
@@ -612,7 +661,29 @@ const I18N_EN = {
   'btn.tunnels': 'Tunnels {count}',
   'btn.tunnelsTitle': 'View the port-forwarding tunnels of this connection',
   'btn.more': 'More',
-  'btn.moreTitle': 'More actions (port forwarding…)',
+  'btn.moreTitle': 'More actions (port forwarding, copy connection info…)',
+  'btn.copyConn': 'Copy connection info',
+  'btn.copyConnTitle': 'Copy the target / jump host / auth method to the clipboard (no credentials)',
+  'btn.copySshCommand': 'Copy ssh command',
+  'btn.copySshCommandTitle': 'Copy a ready-to-run ssh command (port / jump host / ProxyCommand; no credentials)',
+  'msg.connCopied': 'Connection info copied',
+  'connDetail.title': 'Connection details',
+  'connDetail.clickHint': 'Click to view connection details (target / jump host / auth / persistence)',
+  'connDetail.target': 'Target',
+  'connDetail.book': 'Host book entry',
+  'connDetail.auth': 'Authentication',
+  'connDetail.jump': 'Jump host',
+  'connDetail.proxy': 'Proxy command',
+  'connDetail.persist': 'Persistence',
+  'connDetail.persistTmux': 'Hosted by tmux — reattached by name after a disconnect or host restart',
+  'connDetail.persistPlain': 'A persistent session was requested but tmux is unavailable — this is a plain session',
+  'connDetail.status': 'Last status',
+  'connDetail.hint': 'Read from this session’s connection spec; edit the connection in Settings → Plugins → Terminal panel',
+  'connDetail.authKey': 'Key',
+  'connDetail.authPassword': 'Password',
+  'connDetail.authAgent': 'SSH Agent',
+  'connDetail.jumpBadge': 'Jump',
+  'connDetail.jumpBadgeTitle': 'Connected through jump host {label}',
   'btn.reopenSession': 'Reopen session',
   'status.exited': 'Session exited',
   'status.ended': 'Session ended',
@@ -887,7 +958,7 @@ const I18N_EN = {
   'msg.tunnelUpdated': 'Tunnel “{name}” updated',
   'error.nameHostUserRequired': 'Name, host, and username are required',
   'msg.hostEdited': 'Entry “{name}” updated — written to the config on “Save”',
-  'error.probeFailed': '❌ Connection failed: {error}',
+  'error.probeFailed': '❌ Connection failed: {detail}',
   'error.hostKeyDeleteFailed': 'Failed to delete the host key record',
   'msg.hostKeyDeleted': 'Host key record deleted (the fingerprint is recorded again on the next connection)',
   'error.sshConfigReadFailed': 'Failed to read ~/.ssh/config',
@@ -1048,6 +1119,32 @@ const I18N_EN = {
   'meta.uptime': 'Uptime',
   'meta.temp': 'CPU temp',
   'meta.net': 'Network',
+  'stats.fullTitle': 'Status bar: full mode (click for minimal)',
+  'stats.minimalTitle': 'Status bar: minimal mode (click to hide)',
+  'stats.offTitle': 'Status bar: hidden (click to restore full)',
+  'statsDash.open': 'Resource details (floating dashboard)',
+  'statsDash.close': 'Hide resource details',
+  'statsDash.title': 'Resource details',
+  'statsDash.cores': 'CPU',
+  'statsDash.net': 'Network I/O',
+  'statsDash.procs': 'Processes',
+  'statsDash.lastMin': 'Last minute',
+  'statsDash.colCpu': 'CPU',
+  'statsDash.colMem': 'MEM',
+  'statsDash.normal': 'Normal',
+  'statsDash.busy': 'Busy',
+  'statsDash.critical': 'Critical',
+  'statsDash.noCores': 'No per-core data yet',
+  'statsDash.noProcs': 'No process data yet',
+  'statsDash.coresFoot': '{cores} cores · avg {pct}%',
+  'statsDash.netFoot': '↓ {rx} · ↑ {tx} · peak ↓ {peak}',
+  'statsDash.netNone': 'No rate data yet',
+  'statsDash.procsFoot': 'Sorted by {key} {dir} · every 5s',
+  'statsDash.sortDesc': 'desc',
+  'statsDash.sortAsc': 'asc',
+  'statsDash.coreTip': 'Core {index} {pct}%',
+  'statsDash.noCoresHint': 'The host has not reported per-core usage yet — usually an older host process (restart it), or a remote platform without per-core data',
+  'statsDash.noProcsHint': 'The host has not reported processes yet — usually an older host process (restart it), or a remote platform without ps',
   'error.tunnelNoBook': 'Add an SSH entry to the host book first',
   'error.tunnelRemotePortRequired': 'A remote listen port and a local target port are required (1–65535)',
   'error.tunnelLocalRequired': 'Local port, remote host, and remote port are required',
@@ -1249,11 +1346,29 @@ function newSid() {
 }
 
 let styleEl
+/** 本包两条样式表拼成的**一份**文本（内容不变，按需算一次）。 */
+let styleText = null
+function ttyStyleText() {
+  if (styleText === null) styleText = ttyCss + '\n' + xtermCss
+  return styleText
+}
 function ensureStyle() {
-  if (document.getElementById('dsh-tty-style')) return
+  const existing = document.getElementById('dsh-tty-style')
+  if (existing !== null) {
+    /*
+     * 样式表已经在：**内容也要对齐**。客户端半体重建后，宿主（client-hmr）会把新 bundle
+     * 推到页面并重新挂载插件，而旧样式表一直留在 `<head>` 里——只判「id 存在就跳过」时，
+     * 改了 CSS 的版本在**不刷新页面**的情况下仍按旧样式排版（2026-10-31 实测：新 JS 生效、
+     * 旧的 `height:100%` 还压着仪表盘主体，脚注照样被压扁）。更新 textContent 是幂等的，
+     * 内容没变时浏览器重新解析也只是一次等价的替换。
+     */
+    if (existing.textContent !== ttyStyleText()) existing.textContent = ttyStyleText()
+    styleEl = existing
+    return
+  }
   styleEl = document.createElement('style')
   styleEl.id = 'dsh-tty-style'
-  styleEl.textContent = ttyCss + '\n' + xtermCss
+  styleEl.textContent = ttyStyleText()
   document.head.appendChild(styleEl)
 }
 
@@ -1267,6 +1382,28 @@ const ICON_SEARCH =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>'
 const ICON_CLEAR =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5h11"/><path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/><path d="M4.5 4.5l.7 8.1a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8.1"/></svg>'
+// 状态条「完整 / 极简」切换（12px）：极简 = 一条趋势线，完整 = 四根竖条
+const ICON_STATS_MINIMAL =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 11.2l3.2-4.4 3 2.2L14 4.2"/></svg>'
+const ICON_STATS_FULL =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 12.4V7.6"/><path d="M6.4 12.4V4.6"/><path d="M9.8 12.4V9.2"/><path d="M13.2 12.4V6"/></svg>'
+/*
+ * 明细仪表盘的展开/收起箭头（在状态条最右端）。**两个图标**，随展开态互换：
+ *
+ * - 收起态 **▾**：箭头指着「下面马上要出现的东西」——点它，卡片向下展开；
+ * - 展开态 **▴**：指着「卡片会收回哪里」——点它，卡片收回去。
+ *
+ * 这是 chevron 的常规方向（也是用户点名要「有变化」的那件事）。只靠 `aria-expanded`
+ * 的话，看得见的人面对一颗形状不变的箭头，会以为「点了没反应」（面板其实已经开了）。
+ * 两条路径的三点参数完全一致（同一套 16 网格 + 1.6 线宽），只差方向。
+ */
+const ICON_STATS_EXPAND =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>'
+const ICON_STATS_COLLAPSE =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>'
+// 「隐藏」态：四根竖条加一道斜杠
+const ICON_STATS_OFF =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 12.4V7.6"/><path d="M6.4 12.4V4.6"/><path d="M9.8 12.4V9.2"/><path d="M13.2 12.4V6"/><path d="M3.2 3.2l9.6 9.6"/></svg>'
 // 连接栏扩展按钮图标（14px）：重新连接 / SFTP / 端口转发隧道
 const ICON_RECONNECT =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.7H11"/></svg>'
@@ -1383,6 +1520,8 @@ let connbarEl = null
 let connDotEl = null
 let connTargetEl = null
 let connBadgeEl = null
+/** 跳板机徽标：只在 spec.jump 存在时显示（连的是哪台 bastion 不该靠记）。 */
+let connJumpBadgeEl = null
 let connActionsEl = null
 let bodyEl = null
 /** 终端区 + 右侧挂载位的横向容器（openModal 建立；ttyPanel.mountPane 往这里插 pane）。 */
@@ -1486,6 +1625,68 @@ let statsStaleTimer = null
 let statsItemEls = null
 /** 已渲染的数据签名（sid + 帧时间）：同一条数据不重复渲染（1s 陈旧检测也走 applyStatsBar）。 */
 let statsRenderKey = null
+/** 状态条滚动容器（完整 / 极简两种呈现共用）与两个条目容器。 */
+let statsScrollEl = null
+let statsFullEl = null
+let statsMinEl = null
+/** 面板头部（搜索 / 清屏旁边）的「完整 / 极简 / 隐藏」三档循环按钮。 */
+let statsToggleEl = null
+let statsToggleMode = null
+/** 极简模式的三个条目引用（CPU / 内存 / 网络）。 */
+let statsMinRefs = null
+/**
+ * 状态条的呈现（`full` / `minimal` / `off`）：存在 **localStorage**（浏览器本地偏好），
+ * 不进 profile 配置——它是即时显示偏好，不该为一个显示形态改配置、也不该跟机器走。
+ * `off` 会同时停掉当前标签的 stats 订阅（宿主采集器与远端 channel 一并停）。
+ */
+const STATS_STYLE_KEY = 'dsh-tty:stats-style'
+let statsStyleCache = readStatsStyle()
+/**
+ * 极简模式的趋势线历史：每个会话最近 60 个采样（1s/帧 ≈ 一分钟）。
+ *
+ * 为什么在客户端留：宿主每次只发当前帧（没有历史接口），趋势线只能自己攒。会话退出 /
+ * 标签关闭即清；面板关闭整表清空（下次打开从零开始，线从左往右长）。
+ */
+const STATS_HISTORY_LEN = 60
+const statsHistory = new Map()
+/** 极简条 SVG 渐变 id 的序号：同一文档里多个面板也不能撞 id。 */
+let statsSparkGradientSeq = 0
+/**
+ * 明细仪表盘（2026-10-31）：状态条最右端那颗「▴」展开的悬浮卡片。
+ *
+ * 三个卡片各管一摊：CPU 每核柱状 / 网络双向曲线 / Top 进程。数据全部来自
+ * **已经在推的 stats 帧**（`cpuCores` / `procs` 是帧的可选字段），客户端不额外发起请求；
+ * 趋势用本地攒的历史（与极简条同一份 `statsHistory`）。
+ */
+let statsExpandEl = null
+let statsDashEl = null
+let statsDashDismiss = null
+/** 卡片里的可变节点引用（只建一次，每帧改属性/文本，不重建 DOM）。 */
+let statsDashRefs = null
+/** 上一次画图表用的签名：同一帧不重复重算路径（1s 陈旧检测也会走到这里）。 */
+let statsDashKey = null
+/**
+ * 进程卡片的排序状态（点列头切换，见 `nextProcSort`）。只存在内存里、不持久化：
+ * 这是「临时看一眼」的浮层，用户重新打开时回到 CPU 降序最符合直觉。
+ */
+let statsDashSort = { ...PROC_SORT_DEFAULT }
+
+function readStatsStyle() {
+  try {
+    const stored = globalThis.localStorage?.getItem(STATS_STYLE_KEY)
+    return stored === 'minimal' || stored === 'off' ? stored : 'full'
+  } catch {
+    return 'full' // 隐私模式 / 存储被拒：退回完整模式，不抛
+  }
+}
+
+function writeStatsStyle(style) {
+  try {
+    globalThis.localStorage?.setItem(STATS_STYLE_KEY, style)
+  } catch {
+    /* 存不下就只生效这一次：显示形态不是关键数据，不打扰用户 */
+  }
+}
 /**
  * 连接栏按钮注册表（0.13.0）：内置动作（重新打开 / SFTP / 隧道）与第三方插件
  * 经客户端服务 `ttyConnbar` 注册的按钮走**同一条通道**，显示顺序 = 注册顺序。
@@ -1515,21 +1716,11 @@ registerConnbarAction(({ bookName, addAction }) => {
   if (count > 0) {
     // 该连接有启用隧道：常驻按钮（带数量），一眼可见、可点开看实时状态
     addAction(ICON_TUNNEL, t('btn.tunnels', { count }), t('btn.tunnelsTitle'), (event) => openTunnelPopover(event.currentTarget, bookName))
-    return
   }
   /*
-   * 该连接没有启用隧道：收进「⋯」更多，而不是常驻一个「隧道 0」。
-   *
-   * 为什么不常驻：连接栏紧挨着标签条，宽度是先被标签吃掉的（D24 那类"窄屏挤没"的教训），
-   * 而绝大多数连接确实没配隧道——常驻一个 0 是纯噪音。
-   * 为什么仍要留入口：此前**完全不可见**，用户只能自己摸到设置卡片才知道有这功能；
-   * 「⋯」是低频通道，既有发现路径、又不占常驻宽度。
-   *
-   * 前提：隧道必须引用连接簿条目，所以只有条目式连接（bookName 非空）才有这个入口；
-   * 「新建连接」对话框里未保存的临时连接配不了隧道（默认走第一个条目，语义不对）。
+   * 「⋯」不在这里注册：它是动作区的溢出入口，恒排最后（见 renderConnbar 末尾）。放进注册通道
+   * 会按注册顺序落在第三方动作（如 dsh-docker 的「容器」）左边，而那正是它不该在的位置。
    */
-  if (bookName === '') return
-  addAction(ICON_MORE, t('btn.more'), t('btn.moreTitle'), (event) => openConnbarMoreMenu(event.currentTarget, bookName))
 })
 
 function setStatus(text, state) {
@@ -1615,8 +1806,76 @@ function sendFrame(msg) {
  * 这里的固定槽位（`min-width: Nch`，值右对齐）配上「只写变化过的文本」，
  * 让「CPU 5% → 12%」「TCP 36 → 1024」都不再改变任何条目的几何。
  */
+/**
+ * 头部按钮的点击：**完整 → 极简 → 隐藏 → 完整**。
+ *
+ * 隐藏是本地偏好（localStorage），同时停掉当前标签的 stats 订阅——宿主采集器与远端
+ * exec channel 一并停，不是只把条藏起来还在后台采。再点回完整/极简会重新订阅。
+ */
+function onStatsToggleClick() {
+  statsStyleCache = nextStatsStyle(statsStyleCache)
+  writeStatsStyle(statsStyleCache)
+  // 切模式时强制重画一次：`applyStatsBar` 的数据签名没变（同一帧），不重置就只换了显隐、
+  // 极简条会停在上一次刷新（<1s）的值上
+  statsRenderKey = null
+  applyStatsBar()
+  // 「显示 ↔ 隐藏」改变订阅；「完整 ↔ 极简」改变条高（24 ↔ 36px）——两件事都得跟
+  syncStatsSubscription()
+  refitActiveTab()
+}
+
+/**
+ * 保证状态条外壳（滚动容器 + 切换按钮）在：面板刚建时模板里有；隐藏时为了省 DOM
+ * 会被整块清空，下次显示要重建——**重建的是外壳**，条目容器由 buildStatsBarDom 补。
+ */
+function ensureStatsBarShell() {
+  if (statsBarEl === null) return false
+  if (statsScrollEl !== null && statsBarEl.contains(statsScrollEl)) return true
+  statsBarEl.textContent = ''
+  statsScrollEl = document.createElement('div')
+  statsScrollEl.className = 'tt_statsScroll'
+  statsBarEl.appendChild(statsScrollEl)
+  /*
+   * 展开按钮**不随条目滚动**：它挂在滚动区外面、条的最右端。放里面会被长服务器名
+   * 一类的条目挤出可视区（用户就再也点不到了）。
+   */
+  statsExpandEl = document.createElement('button')
+  statsExpandEl.type = 'button'
+  statsExpandEl.className = 'tt_statsExpand'
+  statsExpandEl.dataset.act = 'stats-expand'
+  statsExpandEl.addEventListener('click', onStatsExpandClick)
+  statsBarEl.appendChild(statsExpandEl)
+  /*
+   * 图标 / tooltip / aria 一律走同一个入口：外壳被重建时（隐藏后重新显示）仪表盘可能
+   * 还开着，这时按钮必须画成「收起」而不是回到默认的 ▴ ——否则箭头与实际状态脱节。
+   */
+  applyStatsExpandState(statsDashEl !== null)
+  statsFullEl = null
+  statsMinEl = null
+  statsMinRefs = null
+  return true
+}
+
+/** 条目 DOM 全没了（隐藏 / 兜底清空）之后，所有引用一起作废，避免往游离节点上写。 */
+function forgetStatsDom() {
+  statsScrollEl = null
+  statsFullEl = null
+  statsMinEl = null
+  statsMinRefs = null
+  statsExpandEl = null
+  // 仪表盘挂在 body 上、锚在状态条上：条没了（面板关闭 / 隐藏）它必须跟着收
+  closeStatsDash()
+  discardStatsItems()
+}
+
 function buildStatsBarDom() {
   const refs = []
+  if (!ensureStatsBarShell()) return refs
+  if (statsFullEl === null) {
+    statsFullEl = document.createElement('div')
+    statsFullEl.className = 'tt_statsFull'
+    statsScrollEl.appendChild(statsFullEl)
+  }
   const fragment = document.createDocumentFragment()
   for (const spec of statsItemSpecs(t)) {
     const item = document.createElement('span')
@@ -1627,7 +1886,8 @@ function buildStatsBarDom() {
     item.appendChild(label)
     let meter = null
     let fill = null
-    if (spec.kind === 'pct') {
+    // 有迷你进度条的条目：CPU（纯百分比）与 内存/磁盘（百分比 + 已用/总量合并项）
+    if (spec.kind === 'pct' || spec.kind === 'pctpair') {
       meter = document.createElement('span')
       meter.className = 'tt_statsMeter'
       fill = document.createElement('span')
@@ -1643,8 +1903,775 @@ function buildStatsBarDom() {
     // 首帧必须按实际值设一次，不能想当然套用 spec 里的默认值
     refs.push({ item, value, meter, fill, slot: null })
   }
-  if (statsBarEl !== null) statsBarEl.appendChild(fragment)
+  statsFullEl.appendChild(fragment)
+  buildStatsMinimalDom()
   return refs
+}
+
+/**
+ * 极简模式的 DOM（CPU / 内存 / 网络三项）：小标签 + sparkline + 大数字。
+ *
+ * 结构与完整模式一样**只建一次**：每帧只改 path 的 `d`、值文本与档位属性；
+ * 重建会让趋势线整条闪一下（与 D49 那条「innerHTML 每秒重建」同型）。
+ */
+function buildStatsMinimalDom() {
+  if (statsScrollEl === null || statsMinEl !== null) return
+  statsMinEl = document.createElement('div')
+  statsMinEl.className = 'tt_statsMin'
+  const makeItem = (labelText, kind, options = {}) => {
+    const item = document.createElement('span')
+    item.className = 'tt_statsMinItem'
+    item.dataset.kind = kind
+    const label = document.createElement('span')
+    label.className = 'tt_statsMinLabel'
+    label.textContent = labelText
+    item.appendChild(label)
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    svg.setAttribute('class', 'tt_statsSpark')
+    svg.setAttribute('viewBox', '0 0 100 16')
+    svg.setAttribute('preserveAspectRatio', 'none')
+    svg.setAttribute('aria-hidden', 'true')
+    /*
+     * 填充面用 SVG 渐变（`currentColor` → 透明）：CSS 的 mask/gradient 作用在 SVG 子元素上
+     * 各家引擎支持不一致（实测 Chromium 里 mask-image 被忽略，面积变成一块实色块），
+     * 而 stop-color=currentColor 会取 SVG 自己的 color（由 CSS 按档位给），换主题也跟着走。
+     */
+    const gradientId = 'tt-spark-fade-' + String(++statsSparkGradientSeq)
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+    const gradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient')
+    gradient.setAttribute('id', gradientId)
+    /*
+     * `userSpaceOnUse` + y2=16（= viewBox 高）：渐变锚在**图表高度**上，不锚在路径包围盒上。
+     * 差别在「一条几乎水平的线」上尤其明显：包围盒只有 2~3 个单位高时，objectBoundingBox
+     * 会把 .30 那一档压成一整条实色带（内存 86% 看着就像一根进度条）；锚在行高上，
+     * 填充从线往下逐渐淡出，才读得出「面积」而不是「色块」。
+     */
+    gradient.setAttribute('gradientUnits', 'userSpaceOnUse')
+    gradient.setAttribute('x1', '0')
+    gradient.setAttribute('y1', '0')
+    gradient.setAttribute('x2', '0')
+    gradient.setAttribute('y2', '16')
+    // 中段留一档 .14：CPU/网络常年在半高处，只靠首档会淡到看不见
+    const stops = [['0', '.30'], ['0.55', '.14'], ['1', '0']]
+
+    for (const [offset, opacity] of stops) {
+      const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop')
+      stop.setAttribute('offset', offset)
+      stop.setAttribute('stop-color', 'currentColor')
+      stop.setAttribute('stop-opacity', opacity)
+      gradient.appendChild(stop)
+    }
+    defs.appendChild(gradient)
+    /*
+     * 第二条渐变：**横向**的「时间流向」（左暗右亮），只给折线用。
+     * 只用不透明度阶梯、色相交给 `currentColor`——越线转橙/红时线、面积、光晕一起变色，
+     * 不必再维护第二套色值（与明细仪表盘同一套做法，见 `dashFlowGradient`）。
+     */
+    const flowId = 'tt-spark-flow-' + String(++statsSparkGradientSeq)
+    const flow = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient')
+    flow.setAttribute('id', flowId)
+    flow.setAttribute('gradientUnits', 'userSpaceOnUse')
+    flow.setAttribute('x1', '0')
+    flow.setAttribute('y1', '0')
+    flow.setAttribute('x2', '100')
+    flow.setAttribute('y2', '0')
+    for (const [offset, opacity] of [['0', '.38'], ['0.55', '.78'], ['1', '1']]) {
+      const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop')
+      stop.setAttribute('offset', offset)
+      stop.setAttribute('stop-color', 'currentColor')
+      stop.setAttribute('stop-opacity', opacity)
+      flow.appendChild(stop)
+    }
+    defs.appendChild(flow)
+    svg.appendChild(defs)
+    // 先画填充面、再画折线：面在下面不盖线（极简条的「有体积」主要来自这块面积）
+    const area = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    area.setAttribute('class', 'tt_statsSparkArea')
+    area.setAttribute('fill', 'url(#' + gradientId + ')')
+    svg.appendChild(area)
+    /*
+     * 80% 警戒线：只有 0~100 的两项（CPU / 内存）画——网络那条是字节速率、纵轴随量程走，
+     * 「80%」在它上面没有含义。虚线压得很淡，16px 高的缩略线里它只是「天花板」的暗示。
+     */
+    if (options.limit === true) {
+      const y = String(Number((16 * (1 - STATS_WARN_LIMIT / 100)).toFixed(2)))
+      const limit = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+      limit.setAttribute('class', 'tt_statsSparkLimit')
+      limit.setAttribute('x1', '0')
+      limit.setAttribute('y1', y)
+      limit.setAttribute('x2', '100')
+      limit.setAttribute('y2', y)
+      svg.appendChild(limit)
+    }
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('class', 'tt_statsSparkLine')
+    path.setAttribute('stroke', 'url(#' + flowId + ')')
+    path.setAttribute('vector-effect', 'non-scaling-stroke')
+    svg.appendChild(path)
+    item.appendChild(svg)
+    const value = document.createElement('span')
+    value.className = 'tt_statsMinValue'
+    item.appendChild(value)
+    statsMinEl.appendChild(item)
+    return { item, area, path, value }
+  }
+  const cpu = makeItem('CPU', 'cpu', { limit: true })
+  const mem = makeItem(t('meta.mem'), 'mem', { limit: true })
+  const net = makeItem(t('meta.net'), 'net')
+  // 网络的值是「↓下行 ↑上行」两段，分开着色（下行走强调色、上行走成功色）
+  net.value.textContent = ''
+  const down = document.createElement('span')
+  down.className = 'tt_statsMinDown'
+  const up = document.createElement('span')
+  up.className = 'tt_statsMinUp'
+  // 两个方向都没有数据时（macOS 本地 / 采集失败）显示「无」，而不是光秃秃的「↓ ↑」
+  const none = document.createElement('span')
+  none.className = 'tt_statsMinNone'
+  none.hidden = true
+  net.value.appendChild(down)
+  net.value.appendChild(document.createTextNode(' '))
+  net.value.appendChild(up)
+  net.value.appendChild(none)
+  statsMinRefs = { cpu, mem, net, down, up, none }
+  statsScrollEl.appendChild(statsMinEl)
+}
+
+/** 历史里的一帧（只留趋势线要用的四个字段；`null` = 这一帧没有该数据）。 */
+function pushStatsHistory(sid, stats) {
+  if (typeof sid !== 'string' || sid === '') return
+  const sample = {
+    cpuPct: statsNum(stats, 'cpuPct'),
+    memPct: statsNum(stats, 'memPct'),
+    rxRate: statsNum(stats, 'rxRate'),
+    txRate: statsNum(stats, 'txRate'),
+  }
+  const list = statsHistory.get(sid) ?? []
+  list.push(sample)
+  if (list.length > STATS_HISTORY_LEN) list.splice(0, list.length - STATS_HISTORY_LEN)
+  statsHistory.set(sid, list)
+}
+
+/** 极简条的每帧刷新：三张趋势线 + 三个大数字。路径没变就不写 `d`（避免无谓的重绘）。 */
+function updateStatsMinimal() {
+  if (statsMinRefs === null) return
+  const tab = activeTab()
+  const raw = tab !== undefined ? tab.stats : null
+  const stats = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const history = tab !== undefined ? statsHistory.get(tab.sid) ?? [] : []
+  const pctText = (value) => (value === null ? t('list.none') : Math.round(value) + '%')
+  const cpu = statsNum(stats, 'cpuPct')
+  const mem = statsNum(stats, 'memPct')
+  const setPath = (ref, values, options) => {
+    const line = sparklinePath(values, 100, 16, options)
+    const area = sparklineArea(values, 100, 16, options)
+    if (ref.path.getAttribute('d') !== line) ref.path.setAttribute('d', line)
+    if (ref.area.getAttribute('d') !== area) ref.area.setAttribute('d', area)
+  }
+  setPath(statsMinRefs.cpu, history.map((sample) => sample.cpuPct), { min: 0, max: 100 })
+  setPath(statsMinRefs.mem, history.map((sample) => sample.memPct), { min: 0, max: 100 })
+  const netSeries = history.map((sample) => {
+    const values = [sample.rxRate, sample.txRate].filter((value) => value !== null)
+    return values.length === 0 ? null : Math.max(...values)
+  })
+  const peak = netSeries.reduce((max, value) => (value !== null && value > max ? value : max), 0)
+  setPath(statsMinRefs.net, netSeries, { min: 0, max: netScaleCeiling(peak), logarithmic: true })
+  const setText = (ref, text) => {
+    if (ref.value.textContent !== text) ref.value.textContent = text
+  }
+  setText(statsMinRefs.cpu, pctText(cpu))
+  setText(statsMinRefs.mem, pctText(mem))
+  // 档位只影响配色（内存 82% 黄、≥90 红；CPU 同理，与完整模式的阈值同一份 statsLevel）
+  const level = (value) => statsLevel(value)
+  const setLevel = (ref, value) => {
+    const next = level(value)
+    if (next === '') {
+      if (ref.item.hasAttribute('data-level')) ref.item.removeAttribute('data-level')
+    } else if (ref.item.getAttribute('data-level') !== next) {
+      ref.item.setAttribute('data-level', next)
+    }
+  }
+  setLevel(statsMinRefs.cpu, cpu)
+  setLevel(statsMinRefs.mem, mem)
+  const rx = statsNum(stats, 'rxRate')
+  const tx = statsNum(stats, 'txRate')
+  const hasRates = rx !== null || tx !== null
+  statsMinRefs.down.hidden = !hasRates
+  statsMinRefs.up.hidden = !hasRates
+  statsMinRefs.none.hidden = hasRates
+  if (hasRates) {
+    if (statsMinRefs.down.textContent !== '↓' + statsRateCompact(rx)) statsMinRefs.down.textContent = '↓' + statsRateCompact(rx)
+    if (statsMinRefs.up.textContent !== '↑' + statsRateCompact(tx)) statsMinRefs.up.textContent = '↑' + statsRateCompact(tx)
+  } else {
+    if (statsMinRefs.none.textContent !== t('list.none')) statsMinRefs.none.textContent = t('list.none')
+  }
+}
+
+/* ---------------- 明细仪表盘（悬浮卡片，2026-10-31） ---------------- */
+
+const SVG_NS = 'http://www.w3.org/2000/svg'
+/** 明细图（网络）的 viewBox：宽度按卡片等比拉伸，高度固定 64。 */
+const DASH_CHART_W = 240
+const DASH_CHART_H = 64
+
+function svgEl(tag, className, attrs) {
+  const node = document.createElementNS(SVG_NS, tag)
+  if (className !== undefined && className !== '') node.setAttribute('class', className)
+  for (const key of Object.keys(attrs ?? {})) node.setAttribute(key, attrs[key])
+  return node
+}
+
+/** 状态条最右端那颗 ▴：展开 / 收起明细仪表盘。 */
+function onStatsExpandClick() {
+  if (statsDashEl !== null) closeStatsDash()
+  else openStatsDash()
+}
+
+/**
+ * 展开按钮的「三件套」跟着状态走：箭头方向、tooltip、`aria-label`（外加 `aria-expanded`）。
+ *
+ * 图标不翻方向是用户实际提的第二个问题（原话「展开/折叠面板图标应有变化 ^ 和倒 ^」）：
+ * 收起态与展开态画同一个 ▴，看得见的人只能靠「面板开没开」猜这颗按钮现在会做什么。
+ * 箭头在**收起态朝上、展开态朝下**——与「点它把下面的卡片翻上来 / 收回去」的方向一致。
+ *
+ * `innerHTML` 只在状态真的翻转时才重写（其余调用点每帧都可能经过这里，无谓的
+ * 重写会把按钮里的 SVG 节点反复建删，也会打断焦点环）。
+ */
+function applyStatsExpandState(expanded) {
+  if (statsExpandEl === null) return
+  const state = expanded ? 'open' : 'closed'
+  statsExpandEl.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+  // 两个键都写成字面量：i18n 闸门静态扫不到变量拼出来的键
+  const label = expanded ? t('statsDash.close') : t('statsDash.open')
+  if (statsExpandEl.title !== label) statsExpandEl.title = label
+  if (statsExpandEl.getAttribute('aria-label') !== label) statsExpandEl.setAttribute('aria-label', label)
+  if (statsExpandEl.dataset.state !== state) {
+    statsExpandEl.dataset.state = state
+    statsExpandEl.innerHTML = expanded ? ICON_STATS_COLLAPSE : ICON_STATS_EXPAND
+  }
+}
+
+function closeStatsDash() {
+  if (statsDashDismiss !== null) {
+    document.removeEventListener('mousedown', statsDashDismiss, true)
+    statsDashDismiss = null
+  }
+  document.removeEventListener('keydown', onStatsDashKey, true)
+  window.removeEventListener('resize', positionStatsDash, false)
+  if (statsDashEl !== null) {
+    statsDashEl.remove()
+    statsDashEl = null
+  }
+  statsDashRefs = null
+  statsDashKey = null
+  applyStatsExpandState(false)
+}
+
+/**
+ * Esc 收起明细仪表盘。
+ *
+ * 必须走**捕获阶段**：面板级的 Esc 是「最小化面板」（onModalKeydown），冒泡阶段收浮层
+ * 会被它先吃掉——实测按下 Esc，仪表盘确实关了，但面板同时被最小化，再点 ▴ 就点不到了。
+ */
+function onStatsDashKey(event) {
+  if (event.key !== 'Escape' || statsDashEl === null) return
+  event.preventDefault()
+  event.stopPropagation()
+  closeStatsDash()
+}
+
+/**
+ * 贴着状态条下沿定位；右侧对齐（它是从条的最右端展开的）。
+ *
+ * 边界是**面板**而不是视口：面板通常比视口窄，只按 `innerWidth` 夹的话卡片会伸出
+ * 面板右边缘——那截既没有卡片底（背后是应用背景）又压着终端文字，看起来就是
+ * 「文字被盖掉了一块」。所以先按面板宽度收窄，再在面板内右对齐。
+ */
+function positionStatsDash() {
+  if (statsDashEl === null || statsBarEl === null) return
+  const bar = statsBarEl.getBoundingClientRect()
+  const panel = modalEl !== null ? modalEl.getBoundingClientRect() : bar
+  const maxWidth = Math.max(280, Math.min(720, panel.width - 16, window.innerWidth - 24))
+  if (Math.abs(statsDashEl.offsetWidth - maxWidth) > 1) statsDashEl.style.width = String(Math.round(maxWidth)) + 'px'
+  const width = statsDashEl.offsetWidth
+  // 三 / 两 / 一列：窄卡片上固定三列会横向溢出（CSS 侧按 data-cols 切模板）
+  const cols = width >= 600 ? '3' : width >= 400 ? '2' : '1'
+  if (statsDashEl.dataset.cols !== cols) statsDashEl.dataset.cols = cols
+  const minLeft = Math.max(8, panel.left + 8)
+  const maxLeft = Math.min(window.innerWidth - width - 8, panel.right - width - 8)
+  const left = Math.max(minLeft, Math.min(bar.right - width, maxLeft))
+  statsDashEl.style.top = String(Math.round(bar.bottom + 6)) + 'px'
+  statsDashEl.style.left = String(Math.round(left)) + 'px'
+}
+
+function openStatsDash() {
+  if (modalEl === null || statsBarEl === null || statsBarEl.hidden) return
+  closeStatsDash()
+  const pop = document.createElement('div')
+  pop.className = 'tt_statsDash'
+  pop.setAttribute('role', 'dialog')
+  pop.setAttribute('aria-label', t('statsDash.title'))
+  const refs = { cores: null, net: null, procs: null }
+  pop.appendChild(buildCoresCard(refs))
+  pop.appendChild(buildNetCard(refs))
+  pop.appendChild(buildProcsCard(refs))
+  document.body.appendChild(pop)
+  statsDashEl = pop
+  statsDashRefs = refs
+  positionStatsDash()
+  applyStatsExpandState(true)
+  updateStatsDash()
+  const dismiss = (event) => {
+    if (statsDashEl === null) return
+    if (pop.contains(event.target)) return
+    // 点状态条本身不算「点外面」：那颗 ▴ 要能把面板关掉（否则会先关再被自己打开）
+    if (statsBarEl !== null && statsBarEl.contains(event.target)) return
+    closeStatsDash()
+  }
+  statsDashDismiss = dismiss
+  setTimeout(() => document.addEventListener('mousedown', dismiss, true), 0)
+  document.addEventListener('keydown', onStatsDashKey, true)
+  window.addEventListener('resize', positionStatsDash, false)
+}
+
+/** 卡片的公共外壳：标题 + 右上角状态 + 主体 + 脚注。 */
+function buildDashCard(refs, kind, titleText, metaText) {
+  const card = document.createElement('div')
+  card.className = 'tt_statsDashCard'
+  card.dataset.card = kind
+  const head = document.createElement('div')
+  head.className = 'tt_statsDashHead'
+  const title = document.createElement('span')
+  title.className = 'tt_statsDashTitle'
+  title.textContent = titleText
+  const meta = document.createElement('span')
+  meta.className = 'tt_statsDashMeta'
+  meta.textContent = metaText
+  head.appendChild(title)
+  head.appendChild(meta)
+  card.appendChild(head)
+  const body = document.createElement('div')
+  body.className = 'tt_statsDashBody'
+  card.appendChild(body)
+  const empty = document.createElement('div')
+  empty.className = 'tt_statsDashEmpty'
+  empty.hidden = true
+  card.appendChild(empty)
+  const foot = document.createElement('div')
+  foot.className = 'tt_statsDashFoot'
+  card.appendChild(foot)
+  return { card, head, title, meta, body, empty, foot }
+}
+
+/**
+ * 面积的纵向褪色渐变（顶端不透明 → 底部全透明）。`stops` 由调用方给：
+ * CPU 折线要「极其淡的一抹底色」，网络那块面积大得多，同样的透明度已经读得出分量。
+ *
+ * `gradientUnits="userSpaceOnUse"` 是必须的：默认的 `objectBoundingBox` 会跟着每帧变化的
+ * 路径外框重算，曲线一低整条渐变就被拉伸，看起来像在呼吸。
+ */
+function dashFadeGradient(id, stops) {
+  const gradient = svgEl('linearGradient', 'tt_statsDashFade', { id, gradientUnits: 'userSpaceOnUse', x1: '0', y1: '0', x2: '0', y2: String(DASH_CHART_H) })
+  for (const [offset, opacity] of stops) {
+    gradient.appendChild(svgEl('stop', '', { offset, 'stop-opacity': opacity }))
+  }
+  return gradient
+}
+
+/**
+ * 折线的**横向**「时间流向」渐变：左端（过去）只给 34% 不透明度，右端（最新一帧）给满。
+ *
+ * 只用不透明度阶梯、色相交给 `currentColor`，理由有二：
+ *   ① 深色卡片上「暗」本来就等于「更透」，同一色相 34%→100% 读出来就是「过去 → 现在」，
+ *      右端天然更亮，视线会被带到最新的一帧；
+ *   ② 告警态只改一个 `color`（见 CSS 的 `[data-alert]`），折线、光晕、面积三处一起换色，
+ *      不必在 JS 里维护第二套色值（客户端半体的配色来源闸门也不允许写字面量）。
+ * 光晕用的 `currentColor` 同理：它取的是元素自己的 `color`，与渐变末端同源。
+ *
+ * @param {string} id 渐变 id（同一文档里多张卡片不能撞）
+ * @param {string} [hue] `rx` / `tx` 时按网络那一对色写死；CPU 折线不传（跟着告警态走）
+ */
+function dashFlowGradient(id, hue) {
+  const gradient = svgEl('linearGradient', 'tt_statsDashFlow', { id, gradientUnits: 'userSpaceOnUse', x1: '0', y1: '0', x2: String(DASH_CHART_W), y2: '0' })
+  if (hue !== undefined && hue !== '') gradient.dataset.hue = hue
+  for (const [offset, opacity] of [['0', '.34'], ['0.55', '.76'], ['1', '1']]) {
+    gradient.appendChild(svgEl('stop', '', { offset, 'stop-opacity': opacity }))
+  }
+  return gradient
+}
+
+function buildCoresCard(refs) {
+  const shell = buildDashCard(refs, 'cores', t('statsDash.cores'), '')
+  shell.body.className = 'tt_statsDashBody tt_statsDashCores'
+  // 标题 + 档位（「正常 / 偏高 / 过载」）贴在一起：这档说的是本卡片的每核柱，
+  // 原来右对齐飘到网络卡片左边，读起来像是在说网络
+  shell.head.className = 'tt_statsDashHead tt_statsDashHead--tight'
+  /*
+   * 80% 警戒线：柱状图没有 Y 轴刻度，光看高低分不出「一半高」是 50% 还是 80%。
+   * 位置取 `STATS_WARN_LIMIT`——必须与「柱子变橙」的那一档是同一个数，否则会出现
+   * 「过了虚线却还是绿的」这种自相矛盾的画面。它是 `position: absolute` 的，
+   * 不参与 flex 布局，也不吃鼠标事件。
+   */
+  const guide = document.createElement('span')
+  guide.className = 'tt_statsDashGuide'
+  // 位置取 `STATS_WARN_LIMIT`：这条虚线就是柱子变橙的那一档，不能各写一个数
+  guide.style.bottom = String(STATS_WARN_LIMIT) + '%'
+  shell.body.appendChild(guide)
+  shell.empty.textContent = t('statsDash.noCores')
+  shell.empty.title = t('statsDash.noCoresHint')
+  refs.cores = { ...shell, bars: [], guide }
+  return shell.card
+}
+
+function buildNetCard(refs) {
+  const shell = buildDashCard(refs, 'net', t('statsDash.net'), t('statsDash.lastMin'))
+  /*
+   * 图例：两条线的色相本来就挨着（蓝 / 青）又都带光晕，交叉的地方根本认不出谁是谁。
+   * 分法有两层——**结构上**下行实线、上行虚线（不只靠颜色），再把图例贴在同一行的中间，
+   * 色条与曲线同色同虚实，一眼对得上。
+   * 图例是纯装饰（`aria-hidden`）：数字与 ↓/↑ 已经在脚注里，屏幕阅读器不用再念一遍。
+   */
+  const legend = document.createElement('span')
+  legend.className = 'tt_statsDashLegend'
+  legend.setAttribute('aria-hidden', 'true')
+  for (const kind of ['down', 'up']) {
+    const key = document.createElement('span')
+    key.className = 'tt_statsDashKey'
+    key.dataset.kind = kind
+    key.textContent = kind === 'down' ? '↓' : '↑'
+    legend.appendChild(key)
+  }
+  shell.head.insertBefore(legend, shell.meta)
+  const svg = svgEl('svg', 'tt_statsDashChart', { viewBox: '0 0 ' + String(DASH_CHART_W) + ' ' + String(DASH_CHART_H), preserveAspectRatio: 'none', 'aria-hidden': 'true', 'data-series': 'net' })
+  const seq = ++statsSparkGradientSeq
+  const fadeId = 'tt-dash-fade-' + String(seq)
+  const rxFlowId = 'tt-dash-flow-rx-' + String(seq)
+  const txFlowId = 'tt-dash-flow-tx-' + String(seq)
+  const defs = svgEl('defs', '', {})
+  /*
+   * 面积从 .40 收到 .30（2026-11-01）：这块面积占满 96px 高的整张卡片，同样一片底色
+   * 在视觉上比 CPU 那条 64px 的折线重得多——「网络图太沉、CPU 太飘」就是这么来的。
+   * 两条折线各配一条自己的「时间流向」渐变（`data-hue` 定色，见 CSS）。
+   */
+  defs.appendChild(dashFadeGradient(fadeId, [['0', '.30'], ['0.5', '.10'], ['1', '0']]))
+  defs.appendChild(dashFlowGradient(rxFlowId, 'rx'))
+  defs.appendChild(dashFlowGradient(txFlowId, 'tx'))
+  svg.appendChild(defs)
+  const area = svgEl('path', 'tt_statsDashArea', { fill: 'url(#' + fadeId + ')' })
+  const rxLine = svgEl('path', 'tt_statsDashLine', { 'data-kind': 'rx', stroke: 'url(#' + rxFlowId + ')', 'vector-effect': 'non-scaling-stroke' })
+  const txLine = svgEl('path', 'tt_statsDashLine', { 'data-kind': 'tx', stroke: 'url(#' + txFlowId + ')', 'vector-effect': 'non-scaling-stroke' })
+  svg.appendChild(area)
+  /*
+   * 两条参考横线（1/3、2/3 高）：纯视觉刻度，不标数值——数值在脚注里给峰值。
+   * 顺序是「面积 → 参考线 → 折线」：压在面积**里面**会被那块渐变盖掉（面积自上而下
+   * 由深到无），放在折线之前又保证曲线永远在网格之上。
+   * 取 1/3、2/3 而不是 1/4、3/4：隔壁 CPU 卡片有一条 80% 的警戒虚线，两条线高度太近时
+   * 看上去像一根贯穿两张卡片的虚线。
+   */
+  for (const ratio of [1 / 3, 2 / 3]) {
+    svg.appendChild(svgEl('line', 'tt_statsDashGrid', { x1: '0', y1: String(DASH_CHART_H * ratio), x2: String(DASH_CHART_W), y2: String(DASH_CHART_H * ratio) }))
+  }
+  // 下行最后画（压在上面）：它是主序列——更粗、发光、底下还垫着面积
+  svg.appendChild(txLine)
+  svg.appendChild(rxLine)
+  shell.body.className = 'tt_statsDashBody tt_statsDashChartWrap'
+  shell.body.appendChild(svg)
+  shell.empty.textContent = t('statsDash.netNone')
+  refs.net = { ...shell, svg, area, rxLine, txLine }
+  return shell.card
+}
+
+function buildProcsCard(refs) {
+  const shell = buildDashCard(refs, 'procs', t('statsDash.procs'), '')
+  /*
+   * 列头拆成两格、且**可点**（切排序），宽度取与数据行同一对变量
+   * （`--tt-proc-cpu-w` / `--tt-proc-mem-w`）：原先是一整串「CPU / 内存」右对齐，
+   * 斜杠的位置与下面两列的间距对不上，读起来是散的。
+   *
+   * 用 `<button>` 而不是给 span 绑 click：键盘能 Tab 到、能按空格/回车触发（这是本包
+   * 唯一一个「改了就会重排整张卡片」的控件，不该只服务鼠标）。类名刻意不带 `btn`——
+   * 它不是宿主 Button 原语的一档，而是一个贴在列头上的文本控件（client-style-spec
+   * 的按钮族只识别类名带 btn 的那些）。
+   */
+  shell.meta.className = 'tt_statsDashMeta tt_statsDashCols'
+  shell.meta.textContent = ''
+  const labels = {}
+  for (const key of ['cpu', 'mem']) {
+    const label = document.createElement('button')
+    label.type = 'button'
+    label.className = 'tt_statsDashSort'
+    label.dataset.sort = key
+    label.addEventListener('click', () => onProcsSortClick(key))
+    shell.meta.appendChild(label)
+    labels[key] = label
+  }
+  shell.body.className = 'tt_statsDashBody tt_statsDashProcs'
+  shell.empty.textContent = t('statsDash.noProcs')
+  shell.empty.title = t('statsDash.noProcsHint')
+  refs.procs = { ...shell, rows: [], labels, signature: '', sortKey: '' }
+  applyProcsSortLabels(refs.procs)
+  return shell.card
+}
+
+/**
+ * 把当前排序状态写进列头与脚注：活跃列显示方向箭头（▼ 降序 / ▲ 升序），另一列不带箭头；
+ * 脚注跟着说「按内存 升序 · 5 秒刷新」。
+ *
+ * 只改文本与 `data-active`，不重建节点（列头节点在卡片生命周期里是常驻的）。
+ */
+function applyProcsSortLabels(ref) {
+  if (ref === null || ref === undefined) return
+  const mark = statsDashSort.dir === 'desc' ? ' ▼' : ' ▲'
+  for (const key of ['cpu', 'mem']) {
+    const label = ref.labels[key]
+    if (label === undefined) continue
+    const active = statsDashSort.key === key
+    // i18n 键写成字面量（闸门静态扫不到变量拼出来的键）
+    const name = key === 'cpu' ? t('statsDash.colCpu') : t('statsDash.colMem')
+    const text = active ? name + mark : name
+    if (label.textContent !== text) label.textContent = text
+    if (active) {
+      if (label.dataset.active !== 'true') label.dataset.active = 'true'
+      label.setAttribute('aria-pressed', 'true')
+    } else {
+      if (label.hasAttribute('data-active')) label.removeAttribute('data-active')
+      label.setAttribute('aria-pressed', 'false')
+    }
+  }
+  // i18n 键写成字面量：同上
+  const keyText = statsDashSort.key === 'cpu' ? t('statsDash.colCpu') : t('statsDash.colMem')
+  const dirText = statsDashSort.dir === 'desc' ? t('statsDash.sortDesc') : t('statsDash.sortAsc')
+  const foot = t('statsDash.procsFoot', { key: keyText, dir: dirText })
+  if (ref.foot.textContent !== foot) ref.foot.textContent = foot
+}
+
+/** 点列头：同列翻方向、换列回到降序；然后立刻重画一帧（不等下一个 stats 帧）。 */
+function onProcsSortClick(key) {
+  const next = nextProcSort(statsDashSort, key)
+  if (next.key === statsDashSort.key && next.dir === statsDashSort.dir) return
+  statsDashSort = next
+  if (statsDashRefs !== null) applyProcsSortLabels(statsDashRefs.procs)
+  // 签名清掉：同一帧数据也要重画（否则 `statsDashKey` 没变会直接 return）
+  statsDashKey = null
+  updateStatsDash()
+}
+
+/**
+ * 量宽函数（给 `truncateMiddle` 用）：把元素当前的字体抓进一个离屏 canvas，
+ * 之后按字符量宽度。字体串变了（主题 / 缩放 / 用户改字号）就重建。
+ *
+ * 为什么不用「字符数」硬算：终端等宽字体里中文与英文都是 1ch，但**比例字体下的回退**
+ * （CJK 名字走 PingFang）宽度并不等宽；`measureText` 是唯一不会算错的量法。
+ * canvas 不可用（极老的 WebView）时返回 null，调用方退回 CSS 省略号。
+ */
+let dashMeasure = null
+function dashTextMeasure(el) {
+  if (typeof document === 'undefined' || document.createElement === undefined) return null
+  const style = getComputedStyle(el)
+  const font = style.fontStyle + ' ' + style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily
+  if (dashMeasure === null || dashMeasure.font !== font) {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (ctx === null || ctx === undefined) return null
+    ctx.font = font
+    dashMeasure = { font, ctx }
+  }
+  const ctx = dashMeasure.ctx
+  return (text) => ctx.measureText(text).width
+}
+
+/** 只有仪表盘开着时才跑：关着就没有额外 DOM 工作。 */
+function updateStatsDash() {
+  if (statsDashEl === null || statsDashRefs === null) return
+  const tab = activeTab()
+  if (tab === undefined) {
+    closeStatsDash()
+    return
+  }
+  // 跟着每帧重新锚一次：面板宽度变化 / 浏览器窗口缩放 / 标签条重排都会让旧坐标失效
+  positionStatsDash()
+  const key = tab.sid + ':' + String(tab.statsAt || 0)
+  if (key === statsDashKey) return
+  statsDashKey = key
+  const raw = tab.stats
+  const stats = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  updateCoresCard(statsDashRefs.cores, stats)
+  updateNetCard(statsDashRefs.net, tab)
+  updateProcsCard(statsDashRefs.procs, stats)
+}
+
+/**
+ * 每核柱：柱高是该核本帧的占用，档位色 80/90（`statsLevel`），标题报**最差那一核**的档位
+ * （16 核里有一核烧到 95%，平均值会把它摊平）。
+ *
+ * 为什么**不**在这一格里再画一条总量折线（2026-11-01 试过，同日撤回）：曲线要 64px、
+ * 柱子只能压到 24px，而 60 秒窗口刚打开时大半是空的——用户看到的是「一条贴在右边缘的
+ * 短折线」加「一排很矮的柱子」，两个都看不清。这一格只做一件事：哪一核在顶。
+ */
+function updateCoresCard(ref, stats) {
+  const cores = Array.isArray(stats.cpuCores) ? stats.cpuCores.filter((value) => typeof value === 'number' && Number.isFinite(value)) : []
+  const has = cores.length > 0
+  ref.empty.hidden = has
+  ref.body.hidden = !has
+  if (!has) {
+    ref.meta.textContent = ''
+    ref.meta.removeAttribute('data-level')
+    ref.foot.textContent = ''
+    return
+  }
+  // 核心数变了才重建柱状（热插拔 / 从「无数据」恢复）
+  if (ref.bars.length !== cores.length) {
+    // 只清子节点、保留 body 本身：父级宽度与 flex 布局不会在这一帧抖动
+    while (ref.body.firstChild !== null) ref.body.removeChild(ref.body.firstChild)
+    ref.bars = cores.map((_value, index) => {
+      const bar = document.createElement('span')
+      bar.className = 'tt_statsDashCore'
+      bar.dataset.index = String(index + 1)
+      const fill = document.createElement('span')
+      fill.className = 'tt_statsDashCoreFill'
+      bar.appendChild(fill)
+      ref.body.appendChild(bar)
+      return { bar, fill, value: null, level: null }
+    })
+    // 警戒线绝对定位、不参与布局，清场时会跟着被删掉——放回**最后**，让它画在柱子之上
+    // （叠在下面的话，只有柱子之间那 3px 的缝看得见，等于没有）
+    if (ref.guide !== undefined && ref.guide !== null) ref.body.appendChild(ref.guide)
+  }
+  for (let index = 0; index < cores.length; index += 1) {
+    const barRef = ref.bars[index]
+    const pct = cores[index]
+    if (barRef.value !== pct) {
+      barRef.value = pct
+      barRef.fill.style.height = String(Math.max(0, Math.min(100, pct)).toFixed(1)) + '%'
+      const tip = t('statsDash.coreTip', { index: index + 1, pct: Math.round(pct) })
+      if (barRef.bar.getAttribute('title') !== tip) barRef.bar.setAttribute('title', tip)
+    }
+    const level = statsLevel(pct)
+    if (barRef.level !== level) {
+      barRef.level = level
+      if (level === '') barRef.bar.removeAttribute('data-level')
+      else barRef.bar.setAttribute('data-level', level)
+    }
+  }
+  const level = coresLevel(cores)
+  if (level === '') ref.meta.removeAttribute('data-level')
+  else ref.meta.setAttribute('data-level', level)
+  // 三个键都写成字面量：i18n 闸门静态扫不到变量拼出来的键
+  ref.meta.textContent = level === 'danger' ? t('statsDash.critical') : level === 'warn' ? t('statsDash.busy') : t('statsDash.normal')
+  const avg = Math.round((cores.reduce((sum, value) => sum + value, 0) / cores.length) * 10) / 10
+  ref.foot.textContent = t('statsDash.coresFoot', { cores: cores.length, pct: String(Math.round(avg)) })
+}
+
+function updateNetCard(ref, tab) {
+  const history = statsHistory.get(tab.sid) ?? []
+  /*
+   * 横轴固定成「最近 60 秒」：新采到的点从右边进来，左边还没攒到的位置留空。
+   * 直接把 5 个采样拉伸到整幅宽会假装「这一分钟都有数据」——刚打开的两秒和
+   * 攒满的一分钟看起来一模一样，正好骗人。
+   */
+  const pad = Math.max(0, STATS_HISTORY_LEN - history.length)
+  const rx = new Array(pad).fill(null).concat(history.map((sample) => sample.rxRate))
+  const tx = new Array(pad).fill(null).concat(history.map((sample) => sample.txRate))
+  const has = rx.some((value) => value !== null) || tx.some((value) => value !== null)
+  ref.empty.hidden = has
+  ref.body.hidden = !has
+  if (!has) {
+    ref.foot.textContent = ''
+    return
+  }
+  let peak = 0
+  for (const value of rx) if (value !== null && value > peak) peak = value
+  for (const value of tx) if (value !== null && value > peak) peak = value
+  /*
+   * Y 轴：**1-2-5 量程 + 15% 顶部余量 + 平方根刻度**。
+   *
+   *   - 量程：`chartCeiling(peak)` 按 1-2-5 台阶取（不是逐帧线性跟随），峰值永远落在
+   *     量程之内 → 尖刺不会顶到边框；台阶也让「量程」不会每秒自己微调（曲线不会抖）；
+   *   - 刻度用 sqrt 而不是线性：线性下「一次 9.8 MB/s 的突发 + 一分钟 1.2 MB/s 的常态」
+   *     会把常态压成贴底的一条平线，看不出任何起伏；
+   *   - 也不用对数：对数在**同一个数量级**里几乎不动——实测 58 KB/s 与 163 KB/s 在
+   *     256 KB/s 量程的对数轴上只差 8% 高度，日常波动全被抹平。0.5 次幂是这两者的折中：
+   *     同量级内保留起伏（同样两个值占 32% 高度），跨数量级的突发也不会把常态压没。
+   */
+  const ceiling = chartCeiling(peak)
+  const options = { min: 0, max: ceiling, power: 0.5 }
+  const areaPath = sparklineArea(rx, DASH_CHART_W, DASH_CHART_H, options)
+  const rxPath = sparklinePath(rx, DASH_CHART_W, DASH_CHART_H, options)
+  const txPath = sparklinePath(tx, DASH_CHART_W, DASH_CHART_H, options)
+  if (ref.area.getAttribute('d') !== areaPath) ref.area.setAttribute('d', areaPath)
+  if (ref.rxLine.getAttribute('d') !== rxPath) ref.rxLine.setAttribute('d', rxPath)
+  if (ref.txLine.getAttribute('d') !== txPath) ref.txLine.setAttribute('d', txPath)
+  const last = history.length > 0 ? history[history.length - 1] : null
+  const rxNow = last !== null && last.rxRate !== null ? last.rxRate : 0
+  const txNow = last !== null && last.txRate !== null ? last.txRate : 0
+  ref.foot.textContent = t('statsDash.netFoot', { rx: statsRateCompact(rxNow), tx: statsRateCompact(txNow), peak: statsRateCompact(peak) })
+}
+
+function updateProcsCard(ref, stats) {
+  const rows = procRows(stats.procs, 5, statsDashSort)
+  const has = rows.length > 0
+  ref.empty.hidden = has
+  ref.body.hidden = !has
+  ref.foot.hidden = !has
+  if (!has) {
+    ref.signature = ''
+    return
+  }
+  /*
+   * 行**顺序**变了也要重建（不只是行数）：`ps` 每 5 秒才刷新一次，而排序键可以随时切换，
+   * 若只在行数变化时重建，切到「按内存」或升序后列表会保持旧顺序、值与行对不上。
+   * 签名用 pid + 文件名：同值排序稳定，顺序没变时仍然走「只改文本」的快路径。
+   */
+  const signature = rows.map((row) => String(row.pid) + ':' + row.name).join('|')
+  if (ref.signature !== signature) {
+    ref.signature = signature
+    for (const row of ref.rows) row.line.remove()
+    ref.rows = rows.map(() => {
+      const line = document.createElement('div')
+      line.className = 'tt_statsDashProc'
+      const cmd = document.createElement('span')
+      cmd.className = 'tt_statsDashProcCmd'
+      const cpu = document.createElement('span')
+      cpu.className = 'tt_statsDashProcCpu'
+      const mem = document.createElement('span')
+      mem.className = 'tt_statsDashProcMem'
+      line.appendChild(cmd)
+      line.appendChild(cpu)
+      line.appendChild(mem)
+      ref.body.appendChild(line)
+      return { line, cmd, cpu, mem, level: null, name: '', shown: '' }
+    })
+  }
+  /*
+   * 名字列宽（每帧读一次，5 行的容器很便宜）：用它算「能放几个字符」，做**首尾截断**——
+   * 一串 `Framework Helper (Renderer) / (GPU)` 的前缀完全相同，CSS 的尾部省略号会把它们
+   * 变成同一个 `Framew…`，认不出是哪一个。
+   */
+  const nameWidth = ref.rows.length > 0 ? ref.rows[0].cmd.clientWidth : 0
+  const measure = nameWidth > 0 ? dashTextMeasure(ref.rows[0].cmd) : null
+  for (let index = 0; index < rows.length; index += 1) {
+    const item = rows[index]
+    const rowRef = ref.rows[index]
+    // 卡片里只放可执行文件名（macOS 的 comm 是完整路径，直接显示只能看见 `/Applications/G…`）；
+    // 完整路径与 pid 留在 title 里
+    let nameText = item.name
+    if (measure !== null) nameText = truncateMiddle(nameText, nameWidth, measure)
+    if (rowRef.name !== item.name || rowRef.width !== nameWidth || rowRef.shown !== nameText) {
+      rowRef.name = item.name
+      rowRef.width = nameWidth
+      rowRef.shown = nameText
+      if (rowRef.cmd.textContent !== nameText) rowRef.cmd.textContent = nameText
+    }
+    const tip = item.cmd + (item.pid > 0 ? ' · pid ' + String(item.pid) : '')
+    if (rowRef.cmd.getAttribute('title') !== tip) rowRef.cmd.setAttribute('title', tip)
+    const cpuText = item.cpuPct.toFixed(1) + '%'
+    if (rowRef.cpu.textContent !== cpuText) rowRef.cpu.textContent = cpuText
+    const memText = item.memPct.toFixed(1) + '%'
+    if (rowRef.mem.textContent !== memText) rowRef.mem.textContent = memText
+    if (rowRef.level !== item.level) {
+      rowRef.level = item.level
+      if (item.level === '') rowRef.cpu.removeAttribute('data-level')
+      else rowRef.cpu.setAttribute('data-level', item.level)
+    }
+  }
 }
 
 /**
@@ -1684,7 +2711,7 @@ function discardStatsItems() {
 
 /** 状态条可见性：面板开着、没最小化、开关开、活动标签有新鲜数据。 */
 function statsBarVisible() {
-  if (modalEl === null || minimized || !statsEnabledCache) return false
+  if (modalEl === null || minimized || !statsEnabledCache || statsStyleCache === 'off') return false
   const tab = activeTab()
   if (tab === undefined || tab.embedded === true || tab.exited === true) return false
   if (tab.stats === null || tab.stats === undefined) return false
@@ -1728,7 +2755,7 @@ function applyStatsBar() {
       }
       // 内容被清空 = 之前建的条目全不在文档里了：引用与数据签名必须一起作废，
       // 否则下一次显示会往游离节点上写，状态条看着永远空着
-      discardStatsItems()
+      forgetStatsDom()
       if (bodyEl !== null) delete bodyEl.dataset.stats
     } catch {
       /* 连兜底都失败：静默，至少不再抛 */
@@ -1739,21 +2766,25 @@ function applyStatsBar() {
 /** 重画状态条；只有「显隐翻转」时才需要 fit（数据每秒刷新不该反复抖动终端）。 */
 function applyStatsBarInner() {
   if (bodyEl === null || statsBarEl === null) return
+  // 头部按钮独立于条的显隐：条藏起来时它还得能把人捞回来
+  syncStatsToggle()
   const visible = statsBarVisible()
   const changed = (bodyEl.dataset.stats !== undefined) !== visible
   if (!visible) {
+    closeStatsDash()
     if (changed) delete bodyEl.dataset.stats
     statsBarEl.hidden = true
-    // 隐藏时把条目一起丢掉（省 DOM）：下次显示重建，也就自然拿到了新标签的数据
+    // 隐藏时把条目一起丢掉（省 DOM）：下次显示重建外壳与条目，也就自然拿到了新标签的数据
     if (statsItemEls !== null) {
       statsBarEl.textContent = ''
-      discardStatsItems()
+      forgetStatsDom()
     }
     if (changed) refitActiveTab()
     return
   }
   statsBarEl.hidden = false
   if (statsItemEls === null) statsItemEls = buildStatsBarDom()
+  syncStatsStyleDom()
   const tab = activeTab()
   /*
    * 同一条数据不重复渲染：1s 陈旧检测定时器也走这里，但它的职责只是「数据停了就收起」。
@@ -1764,11 +2795,59 @@ function applyStatsBarInner() {
   if (key !== statsRenderKey) {
     statsRenderKey = key
     updateStatsItems(statsItemEls, tab)
+    updateStatsMinimal()
   }
   if (changed) {
     bodyEl.dataset.stats = ''
     refitActiveTab()
   }
+  // 仪表盘开着时跟着每帧刷新（关着就是一次 null 判断）
+  updateStatsDash()
+}
+
+/**
+ * 把「完整 / 极简」的呈现切到当前偏好：只切两个容器的 `hidden`，两边的 DOM 都不销毁
+ * （切回来时趋势线与固定槽位立刻还在，不用等下一帧重新长出来）。
+ */
+function syncStatsStyleDom() {
+  const minimal = statsStyleCache === 'minimal'
+  if (statsFullEl !== null) statsFullEl.hidden = minimal
+  if (statsMinEl !== null) statsMinEl.hidden = !minimal
+  // 条高由 CSS 变量按这个属性切（极简 36px / 完整 24px）：终端 top 偏移与退出条共用它
+  if (bodyEl !== null) {
+    const next = minimal ? 'minimal' : 'full'
+    if (bodyEl.dataset.statsStyle !== next) bodyEl.dataset.statsStyle = next
+  }
+}
+
+/**
+ * 头部那颗三档循环按钮：图标与文案跟**当前**档位走（不是「点它会发生什么」），
+ * 这样用户不点开也知道现在处在哪一档。
+ */
+function syncStatsToggle() {
+  if (statsToggleEl === null) return
+  // 配置层把整条关掉时按钮没有意义（点了也不会采），跟着藏起来——但本地 off 不藏，
+  // 否则用户就再也点不回来了。
+  statsToggleEl.hidden = !statsEnabledCache
+  if (statsToggleMode !== statsStyleCache) {
+    statsToggleMode = statsStyleCache
+    // 三个键都写成字面量：i18n 闸门静态扫不到变量拼的键，会报成死键
+    if (statsStyleCache === 'minimal') {
+      statsToggleEl.innerHTML = ICON_STATS_MINIMAL
+      statsToggleEl.title = t('stats.minimalTitle')
+      statsToggleEl.setAttribute('aria-label', t('stats.minimalTitle'))
+    } else if (statsStyleCache === 'off') {
+      statsToggleEl.innerHTML = ICON_STATS_OFF
+      statsToggleEl.title = t('stats.offTitle')
+      statsToggleEl.setAttribute('aria-label', t('stats.offTitle'))
+    } else {
+      statsToggleEl.innerHTML = ICON_STATS_FULL
+      statsToggleEl.title = t('stats.fullTitle')
+      statsToggleEl.setAttribute('aria-label', t('stats.fullTitle'))
+    }
+  }
+  const pressed = statsStyleCache === 'off' ? 'false' : 'true'
+  if (statsToggleEl.getAttribute('aria-pressed') !== pressed) statsToggleEl.setAttribute('aria-pressed', pressed)
 }
 
 /** 陈旧检测：采集端静默停止（无 /proc、exec 被拒、配置关闭）时前端要自己收起。 */
@@ -1785,7 +2864,7 @@ function stopStatsStaleTimer() {
 
 /** 需要订阅的 sid：只有可见标签才采（最小化/嵌入/已退出/开关关闭都不采）。 */
 function desiredStatsSid() {
-  if (modalEl === null || minimized || !statsEnabledCache) return null
+  if (modalEl === null || minimized || !statsEnabledCache || statsStyleCache === 'off') return null
   const tab = activeTab()
   if (tab === undefined || tab.embedded === true || tab.exited === true) return null
   return tab.sid
@@ -2733,6 +3812,7 @@ function closeTab(sid, options) {
   // 已经删了会话，kill 只会换来一个错误帧。
   if (!silent) sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
+  statsHistory.delete(sid)
   // 标签右键菜单描述的就是某个标签 / 某几个标签的条数：标签一关就作废（里面的批量行
   // 会照着过期的名单关人），一律收掉
   closeTabContextMenu()
@@ -3193,6 +4273,9 @@ function switchTab(sid, options) {
   activeSid = sid
   // 答案浮层属于**某个**会话：切走就收起，免得它挂在新终端上（徽标则跟着新活动标签重算）
   closeAssistMenu()
+  // 连接详情 / 「⋯」都锚在旧标签的连接栏上：切走就收起，别让一块弹层指着上一台主机。
+  closeConnDetailPopover()
+  closeConnbarMoreMenu()
   syncAssistBadge()
   for (const [otherSid, other] of tabs) {
     // 嵌入终端的显隐由挂载方（抽屉/面板）决定，这里不碰
@@ -3442,6 +4525,22 @@ function renderConnbar() {
       connBadgeEl.removeAttribute('title')
     }
   }
+  // 跳板机徽标：只在配了跳板机时出现（连的是哪台 bastion 不该靠记）；标题带完整地址。
+  // 与 tmux 徽标并排、同一套 .tt_connBadge 皮肤（data-state=info）。
+  if (connJumpBadgeEl !== null) {
+    const jump = jumpLabelOf(resolvedTabSpec(tab).jump)
+    if (jump !== '') {
+      connJumpBadgeEl.textContent = t('connDetail.jumpBadge')
+      connJumpBadgeEl.dataset.state = 'info'
+      connJumpBadgeEl.title = t('connDetail.jumpBadgeTitle', { label: jump })
+    } else {
+      connJumpBadgeEl.textContent = ''
+      delete connJumpBadgeEl.dataset.state
+      connJumpBadgeEl.removeAttribute('title')
+    }
+  }
+  // 左侧地址可点开「连接详情」（跳板机 / 代理 / 认证 / 持久化 / 最近状态）
+  connTargetEl.title = t('connDetail.clickHint')
   const state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
   connDotEl.dataset.state = state
   connDotEl.title = state === 'connected' ? t('status.connected') : state === 'connecting' ? t('status.connecting') : state === 'error' ? t('status.errored') : t('status.exited')
@@ -3480,16 +4579,24 @@ function renderConnbar() {
       console.warn('[dsh-tty] connbar action failed: ' + (error instanceof Error ? error.message : String(error)))
     }
   }
+  /*
+   * 「⋯」**恒排最后**（不随注册顺序）：它是动作区的溢出入口，第三方动作（dsh-docker 的「容器」）
+   * 是在 tty 之后才注册的——放进注册通道里就会被顶到「容器」左边，看起来像「更多」只管住它
+   * 前面那几个。这里在全部工厂跑完之后再追加，保证它永远是最后一颗。
+   */
+  if (entryVisible) {
+    action(ICON_MORE, t('btn.more'), t('btn.moreTitle'), (event) => openConnbarMoreMenu(event.currentTarget, bookName, tab))
+  }
 }
 
 /**
  * 连接栏「⋯」更多菜单。
  *
- * 目前只有一个条目（端口转发），但它是**低频入口**的落脚点：连接栏宽度优先给标签条，
- * 常驻按钮只留高频项（SFTP / 容器 / 已有隧道）。后续再有低频动作也加在这里，别再往
- * 连接栏上堆。
+ * 低频入口的落脚点：连接栏宽度优先给标签条，常驻按钮只留高频项（SFTP / 容器 / 已有隧道）。
+ * 2026-10-31 起菜单里是三类：端口转发（**只在没配启用隧道时**——配了的话常驻按钮已经在）、
+ * 复制连接信息、复制 SSH 命令。内联连接（bookName 为空）只看到后两项。
  */
-function openConnbarMoreMenu(anchor, bookName) {
+function openConnbarMoreMenu(anchor, bookName, tab) {
   if (connbarMoreEl !== null) {
     closeConnbarMoreMenu()
     return
@@ -3500,10 +4607,27 @@ function openConnbarMoreMenu(anchor, bookName) {
   // 不给"跳转设置卡片"的假按钮：宿主没有开放程序化导航到设置面板的接口（实测
   // dsh-client-ui-settings 没有暴露 openSettings / 路由 hash），做了也只能是个不动的
   // 按钮。改成**把路径写清楚**——用户照着一句话就能找到，比一个点了没反应的跳转强。
-  addMenuItem(menu, t('panel.tunnels'), t('hint.tunnelsSettings'), () => {
+  let hasTunnelItem = false
+  if (bookName !== '' && tunnelCountFor(bookName) === 0) {
+    addMenuItem(menu, t('panel.tunnels'), t('hint.tunnelsSettings'), () => {
+      closeConnbarMoreMenu()
+      openTunnelPopover(anchor, bookName)
+    }, undefined, ICON_TUNNEL)
+    hasTunnelItem = true
+  }
+  if (hasTunnelItem) {
+    const sep = document.createElement('div')
+    sep.className = 'tt_addMenuSep'
+    menu.appendChild(sep)
+  }
+  addMenuItem(menu, t('btn.copyConn'), t('btn.copyConnTitle'), () => {
     closeConnbarMoreMenu()
-    openTunnelPopover(anchor, bookName)
-  }, undefined, ICON_TUNNEL)
+    void copyConnectionText(tab, 'info')
+  }, undefined, ICON_LINK)
+  addMenuItem(menu, t('btn.copySshCommand'), t('btn.copySshCommandTitle'), () => {
+    closeConnbarMoreMenu()
+    void copyConnectionText(tab, 'ssh')
+  }, undefined, TERMINAL_ICON)
   document.body.appendChild(menu)
   const rect = anchor.getBoundingClientRect()
   const width = menu.offsetWidth
@@ -3520,6 +4644,21 @@ function openConnbarMoreMenu(anchor, bookName) {
   setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0)
 }
 
+/**
+ * 「⋯」里的两个复制项：`info` = 连接信息多行文本，`ssh` = 一条可执行命令。
+ *
+ * 失败由 `copyTerminalText` 统一报（非 secure context 下会说明），成功给一条 4s 的
+ * toast——不把「已复制」写进状态胶囊（那会让它一直挂着，直到下一条真实状态覆盖）。
+ */
+async function copyConnectionText(tab, mode) {
+  const spec = resolvedTabSpec(tab)
+  // 连接簿条目后来被改过时，真正连上的是宿主 `ready` 帧回来的那个地址——目标行用它
+  const targetText = tab !== undefined && tab !== null && typeof tab.target === 'string' ? tab.target : ''
+  const text = mode === 'ssh' ? sshCommandOf(spec) : connCopyText(spec, t, { targetText })
+  if (text === '') return
+  if (await copyTerminalText(text)) showToast(t('msg.connCopied'), 'info')
+}
+
 function closeConnbarMoreMenu() {
   if (connbarMoreDismiss !== null) {
     document.removeEventListener('mousedown', connbarMoreDismiss, true)
@@ -3531,8 +4670,82 @@ function closeConnbarMoreMenu() {
   }
 }
 
+/**
+ * 连接详情弹层：点连接栏左侧的 `user@host:port` 打开。
+ *
+ * 只读：数据全来自会话的 `spawnSpec` 与标签状态（跳板机 / 代理命令 / 认证方式 /
+ * 持久化 / 最近状态）。改连接仍走设置卡片——宿主没有开放设置导航接口，这里只写路径，
+ * 不做假按钮。
+ */
+function openConnDetailPopover(anchor, tab) {
+  if (connPopoverEl !== null) {
+    closeConnDetailPopover()
+    return
+  }
+  closeTunnelPopover()
+  closeConnbarMoreMenu()
+  const spec = resolvedTabSpec(tab)
+  const pop = document.createElement('div')
+  pop.className = 'tt_connPop'
+  const title = document.createElement('div')
+  title.className = 'tt_connPopTitle'
+  title.textContent = t('connDetail.title')
+  pop.appendChild(title)
+  const rows = connDetailRows(spec, {
+    targetText: typeof tab.target === 'string' ? tab.target : '',
+    persistTmux: tab.persistTmux === true,
+    persistRequested: tab.spawnSpec?.persist === true && tab.spawned === true,
+    statusText: typeof tab.statusText === 'string' ? tab.statusText : '',
+  }, t)
+  for (const row of rows) {
+    const line = document.createElement('div')
+    line.className = 'tt_connPopRow'
+    const label = document.createElement('span')
+    label.className = 'tt_connPopLabel'
+    label.textContent = t('connDetail.' + row.id)
+    const value = document.createElement('span')
+    value.className = 'tt_connPopValue'
+    value.textContent = row.value
+    value.title = row.value
+    line.appendChild(label)
+    line.appendChild(value)
+    pop.appendChild(line)
+  }
+  const hint = document.createElement('span')
+  hint.className = 'tt_cardHint'
+  hint.textContent = t('connDetail.hint')
+  pop.appendChild(hint)
+  document.body.appendChild(pop)
+  connPopoverEl = pop
+  const rect = anchor.getBoundingClientRect()
+  const width = pop.offsetWidth
+  pop.style.top = String(rect.bottom + 6) + 'px'
+  pop.style.left = String(Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))) + 'px'
+  const onDocMouseDown = (event) => {
+    if (connPopoverEl !== pop) return
+    if (pop.contains(event.target) || anchor.contains(event.target)) return
+    closeConnDetailPopover()
+  }
+  connPopoverDismiss = onDocMouseDown
+  setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0)
+}
+
+function closeConnDetailPopover() {
+  if (connPopoverDismiss !== null) {
+    document.removeEventListener('mousedown', connPopoverDismiss, true)
+    connPopoverDismiss = null
+  }
+  if (connPopoverEl !== null) {
+    connPopoverEl.remove()
+    connPopoverEl = null
+  }
+}
+
 let tunnelPopoverEl = null
 let tunnelPopoverDismiss = null
+/** 连接详情弹层（点连接栏左侧地址打开）：与 tunnelPopover 同一套两件套。 */
+let connPopoverEl = null
+let connPopoverDismiss = null
 /** 连接栏「⋯」更多菜单的元素与外部点击卸载回调（同 tunnelPopover 的两件套）。 */
 let connbarMoreEl = null
 let connbarMoreDismiss = null
@@ -3554,6 +4767,8 @@ function openTunnelPopover(anchor, bookName) {
     closeTunnelPopover()
     return
   }
+  closeConnDetailPopover()
+  closeConnbarMoreMenu()
   const pop = document.createElement('div')
   pop.className = 'tt_tunnelPop'
   const title = document.createElement('div')
@@ -3932,6 +5147,18 @@ function newPersistName() {
 /** 连接簿条目名下的启用隧道数（「+」菜单徽标用）。 */
 function tunnelCountFor(bookName) {
   return tunnelsCache.filter((tunnel) => tunnel?.bookName === bookName && tunnel?.enabled !== false).length
+}
+
+/**
+ * 会话规格的「展示版」：连接簿式标签的 spawnSpec 只有 `{t:'ssh', name}`——主机 / 端口 /
+ * 认证 / 跳板机全在宿主侧的连接簿里（[`addTab`] 只传个名字），所以展示、详情与复制都先按
+ * 名字回填条目（客户端缓存在 `sshHostsCache`，由 `/api/dsh-tty/config` 预热）。
+ *
+ * 找不到条目（缓存还没到 / 条目被删）就原样返回：此时只能显示条目名与宿主 `ready` 帧回来的
+ * 实时地址，不猜。
+ */
+function resolvedTabSpec(tab) {
+  return resolveConnSpec(tab !== undefined && tab !== null ? tab.spawnSpec : null, sshHostsCache)
 }
 
 /** 连接簿条目的展示副标题：user@host[:port] · auth[ · fwd]。 */
@@ -8201,6 +9428,7 @@ function connect() {
         tab.exited = true
         tab.live = false
         tab.stats = null // 会话结束：状态条数据作废（宿主侧采集器也随会话停）
+        statsHistory.delete(sid)
         if (sid === activeSid) applyStatsBar()
         const code = msg.code !== null && msg.code !== undefined ? 'code=' + msg.code : ''
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
@@ -8228,9 +9456,18 @@ function connect() {
         const tab = tabs.get(sid)
         if (tab !== undefined) {
           const stats = msg.stats
-          // 结构不合法或一个可用字段都没有 → 按「无数据」处理（隐藏，而不是显示一排「无」）
-          tab.stats = hasUsableStats(stats) ? stats : null
+          /*
+           * 结构不合法或一个可用字段都没有 → 按「无数据」处理（隐藏，而不是显示一排「无」）。
+           *
+           * 合并低频字段（`cpuCores` / `procs`）：宿主**不是每帧都带**它们（SSH 远端把 `ps`
+           * 压到 5 拍一次），缺席要沿用上一帧，否则进程卡片每秒在「列表」与「暂无数据」
+           * 之间翻一次（用户报的「一闪一闪」，2026-10-31）。合并后的对象存回 `tab.stats`，
+           * 状态条与明细仪表盘读的是同一份，不必各留一份缓存。
+           */
+          tab.stats = hasUsableStats(stats) ? mergeOptionalStats(tab.stats, stats) : null
           tab.statsAt = Date.now()
+          // 趋势线历史（极简模式）：坏帧也记一帧「缺口」，不补值——线断开比假装平滑诚实
+          pushStatsHistory(sid, stats)
           if (sid === activeSid) applyStatsBar()
         }
       } catch (error) {
@@ -8390,6 +9627,7 @@ function openModal() {
     '<div class="tt_status"><span class="tt_statusDot"></span><span class="tt_statusText">' + t('status.initializing') + '</span></div>' +
     '<input class="tt_searchInput" style="display:' + SEARCH_CLOSED_DISPLAY + '" placeholder="' + t('placeholder.search') + '" />' +
     '<span class="tt_toolGroup">' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="stats" title="' + t('stats.fullTitle') + '">' + ICON_STATS_FULL + '</button>' +
     '<button class="tt_toolBtn tt_iconBtn" data-act="search" title="' + t('btn.searchTitle') + '">' + ICON_SEARCH + '</button>' +
     '<button class="tt_toolBtn tt_iconBtn" data-act="clear" title="' + t('btn.clearTitle') + '">' + ICON_CLEAR + '</button>' +
     '</span>' +
@@ -8399,13 +9637,13 @@ function openModal() {
     '</span>' +
     '</div>' +
     // 连接栏：左侧连接状态，右侧 SFTP / 扩展按钮；本地终端时隐藏（renderConnbar 控制）
-    '<div class="tt_connbar" data-hidden><div class="tt_connArea"><span class="tt_connDot"></span><span class="tt_connTarget">—</span><span class="tt_connBadge"></span></div><div class="tt_connActions"></div></div>' +
+    '<div class="tt_connbar" data-hidden><div class="tt_connArea"><span class="tt_connDot"></span><span class="tt_connTarget tt_connTargetOpen" role="button" tabindex="0">—</span><span class="tt_connBadge"></span><span class="tt_connBadge tt_connJump"></span></div><div class="tt_connActions"></div></div>' +
     // 终端区与「右侧挂载位」并排：其他插件（如 dsh-docker）经 ttyPanel.mountPane
     // 把界面挂进 .tt_work，终端保持可见——这是从 SSH 连接栏打开容器面板的主路径
     '<div class="tt_work">' +
     // 状态条（0.17.0）与终端容器同级：绝对定位在 body 顶部，显隐只改 .tt_term 的
     // top 偏移——不能塞进 .tt_term 里，否则 FitAddon 会把条高算进行数
-    '<div class="tt_body"><div class="tt_statsBar" hidden></div><div class="tt_exitBar" hidden></div><button type="button" class="tt_assistBadge" hidden><span class="tt_assistDot"></span><span class="tt_assistBadgeText"></span></button><div class="tt_overlay"></div></div>' +
+    '<div class="tt_body"><div class="tt_statsBar" hidden><div class="tt_statsScroll"></div><button type="button" class="tt_statsExpand" data-act="stats-expand" data-state="closed" aria-expanded="false" title="' + t('statsDash.open') + '" aria-label="' + t('statsDash.open') + '">' + ICON_STATS_EXPAND + '</button></div><div class="tt_exitBar" hidden></div><button type="button" class="tt_assistBadge" hidden><span class="tt_assistDot"></span><span class="tt_assistBadgeText"></span></button><div class="tt_overlay"></div></div>' +
     '</div>' +
     '</div>'
   document.body.appendChild(modalEl)
@@ -8449,10 +9687,27 @@ function openModal() {
   connDotEl = modalEl.querySelector('.tt_connDot')
   connTargetEl = modalEl.querySelector('.tt_connTarget')
   connBadgeEl = modalEl.querySelector('.tt_connBadge')
+  connJumpBadgeEl = modalEl.querySelector('.tt_connJump')
   connActionsEl = modalEl.querySelector('.tt_connActions')
+  // 左侧地址 = 「连接详情」的入口：鼠标点、键盘 Enter / 空格都能开（它是 role=button 的 span，
+  // 不是真按钮——真按钮会带宿主的按钮内边距，撑变这枚输入框形状的胶囊）。
+  const onConnTargetActivate = (event) => {
+    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return
+    const tab = activeTab()
+    if (tab === undefined) return
+    event.preventDefault()
+    openConnDetailPopover(connTargetEl, tab)
+  }
+  connTargetEl.addEventListener('click', onConnTargetActivate)
+  connTargetEl.addEventListener('keydown', onConnTargetActivate)
   workEl = modalEl.querySelector('.tt_work')
   bodyEl = modalEl.querySelector('.tt_body')
   statsBarEl = modalEl.querySelector('.tt_statsBar')
+  statsScrollEl = modalEl.querySelector('.tt_statsScroll')
+  statsExpandEl = modalEl.querySelector('.tt_statsExpand')
+  if (statsExpandEl !== null) statsExpandEl.addEventListener('click', onStatsExpandClick)
+  statsToggleEl = modalEl.querySelector('[data-act=stats]')
+  if (statsToggleEl !== null) statsToggleEl.addEventListener('click', onStatsToggleClick)
   exitBarEl = modalEl.querySelector('.tt_exitBar')
   exitBarRenderKey = ''
   // 新面板 = 新的（空的）状态条节点：上一份条目引用与数据签名一起作废，下次显示重建
@@ -8874,8 +10129,15 @@ function closeModal() {
   connDotEl = null
   connTargetEl = null
   connBadgeEl = null
+  connJumpBadgeEl = null
   connActionsEl = null
   closeTunnelPopover()
+  closeConnDetailPopover()
+  closeConnbarMoreMenu()
+  statsHistory.clear()
+  forgetStatsDom()
+  statsToggleEl = null
+  statsToggleMode = null
   stopStatsStaleTimer()
   statsBarEl = null
   discardStatsItems()

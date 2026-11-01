@@ -30,7 +30,30 @@ export interface StatsFrame {
     txRate?: number;
     /** CPU 温度（摄氏度）。 */
     tempC?: number;
+    /** 每核使用率 0~100（按 cpuN 顺序）。明细仪表盘的「CPU 核心」卡片用它。 */
+    cpuCores?: number[];
+    /**
+     * 进程候选集：**CPU 前 5 ∪ 内存前 5**（去重后最多 10 条）。客户端按 CPU 或内存排序，
+     * 各自都能拿到真正的头部——只发 CPU 前 5 的话，「按内存降序」只能在那 5 条里重排。
+     */
+    procs?: StatsProc[];
 }
+/** 一条进程占用（`procs` 的元素）。`cmd` 已去掉控制字符并截断。 */
+export interface StatsProc {
+    pid: number;
+    cmd: string;
+    /** 该进程占用的 CPU 百分比（多线程可 >100，上限 100×核数）。 */
+    cpuPct: number;
+    /** 该进程占用的内存百分比 0~100。 */
+    memPct: number;
+}
+/**
+ * 每个榜单取几条（卡片只列前 5 条）。
+ *
+ * 注意它限制的是**每个榜单**：帧里带的是「CPU 前 5 ∪ 内存前 5」（见 `pickProcLeaders`），
+ * 所以最多 10 条。客户端的列头可以在两把尺子之间切换，候选集必须两边都覆盖。
+ */
+export declare const MAX_PROCS_REPORTED = 5;
 /**
  * 帧的白名单清洗：非对象/未知键/非有限数值/越界一律丢弃，pct 与温度保留
  * 一位小数，字节与速率取整。返回 null = 这根本不是一帧 stats（调用方静默
@@ -38,6 +61,17 @@ export interface StatsFrame {
  * 「无数据」隐藏状态条）。
  */
 export declare function sanitizeStatsFrame(input: unknown): StatsFrame | null;
+/**
+ * 进程名的清洗：去掉控制字符 / 折叠空白 / 截断（远端 `ps` 的 comm 可能是任意字节）。
+ *
+ * **超长时保留尾部、砍掉开头**（2026-10-31，用户问「进程名对不上」的真因）：
+ * macOS 的 `ps comm` 是**完整路径**，而卡片上显示的是可执行文件名（`procDisplayName`）。
+ * 原来从头部截断（`/System/Library/PrivateFrameworks/Ecosystem.fra…`），客户端再取
+ * basename 就只剩被切断的路径片段——于是出现了 `Ecosystem.fra…` / `SkyLight.fram…` /
+ * `Ma…` 这种既不是路径也不是文件名的东西。保留尾部后，basename 一定完整，tooltip 里
+ * 也仍能看到路径的末段（`…/Contents/MacOS/Google Chrome`）。
+ */
+export declare function cleanProcName(input: string): string;
 /** 清洗后是否至少有一个指标（决定要不要发帧）。 */
 export declare function hasStatsData(frame: StatsFrame): boolean;
 /** /proc/stat 聚合行的累计计数器（差值即使用率）。 */
@@ -56,6 +90,89 @@ export interface CpuCounters {
 export declare function parseProcStat(text: string): CpuCounters | null;
 /** 两次累计计数器差值 → 使用率 0~100；窗口无效（无变化/回绕）返回 undefined。 */
 export declare function cpuPctBetween(prev: CpuCounters, next: CpuCounters): number | undefined;
+/** 单核的累计计数器（`parseProcStatCores` / `os.cpus()` 两路共用）。 */
+export interface CpuCoreCounters {
+    total: number;
+    idle: number;
+}
+/**
+ * /proc/stat 的 cpuN 行 → 每核计数器（按出现顺序）。
+ *
+ * 与 `parseProcStat` 分开遍历是有意的：聚合值必须**在**每核都读到时才可信，
+ * 而每核是明细仪表盘的附加信息——任一处拿不到只影响那一张卡片，不影响整条状态条。
+ */
+export declare function parseProcStatCores(text: string): CpuCoreCounters[];
+/**
+ * 两次每核读数 → 每核使用率。核数对不上（热插拔 / 两次读的是不同来源）时
+ * 返回 undefined：宁可这一帧不画，也不要按错位的序号张冠李戴。
+ */
+export declare function cpuCoresPctBetween(prev: CpuCoreCounters[], next: CpuCoreCounters[]): number[] | undefined;
+/**
+ * `ps -o pid=,pcpu=,pmem=,comm=` 的输出 → 前 `limit` 条进程。
+ *
+ * 只按**行首三列**切（pid / %CPU / %MEM），第四列之后全是命令名——`comm` 里带空格
+ * 的情况（macOS 的 app 路径）必须整体保留，不能用 split 后的最后一列。
+ * 列顺序与 `=` 号后缀是 `ps` 的 POSIX 写法，两平台一致（Linux procps / macOS BSD）。
+ */
+/**
+ * `ps` 的 `time` 列（累计 CPU 时间）→ 秒。macOS / Linux 的格式都覆盖：
+ * `mm:ss`、`mm:ss.cc`、`hh:mm:ss`、`[[dd-]hh:]mm:ss`。
+ *
+ * 为什么要解析这一列（2026-10-31，用户问「为什么和活动监视器对不上」）：macOS 的
+ * `ps %cpu` 是**最长一分钟的衰减平均**（man ps 原话），而活动监视器是**瞬时**采样；
+ * 两者本来就不该相等——突发型的 WindowServer 在 ps 里偏低，早先忙过后闲下来的进程在
+ * ps 里偏高。拿**两次采样的累计 CPU 时间之差**除以墙钟，才是同一口径的瞬时占用。
+ */
+export declare function parseCpuTime(text: string): number | null;
+/** 本地 `ps` 的一行：`pid pcpu time pmem comm`（`comm` 里可以有空格）。 */
+export interface ProcCpuRow {
+    pid: number;
+    /** ps 给的衰减平均（只有首次采样 / 计数器回退时用它兜底）。 */
+    cpuPct: number;
+    /** 累计 CPU 秒数。 */
+    cpuTime: number;
+    memPct: number;
+    cmd: string;
+}
+/**
+ * 解析 `ps -Ao pid=,pcpu=,time=,pmem=,comm=`（本地路径用；远端 awk 走 `parsePsOutput`）。
+ * 组的顺序是硬契约：前四个是数字列，剩下整段是命令（含空格）。
+ */
+export declare function parseProcCpuRows(text: string): ProcCpuRow[];
+/** 「上一次采样」的累计 CPU 时间标记（pid → 值与墙钟）。 */
+export interface ProcCpuMark {
+    cpuTime: number;
+    at: number;
+}
+/**
+ * 瞬时 CPU%：`Δ累计CPU / Δ墙钟 × 100`，与活动监视器同一口径。
+ *
+ * 兜底（退回 ps 的衰减平均）的四种情况，都会在真实机器上出现：
+ *   - **首见**（刚启动 / 新建的进程）：没有上一次可减；
+ *   - **计数器回退**（pid 复用、ps 输出异常）：差值 < 0 时不能算成负占用；
+ *   - **间隔太短**（< 1s，例如两次刷新挨在一起）：除出来的噪声极大；
+ *   - **ps 这一行没出现**（进程退出 / 被过滤）：直接从状态里剔除，免得 map 无限长。
+ *
+ * @param rows 本次采样
+ * @param prev 上次的标记（pid 字符串键，便于原样存进 JSON 友好的对象）
+ * @param nowMs 本次采样的墙钟
+ * @returns `pct`（与 rows 一一对应，0~100×核数）与新的状态
+ */
+export declare function procCpuUsage(rows: ProcCpuRow[], prev: Record<string, ProcCpuMark>, nowMs: number): {
+    pct: number[];
+    state: Record<string, ProcCpuMark>;
+};
+export declare function parsePsOutput(text: string, limit?: number): StatsProc[];
+/**
+ * 发给客户端的候选集：**CPU 前 `top` 条 ∪ 内存前 `top` 条**（按 pid 去重）。
+ *
+ * 为什么不是「CPU 前 5」：2026-11-01 用户拿本机对活动监视器，说「内存排名取得不对」——
+ * 根因就在这。帧里只有 CPU 前 5，客户端切到「按内存降序」时只能在这 5 条里重排，
+ * 微信那种 1.2 GB、CPU 却只有个位数的进程根本不在候选集里，于是内存榜第一名成了
+ * 某个 Chrome 辅助进程（它的 rss 高、CPU 也高）。两个榜单各取前 `top` 条再合并，
+ * 客户端按任一侧排序都能拿到真正的头部；去重后最多 `top * 2` 条，帧大小可以忽略。
+ */
+export declare function pickProcLeaders(list: StatsProc[], top?: number): StatsProc[];
 /** /proc/meminfo → 内存用量（bytes）。MemAvailable 优于 MemFree（缓存可回收）。 */
 export declare function parseMeminfo(text: string): {
     total: number;
@@ -118,6 +235,16 @@ export interface VmStat {
     compressed: number;
 }
 export declare function parseVmStat(text: string): VmStat | null;
+/**
+ * 远端循环里**子进程类字段**（磁盘 `df` / Top 进程 `ps`）的刷新间隔：1 秒一帧，
+ * 5 拍（= 5 秒）才 fork 一次。
+ *
+ * 为什么要有这个门（2026-10-31）：这两项都是 fork（df 还会先起一个 `sh -c`），而它们
+ * 的变化量远小于 1 秒——磁盘容量要几分钟才动、谁在吃 CPU 也不需要秒级分辨率。本地路径
+ * 早就按 `SLOW_TTL_MS = 5000` 缓存了同一批字段，远端循环当时只有 `ps` 压了频率、`df`
+ * 还在每秒跑，成了这条常驻循环里唯一「每秒一个子进程」的开销。
+ */
+export declare const REMOTE_SLOW_EVERY = 5;
 /** 导出 awk 主体（测试用：把死循环换成 if(0) 后可做语法自检）。 */
 export declare function remoteStatsAwk(): string;
 /**

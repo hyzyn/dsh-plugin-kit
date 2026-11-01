@@ -67,6 +67,9 @@ const SCENARIOS = [
   ['stats-off', '服务器状态条关闭（整条收起）'],
   ['stats-broken', '服务器状态条坏数据兜底（不崩、不变形）'],
   ['stats-slow', '服务器状态条：宿主采样慢（4s 一帧）时不能整条消失又出现'],
+  ['stats-minimal', '服务器状态条：极简模式（CPU / 内存 / 网络 + 趋势线，条上切换）'],
+  ['stats-dashboard', '服务器状态条：明细仪表盘（悬浮卡片：每核 / 网络 / 进程）'],
+  ['stats-sparse', '服务器状态条：低频字段（每 5 拍才带一次进程）时进程卡片不能闪'],
   ['multi', '多标签 + SSH 连接栏'],
   ['menu', '「+」新建菜单'],
   ['ssh', 'SSH 连接对话框'],
@@ -97,6 +100,7 @@ const SCENARIOS = [
   ['error', '连接错误遮罩'],
   ['tunnel', '隧道状态弹层'],
   ['connbar-more', '连接栏「⋯」更多（没配隧道的连接也能找到端口转发入口）'],
+  ['conn-detail', '连接栏地址 → 连接详情弹层（目标 / 跳板机 / 持久化）+ 两个复制项'],
   ['search', '搜索框展开'],
   ['toast', 'toast 提醒'],
   ['embed', '嵌入式终端（ttyTerminal.mount）'],
@@ -410,6 +414,13 @@ async function launchChrome() {
     // 东西的上下文（不抛错 → 不会回退 DOM 渲染器），截图里终端永远空白
     '--disable-3d-apis',
     '--disable-webgl',
+    /*
+     * Chrome 自己的进程沙箱在**外层沙箱里起不来**（2026-10-31 实测：agent 的
+     * workspace-write 沙箱内 CLI 起 headless Chrome，GPU/渲染进程一崩，DevTools
+     * 连接开了就断——socket `open` 后立刻 `close 1006`，或 `Page.enable` 永远不回）。
+     * 截图工具读的是本地夹具文件、不访问外网，关掉 Chrome 的沙箱换来可复现的截图。
+     */
+    '--no-sandbox',
     '--force-color-profile=srgb',
     '--font-render-hinting=none',
     ...extraChromeArgs,

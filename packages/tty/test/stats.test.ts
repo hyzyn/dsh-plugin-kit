@@ -15,7 +15,7 @@
  * 而不是假装通过。
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -25,19 +25,27 @@ import {
   buildWindowsStatsCommand,
   countNetstatEstablished,
   countTcpEstablished,
+  cleanProcName,
+  cpuCoresPctBetween,
   cpuPctBetween,
   createLocalSampler,
   hasStatsData,
+  parseCpuTime,
   parseDfKb,
   parseLoadavg,
   parseMeminfo,
   parseNetDev,
   parseNetstatIb,
+  parseProcCpuRows,
   parseProcStat,
+  parseProcStatCores,
   parseProcUptime,
+  parsePsOutput,
   parseStatsLine,
+  procCpuUsage,
   parseThermalTemp,
   parseVmStat,
+  pickProcLeaders,
   remoteStatsAwk,
   remoteStatsScript,
   remoteWindowsStatsScript,
@@ -293,6 +301,107 @@ describe('sanitizeStatsFrame（帧清洗）', () => {
   it('hasStatsData：空帧不算数据（不触发发帧）', () => {
     expect(hasStatsData({})).toBe(false)
     expect(hasStatsData({ cpuPct: 0 })).toBe(true)
+    // 明细字段单独存在也算「有数据」：只剩每核/进程的帧照样值得发（卡片要画）
+    expect(hasStatsData({ cpuCores: [1, 2] })).toBe(true)
+    expect(hasStatsData({ procs: [{ pid: 1, cmd: 'node', cpuPct: 1, memPct: 1 }] })).toBe(true)
+  })
+
+  it('cpuCores：越界/非数丢弃，超长截断，空数组不上送', () => {
+    expect(sanitizeStatsFrame({ cpuCores: [12.34, 200, Number.NaN, 'x', -1, 99.95] })).toEqual({ cpuCores: [12.3, 100] })
+    expect(sanitizeStatsFrame({ cpuCores: [] })).toEqual({})
+    expect(sanitizeStatsFrame({ cpuCores: 'x' })).toEqual({})
+    const many = Array.from({ length: 300 }, () => 1)
+    expect(sanitizeStatsFrame({ cpuCores: many })?.cpuCores?.length).toBe(128)
+  })
+
+  it('procs：缺字段/带控制字符/越界都按规则降级', () => {
+    const frame = sanitizeStatsFrame({
+      procs: [
+        { pid: 12.7, cmd: 'node\n\tworker', cpuPct: 12.34, memPct: 1.26 },
+        { pid: '#1', cmd: '', cpuPct: 5, memPct: 5 }, // 空命令名 → 丢
+        { pid: 3, cmd: 'bad', cpuPct: 'x', memPct: 5 }, // cpu 非数 → 丢
+        { pid: 4, cmd: 'clamp', cpuPct: -5, memPct: 250 },
+      ],
+    })
+    expect(frame?.procs).toEqual([
+      { pid: 13, cmd: 'node worker', cpuPct: 12.3, memPct: 1.3 },
+      { pid: 4, cmd: 'clamp', cpuPct: 0, memPct: 100 },
+    ])
+    expect(sanitizeStatsFrame({ procs: [] })).toEqual({})
+    expect(sanitizeStatsFrame({ procs: 'x' })).toEqual({})
+    // 上限是「CPU 前 5 ∪ 内存前 5」= 10 条：切到 5 的话，内存榜的头部会在上送这一步被切掉
+    const many = Array.from({ length: 14 }, (_item, index) => ({ pid: index + 1, cmd: 'p' + String(index), cpuPct: 1, memPct: 1 }))
+    expect(sanitizeStatsFrame({ procs: many })?.procs?.length).toBe(10)
+  })
+
+  /**
+   * 超长时**保留尾部**（2026-10-31）：macOS 的 comm 是完整路径，客户端取的是 basename。
+   * 从头部截断会把 basename 切成 `Ecosystem.fra…` 这种既不是路径也不是文件名的片段
+   * （用户报的就是这个：卡片上一排 `Framew…` / `Ma…`，认不出是哪个进程）。
+   */
+  it('cleanProcName：控制字符折叠成空格；超长时保留尾部（basename 不被切断）', () => {
+    expect(cleanProcName('  node\u0000\u0007 /a/b  ')).toBe('node /a/b')
+    expect(cleanProcName('x'.repeat(60)).length).toBe(48)
+    expect(cleanProcName('x'.repeat(60)).startsWith('…')).toBe(true)
+    const longPath = '/System/Library/PrivateFrameworks/Ecosystem.framework/Versions/A/Resources/Ecosystem'
+    const cleaned = cleanProcName(longPath)
+    expect(cleaned.endsWith('Ecosystem')).toBe(true)
+    expect(cleaned.startsWith('…')).toBe(true)
+    // 客户端取 basename 之后必须仍然是可执行文件名，而不是路径片段
+    expect(cleaned.slice(cleaned.lastIndexOf('/') + 1)).toBe('Ecosystem')
+  })
+})
+
+describe('parseProcStatCores / cpuCoresPctBetween（每核明细）', () => {
+  const sample = [
+    'cpu  1 2 3 4 5 6 7 8 9 10',
+    'cpu0 10 0 10 80 0 0 0 0 0 0',
+    'cpu1 30 0 30 40 0 0 0 0 0 0',
+    'intr 1',
+  ].join('\n')
+
+  it('只取 cpuN 行，按出现顺序', () => {
+    const cores = parseProcStatCores(sample)
+    expect(cores.length).toBe(2)
+    expect(cores[0]).toEqual({ total: 100, idle: 80 })
+    expect(cores[1]).toEqual({ total: 100, idle: 40 })
+  })
+
+  it('差值：100% 忙 / 50% / 核数不一致返回 undefined', () => {
+    expect(cpuCoresPctBetween([{ total: 0, idle: 0 }], [{ total: 100, idle: 0 }])).toEqual([100])
+    expect(cpuCoresPctBetween([{ total: 0, idle: 0 }], [{ total: 100, idle: 50 }])).toEqual([50])
+    expect(cpuCoresPctBetween([{ total: 0, idle: 0 }], [{ total: 100, idle: 50 }, { total: 1, idle: 1 }])).toBeUndefined()
+    expect(cpuCoresPctBetween([], [{ total: 1, idle: 0 }])).toBeUndefined()
+  })
+})
+
+describe('parsePsOutput（Top 进程）', () => {
+  it('四个字段对齐，命令名里的空格整体保留', () => {
+    const text = [
+      '  123  42.5  1.2 node',
+      '   88   3.0  0.4 /Applications/Visual Studio Code.app/Contents/MacOS/Electron',
+      '',
+    ].join('\n')
+    const rows = parsePsOutput(text)
+    expect(rows[0]).toEqual({ pid: 123, cmd: 'node', cpuPct: 42.5, memPct: 1.2 })
+    // 路径里的空格整体保留（不是只取最后一列）；超长时 cleanProcName **保留尾部**，
+    // 所以 basename（Electron）必须还在——这才是卡片上显示的那个名字
+    expect(rows[1].pid).toBe(88)
+    expect(rows[1].cpuPct).toBe(3)
+    expect(rows[1].memPct).toBe(0.4)
+    expect(rows[1].cmd.startsWith('…')).toBe(true)
+    // 尾部的可执行文件名必须完整（卡片上显示的就是它）
+    expect(rows[1].cmd.endsWith('Electron')).toBe(true)
+    expect(rows[1].cmd.length).toBe(48)
+  })
+
+  it('表头/空行/非数字 pid 都跳过；limit 生效', () => {
+    const text = ['  PID  %CPU  %MEM COMMAND', '  abc  1 1 x', '  1  1  1 a', '  2  2  2 b', '  3  3  3 c'].join('\n')
+    expect(parsePsOutput(text, 2).map((p) => p.pid)).toEqual([1, 2])
+  })
+
+  it('括号里的命令名（内核线程）照常解析', () => {
+    expect(parsePsOutput('  1  0.0  0.1 [kworker/0:1]')).toEqual([{ pid: 1, cmd: '[kworker/0:1]', cpuPct: 0, memPct: 0.1 }])
   })
 })
 
@@ -318,6 +427,137 @@ describe('StatsLineBuffer / parseStatsLine', () => {
   })
 })
 
+/**
+ * 本地进程的「瞬时 CPU」（2026-10-31，用户问「为什么和活动监视器对不上」）。
+ *
+ * 根因不在渲染而在**口径**：macOS `ps %cpu` 是「最长一分钟的衰减平均」（man ps 原文），
+ * 活动监视器是瞬时采样。所以本地路径改成：`ps` 只取**累计 CPU 时间**，两次采样做差
+ * 除以墙钟 → 与活动监视器同一口径（差值窗口 = 5s 的 TTL）。
+ */
+describe('进程候选集（CPU 前 5 ∪ 内存前 5）', () => {
+  /**
+   * 用户报的「本机的内存排名取得不对」就是这个函数的起因：帧里只有 CPU 前 5，
+   * 客户端切「按内存降序」时只能在那 5 条里重排，一个 1.2 GB、CPU 却只有个位数的
+   * 进程（微信）根本不在候选集里，内存榜第一名于是成了某个 Chrome 辅助进程。
+   */
+  const rows = [
+    { pid: 1, cmd: 'chrome-helper', cpuPct: 92, memPct: 2.2 },
+    { pid: 2, cmd: 'dockerd', cpuPct: 88, memPct: 0.7 },
+    { pid: 3, cmd: 'verge-mihomo', cpuPct: 84, memPct: 0.2 },
+    { pid: 4, cmd: 'ecosystemd', cpuPct: 80, memPct: 0.1 },
+    { pid: 5, cmd: 'mactop', cpuPct: 76, memPct: 0.1 },
+    { pid: 6, cmd: 'WeChat', cpuPct: 1.2, memPct: 40 },
+    { pid: 7, cmd: 'WindowServer', cpuPct: 0.4, memPct: 25 },
+  ]
+
+  it('内存榜的头部必须在候选集里（哪怕它的 CPU 排在第 6 名之外）', () => {
+    const picked = pickProcLeaders(rows, 5)
+    const pids = picked.map((proc) => proc.pid)
+    expect(pids).toContain(6)
+    expect(pids).toContain(7)
+    // CPU 榜的头部同样都在
+    expect(pids).toEqual(expect.arrayContaining([1, 2, 3, 4, 5]))
+    // 去重后最多 10 条
+    expect(picked.length).toBeLessThanOrEqual(10)
+    expect(new Set(pids).size).toBe(pids.length)
+  })
+
+  it('两个榜单重叠时不重复（同一个 pid 只出现一次）', () => {
+    const picked = pickProcLeaders([
+      { pid: 1, cmd: 'a', cpuPct: 90, memPct: 30 },
+      { pid: 2, cmd: 'b', cpuPct: 10, memPct: 1 },
+    ], 1)
+    expect(picked.map((proc) => proc.pid)).toEqual([1])
+  })
+
+  it('空输入 / top=0 都退化成空数组，不抛', () => {
+    expect(pickProcLeaders([])).toEqual([])
+    expect(pickProcLeaders(rows, 0)).toEqual([])
+  })
+})
+
+describe('本地进程的瞬时 CPU（两次累计时间的差值）', () => {
+  it('parseCpuTime：ps 的 time 列各种格式都能读成秒', () => {
+    expect(parseCpuTime('00:03:21')).toBe(201)
+    expect(parseCpuTime('03:21')).toBe(201)
+    expect(parseCpuTime('03:21.45')).toBeCloseTo(201.45, 5)
+    expect(parseCpuTime('1-02:03:04')).toBe(93784)
+    expect(parseCpuTime(' 0:00.00 ')).toBe(0)
+    expect(parseCpuTime('')).toBeNull()
+    expect(parseCpuTime('abc')).toBeNull()
+    expect(parseCpuTime('-5:00')).toBeNull()
+  })
+
+  it('parseProcCpuRows：pid / pcpu / time / pmem / comm（路径里有空格也切得对）', () => {
+    const text = [
+      '  431  12.4 00:03:21  4.2 /opt/homebrew/bin/node',
+      ' 1022   3.4 01:02:03  7.8 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '  76   0.9 1-02:03:04  6.4 /usr/lib/postgres',
+      'not a ps line',
+      '  99   1.0 abc       1.0 /usr/bin/whatever',
+    ].join('\n')
+    const rows = parseProcCpuRows(text)
+    expect(rows.map((row) => row.pid)).toEqual([431, 1022, 76])
+    // 路径里的空格没有被切碎；超过 48 字符时保留尾部，可执行文件名完整
+    expect(rows[1].cmd.startsWith('…')).toBe(true)
+    expect(rows[1].cmd.endsWith('Google Chrome')).toBe(true)
+    expect(rows[2].cpuTime).toBe(93784)
+    // 解析不了 time 的行直接丢（宁可少一行，也不把垃圾当占用率）
+    expect(rows.some((row) => row.pid === 99)).toBe(false)
+  })
+
+  it('procCpuUsage：首见用 ps 的衰减平均，第二次开始用差值（与活动监视器同口径）', () => {
+    const rows = [
+      { pid: 1, cpuPct: 12.4, cpuTime: 100, memPct: 1, cmd: 'a' },
+      { pid: 2, cpuPct: 40, cpuTime: 50, memPct: 1, cmd: 'b' },
+    ]
+    const first = procCpuUsage(rows, {}, 1_000_000)
+    expect(first.pct).toEqual([12.4, 40]) // 没有上一次：退回 ps 的值
+    // 5 秒后：pid 1 多用了 2.5 秒 CPU → 50%；pid 2 只多 0.05 秒 → 1%
+    const next = procCpuUsage(
+      [
+        { pid: 1, cpuPct: 12.4, cpuTime: 102.5, memPct: 1, cmd: 'a' },
+        { pid: 2, cpuPct: 40, cpuTime: 50.05, memPct: 1, cmd: 'b' },
+      ],
+      first.state,
+      1_005_000,
+    )
+    expect(next.pct).toEqual([50, 1])
+    // 状态里只剩还活着的 pid（退出的进程不能把 map 越拖越长）
+    expect(Object.keys(next.state)).toEqual(['1', '2'])
+  })
+
+  it('procs：ps 不认 time= 时退回 pcpu 老格式（进程列表不能因此整段消失）', async () => {
+    // 模拟「精简版 ps」：带 time= 的那条命令整体报错（空输出），老格式照常返回
+    const calls: string[] = []
+    const fakeExec = async (command: string, args: string[]) => {
+      calls.push(command + ' ' + args.join(' '))
+      if (args.join(' ').includes('time=')) return ''
+      return '  321  12.5  3.1 /usr/bin/node\n  77   4.0  1.5 /usr/bin/dockerd'
+    }
+    const sampler = createLocalSampler({
+      platform: 'darwin',
+      exec: fakeExec,
+      // darwin 的第一判据是「有没有 /proc」：这里假装没有，才会真的走 ps 分支
+      readFile: () => undefined,
+    })
+    const frame = await sampler.sample()
+    expect(calls.some((call) => call.includes('time='))).toBe(true)
+    expect(calls.some((call) => call.includes('pcpu='))).toBe(true)
+    expect(frame.procs?.map((row) => [row.pid, row.cpuPct])).toEqual([[321, 12.5], [77, 4]])
+  })
+
+  it('procCpuUsage：计数器回退 / 间隔太短 / 新进程都退回 ps 值（不出负数、不出噪声）', () => {
+    const prev = { '1': { cpuTime: 100, at: 1_000_000 } }
+    // pid 复用 → 累计时间变小：不能算成负占用
+    expect(procCpuUsage([{ pid: 1, cpuPct: 7, cpuTime: 10, memPct: 0, cmd: 'a' }], prev, 1_005_000).pct).toEqual([7])
+    // 间隔 200ms：除出来的噪声极大，退回 ps
+    expect(procCpuUsage([{ pid: 1, cpuPct: 7, cpuTime: 200, memPct: 0, cmd: 'a' }], prev, 1_000_200).pct).toEqual([7])
+    // 没见过的新进程：同样退回 ps
+    expect(procCpuUsage([{ pid: 2, cpuPct: 9, cpuTime: 5, memPct: 0, cmd: 'b' }], prev, 1_005_000).pct).toEqual([9])
+  })
+})
+
 describe('远端采集脚本 / 命令拼接', () => {
   it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('脚本是 POSIX sh 可解析的（sh -n）', () => {
     const script = remoteStatsScript()
@@ -334,6 +574,44 @@ describe('远端采集脚本 / 命令拼接', () => {
       const file = join(dir, 'probe.awk')
       writeFileSync(file, remoteStatsAwk().replace('while (1) {', 'if (0) {'), 'utf8')
       execFileSync('awk', ['-f', file, '/dev/null'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /*
+   * 慢字段的拍数门（2026-10-31）：`df` 与 `ps` 都是子进程，压到每 5 拍一次；中间的帧
+   * **沿用上次读数**而不是把字段丢掉（丢掉 = 状态条上「磁盘」一秒有、下一秒「无」，
+   * 与 D50 里「整条消失又出现」同一个毛病）。
+   *
+   * 验法是把这个常驻循环真的跑起来：`/proc` 换成夹具目录、死循环改成 `tick < 6`、
+   * `sleep 1` 抹掉，于是 6 拍里只有第 1、6 拍会真的跑 `df`，中间 4 拍的磁盘字段必须
+   * 等于第 1 拍。谁把 `jput("diskTotal")` 挪回 `if` 里面，这条就红。
+   */
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('远端循环：磁盘字段在非刷新拍沿用上次读数（5 拍一刷）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-proc-'))
+    try {
+      mkdirSync(join(dir, 'net'), { recursive: true })
+      writeFileSync(join(dir, 'stat'), PROC_STAT + '\n', 'utf8')
+      writeFileSync(join(dir, 'meminfo'), PROC_MEMINFO + '\n', 'utf8')
+      writeFileSync(join(dir, 'net', 'dev'), PROC_NET_DEV + '\n', 'utf8')
+      writeFileSync(join(dir, 'uptime'), '1000.00 4000.00\n', 'utf8')
+      const probe = remoteStatsAwk()
+        .replaceAll('/proc', dir)
+        .replace('while (1) {', 'while (tick < 6) {')
+        .replace('system("sleep 1")', '')
+      const file = join(dir, 'loop.awk')
+      writeFileSync(file, probe, 'utf8')
+      const out = execFileSync('awk', ['-f', file, '/dev/null'], { encoding: 'utf8' })
+      const frames = out.trim().split('\n').filter((line) => line !== '').map((line) => JSON.parse(line))
+      expect(frames.length).toBe(6)
+      const first = frames[0]
+      expect(typeof first.diskTotal).toBe('number')
+      for (const frame of frames) {
+        expect(frame.diskTotal).toBe(first.diskTotal)
+        expect(frame.diskUsed).toBe(first.diskUsed)
+        expect(frame.diskPct).toBe(first.diskPct)
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -378,6 +656,59 @@ function runAwkProbe(fn: string, base: string): string {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+describe('远端 Top 进程（pslist 的候选集）', () => {
+  /**
+   * 用户报的「本机的内存排名取得不对」在远端路径是同一个根因：`ps --sort=-pcpu` 只给出
+   * CPU 顺序，旧实现顺着它取前 5 条就收工，于是「按内存降序」只能在这 5 条里重排——
+   * 一个 40% 内存、CPU 只有 1.2% 的进程永远进不来。这里用假 `ps` 直接跑 awk 里的 pslist。
+   */
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('CPU 前 5 与内存前 5 的并集都会发给客户端', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-ps-'))
+    try {
+      const fake = join(dir, 'ps')
+      // 只回 -eo 那一路：真实远端会先试它，成功就不会退到 ps aux。
+      // 106/107 是「内存高、CPU 低」的两条——它们排在 CPU 第 6、7 名之外。
+      writeFileSync(fake, [
+        '#!/bin/sh',
+        'printf "%s\\n" \\',
+        '  "  101 92.0 0.3 node" \\',
+        '  "  102 88.0 0.2 dockerd" \\',
+        '  "  103 84.0 0.1 vim" \\',
+        '  "  104 80.0 0.1 top" \\',
+        '  "  105 76.0 0.1 ps" \\',
+        '  "  106  1.2 40.0 WeChat" \\',
+        '  "  107  0.4 25.0 WindowServer"',
+        '',
+      ].join('\n'), 'utf8')
+      chmodSync(fake, 0o755)
+      const source = remoteStatsAwk()
+      const probe = [
+        awkFunction(source, 'jesc'),
+        awkFunction(source, 'psread'),
+        awkFunction(source, 'pslist'),
+        'BEGIN { print pslist() }',
+      ].join('\n')
+      const file = join(dir, 'probe.awk')
+      writeFileSync(file, probe, 'utf8')
+      const out = execFileSync('awk', ['-f', file, '/dev/null'], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: dir + ':' + String(process.env.PATH ?? '') },
+      }).trim()
+      const pids = [...out.matchAll(/"pid":(\d+)/g)].map((match) => Number(match[1]))
+      expect(pids).toContain(106)
+      expect(pids).toContain(107)
+      expect(pids).toEqual(expect.arrayContaining([101, 102, 103, 104, 105]))
+      expect(pids.length).toBeLessThanOrEqual(10)
+      expect(new Set(pids).size).toBe(pids.length)
+      expect(out).toContain('"cmd":"WeChat"')
+      // 数值照抄 ps 的两列，别在并集逻辑里被改写
+      expect(out).toContain('"cpuPct":1.2,"memPct":40.0')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('远端 TCP 计数（tcpest + /proc 夹具）', () => {
   it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('established 只数状态码 01，且行首空白不能把状态列挤走', () => {

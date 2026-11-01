@@ -60,7 +60,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 <table>
 <tr>
-<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png" alt="终端面板：多标签真实 PTY + 顶部服务器状态条，下方抽屉是 SFTP 双栏（左本机 / 右远程）" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png" alt="终端面板：xterm 弹窗 + 完整模式服务器状态条（CPU / 内存 / 磁盘 / 在线 / TCP / 温度 / 网络）+ 资源明细浮层（每核柱 / 上下行双线 / Top 进程）" width="400"></td>
 <td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png" alt="Docker 容器面板：会话右侧栏标签，与对话同屏" width="400"></td>
 </tr>
 <tr>

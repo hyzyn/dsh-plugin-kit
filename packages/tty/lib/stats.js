@@ -20,6 +20,22 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { cpus, freemem, loadavg, totalmem, uptime as osUptime } from 'node:os';
 import { shSingleQuote } from './shell-integration.js';
 const STATS_KEYS = ['cpuPct', 'cores', 'memUsed', 'memTotal', 'memPct', 'diskUsed', 'diskTotal', 'diskPct', 'uptimeSec', 'tcpConns', 'rxRate', 'txRate', 'tempC'];
+/** 每核数组的上限：超过就是别人塞的垃圾，不上送（正常物理机 ≤ 256 核）。 */
+const MAX_CORES_REPORTED = 128;
+/**
+ * 每个榜单取几条（卡片只列前 5 条）。
+ *
+ * 注意它限制的是**每个榜单**：帧里带的是「CPU 前 5 ∪ 内存前 5」（见 `pickProcLeaders`），
+ * 所以最多 10 条。客户端的列头可以在两把尺子之间切换，候选集必须两边都覆盖。
+ */
+export const MAX_PROCS_REPORTED = 5;
+/**
+ * 一帧里最多带几条进程候选：**CPU 前 5 ∪ 内存前 5**（去重后 ≤ 10）。
+ *
+ * 客户端按 CPU 或内存排序都用这一份候选集，所以上限必须是两个榜单之和——
+ * 只留 5 条的话，内存榜的头部会在上送这一步被切掉（用户报的「内存排名不对」的另一半）。
+ */
+const MAX_PROCS_CANDIDATES = MAX_PROCS_REPORTED * 2;
 /** 数值边界：超出即视为解析垃圾丢弃（远端脚本被改写、df 输出异常、计数器回绕）。 */
 const LIMITS = {
     cpuPct: { min: 0, max: 100, int: false },
@@ -56,11 +72,82 @@ export function sanitizeStatsFrame(input) {
             continue;
         out[key] = limit.int ? Math.round(value) : Math.round(value * 10) / 10;
     }
+    const cores = sanitizeCpuCores(raw.cpuCores);
+    if (cores !== undefined)
+        out.cpuCores = cores;
+    const procs = sanitizeProcs(raw.procs);
+    if (procs !== undefined)
+        out.procs = procs;
     return out;
+}
+/**
+ * 每核数组的清洗：只留 0~100 的有限数，超长截断（半截数组也保留——前几个核的
+ * 信息仍然有用，卡片按实际长度画）。
+ */
+function sanitizeCpuCores(input) {
+    if (!Array.isArray(input))
+        return undefined;
+    const list = [];
+    for (const item of input) {
+        if (list.length >= MAX_CORES_REPORTED)
+            break;
+        if (typeof item !== 'number' || !Number.isFinite(item))
+            continue;
+        if (item < 0 || item > 100)
+            continue;
+        list.push(Math.round(item * 10) / 10);
+    }
+    return list.length > 0 ? list : undefined;
+}
+/**
+ * 进程名的清洗：去掉控制字符 / 折叠空白 / 截断（远端 `ps` 的 comm 可能是任意字节）。
+ *
+ * **超长时保留尾部、砍掉开头**（2026-10-31，用户问「进程名对不上」的真因）：
+ * macOS 的 `ps comm` 是**完整路径**，而卡片上显示的是可执行文件名（`procDisplayName`）。
+ * 原来从头部截断（`/System/Library/PrivateFrameworks/Ecosystem.fra…`），客户端再取
+ * basename 就只剩被切断的路径片段——于是出现了 `Ecosystem.fra…` / `SkyLight.fram…` /
+ * `Ma…` 这种既不是路径也不是文件名的东西。保留尾部后，basename 一定完整，tooltip 里
+ * 也仍能看到路径的末段（`…/Contents/MacOS/Google Chrome`）。
+ */
+export function cleanProcName(input) {
+    const text = input.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (text.length <= 48)
+        return text;
+    return '…' + text.slice(text.length - 47);
+}
+function sanitizeProcs(input) {
+    if (!Array.isArray(input))
+        return undefined;
+    const list = [];
+    for (const item of input) {
+        if (list.length >= MAX_PROCS_CANDIDATES)
+            break;
+        if (typeof item !== 'object' || item === null || Array.isArray(item))
+            continue;
+        const row = item;
+        const cmd = typeof row.cmd === 'string' ? cleanProcName(row.cmd) : '';
+        if (cmd === '')
+            continue;
+        const cpuRaw = typeof row.cpuPct === 'number' && Number.isFinite(row.cpuPct) ? row.cpuPct : Number.NaN;
+        const memRaw = typeof row.memPct === 'number' && Number.isFinite(row.memPct) ? row.memPct : Number.NaN;
+        if (!Number.isFinite(cpuRaw))
+            continue;
+        const pidRaw = typeof row.pid === 'number' && Number.isFinite(row.pid) ? Math.round(row.pid) : 0;
+        list.push({
+            pid: pidRaw > 0 && pidRaw < 2 ** 31 ? pidRaw : 0,
+            cmd,
+            // 多线程进程的 %CPU 会超过 100（top 口径），上限放到 100×核数后夹一刀
+            cpuPct: Math.round(Math.min(Math.max(cpuRaw, 0), 100_000) * 10) / 10,
+            memPct: Number.isFinite(memRaw) ? Math.round(Math.min(Math.max(memRaw, 0), 100) * 10) / 10 : 0,
+        });
+    }
+    return list.length > 0 ? list : undefined;
 }
 /** 清洗后是否至少有一个指标（决定要不要发帧）。 */
 export function hasStatsData(frame) {
-    return STATS_KEYS.some((key) => frame[key] !== undefined);
+    if (STATS_KEYS.some((key) => frame[key] !== undefined))
+        return true;
+    return (frame.cpuCores !== undefined && frame.cpuCores.length > 0) || (frame.procs !== undefined && frame.procs.length > 0);
 }
 /**
  * 解析 /proc/stat 的聚合行与 cpuN 行。iowait 计入 idle——与 top/htop 的默认口径
@@ -101,6 +188,198 @@ export function cpuPctBetween(prev, next) {
     if (!Number.isFinite(value))
         return undefined;
     return Math.min(100, Math.max(0, Math.round(value * 10) / 10));
+}
+/**
+ * /proc/stat 的 cpuN 行 → 每核计数器（按出现顺序）。
+ *
+ * 与 `parseProcStat` 分开遍历是有意的：聚合值必须**在**每核都读到时才可信，
+ * 而每核是明细仪表盘的附加信息——任一处拿不到只影响那一张卡片，不影响整条状态条。
+ */
+export function parseProcStatCores(text) {
+    const list = [];
+    for (const line of text.split('\n')) {
+        if (!/^cpu[0-9]/.test(line))
+            continue;
+        const cols = line.trim().split(/\s+/);
+        let total = 0;
+        for (let i = 1; i < cols.length; i += 1) {
+            const value = Number(cols[i]);
+            if (Number.isFinite(value))
+                total += value;
+        }
+        const idle = (Number(cols[4]) || 0) + (Number(cols[5]) || 0);
+        if (total <= 0)
+            continue;
+        list.push({ total, idle });
+        if (list.length >= MAX_CORES_REPORTED)
+            break;
+    }
+    return list;
+}
+/**
+ * 两次每核读数 → 每核使用率。核数对不上（热插拔 / 两次读的是不同来源）时
+ * 返回 undefined：宁可这一帧不画，也不要按错位的序号张冠李戴。
+ */
+export function cpuCoresPctBetween(prev, next) {
+    if (prev.length === 0 || prev.length !== next.length)
+        return undefined;
+    const out = [];
+    for (let i = 0; i < next.length; i += 1) {
+        const pct = cpuPctBetween({ total: prev[i].total, idle: prev[i].idle, cores: 1 }, { total: next[i].total, idle: next[i].idle, cores: 1 });
+        if (pct === undefined)
+            return undefined;
+        out.push(pct);
+    }
+    return out;
+}
+/**
+ * `ps -o pid=,pcpu=,pmem=,comm=` 的输出 → 前 `limit` 条进程。
+ *
+ * 只按**行首三列**切（pid / %CPU / %MEM），第四列之后全是命令名——`comm` 里带空格
+ * 的情况（macOS 的 app 路径）必须整体保留，不能用 split 后的最后一列。
+ * 列顺序与 `=` 号后缀是 `ps` 的 POSIX 写法，两平台一致（Linux procps / macOS BSD）。
+ */
+/**
+ * `ps` 的 `time` 列（累计 CPU 时间）→ 秒。macOS / Linux 的格式都覆盖：
+ * `mm:ss`、`mm:ss.cc`、`hh:mm:ss`、`[[dd-]hh:]mm:ss`。
+ *
+ * 为什么要解析这一列（2026-10-31，用户问「为什么和活动监视器对不上」）：macOS 的
+ * `ps %cpu` 是**最长一分钟的衰减平均**（man ps 原话），而活动监视器是**瞬时**采样；
+ * 两者本来就不该相等——突发型的 WindowServer 在 ps 里偏低，早先忙过后闲下来的进程在
+ * ps 里偏高。拿**两次采样的累计 CPU 时间之差**除以墙钟，才是同一口径的瞬时占用。
+ */
+export function parseCpuTime(text) {
+    const value = text.trim();
+    if (value === '')
+        return null;
+    let days = 0;
+    let rest = value;
+    const dash = rest.lastIndexOf('-');
+    if (dash > 0) {
+        days = Number(rest.slice(0, dash));
+        rest = rest.slice(dash + 1);
+        if (!Number.isFinite(days) || days < 0)
+            return null;
+    }
+    const parts = rest.split(':');
+    if (parts.length < 2 || parts.length > 3)
+        return null;
+    let seconds = 0;
+    for (const part of parts) {
+        const num = Number(part);
+        if (!Number.isFinite(num) || num < 0)
+            return null;
+        seconds = seconds * 60 + num;
+    }
+    return days * 86400 + seconds;
+}
+/**
+ * 解析 `ps -Ao pid=,pcpu=,time=,pmem=,comm=`（本地路径用；远端 awk 走 `parsePsOutput`）。
+ * 组的顺序是硬契约：前四个是数字列，剩下整段是命令（含空格）。
+ */
+export function parseProcCpuRows(text) {
+    const rows = [];
+    for (const line of text.split('\n')) {
+        const match = /^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+([\d.]+)\s+(.+?)\s*$/.exec(line);
+        if (match === null)
+            continue;
+        const cmd = cleanProcName(match[5]);
+        if (cmd === '')
+            continue;
+        const cpuTime = parseCpuTime(match[3]);
+        if (cpuTime === null)
+            continue;
+        const cpu = Number(match[2]);
+        if (!Number.isFinite(cpu))
+            continue;
+        const mem = Number(match[4]);
+        rows.push({
+            pid: Number(match[1]),
+            cpuPct: Math.min(Math.max(cpu, 0), 100_000),
+            cpuTime,
+            memPct: Number.isFinite(mem) ? Math.min(Math.max(mem, 0), 100) : 0,
+            cmd,
+        });
+    }
+    return rows;
+}
+/**
+ * 瞬时 CPU%：`Δ累计CPU / Δ墙钟 × 100`，与活动监视器同一口径。
+ *
+ * 兜底（退回 ps 的衰减平均）的四种情况，都会在真实机器上出现：
+ *   - **首见**（刚启动 / 新建的进程）：没有上一次可减；
+ *   - **计数器回退**（pid 复用、ps 输出异常）：差值 < 0 时不能算成负占用；
+ *   - **间隔太短**（< 1s，例如两次刷新挨在一起）：除出来的噪声极大；
+ *   - **ps 这一行没出现**（进程退出 / 被过滤）：直接从状态里剔除，免得 map 无限长。
+ *
+ * @param rows 本次采样
+ * @param prev 上次的标记（pid 字符串键，便于原样存进 JSON 友好的对象）
+ * @param nowMs 本次采样的墙钟
+ * @returns `pct`（与 rows 一一对应，0~100×核数）与新的状态
+ */
+export function procCpuUsage(rows, prev, nowMs) {
+    const state = {};
+    const pct = [];
+    for (const row of rows) {
+        const key = String(row.pid);
+        const last = prev[key];
+        let value = row.cpuPct;
+        if (last !== undefined) {
+            const elapsed = (nowMs - last.at) / 1000;
+            const delta = row.cpuTime - last.cpuTime;
+            if (elapsed >= 1 && delta >= 0)
+                value = (delta / elapsed) * 100;
+        }
+        state[key] = { cpuTime: row.cpuTime, at: nowMs };
+        pct.push(Math.round(Math.min(Math.max(value, 0), 100 * 1024) * 10) / 10);
+    }
+    return { pct, state };
+}
+export function parsePsOutput(text, limit = MAX_PROCS_REPORTED) {
+    const list = [];
+    for (const line of text.split('\n')) {
+        if (list.length >= limit)
+            break;
+        const match = /^\s*(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+?)\s*$/.exec(line);
+        if (match === null)
+            continue;
+        const cmd = cleanProcName(match[4]);
+        if (cmd === '')
+            continue;
+        const cpu = Number(match[2]);
+        const mem = Number(match[3]);
+        if (!Number.isFinite(cpu))
+            continue;
+        list.push({
+            pid: Number(match[1]),
+            cmd,
+            cpuPct: Math.round(Math.min(Math.max(cpu, 0), 100_000) * 10) / 10,
+            memPct: Number.isFinite(mem) ? Math.round(Math.min(Math.max(mem, 0), 100) * 10) / 10 : 0,
+        });
+    }
+    return list;
+}
+/**
+ * 发给客户端的候选集：**CPU 前 `top` 条 ∪ 内存前 `top` 条**（按 pid 去重）。
+ *
+ * 为什么不是「CPU 前 5」：2026-11-01 用户拿本机对活动监视器，说「内存排名取得不对」——
+ * 根因就在这。帧里只有 CPU 前 5，客户端切到「按内存降序」时只能在这 5 条里重排，
+ * 微信那种 1.2 GB、CPU 却只有个位数的进程根本不在候选集里，于是内存榜第一名成了
+ * 某个 Chrome 辅助进程（它的 rss 高、CPU 也高）。两个榜单各取前 `top` 条再合并，
+ * 客户端按任一侧排序都能拿到真正的头部；去重后最多 `top * 2` 条，帧大小可以忽略。
+ */
+export function pickProcLeaders(list, top = MAX_PROCS_REPORTED) {
+    const byCpu = [...list].sort((a, b) => b.cpuPct - a.cpuPct).slice(0, top);
+    const byMem = [...list].sort((a, b) => b.memPct - a.memPct).slice(0, top);
+    const seen = new Set();
+    const out = [];
+    for (const proc of [...byCpu, ...byMem]) {
+        if (seen.has(proc.pid))
+            continue;
+        seen.add(proc.pid);
+        out.push(proc);
+    }
+    return out;
 }
 /** /proc/meminfo → 内存用量（bytes）。MemAvailable 优于 MemFree（缓存可回收）。 */
 export function parseMeminfo(text) {
@@ -284,9 +563,20 @@ export function parseVmStat(text) {
  * 远端采集脚本（POSIX sh + awk，常驻循环）
  * ------------------------------------------------------------------ */
 /**
+ * 远端循环里**子进程类字段**（磁盘 `df` / Top 进程 `ps`）的刷新间隔：1 秒一帧，
+ * 5 拍（= 5 秒）才 fork 一次。
+ *
+ * 为什么要有这个门（2026-10-31）：这两项都是 fork（df 还会先起一个 `sh -c`），而它们
+ * 的变化量远小于 1 秒——磁盘容量要几分钟才动、谁在吃 CPU 也不需要秒级分辨率。本地路径
+ * 早就按 `SLOW_TTL_MS = 5000` 缓存了同一批字段，远端循环当时只有 `ps` 压了频率、`df`
+ * 还在每秒跑，成了这条常驻循环里唯一「每秒一个子进程」的开销。
+ */
+export const REMOTE_SLOW_EVERY = 5;
+/**
  * 远端脚本的 awk 主体。设计要点：
  *   - **单进程常驻**：awk 自己死循环，每秒读一遍 /proc 再 system("sleep 1")。
- *     比起 sh 里每秒起 6 个进程，开销可忽略（1 个常驻 awk，几百 KB 内存）。
+ *     比起 sh 里每秒起 6 个进程，开销可忽略（1 个常驻 awk，几百 KB 内存）；
+ *     子进程类字段（df / ps）另有 `REMOTE_SLOW_EVERY` 拍的门，不在每秒那一档。
  *   - **只依赖 POSIX awk**：getline/close/split/sprintf/system/fflush，无 gawk 扩展，
  *     busybox awk 亦可用。
  *   - **速率在远端算好**：CPU% = /proc/stat 差值，网速 = /proc/net/dev 差值 ÷
@@ -305,6 +595,94 @@ function jput(key, val) {
   if (val == "") return
   if (j != "") j = j ","
   j = j "\"" key "\":" val
+}
+# 直接拼一段**已经合法的 JSON**（数组 / 对象数组）：jput 只接标量，这两个字段是结构体
+function jraw(key, val) {
+  if (val == "") return
+  if (j != "") j = j ","
+  j = j "\"" key "\":" val
+}
+# JSON 字符串转义：进程名里可能有双引号/反斜杠，直接拼会破坏整帧
+function jesc(s,   out, i, ch) {
+  out = ""
+  for (i = 1; i <= length(s); i++) {
+    ch = substr(s, i, 1)
+    if (ch == "\\") out = out "\\\\"
+    else if (ch == "\"") out = out "\\\""
+    else out = out ch
+  }
+  return out
+}
+# Top 进程：先试 POSIX 的 ps -o（procps / BSD 都认 "=" 后缀写法），拿不到再退 ps aux
+# ——busybox 之类不认 -eo 的实现也有机会给出数据。只在每 5 拍跑一次（见主循环）。
+#
+# 一次 ps 读进数组，返回行数。shift 区分两种格式（0 = ps -eo pid=,pcpu=,pmem=,comm=，
+# 1 = ps aux）：两种格式的列序不同，分开取才不会把 CPU 读成 pid。
+function psread(cmd, shift, PIDS, CPUS, MEMS, CMDS,   line, f, m, c, n, pid, cpu, mem, cmdname) {
+  n = 0
+  while ((cmd | getline line) > 0) {
+    # 列右对齐 → 行首全是空格：先削掉再 split，否则会多出一个空首字段、整行列错位
+    sub(/^[ \t]+/, "", line)
+    m = split(line, f, /[ \t]+/)
+    if (shift == 0) {
+      if (m < 4) continue
+      if (f[1] !~ /^[0-9]+$/) continue
+      pid = f[1] + 0
+      cpu = f[2] + 0
+      mem = f[3] + 0
+      cmdname = f[4]
+      for (c = 5; c <= m; c++) cmdname = cmdname " " f[c]
+    } else {
+      if (m < 11) continue
+      if (f[2] !~ /^[0-9]+$/) continue
+      pid = f[2] + 0
+      cpu = f[3] + 0
+      mem = f[4] + 0
+      cmdname = f[11]
+      for (c = 12; c <= m; c++) cmdname = cmdname " " f[c]
+    }
+    if (cmdname == "") continue
+    n++
+    PIDS[n] = pid
+    CPUS[n] = cpu
+    MEMS[n] = mem
+    CMDS[n] = cmdname
+    if (n >= 6000) break
+  }
+  close(cmd)
+  return n
+}
+#
+# Top 进程的候选集：**CPU 前 5 + 内存前 5 的并集**（按 pid 去重，最多 10 条）。
+#
+# 为什么不能顺着 ps --sort=-pcpu 只取前 5 条：那是「CPU 前 5」，客户端切到
+# 「按内存降序」时只能在这 5 条里重排——微信那种 1.2 GB、CPU 却只有个位数的进程
+# 根本不在候选集里，内存榜第一名于是变成某个 Chrome 辅助进程（用户报的「本机的内存
+# 排名取得不对」，本地路径同一个根因，见 pickProcLeaders）。一次读完、按两把尺子
+# 各选 5 条再合并，两个榜单的头都在里面。
+function pslist(   n, PIDS, CPUS, MEMS, CMDS, used, out, k, i, best, bv, v, cnt) {
+  n = psread("ps -eo pid=,pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null", 0, PIDS, CPUS, MEMS, CMDS)
+  if (n == 0) n = psread("ps aux 2>/dev/null", 1, PIDS, CPUS, MEMS, CMDS)
+  out = ""
+  for (k = 1; k <= 2; k++) {
+    for (cnt = 0; cnt < 5; cnt++) {
+      best = 0
+      bv = -1
+      for (i = 1; i <= n; i++) {
+        if (i in used) continue
+        v = (k == 1) ? CPUS[i] : MEMS[i]
+        if (v > bv) {
+          bv = v
+          best = i
+        }
+      }
+      if (best == 0) break
+      used[best] = 1
+      if (out != "") out = out ","
+      out = out "{\"pid\":" sprintf("%d", PIDS[best]) ",\"cmd\":\"" jesc(CMDS[best]) "\",\"cpuPct\":" sprintf("%.1f", CPUS[best]) ",\"memPct\":" sprintf("%.1f", MEMS[best]) "}"
+    }
+  }
+  return out
 }
 # /proc/net/tcp{,6} 的 established 计数（状态码 01），读不到任何一份时返回 -1
 # ——调用方据此省略字段（前端显示「无」），而不是报 0（0 会被当成「没有连接」）。
@@ -335,15 +713,44 @@ function tcpest(base,   fi, tp, td, n, L, i, m, f, tcp, have, ln) {
 BEGIN {
   seenCpu = 0
   seenNet = 0
+  coreReady = 0
+  tick = 0
+  dhave = 0
   while (1) {
+    # tick 在**帧首**自增：磁盘容量与 Top 进程这两处慢字段共用它当「每 N 拍一次」的相位，
+    # 放在循环末尾会让第一帧落在 tick=0 上（% 5 != 1）——首帧就没有磁盘与进程数据。
+    tick++
     j = ""
     st = slurp("/proc/stat")
     cpuPct = ""
     cores = 0
+    coreJson = ""
+    coreN = 0
     if (st != "") {
       n = split(st, L, "\n")
       for (i = 1; i <= n; i++) {
-        if (L[i] ~ /^cpu[0-9]/) { cores++ }
+        if (L[i] ~ /^cpu[0-9]/) {
+          cores++
+          # 每核明细：与聚合值同一口径（全列求和当分母，idle+iowait 当空闲）。
+          # coreReady 单独一个标志：聚合行在 cpuN 之前，用 seenCpu 会让第一拍拿
+          # 0 作基线算出一整排假百分比。
+          m = split(L[i], c, /[ \t]+/)
+          cTot = 0
+          for (k = 2; k <= m; k++) if (c[k] != "") cTot = cTot + c[k]
+          cIdle = c[5] + c[6]
+          if (coreReady == 1 && cores <= 128 && cTot > pCoreTot[cores]) {
+            dtc = cTot - pCoreTot[cores]
+            dic = cIdle - pCoreIdle[cores]
+            v = (dtc - dic) * 100 / dtc
+            if (v < 0) v = 0
+            if (v > 100) v = 100
+            if (coreJson != "") coreJson = coreJson ","
+            coreJson = coreJson sprintf("%.1f", v)
+            coreN++
+          }
+          pCoreTot[cores] = cTot
+          pCoreIdle[cores] = cIdle
+        }
         else if (L[i] ~ /^cpu /) {
           m = split(L[i], c, /[ \t]+/)
           tot = 0
@@ -364,9 +771,11 @@ BEGIN {
           seenCpu = 1
         }
       }
+      if (cores > 0) coreReady = 1
     }
     jput("cpuPct", cpuPct)
     if (cores > 0) jput("cores", sprintf("%d", cores))
+    if (coreN > 0) jraw("cpuCores", "[" coreJson "]")
 
     mi = slurp("/proc/meminfo")
     memTot = 0
@@ -430,21 +839,29 @@ BEGIN {
     tcp = tcpest("/proc")
     if (tcp >= 0) jput("tcpConns", sprintf("%d", tcp))
 
-    cmd = "df -kP / 2>/dev/null"
-    dn = 0
-    dfl = ""
-    while ((cmd | getline dline) > 0) { dn++; dfl = dline }
-    close(cmd)
-    if (dn > 0) {
-      m = split(dfl, f, /[ \t]+/)
-      if (m >= 3 && (f[2] + 0) > 0) {
-        dtot = (f[2] + 0) * 1024
-        dused = (f[3] + 0) * 1024
-        if (dused < 0) dused = 0
-        jput("diskTotal", sprintf("%.0f", dtot))
-        jput("diskUsed", sprintf("%.0f", dused))
-        jput("diskPct", sprintf("%.1f", dused * 100 / dtot))
+    # 磁盘容量：df 会 fork 一个 "sh -c" + 一个 df，和 Top 进程一样压到每 5 拍一次；
+    # 中间的帧沿用上次读数（容量本来也不会每秒变）。读不到的拍不覆盖旧值——按「沿用」
+    # 处理，而不是把字段变成「无」再变回来。
+    if (tick % ${REMOTE_SLOW_EVERY} == 1) {
+      cmd = "df -kP / 2>/dev/null"
+      dn = 0
+      dfl = ""
+      while ((cmd | getline dline) > 0) { dn++; dfl = dline }
+      close(cmd)
+      if (dn > 0) {
+        m = split(dfl, f, /[ \t]+/)
+        if (m >= 3 && (f[2] + 0) > 0) {
+          dtot = (f[2] + 0) * 1024
+          dused = (f[3] + 0) * 1024
+          if (dused < 0) dused = 0
+          dhave = 1
+        }
       }
+    }
+    if (dhave == 1) {
+      jput("diskTotal", sprintf("%.0f", dtot))
+      jput("diskUsed", sprintf("%.0f", dused))
+      jput("diskPct", sprintf("%.1f", dused * 100 / dtot))
     }
 
     if (tempf != "") {
@@ -456,6 +873,12 @@ BEGIN {
       } else {
         close(tempf)
       }
+    }
+
+    # Top 进程：5 拍一次（ps 是子进程，秒级分辨率没有意义，还会给远端加负载）
+    if (tick % ${REMOTE_SLOW_EVERY} == 1) {
+      plist = pslist()
+      if (plist != "") jraw("procs", "[" plist "]")
     }
 
     printf "{%s}\n", j
@@ -656,10 +1079,21 @@ async function primeSlot(slot, run) {
 }
 function execFileText(command, args) {
     return new Promise((resolve) => {
-        execFile(command, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
-            // best-effort：命令缺失/超时/非零退出都当作「拿不到」，返回空串由解析层降级
-            resolve(error === null || error === undefined ? String(stdout) : '');
-        });
+        try {
+            execFile(command, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+                // best-effort：命令缺失/超时/非零退出都当作「拿不到」，返回空串由解析层降级
+                resolve(error === null || error === undefined ? String(stdout) : '');
+            });
+        }
+        catch {
+            /*
+             * 沙箱 / 系统策略拒绝 spawn 时，`execFile` 是**同步抛**（实测 EPERM: spawn ps）——
+             * 不是走回调。以前这条路径没人踩到（df/netstat 都还允许），明细仪表盘加了 `ps`
+             * 之后一上来就把它踩穿了：一次同步异常能让整帧采样 reject → 状态条全空。
+             * 按「拿不到」返回空串，符合本模块的 best-effort 不变式。
+             */
+            resolve('');
+        }
     });
 }
 function readTextFile(path) {
@@ -736,11 +1170,14 @@ export function createLocalSampler(deps = {}) {
     /** 「可选文件」读取（读不到 = undefined，与 tryRead 同语义）。 */
     const readOptional = deps.readFile ?? tryRead;
     let prevCpu = null;
+    /** 每核的上一次读数（明细仪表盘的「CPU 核心」卡片；与聚合值各走各的来源）。 */
+    let prevCores = null;
     let prevNet = null;
     const netSlot = emptySlot();
     const diskSlot = emptySlot();
     const tcpSlot = emptySlot();
     const vmSlot = emptySlot();
+    const procSlot = emptySlot();
     let memo = null;
     let inflight = null;
     /** 首次采样没有差值窗口：退化为 load1/核心数（明确标注的 best-effort 近似）。 */
@@ -782,6 +1219,78 @@ export function createLocalSampler(deps = {}) {
         prevCpu = next;
         const pct = prev !== null ? cpuPctBetween(prev, next) : loadApprox(next.cores);
         return pct === undefined ? { cores: next.cores } : { pct, cores: next.cores };
+    };
+    /**
+     * 每核使用率：Linux 读 /proc/stat 的 cpuN 行，其余平台用 `os.cpus()` 的每核累计时间。
+     *
+     * 首次采样没有差值窗口就**省略**（不发一排 0）：卡片上「16 核全部 0%」比「暂无每核数据」
+     * 更容易被误读成机器空闲。核数变化（热插拔 / 两次来源不一致）也走省略。
+     */
+    const cpuCoresNow = () => {
+        let next = [];
+        const stat = readOptional('/proc/stat');
+        if (stat !== undefined)
+            next = parseProcStatCores(stat);
+        if (next.length === 0) {
+            next = cpus().map((cpu) => {
+                const times = cpu.times;
+                return { total: times.user + times.nice + times.sys + times.idle + times.irq, idle: times.idle };
+            });
+        }
+        if (next.length === 0)
+            return undefined;
+        const prev = prevCores;
+        prevCores = next;
+        if (prev === null)
+            return undefined;
+        return cpuCoresPctBetween(prev, next);
+    };
+    /**
+     * Top 进程（明细仪表盘）：`ps` 是子进程，走 5s TTL 槽位——帧每秒都在推，
+     * 但「谁在吃 CPU」不需要秒级分辨率，压到 5s 一次也就不会每秒 fork 一个 ps。
+     */
+    /*
+     * 上一次采样时每个进程的累计 CPU 秒数。用两次差值算「瞬时占用」——`ps` 的 `%cpu`
+     * 是**最长一分钟的衰减平均**（man ps），跟活动监视器那种瞬时采样对不上；用户第一眼
+     * 就会觉得「这数据是错的」。差值窗口正好是 `SLOW_TTL_MS`（5 秒），与活动监视器的
+     * 默认刷新间隔同量级。
+     */
+    let prevProcMarks = {};
+    const procRun = async () => {
+        const text = platform === 'darwin'
+            ? await exec('ps', ['-Ao', 'pid=,pcpu=,time=,pmem=,comm=', '-r'])
+            : await exec('ps', ['-eo', 'pid=,pcpu=,time=,pmem=,comm=', '--sort=-pcpu']);
+        const rows = text === '' ? [] : parseProcCpuRows(text);
+        if (rows.length === 0) {
+            /*
+             * 兼容性兜底：`time=` 是「累计 CPU 时间」的关键字，macOS / Linux(procps) 都认，
+             * 但精简版 ps（busybox 等）可能整个命令报错 → 空输出。那时退回**只有 pcpu 的
+             * 老格式**：数值退化成衰减平均（与旧行为一致），但进程列表不会因此整段消失。
+             */
+            const plain = platform === 'darwin'
+                ? await exec('ps', ['-Ao', 'pid=,pcpu=,pmem=,comm=', '-r'])
+                : await exec('ps', ['-eo', 'pid=,pcpu=,pmem=,comm=', '--sort=-pcpu']);
+            prevProcMarks = {};
+            // 同上：先全量解析，再由 pickProcLeaders 取两个榜单的并集
+            const all = plain === '' ? [] : parsePsOutput(plain, Number.POSITIVE_INFINITY);
+            const fallback = pickProcLeaders(all);
+            return fallback.length > 0 ? fallback : null;
+        }
+        const nowMs = Date.now();
+        const usage = procCpuUsage(rows, prevProcMarks, nowMs);
+        prevProcMarks = usage.state;
+        const list = rows.map((row, index) => ({
+            pid: row.pid,
+            cmd: row.cmd,
+            cpuPct: usage.pct[index],
+            memPct: Math.round(row.memPct * 10) / 10,
+        }));
+        // 不在这里按 CPU 切 5 条：客户端还要按内存排序，候选集得覆盖两个榜单
+        return pickProcLeaders(list);
+    };
+    const procsNow = async () => {
+        await primeSlot(procSlot, procRun);
+        return readSlot(procSlot, SLOW_TTL_MS, procRun);
     };
     /**
      * macOS 的内存口径：vm_stat（active + wired + compressed），失败退回 os.freemem。
@@ -915,6 +1424,18 @@ export function createLocalSampler(deps = {}) {
         const temp = readThermalC();
         if (temp !== undefined)
             raw.tempC = temp;
+        // 明细仪表盘的额外字段：拿不到就整段省略（卡片按「暂无数据」降级，不影响整条）
+        try {
+            const corePcts = cpuCoresNow();
+            if (corePcts !== undefined)
+                raw.cpuCores = corePcts;
+            const procs = await procsNow();
+            if (procs !== null)
+                raw.procs = procs;
+        }
+        catch {
+            /* 附加信息失败不影响整帧：主指标照发 */
+        }
         return sanitizeStatsFrame(raw) ?? {};
     };
     return {

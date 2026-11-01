@@ -62,7 +62,7 @@ and you can install them one by one or all at once with the aggregate package.
 
 <table>
 <tr>
-<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png" alt="Terminal panel: multi-tab real PTY with the server status bar, and the SFTP dual-pane drawer below (local on the left, remote on the right)" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png" alt="Terminal panel: xterm modal + full-mode server status bar (CPU / memory / disk / uptime / TCP / temperature / network) + resource dashboard (per-core bars / up-down lines / top processes)" width="400"></td>
 <td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png" alt="Docker container panel: docked as a sidebar tab next to the conversation" width="400"></td>
 </tr>
 <tr>

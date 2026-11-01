@@ -58,11 +58,20 @@ export function formatRate(bytesPerSec) {
   return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index] + '/s'
 }
 
-/** 进度条档位：<70 正常 / 70~90 黄 / >=90 红。 */
+/**
+ * 告警阈值：越过它就转橙，**也是两条折线上那条虚线画的位置**。
+ *
+ * 2026-11-01 从 70 统一到 80：折线一旦带参考线，「线在哪、色从哪变」就必须是同一个数——
+ * 否则 72% 的曲线已经变橙、却还在虚线下面，用户看到的是自相矛盾的两个信号。
+ * 只留一个数（这个常量），进度条 / 每核柱 / 进程 CPU 列 / 折线都从这里取。
+ */
+export const STATS_WARN_LIMIT = 80
+
+/** 进度条档位：<80 正常 / 80~90 橙 / >=90 红。 */
 export function statsLevel(pct) {
   if (!Number.isFinite(pct)) return ''
   if (pct >= 90) return 'danger'
-  if (pct >= 70) return 'warn'
+  if (pct >= STATS_WARN_LIMIT) return 'warn'
   return ''
 }
 
@@ -79,7 +88,12 @@ export function statsRate(value, t) {
   return formatRate(value) || t('list.none')
 }
 
-/** uptime 秒 → FinalShell 风格（2w4d7h16m / 3h5m / 12m / 45s）。 */
+/**
+ * uptime 秒 → FinalShell 风格（2w4d7h16m / 3h5m / 12m / 45s）。
+ *
+ * **尾部的零不写**（2026-10-31，对齐 FinalShell）：`9w3d5h0m` → `9w3d5h`、`2w0d0h0m` → `2w`。
+ * 只去**尾部**的零——中间那些零是必要的（`3d0h5m` 去掉 0h 会读成 3 天 5 分）。
+ */
 export function formatUptime(sec, t) {
   if (!Number.isFinite(sec) || sec < 0) return t('list.none')
   const total = Math.floor(sec)
@@ -87,18 +101,32 @@ export function formatUptime(sec, t) {
   const days = Math.floor((total % 604800) / 86400)
   const hours = Math.floor((total % 86400) / 3600)
   const minutes = Math.floor((total % 3600) / 60)
+  /** `[值, 单位]`；只要有任何更高位就保留这一位（哪怕它是 0），好让 `3d0h5m` 读得对。 */
   const parts = []
-  if (weeks > 0) parts.push(weeks + 'w')
-  if (weeks > 0 || days > 0) parts.push(days + 'd')
-  if (weeks > 0 || days > 0 || hours > 0) parts.push(hours + 'h')
-  if (weeks > 0 || days > 0 || hours > 0 || minutes > 0) parts.push(minutes + 'm')
-  return parts.length > 0 ? parts.join('') : total + 's'
+  if (weeks > 0) parts.push([weeks, 'w'])
+  if (parts.length > 0 || days > 0) parts.push([days, 'd'])
+  if (parts.length > 0 || hours > 0) parts.push([hours, 'h'])
+  if (parts.length > 0 || minutes > 0) parts.push([minutes, 'm'])
+  while (parts.length > 1 && parts[parts.length - 1][0] === 0) parts.pop()
+  return parts.length > 0 ? parts.map(([value, unit]) => String(value) + unit).join('') : total + 's'
 }
 
 /** 「已用/总量」对：任一侧缺失或总量为 0 都退化成「无」。 */
 export function statsPair(used, total, t) {
   if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return t('list.none')
-  return (formatBytes(used) || '0 B') + '/' + (formatBytes(total) || '0 B')
+  const usedText = formatBytes(used) || '0 B'
+  const totalText = formatBytes(total) || '0 B'
+  /*
+   * 单位相同就只写一次（`52.3/62.3 GB`，FinalShell 的写法）：省 3 个字符，读起来也更像
+   * 「已用/总量」而不是两个独立测量值。单位不同（`512 B/1.0 KB`）时两侧都保留——否则
+   * `512/1.0 KB` 里的 512 就不知道是什么单位。
+   */
+  const usedUnit = / ([A-Z]+)$/.exec(usedText)
+  const totalUnit = / ([A-Z]+)$/.exec(totalText)
+  if (usedUnit !== null && totalUnit !== null && usedUnit[1] === totalUnit[1]) {
+    return usedText.slice(0, -(usedUnit[1].length + 1)) + '/' + totalText
+  }
+  return usedText + '/' + totalText
 }
 
 /**
@@ -126,6 +154,52 @@ export const STATS_FIELDS = ['cpuPct', 'cores', 'memUsed', 'memTotal', 'memPct',
 export function hasUsableStats(stats) {
   if (stats === null || typeof stats !== 'object' || Array.isArray(stats)) return false
   return STATS_FIELDS.some((key) => statsNum(stats, key) !== null)
+}
+
+/**
+ * **低频字段**：宿主不是每帧都带（每核 / Top 进程），缺席 ≠ 没数据。
+ *
+ * SSH 远端的常驻 awk 把 `ps` 压到 5 拍一次（`tick % 5 == 1`，秒级分辨率没有意义，
+ * 还会给远端加负载），本地 `os.cpus()` 的差值窗口也是从第二帧才有。所以 1 秒一帧里
+ * 有 4 帧**没有**这两个键——渲染层若把「帧里没有这个键」读成「采不到」，进程卡片就会
+ * 在「5 行列表」与「暂无进程数据」之间每秒翻一次（用户报的「怎么一闪一闪的」，
+ * 2026-10-31，SSH 会话）。
+ */
+export const OPTIONAL_STATS_KEYS = ['cpuCores', 'procs']
+
+/** 该字段值能不能拿来画：只有非空数组才算「有」。 */
+function statsListPresent(value) {
+  return Array.isArray(value) && value.length > 0
+}
+
+/**
+ * 把本帧里**缺席的低频字段**补成上一帧的值（帧级合并，纯函数）。
+ *
+ * - 本帧带了该字段（非空数组）→ 用本帧的，覆盖旧的；
+ * - 本帧没带 / 空数组 → 沿用上一帧的（`ps` 每 5 秒才跑一次，中间的 4 帧不该变「暂无」）；
+ * - 上一帧也没有 → 保持缺席，渲染层显示「暂无」（真的从没采到过才这么显示）；
+ * - 只处理 `OPTIONAL_STATS_KEYS`，其它字段（CPU / 内存 / 网速…）**绝不沿用**——
+ *   那些是每秒的实测量，沿用上一帧等于显示旧值却看不出旧；
+ * - 不改入参（帧对象可能还被 WS 层别处引用），永远返回新对象。
+ *
+ * 代价：宿主真的不再上报该字段时，卡片会停在上一次的值上（最多 5 秒一次刷新）；
+ * 这一点可接受——整条「无数据」由 `hasUsableStats` / `statsFrameFresh` 兜住。
+ *
+ * @param {object | null | undefined} prev 上一帧（合并后的）
+ * @param {object} next 本帧
+ * @returns {object} 合并结果
+ */
+export function mergeOptionalStats(prev, next) {
+  const merged = { ...next }
+  const base = prev !== null && typeof prev === 'object' && !Array.isArray(prev) ? prev : null
+  if (base === null) return merged
+  for (const key of OPTIONAL_STATS_KEYS) {
+    if (statsListPresent(merged[key])) continue
+    const last = base[key]
+    if (statsListPresent(last)) merged[key] = last
+    else delete merged[key]
+  }
+  return merged
 }
 
 /**
@@ -167,13 +241,16 @@ const NET_SLOT = 23
 export function statsItemSpecs(t) {
   return [
     { key: 'cpuPct', label: 'CPU', kind: 'pct', slot: 4 }, // 100% = 4
-    { key: 'memPct', label: t('meta.mem'), kind: 'pct', slot: 4 },
-    { key: 'diskPct', label: t('meta.disk'), kind: 'pct', slot: 4 },
     { key: 'cores', label: t('meta.cores'), kind: 'count', slot: 4 }, // 4096 = 4
-    { key: 'mem', label: t('meta.mem'), kind: 'pair', slot: 17, used: 'memUsed', total: 'memTotal' }, // 999.9 GB/999.9 GB = 17
+    /*
+     * 2026-10-31（对齐 FinalShell 会话监控条）：**一项资源一条**——百分比、迷你条、已用/总量
+     * 同组，`内存` 这个标签只出现一次。此前是 `内存 84%` 与 `内存 52.3 GB/62.3 GB` 两条并列，
+     * 标签重复、视线要来回跳。
+     */
+    { key: 'mem', label: t('meta.mem'), kind: 'pctpair', pctKey: 'memPct', used: 'memUsed', total: 'memTotal', slot: 24 },
+    { key: 'disk', label: t('meta.disk'), kind: 'pctpair', pctKey: 'diskPct', used: 'diskUsed', total: 'diskTotal', slot: 24 },
     { key: 'uptimeSec', label: t('meta.uptime'), kind: 'uptime', slot: 13 }, // 上限 100 年 = 5217w6d23h59m = 13
     { key: 'tcpConns', label: 'TCP', kind: 'count', slot: 6 }, // 999999 = 6（1000 万连接只存在于脏数据里）
-    { key: 'disk', label: t('meta.disk'), kind: 'pair', slot: 17, used: 'diskUsed', total: 'diskTotal' },
     { key: 'tempC', label: t('meta.temp'), kind: 'temp', slot: 8 }, // 199.9°C = 7 字符，但「°」在部分字体里按全角渲染，留一位
     { key: 'net', label: t('meta.net'), kind: 'net', slot: NET_SLOT }, // 有速率时用固定槽位；「无」时不留（见 statsItemValues）
   ]
@@ -208,6 +285,23 @@ export function statsItemValues(stats, t) {
       const value = num(spec.key)
       return make(spec, value === null ? t('list.none') : Math.round(value) + '%', value)
     }
+    /*
+     * 百分比 + 已用/总量**同一条**（`86% (53.5/62.3 GB)`）：两者必须来自同一帧，缺哪一半就
+     * 只画另一半——不拼 `86% (无)` 这种自相矛盾的读数，也不把缺失的百分比画成 0%。
+     */
+    if (spec.kind === 'pctpair') {
+      const pct = num(spec.pctKey)
+      const pair = statsPair(num(spec.used), num(spec.total), t)
+      const hasPair = pair !== t('list.none')
+      const value = pct !== null && hasPair
+        ? Math.round(pct) + '% (' + pair + ')'
+        : pct !== null
+          ? Math.round(pct) + '%'
+          : hasPair
+            ? pair
+            : t('list.none')
+      return make(spec, value, pct)
+    }
     if (spec.kind === 'pair') return make(spec, statsPair(num(spec.used), num(spec.total), t), null)
     if (spec.kind === 'uptime') return make(spec, formatUptime(num(spec.key), t), null)
     if (spec.kind === 'temp') {
@@ -223,4 +317,303 @@ export function statsItemValues(stats, t) {
     const value = num(spec.key) // kind === 'count'：核心 / TCP
     return make(spec, value === null ? t('list.none') : String(value), null)
   })
+}
+
+/* ------------------------------------------------------------------ *
+ * 极简模式（2026-10-31）：趋势线 / 网络量纲 / 紧凑速率
+ *
+ * 极简条只留 CPU / 内存 / 网络三项，每项是「小标签 + sparkline + 大数字」。
+ * 趋势线比瞬时进度条多给一条信息：**在涨还是在抖**；这三项也正好是判断「这台
+ * 机器现在累不累」最短的路径。磁盘 / 在线 / TCP / 温度留给完整模式。
+ * ------------------------------------------------------------------ */
+
+/** 趋势线的 x 轴宽度（viewBox 单位；`preserveAspectRatio="none"` 让 CSS 宽度自适应）。 */
+export const SPARK_WIDTH = 100
+/** 趋势线的 y 轴高度（viewBox 单位）。 */
+export const SPARK_HEIGHT = 16
+
+/**
+ * 趋势线的坐标分段：`null` / 非有限值 = **采样缺口**（断线，不补值不插值）。
+ *
+ * 返回 `[[ [x, y], ... ], ...]`：每段连续采样一组点；没有任何点时返回空数组。
+ * `sparklinePath`（折线）与 `sparklineArea`（折线 + 到底部的填充面）共用这一份映射，
+ * 免得两条路径各算一套、在边界上悄悄分叉。
+ */
+function sparklineSegments(values, width, height, options = {}) {
+  const list = Array.isArray(values) ? values : []
+  if (list.length < 2 || width <= 0 || height <= 0) return []
+  const min = Number.isFinite(options.min) ? options.min : 0
+  const max = Number.isFinite(options.max) && options.max > min ? options.max : min + 1
+  const span = max - min
+  const logarithmic = options.logarithmic === true
+  // 幂次刻度（1 = 线性；0.5 = 平方根）。见 `sparklinePath` 的 options 说明。
+  const power = Number.isFinite(options.power) && options.power > 0 ? options.power : 1
+  const yOf = (value) => {
+    const clamped = Math.max(min, Math.min(max, value))
+    const ratio = logarithmic
+      ? Math.log1p(clamped - min) / Math.log1p(span)
+      : Math.pow((clamped - min) / span, power)
+    return Math.round((height - ratio * height) * 100) / 100
+  }
+  const xOf = (index) => Math.round((index / (list.length - 1)) * width * 100) / 100
+  const segments = []
+  let segment = []
+  for (let index = 0; index < list.length; index += 1) {
+    const value = list[index]
+    if (!Number.isFinite(value)) {
+      if (segment.length > 0) segments.push(segment)
+      segment = []
+      continue
+    }
+    segment.push([xOf(index), yOf(value)])
+  }
+  if (segment.length > 0) segments.push(segment)
+  return segments
+}
+
+/**
+ * 迷你趋势线的折线路径（SVG path 的 `d`）——纯函数，渲染层只负责塞进 `<path>`。
+ *
+ * - `values` 里的 `null` / 非有限值 = **采样缺口**：断线（重新 `M`），不补值、不插值；
+ * - 少于两个点返回 `''`（一条线至少要两个点；一个点画出来是误导）；
+ * - `options.min/max` 是**显示量程**，越界值夹紧；`max <= min` 时按 `min+1` 兜底；
+ * - `options.logarithmic`：极端量级差（极简条的 64 KB/s 地板 → GB/s）用对数刻度；
+ * - `options.power`：幂次刻度（1 线性 / 0.5 平方根）。**仪表盘的网络图用它**——理由见
+ *   `updateNetCard`：线性会把「一次突发 + 一段常态」压成贴底直线，而纯对数在同一个
+ *   数量级里几乎不动（58 KB/s 与 163 KB/s 只差 8% 高度），把日常波动一起抹平。
+ *
+ * @param {Array<number | null | undefined>} values 采样序列（左旧右新）
+ * @param {number} width viewBox 宽度
+ * @param {number} height viewBox 高度
+ * @param {{ min?: number, max?: number, logarithmic?: boolean, power?: number }} [options]
+ * @returns {string} 形如 `M0 8 L5 6 M10 4 …` 的路径；没有可画的段时为空串
+ */
+export function sparklinePath(values, width, height, options = {}) {
+  const segments = sparklineSegments(values, width, height, options)
+  return segments
+    .map((segment) => segment.map(([x, y], i) => (i === 0 ? 'M' : 'L') + String(x) + ' ' + String(y)).join(' '))
+    .join(' ')
+}
+
+/**
+ * 折线下方的填充面（极简模式的视觉效果）：每段收口到画布底部再回到起点。
+ *
+ * 有缺口时**每段各自闭合**——中间那段空白保持干净，而不是用一块梯形把它连起来。
+ * 路径样式（颜色 / 透明度 / 渐变遮罩）全在 CSS 里，这里只给几何。
+ */
+export function sparklineArea(values, width, height, options = {}) {
+  const segments = sparklineSegments(values, width, height, options)
+  return segments
+    .map((segment) => {
+      if (segment.length < 2) return ''
+      const head = segment[0]
+      const tail = segment[segment.length - 1]
+      const body = segment.map(([x, y]) => 'L' + String(x) + ' ' + String(y)).join(' ')
+      return 'M' + String(head[0]) + ' ' + String(height) + ' ' + body + ' L' + String(tail[0]) + ' ' + String(height) + ' Z'
+    })
+    .filter((part) => part !== '')
+    .join(' ')
+}
+
+/** 网络趋势线的地板量程：64 KB/s 以下一律画平线（否则空闲时的几个字节会被放大成「剧烈」）。 */
+export const NET_SPARK_FLOOR = 64 * 1024
+
+/**
+ * 网络趋势线的显示上限：从地板开始按 ×4 档往上取，取到装得下窗口内峰值为止。
+ *
+ * 为什么不直接用窗口最大值：**每帧都变**的上限会让整条线在纵轴上被反复拉伸/压缩，
+ * 看起来像在抖（而数据没变）。按 ×4 档跳：只有峰值跨过一个数量级时量程才换一次。
+ */
+export function netScaleCeiling(maxBps) {
+  if (!Number.isFinite(maxBps) || maxBps <= NET_SPARK_FLOOR) return NET_SPARK_FLOOR
+  let ceiling = NET_SPARK_FLOOR
+  while (ceiling < maxBps) ceiling *= 4
+  return ceiling
+}
+
+/**
+ * 极简条的紧凑速率（`512B` / `32K` / `1.2M` / `674K`）：完整模式用 `32.0 KB/s` 那种
+ * 带单位的写法，极简条只有 3 组，大数字旁边再拖一个 `/s` 就挤了。
+ *
+ * 10 以上不留小数（`131K` 而不是 `130.7K`），10 以下留一位（`9.9K`）——与 formatRate 同口径。
+ */
+export function statsRateCompact(bytesPerSec) {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec < 0) return ''
+  if (bytesPerSec < 1024) return Math.round(bytesPerSec) + 'B'
+  const units = ['K', 'M', 'G', 'T']
+  let value = bytesPerSec / 1024
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024
+    index += 1
+  }
+  return (value >= 10 ? Math.round(value) : Math.round(value * 10) / 10) + units[index]
+}
+
+/**
+ * 状态条呈现的三档循环：**完整 → 极简 → 隐藏 → 完整**（面板头部那颗按钮）。
+ *
+ * 隐藏是**本地**的（只影响这个浏览器，不写 profile 配置）：它同时停掉该标签的 stats
+ * 订阅，宿主那边的采集器与远端 exec channel 会一并关掉；再点回完整/极简时重新订阅。
+ * 未知取值按「完整」处理（旧 localStorage 值 / 手改坏了都不能让按钮卡死）。
+ */
+export const STATS_STYLES = ['full', 'minimal', 'off']
+
+/** 下一档（未知取值回落到完整）。 */
+export function nextStatsStyle(style) {
+  const index = STATS_STYLES.indexOf(style)
+  return STATS_STYLES[(index + 1) % STATS_STYLES.length]
+}
+
+/* ---------------- 明细仪表盘（悬浮卡片）的纯逻辑 ---------------- */
+
+/**
+ * 每核明细的汇总档位：**取最差的那一核**（16 核里有一核 95%，这张卡片就该报警，
+ * 平均值会把它摊平）。
+ */
+export function coresLevel(cores) {
+  if (!Array.isArray(cores)) return ''
+  let level = ''
+  for (const value of cores) {
+    const one = statsLevel(typeof value === 'number' && Number.isFinite(value) ? value : null)
+    if (one === 'danger') return 'danger'
+    if (one === 'warn') level = 'warn'
+  }
+  return level
+}
+
+/**
+ * 明细图纵轴上限：取 ≥ peak × 1.15 的「好看数值」（1 / 2 / 5 × 10ⁿ）。
+ *
+ * 与极简条的 `netScaleCeiling` 不同：那里是 16px 高的缩略线，靠 ×4 档跳避免量程抖动；
+ * 这里是带刻度的明细图，1-2-5 这种人类熟悉的刻度才读得出量级。
+ */
+export function chartCeiling(peak) {
+  if (!Number.isFinite(peak) || peak <= 0) return 1
+  const target = peak * 1.15
+  const base = Math.pow(10, Math.floor(Math.log10(target)))
+  for (const step of [1, 2, 5]) {
+    if (base * step >= target) return base * step
+  }
+  return base * 10
+}
+
+/**
+ * 进程名的展示形式：**只留可执行文件名**。
+ *
+ * macOS 的 `ps comm` 给的是完整路径（`/Applications/Google Chrome.app/Contents/MacOS/Google
+ * Chrome`），十几列宽的卡片里只能看见 `/Applications/G…`——五条全变成同一个前缀，等于没有
+ * 信息。取文件名后是 `Google Chrome`，一眼能认；完整路径与 pid 放 title（悬停可看）。
+ *
+ * Linux 的 comm 本来就不带路径，这里是恒等变换。
+ */
+export function procDisplayName(cmd) {
+  const text = typeof cmd === 'string' ? cmd.trim() : ''
+  if (text === '') return ''
+  // 内核线程在 ps 里是 `[kworker/0:1]`：方括号内的斜杠不是路径分隔符
+  if (text.startsWith('[') && text.endsWith(']')) return text
+  const cut = text.lastIndexOf('/')
+  const base = cut >= 0 ? text.slice(cut + 1) : text
+  return base === '' ? text : base
+}
+
+/** 进程列表的排序键（与列头一一对应：CPU / 内存）。 */
+export const PROC_SORT_KEYS = ['cpu', 'mem']
+/** 排序方向：`desc` 降序（大在上）/ `asc` 升序。 */
+export const PROC_SORT_DIRS = ['desc', 'asc']
+/** 默认排序：CPU 降序（「谁在吃 CPU」是这张卡片的第一问题）。 */
+export const PROC_SORT_DEFAULT = { key: 'cpu', dir: 'desc' }
+
+/**
+ * 排序状态 → 规范化（脏状态一律退回默认）：点表头传进来的东西来自 DOM，
+ * 别让一个拼错的值把整张卡片清空。
+ */
+export function normalizeProcSort(sort) {
+  const source = sort !== null && typeof sort === 'object' ? sort : {}
+  const key = PROC_SORT_KEYS.includes(source.key) ? source.key : PROC_SORT_DEFAULT.key
+  const dir = PROC_SORT_DIRS.includes(source.dir) ? source.dir : PROC_SORT_DEFAULT.dir
+  return { key, dir }
+}
+
+/**
+ * 点一下表头之后的新排序状态：**同一个键 → 翻方向；换键 → 回到该键的降序**
+ * （先看谁最高是最常见的意图，再点才看最低）。
+ */
+export function nextProcSort(sort, key) {
+  const current = normalizeProcSort(sort)
+  if (!PROC_SORT_KEYS.includes(key) || current.key !== key) return { key: PROC_SORT_KEYS.includes(key) ? key : current.key, dir: 'desc' }
+  return { key, dir: current.dir === 'desc' ? 'asc' : 'desc' }
+}
+
+/**
+ * Top 进程的行（明细卡片的纯数据层）：过滤坏行 → 按 `options` 排序 → 只留前 `limit` 条。
+ *
+ * 排序放在客户端做而不是信宿主：宿主已经按 ps 排过一遍，但那只是「采集那一刻」的顺序，
+ * 且旧版宿主/第三方实现不保证有序。这里排一次，卡片顺序永远稳定。
+ *
+ * `options` 是 `{ key: 'cpu'|'mem', dir: 'desc'|'asc' }`（见 `nextProcSort`）；
+ * 不传 = CPU 降序（老调用方的行为不变）。同值保持输入顺序（`Array#sort` 稳定），
+ * 同一帧重画不会让两条同占用率的进程互相换位。
+ */
+export function procRows(procs, limit = 5, options = {}) {
+  if (!Array.isArray(procs)) return []
+  const rows = []
+  for (const item of procs) {
+    if (item === null || typeof item !== 'object') continue
+    const cmd = typeof item.cmd === 'string' ? item.cmd.trim() : ''
+    if (cmd === '') continue
+    const cpuPct = typeof item.cpuPct === 'number' && Number.isFinite(item.cpuPct) ? item.cpuPct : 0
+    const memPct = typeof item.memPct === 'number' && Number.isFinite(item.memPct) ? item.memPct : 0
+    const pid = typeof item.pid === 'number' && Number.isFinite(item.pid) ? item.pid : 0
+    rows.push({ pid, cmd, name: procDisplayName(cmd) || cmd, cpuPct, memPct, level: statsLevel(cpuPct) })
+  }
+  const sort = normalizeProcSort(options)
+  const sign = sort.dir === 'asc' ? 1 : -1
+  rows.sort((a, b) => sign * ((sort.key === 'mem' ? a.memPct : a.cpuPct) - (sort.key === 'mem' ? b.memPct : b.cpuPct)))
+  return rows.slice(0, limit)
+}
+
+/**
+ * **首尾截断**：`Framew…(Renderer)`。中间的省略号保留了「同类进程靠尾部区分」的信息
+ * （macOS 上一串 `Framework Helper (Renderer) / (GPU) / (Plugin)` 前缀完全相同，只留尾部
+ * 才认得出是哪一个），而纯尾部截断（CSS `text-overflow`）会把它们全变成同一个前缀。
+ *
+ * `widthOf(chunk)` 由渲染层注入：浏览器里是 Canvas `measureText`（同一份 mono 字体），
+ * 单测里可以给「每个字符 7px」这种确定值。放不进 `budget` 时**先保尾部**，再用剩余
+ * 空间从头部补字符。
+ *
+ * - 放得下 → 原样返回（不碰）；
+ * - 连一个字符都放不下 → `…`；
+ * - `budget` 不可用（0 / NaN / 没给 widthOf）→ 原样返回，交给 CSS 的省略号兜底。
+ *
+ * @param {string} text 完整进程名
+ * @param {number} budget 可用宽度（与 `widthOf` 同一单位）
+ * @param {(chunk: string) => number} widthOf 量宽函数
+ * @returns {string} 放得下的展示文本（含 `…`）
+ */
+export function truncateMiddle(text, budget, widthOf) {
+  const value = typeof text === 'string' ? text : ''
+  if (value === '') return ''
+  if (typeof widthOf !== 'function' || !(budget > 0)) return value
+  if (widthOf(value) <= budget) return value
+  const ellipsis = '…'
+  // 按码点切，别把 emoji / 代理对劈成两半
+  const chars = [...value]
+  const tailOf = (count) => chars.slice(chars.length - count).join('')
+  const headOf = (count) => chars.slice(0, count).join('')
+  /*
+   * 尾部最多吃掉 70% 的宽度：比例是**刻意**的，两头各有一条硬约束——
+   *   - 不封顶（纯尾部优先）会贪心地把整个预算花在尾部，变成 `…Kit.WebContent (Renderer)`，
+   *     开头一点都认不出，等于没有首尾截断；
+   *   - 压到 60% 又会在窄列里把 `(Renderer)` 前方的空格挤掉，尾部从 `(R` 开始切，
+   *     能区分进程的那半截正好被切坏（单测里 18 字符预算就是这个边界）。
+   * 70% 让「括号后缀」整体活下来，剩 30% 给头部认 app。
+   */
+  const tailCap = budget * 0.7
+  let tail = 0
+  while (tail < chars.length - 1 && widthOf(ellipsis + tailOf(tail + 1)) <= tailCap) tail += 1
+  let head = 0
+  while (head + tail < chars.length && widthOf(headOf(head + 1) + ellipsis + tailOf(tail)) <= budget) head += 1
+  if (head === 0 && tail === 0) return ellipsis
+  return headOf(head) + ellipsis + tailOf(tail)
 }

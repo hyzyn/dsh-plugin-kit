@@ -197,6 +197,12 @@ export const KEY_DOMAINS = new Set([
   'field', 'option', 'check', 'editor', 'section',
   // 列表项上的徽标与状态
   'badge', 'status',
+  // 连接详情弹层的行标题（tty，2026-10-31）
+  'connDetail',
+  // 服务器状态条自身的界面文案（完整 / 极简切换，tty）
+  'stats',
+  // 状态条展开的「资源明细」悬浮仪表盘（tty，2026-10-31）
+  'statsDash',
   // 面板内的说明与元信息
   'hint', 'banner', 'meta', 'elev',
   // 具体动作的提示与确认
