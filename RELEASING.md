@@ -46,6 +46,17 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
 
 1. `pnpm -r build && pnpm -r typecheck && pnpm test` 全绿。本地 `pnpm publish` 没有闸，
    全靠自觉——CI 在发布前会再跑一遍兜底。
+   **`pnpm test` 不包含端到端脚本**：`packages/*/scripts/integration.mjs` 这类要真宿主 /
+   真 PTY / 内存 sshd 的用例是 CI 单独一步跑的（`ci.yml` 的 `dsh-tty end-to-end scripts`），
+   途经 `lib/` 行为面（工具 output.schema、采集通道的 exec 次数、订阅生命周期）的改动必须
+   补跑对应包的那一条，否则只能等 CI 红（v0.37.0 → v0.37.1 就是这么出的 hotfix 链：
+   `tty_stats` 漏声明 `swapUsed` / `swapTotal`、Ping 探针在订阅前就开始 exec，全部躲过了
+   `pnpm test`）：
+
+   ```bash
+   pnpm --filter @hyzyn/dsh-tty run integration     # tty：真宿主 / PTY / 内存 sshd
+   ```
+
    **bump 完版本号先同步 lockfile**，且顺序必须是：**bump → `pnpm aggregate`（聚合层
    钉新版本）→ `pnpm install --lockfile-only`**。workspace 内部依赖是按版本号写进
    lockfile 的（`specifier:` 那一行），只改 package.json 不改 lockfile，CI 第一步
