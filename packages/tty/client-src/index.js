@@ -1641,13 +1641,34 @@ let statsItemEls = null
  */
 const OPTIONAL_ITEM_KEYS = new Set(['tempC', 'ping', 'swap'])
 /**
- * 空间不够时**先藏哪些条目**（2026-11-01）：条宽是有限的，加到 10 项之后 1280px 的面板
- * 已经装不下了。让位顺序按「这条信息有多不可替代」排：
- *   ① `cores`（核心数）——静态的机器事实，明细卡片里每核都在（`16 核`那行脚注）；
- *   ② `uptimeSec`（在线时长）——同样是静态信息，`tty_stats` 里还能读到。
- * 活指标（CPU / 内存 / 磁盘 / TCP / Ping / Swap / 网络）不参与让位——那是状态条存在的理由。
+ * 空间不够时的**让位阶梯**（2026-11-01）：从「最可替代」到「最不可替代」，按这条顺序逐级藏，
+ * 一不溢出就停。条宽是有限的，加到 10 项之后 1280px 的面板本来就装不下。
+ *
+ * 为什么只有**一条**顺序：原先是两条独立阶梯（条目区先让「核心 / 在线」，再轮到右侧那组让
+ * 「时钟 → 整组」），每条都「一不溢出就返回」。于是条目区刚好吃满、右侧那组每次都被判溢出而
+ * 整组藏掉——加完 Ping / Swap（10 格）之后，完整模式**在任何视口**都看不到负载 / 时钟
+ * （面板宽上限就是 1280px），而只有 5 格的极简模式反而看得到。让位该按信息价值排，
+ * 不该按 DOM 顺序排。
+ *
+ * 顺序与理由：
+ *   ① `cores`（核心数）——静态的机器事实，明细卡片脚注里还有「16 核 · 平均 63%」；
+ *   ② `uptimeSec`（在线时长）——同样是静态信息，`tty_stats` 里还能读到；
+ *   ③ `clock`（时钟）——装饰性读数，但它是这一组的另一半；只有连静态项都让完还不够时才收；
+ *   ④ `extra`（负载 + 时钟整组）——只作极窄面板的兜底。
+ * 活指标（CPU / 内存 / 磁盘 / TCP / Ping / Swap / 网络 / 负载）一律不让——那是状态条存在的理由。
+ *
+ * ③ 为什么排在 ①② 后面（而不是像原来那样先藏时钟）：阶梯是**前缀序**，前面每一步都会挤掉
+ * 后面能用的空间。先藏时钟时实测是这样收场的——时钟只值 ~60px 不够，于是还得接着藏「核心」
+ * 「在线」（合计 ~135px），最后明明有空间容下时钟，它却已经被牺牲掉了：既丢了两个静态项、
+ * 又没保住用户要的那半组。把它排到静态项之后，同样的空间预算下收场是
+ * 「核心 / 在线 让位，负载 + 时钟都在」。
  */
-const ITEM_YIELD_ORDER = ['cores', 'uptimeSec']
+const YIELD_ORDER = ['cores', 'uptimeSec', 'clock', 'extra']
+/**
+ * 参与让位的**条目**键：从 `YIELD_ORDER` 里剔掉两个非条目档位推出来。
+ * 不另写一份列表——两处各写一遍，加一格新指标时迟早会漂（见上面那段理由）。
+ */
+const YIELD_ITEM_KEYS = YIELD_ORDER.filter((key) => key !== 'clock' && key !== 'extra')
 /** 已渲染的数据签名（sid + 帧时间）：同一条数据不重复渲染（1s 陈旧检测也走 applyStatsBar）。 */
 let statsRenderKey = null
 /** 状态条滚动容器（完整 / 极简两种呈现共用）与两个条目容器。 */
@@ -2275,49 +2296,51 @@ function updateStatsExtra(tab) {
   if (statsExtraRefs.load.hidden !== loadHidden) statsExtraRefs.load.hidden = loadHidden
   const now = clockText(new Date())
   if (statsExtraRefs.clock.textContent !== now) statsExtraRefs.clock.textContent = now
-  fitStatsExtra()
+  // 写完才让位：让位判据读的是真实布局，必须在负载 / 时钟的文本都落进去之后
+  fitStatsBar()
 }
 
 /**
- * 条目区自己先让位：按 `ITEM_YIELD_ORDER` 逐级藏「静态信息」，直到条不溢出。
+ * 状态条让位：按 `YIELD_ORDER` **一条**阶梯逐级藏，直到条不溢出。
  *
  * 为什么不能只靠横向滚动：溢出时**最后一个值会被切一半**（`↑57.0 KB/`），看上去像坏了；
- * 而状态条是「一眼扫完」的东西，不该要求用户去横滚。让掉的都是悬停卡片 / 明细里还在的静态项，
- * 活指标一个都不让。
+ * 而状态条是「一眼扫完」的东西，不该要求用户去横滚。
+ * 为什么判据是**真实的溢出**而不是算宽度：条目总宽随值变（网络那格有速率才占 23ch，
+ * 在线时长会从 `3h2m` 长到 `2w4d7h16m`），同样 1280 宽的面板有时塞得下、有时塞不下。
+ * 每帧都从「全显示」重算——窗口变宽 / 切回完整模式要能自动长回来；全部读写都在同一个任务里
+ * 完成，浏览器还没 paint，用户看不到中间态。
+ * 调用频率是每帧一次（≈1s）外加时钟自己的 1s 复算（见 `tickStatsClock`）。
  */
-function fitStatsItems() {
-  if (statsItemEls === null || statsScrollEl === null) return
+function fitStatsBar() {
+  if (statsScrollEl === null) return
   const overflow = () => statsScrollEl.scrollWidth > statsScrollEl.clientWidth + 1
-  const refs = statsItemEls.filter((ref) => ITEM_YIELD_ORDER.indexOf(ref.key) >= 0)
-  if (refs.length === 0) return
-  // 每帧从「全显示」重新算：窗口变宽 / 切模式后要能自动长回来
-  for (const ref of refs) ref.item.hidden = false
+  const itemRef = (key) => {
+    if (statsItemEls === null) return undefined
+    return statsItemEls.find((ref) => ref.key === key)
+  }
+  for (const key of YIELD_ITEM_KEYS) {
+    const ref = itemRef(key)
+    if (ref !== undefined) ref.item.hidden = false
+  }
+  if (statsExtraEl !== null && statsExtraRefs !== null) {
+    statsExtraEl.hidden = false
+    statsExtraRefs.clock.hidden = false
+  }
   if (!overflow()) return
-  for (const key of ITEM_YIELD_ORDER) {
-    const ref = refs.find((item) => item.key === key)
-    if (ref === undefined) continue
-    ref.item.hidden = true
+  for (const step of YIELD_ORDER) {
+    if (step === 'clock') {
+      if (statsExtraRefs === null) continue
+      statsExtraRefs.clock.hidden = true
+    } else if (step === 'extra') {
+      if (statsExtraEl === null) continue
+      statsExtraEl.hidden = true
+    } else {
+      const ref = itemRef(step)
+      if (ref === undefined) continue
+      ref.item.hidden = true
+    }
     if (!overflow()) return
   }
-}
-
-/**
- * 空间不够时**逐级让位**：条目区一旦溢出就先藏时钟，还溢出就整组藏起来。
- *
- * 为什么不能只靠容器宽度：条目总宽随值变（网络那格有速率才占 23ch），同样 1280 宽的面板
- * 有时塞得下、有时塞不下。判据只能是**真实的溢出**（scrollWidth > clientWidth）。
- * 三次读都在同一个任务里完成，浏览器还没 paint，用户看不到中间态；调用频率是每帧一次（≈1s），
- * 外加窗口缩放后的一帧。
- */
-function fitStatsExtra() {
-  if (statsExtraEl === null || statsExtraRefs === null || statsScrollEl === null) return
-  const overflow = () => statsScrollEl.scrollWidth > statsScrollEl.clientWidth + 1
-  statsExtraEl.hidden = false
-  statsExtraRefs.clock.hidden = false
-  if (!overflow()) return
-  statsExtraRefs.clock.hidden = true
-  if (!overflow()) return
-  statsExtraEl.hidden = true
 }
 
 function tickStatsClock() {
@@ -2326,10 +2349,10 @@ function tickStatsClock() {
   if (statsExtraRefs.clock.textContent !== now) statsExtraRefs.clock.textContent = now
   /*
    * 让位判据**也要在定时器里重算**：stats 帧可能很稀（SSH 上 4s 一帧），只挂在帧上时，
-   * 一次瞬时布局（刚切回完整模式、值还没填进去）会把时钟按住不放，而后续没有帧来纠正它。
-   * 每秒钟复算一次就能收敛，代价是三次布局读取。
+   * 一次瞬时布局（刚切回完整模式、值还没填进去）会把某一级按住不放，而后续没有帧来纠正它。
+   * 每秒钟复算一次就能收敛，代价是最多五次布局读取（阶梯每走一级读一次）。
    */
-  fitStatsExtra()
+  fitStatsBar()
 }
 
 function ensureStatsClockTimer() {
@@ -3316,8 +3339,8 @@ function applyStatsBarInner() {
   if (key !== statsRenderKey) {
     statsRenderKey = key
     updateStatsItems(statsItemEls, tab)
-    fitStatsItems()
     updateStatsMinimal()
+    // 让位在 `updateStatsExtra` 末尾统一做：两种呈现的 DOM 都写完之后再按一条阶梯裁决
     updateStatsExtra(tab)
   }
   // 时钟自己走 1s 定时器（宿主帧慢时挂在帧上会「几秒跳几下」）

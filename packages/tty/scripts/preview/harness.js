@@ -836,8 +836,11 @@
       await sleep(1300)
       const secondClock = q('.tt_statsClock').textContent || ''
       /*
-       * 让位阶梯：完整模式 8 项在 1280px 面板上本来就占满，溢出时时钟先藏、再不够整组藏。
-       * 这里只断言「要么看得见时钟，要么确实是溢出才藏的」，不硬编码某一档。
+       * 让位阶梯（2026-11-02 回归自查后**收紧**）：这里原先允许「整组被藏」——只要反事实判据成立
+       * （露出来确实溢出）就算过。结果完整模式在 1280px（面板宽度上限，屏幕再宽也不会更好）里
+       * 永远看不到负载 / 时钟，而只有 5 项的极简模式反而看得到。
+       * 阶梯已按信息价值合并成一条（核心 → 在线 → 时钟 → 整组），所以改成硬要求：
+       * **负载必须在场**；只有时钟允许被让掉，且必须真的是溢出才藏的。
        */
       window.__previewAssert = async () => {
         /*
@@ -853,21 +856,13 @@
         if (group === null || load === null || clock === null || scroll === null || expand === null) {
           return '重建后右侧这组或它的邻居不见了'
         }
-        /*
-         * 完整模式 10 项 + 右侧一组在 1280px 面板上放不下：让位阶梯会先藏「核心 / 在线」，
-         * 还不够就把这一组整个收起来。所以这里只要求「要么看得见，要么确实是溢出才藏的」，
-         * 真正的「有空间时必须显示」由下面的极简模式验。
-         */
         if (group.hidden === true) {
-          /*
-           * 反事实判据：藏起来之后当然不溢出，所以要把它临时露出来再量——真的溢出才算让位成立。
-           * 量完立刻还原，不给后续断言留下中间态。
-           */
+          // 把差多少 px 一并报出来：以后再加格子、这个数会直接告诉你要让掉几级
           group.hidden = false
-          const overflowWithGroup = scroll.scrollWidth > scroll.clientWidth + 1
+          const need = scroll.scrollWidth
+          const have = scroll.clientWidth
           group.hidden = true
-          if (!overflowWithGroup) return '右侧这组被藏了，但把它露出来条目区也不溢出（让位判据失效）'
-          return null
+          return '完整模式下右侧整组被藏了：条目区需要 ' + String(need) + 'px，只有 ' + String(have) + 'px'
         }
         if (load.hidden === true) return '有 load1 数据时「负载」不该隐藏'
         if (!/^\d+\.\d{2}$/.test(loadValue.textContent || '')) return '负载不是两位小数：' + (loadValue.textContent || '')

@@ -782,8 +782,7 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   — an intermittently failing sensor read must not make the cell blink once a second. Dividers are painted
   by the **following** cell (`A + B::before`), so hiding the cell drops the one on its left while the
   `TCP │ Network` divider stays put — the cell simply looks as if it never existed. This also hands the width
-  back to the Load / clock group on the right (measured: after dropping it, the full mode on a 1280px panel
-  fits the clock too).
+  back to the cells that follow (see the yield ladder below for what happens when it still does not fit).
 
 - **Minimal mode** (2026-10-31): a **three-state button** in the top-right of the panel header (next to
   search / clear) cycles **full → minimal → hidden → full** (the preference lives in the browser’s
@@ -908,13 +907,8 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   `os.loadavg()`; **Windows cannot provide it, so the cell hides rather than showing 0.00**), and the clock
   runs on **its own 1-second timer** instead of the stats frames (with 4s frames a frame-bound clock jumps
   four seconds at a time). The group sits **outside** the scrolling area, so it never scrolls away with the
-  items; the cost is fixed width, hence a **yield ladder**: once the item strip actually overflows
-  (`scrollWidth > clientWidth`) the clock goes first, and the whole group goes if that is still not enough —
-  the criterion is real overflow, not container width, because the items' total width changes with their
-  values (the network cell only takes its slot when a rate exists). On a 1280px panel the full mode (8 items)
-  is already full, so that mode shows just `Load`; minimal mode (3 items) shows both. The decision is
-  re-evaluated in the timer as well, so a resize or a mode switch settles within a second instead of waiting
-  for the next stats frame.
+  items; the cost is fixed width — see the **yield ladder** below for what gives way when it does not fit
+  (one ladder arbitrates the whole bar, not just this group).
 
 - **Ping and Swap** (2026-11-01): both cells exist only where the machine has them — a local session has no
   network peer (no Ping) and a host without swap has none to report; the rule is the same as temperature
@@ -924,12 +918,23 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   It answers “how laggy does typing feel”, so the tiers are by feel: `<120ms` green, `120–300ms` amber,
   `≥300ms` red. `Swap` is used/total (Linux reads SwapTotal/SwapFree from `/proc/meminfo`, macOS goes through
   `sysctl -n vm.swapusage`).
-- **Items yield when the bar is full** (2026-11-01): with ten cells a 1280px panel no longer fits, so the item
-  strip has its own ladder — **cores first, then uptime** (both are static machine facts that stay available in
-  the dashboard and `tty_stats`); **live metrics (CPU / memory / disk / TCP / Ping / Swap / network) never
-  yield**. The criterion is real overflow again, recomputed from “everything visible” every frame, so a wider
-  window brings them back; only after that does the Load / clock group start yielding (clock first, then the
-  whole group).
+- **Yield ladder** (2026-11-01 — one ladder arbitrates the whole bar): with ten cells a 1280px panel no
+  longer fits, so the bar gives things up in **one** order — **cores → uptime → clock → the whole Load / clock
+  group** — stopping as soon as it fits. The first three are all readable elsewhere: core count in the
+  dashboard foot (`16 cores · avg 63%`), uptime in `tty_stats`, and the clock is decoration; **live metrics
+  (CPU / memory / disk / TCP / Ping / Swap / network / load) never yield** — they are why the bar exists.
+  The criterion is **real overflow** (`scrollWidth > clientWidth`) rather than computed widths, because the
+  items' total width changes with their values (the network cell only takes its slot when a rate exists, and
+  uptime grows from `3h2m` to `2w4d7h16m`); each frame recomputes from “everything visible”, so a wider window
+  or a switch back to full mode grows them back, and over SSH (4s frames) the clock's 1-second timer keeps
+  re-checking so the state still settles.
+  **Why one ladder**: it used to be two (the strip yielded cores / uptime, then the right-hand group yielded
+  the clock → the whole group), each returning as soon as it did not overflow — so whenever the strip happened
+  to be exactly full, the right-hand group was judged overflowing every time and hidden, and after Ping / Swap
+  landed the full mode showed **no load or clock at any viewport** (the panel caps at 1280px, so a bigger screen
+  does not help) while the 5-cell minimal mode showed both. Ordered by information value instead, a 1280px full
+  mode now settles at “cores / uptime yield, load + clock stay”; the `stats-extra` preview scenario guards this
+  with a hard assertion (load must be present; the clock may only yield when it genuinely overflows).
 
 - **Two collection paths, one frame shape**: for an SSH session a second **non-PTY exec channel** is opened
   on **the same ssh2 connection**, running a resident loop on the remote that emits one line of JSON per
