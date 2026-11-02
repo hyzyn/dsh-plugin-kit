@@ -2842,12 +2842,18 @@ export class TtyServer {
   /** 订阅/退订（tab 可见性驱动）：退到 0 即停表，任何路径都不会让采集器空转。键 = 绑定键（connId:sid）。 */
   private setStatsSub(session: TtySession, bindingKey: string, on: boolean): void {
     if (on) {
+      const first = session.statsSubs.size === 0
       session.statsSubs.add(bindingKey)
       this.startStats(session)
+      // 连接往返（Ping）与采集器同一条生命周期：只在有人看状态条时探，末位退订就停
+      if (first) this.startPingProbe(session)
       return
     }
     session.statsSubs.delete(bindingKey)
-    if (session.statsSubs.size === 0) this.stopStats(session)
+    if (session.statsSubs.size === 0) {
+      this.stopStats(session)
+      stopPingProbe(session)
+    }
   }
 
   /** 清掉指向已解绑客户端（WS 关闭 / 标签换 sid 重绑）的订阅，防采集器永不收尾。 */
@@ -2996,10 +3002,17 @@ export class TtyServer {
    * 远端拒绝 exec / 连接断开时静默跳过——探针是附加信息，量不到就不报。
    *
    * 为什么不用远端采集脚本量：那个脚本跑在对端，它量不了「到对端」的往返。
+   *
+   * **只在有人订阅状态条时探**（2026-11-02）：它在会话就绪时无脑起表，等于「用户从没打开
+   * 过状态条，每个 SSH 会话也每 5 秒开一条 exec channel」——纯浪费，而且把「未订阅时不采集
+   * （懒启动）」这条端到端断言带红了（B30b：订阅前就多出一条 exec）。现在跟着 `setStatsSub`
+   * 的首订 / 末退走，与采集器同一条生命周期。
    */
   private startPingProbe(session: TtySession): void {
     const probe = session.handle.probeRtt
     if (probe === undefined) return
+    // 多个标签绑同一会话会重复订阅：已经在探就不再叠一个定时器
+    if (session.pingTimer !== null) return
     const tick = (): void => {
       if (session.closed) return
       void probe.call(session.handle).then((ms) => {
@@ -3791,7 +3804,7 @@ export class TtyServer {
           }
           this.attachOutput(next)
           this.watchDone(next, local)
-          this.startPingProbe(next)
+          // 连接往返探针不在这里起（2026-11-02）：它跟着状态条订阅走，见 setStatsSub
           return next
         })()
         if (persistName !== null) {
@@ -6102,7 +6115,7 @@ const plugin = definePlugin<Config>({
             name: 'tty_stats',
             // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
             isConcurrencySafe: () => true,
-            description: '读取某个终端会话所在机器的实时指标（CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长 / 1 分钟负载）——本地会话取宿主机，SSH 会话取那台远程主机（另开一条非 PTY 通道，不影响终端）。部署、压测、排查「机器是不是满了」之前先看它。仅 Linux 远端字段齐全，Windows 远端部分字段可采，macOS/BSD 远端取不到。',
+            description: '读取某个终端会话所在机器的实时指标（CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长 / 1 分钟负载 / 交换分区 / SSH 连接往返）——本地会话取宿主机，SSH 会话取那台远程主机（另开一条非 PTY 通道，不影响终端）。部署、压测、排查「机器是不是满了」之前先看它。仅 Linux 远端字段齐全，Windows 远端部分字段可采，macOS/BSD 远端取不到。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（tty_list 提供）' },
             },
@@ -6130,6 +6143,16 @@ const plugin = definePlugin<Config>({
                   uptimeSec: { type: 'number' },
                   load1: { type: 'number' },
                   /*
+                   * 交换分区与连接往返（2026-11-02）：同样是「宿主帧里的可选字段」——`execute` 把
+                   * 整帧摊平进返回值，所以这里必须逐个声明。0.37.0 已经把 `swapUsed` / `swapTotal`
+                   * 返回出去了、schema 却没有（`additionalProperties: false` 直接判违约，CI 的 B33
+                   * 端到端断言拦下的正是它）；`pingMs` 一并补上——它只是当时没被那条夹具覆盖到才
+                   * 没报出来，是同一个洞。
+                   */
+                  swapUsed: { type: 'number' },
+                  swapTotal: { type: 'number' },
+                  pingMs: { type: 'number' },
+                  /*
                    * 每核使用率与 Top 进程：宿主帧里的**可选**字段，`execute` 把它整帧摊平进返回值，
                    * 所以这里必须声明——否则违反 `additionalProperties: false`（B33 那条端到端断言
                    * 就是被 0.36.0 的漏声明拦下的：工具返回里多了 `procs`，schema 里没有）。
@@ -6151,7 +6174,7 @@ const plugin = definePlugin<Config>({
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const v = value as { sid?: string; available?: boolean; reason?: string; target?: string; cpuPct?: number; cores?: number; memPct?: number; memUsed?: number; memTotal?: number; diskPct?: number; diskUsed?: number; diskTotal?: number; tcpConns?: number; rxRate?: number; txRate?: number; tempC?: number; uptimeSec?: number; load1?: number; cpuCores?: number[]; procs?: { pid: number; cmd: string; cpuPct: number; memPct: number }[] }
+                const v = value as { sid?: string; available?: boolean; reason?: string; target?: string; cpuPct?: number; cores?: number; memPct?: number; memUsed?: number; memTotal?: number; diskPct?: number; diskUsed?: number; diskTotal?: number; tcpConns?: number; rxRate?: number; txRate?: number; tempC?: number; uptimeSec?: number; load1?: number; swapUsed?: number; swapTotal?: number; pingMs?: number; cpuCores?: number[]; procs?: { pid: number; cmd: string; cpuPct: number; memPct: number }[] }
                 if (v.available !== true) return [{ type: 'text', text: `会话 ${v.sid ?? '?'} 取不到指标：${v.reason ?? '未知原因'}` }]
                 const parts = [
                   v.cpuPct !== undefined ? `CPU ${v.cpuPct.toFixed(0)}%${v.cores !== undefined ? `（${String(v.cores)} 核）` : ''}` : null,
@@ -6162,6 +6185,8 @@ const plugin = definePlugin<Config>({
                   v.tempC !== undefined ? `温度 ${v.tempC.toFixed(0)}°C` : null,
                   v.uptimeSec !== undefined ? `在线 ${humanDuration(v.uptimeSec)}` : null,
                   v.load1 !== undefined ? `负载 ${v.load1.toFixed(2)}` : null,
+                  v.swapUsed !== undefined && v.swapTotal !== undefined ? `Swap ${humanFileSize(v.swapUsed)} / ${humanFileSize(v.swapTotal)}` : null,
+                  v.pingMs !== undefined ? `往返 ${v.pingMs.toFixed(0)}ms` : null,
                   v.procs !== undefined && v.procs.length > 0
                     ? 'Top 进程 ' + v.procs.slice(0, 3).map((proc) => `${proc.cmd} ${proc.cpuPct.toFixed(0)}%`).join(' / ')
                     : null,
@@ -6170,7 +6195,7 @@ const plugin = definePlugin<Config>({
                 return [{ type: 'text', text: head + (parts.length > 0 ? parts.join(' · ') : '（无可用字段）') }]
               },
             },
-            async execute(args: unknown): Promise<{ sid: string; available: boolean; reason?: string; target?: string; cpuPct?: number; cores?: number; memPct?: number; memUsed?: number; memTotal?: number; diskPct?: number; diskUsed?: number; diskTotal?: number; tcpConns?: number; rxRate?: number; txRate?: number; tempC?: number; uptimeSec?: number; load1?: number; cpuCores?: number[]; procs?: { pid: number; cmd: string; cpuPct: number; memPct: number }[] }> {
+            async execute(args: unknown): Promise<{ sid: string; available: boolean; reason?: string; target?: string; cpuPct?: number; cores?: number; memPct?: number; memUsed?: number; memTotal?: number; diskPct?: number; diskUsed?: number; diskTotal?: number; tcpConns?: number; rxRate?: number; txRate?: number; tempC?: number; uptimeSec?: number; load1?: number; swapUsed?: number; swapTotal?: number; pingMs?: number; cpuCores?: number[]; procs?: { pid: number; cmd: string; cpuPct: number; memPct: number }[] }> {
               const input = args as { sid?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               const session = sessions.agentView(input.sid)

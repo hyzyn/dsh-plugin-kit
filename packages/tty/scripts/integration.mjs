@@ -1830,12 +1830,20 @@ async function run() {
     if (stats !== null && stats.cores === 12 && Number.isFinite(stats.cpuPct) && stats.cpuPct >= 70) pass('B31a POSIX 被拒后自动回退 PowerShell 分支并出帧（cores=12）')
     else fail('B31a 回退后出帧', JSON.stringify(stats))
 
-    const orderOk = execLog.length >= 2 && execLog[0].startsWith('sh -c ') && execLog[0].includes('/proc/stat') && execLog[1].includes('-EncodedCommand')
+    /*
+     * 只数**采集通道**的 exec（2026-11-02）：连接往返探针（Ping）订阅期间每 5s 也在同一条连接上
+     * exec 一条 `true`，它不属于采集通道。原先这两条断言数的是「连接上总共几条 exec」，探针一
+     * 进来就必红（B31c 实测 3 条）。判据按命令形状取，不按「剔除某条字符串」——探针改命令形态
+     * 时这里不会悄悄把它当成采集通道。
+     */
+    const statsExecs = () => execLog.filter((c) => c.startsWith('sh -c ') || c.includes('-EncodedCommand'))
+    const attempts = statsExecs()
+    const orderOk = attempts.length >= 2 && attempts[0].startsWith('sh -c ') && attempts[0].includes('/proc/stat') && attempts[1].includes('-EncodedCommand')
     if (orderOk) pass('B31b 两跳顺序正确：先 POSIX（sh -c），后 -EncodedCommand')
     else fail('B31b 两跳顺序', execLog.map((c) => c.slice(0, 40)).join(' | '))
     await sleep(1200)
-    if (execLog.length === 2) pass('B31c 只回退一次（不无限重试）')
-    else fail('B31c 只回退一次', 'exec 次数=' + String(execLog.length))
+    if (statsExecs().length === 2) pass('B31c 只回退一次（不无限重试）')
+    else fail('B31c 只回退一次', '采集通道 exec 次数=' + String(statsExecs().length))
 
     s.client.send(JSON.stringify({ t: 'statsOff', sid: 'b31' }))
     await sleep(400)

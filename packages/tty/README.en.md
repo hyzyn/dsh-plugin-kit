@@ -912,8 +912,9 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
 
 - **Ping and Swap** (2026-11-01): both cells exist only where the machine has them — a local session has no
   network peer (no Ping) and a host without swap has none to report; the rule is the same as temperature
-  (“this session has ever reported the field”). **Ping measures the round trip on that SSH connection**: the
-  host opens an exec channel on the same connection every 5 seconds and times “send → channel confirmed”,
+  (“this session has ever reported the field”). **Ping measures the round trip on that SSH connection**:
+  while the stats bar is **subscribed**, the host opens an exec channel on the same connection every 5 seconds
+  and times “send → channel confirmed”,
   deliberately **excluding** the remote command's own runtime (otherwise “spawn a shell” inflates the number).
   It answers “how laggy does typing feel”, so the tiers are by feel: `<120ms` green, `120–300ms` amber,
   `≥300ms` red. `Swap` is used/total (Linux reads SwapTotal/SwapFree from `/proc/meminfo`, macOS goes through
