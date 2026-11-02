@@ -380,7 +380,11 @@ class Cdp {
     return new Cdp(socket, 'node')
   }
 
-  send(method, params = {}) {
+  /*
+   * `timeoutMs` 可调（2026-11-02）：截图会偶发卡到超时，那条路要能自己设短一点、早点重试，
+   * 而不是陪着通用通道的 30s 一起干等。
+   */
+  send(method, params = {}, timeoutMs = 30000) {
     const id = ++this.id
     this.socket.send(JSON.stringify({ id, method, params }))
     return new Promise((resolve, reject) => {
@@ -390,7 +394,7 @@ class Cdp {
           this.pending.delete(id)
           reject(new Error('CDP 超时：' + method))
         }
-      }, 30000)
+      }, timeoutMs)
     })
   }
 
@@ -463,6 +467,55 @@ async function launchChrome() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** 截图单次尝试的 CDP 超时：比通道默认的 30s 短——真要卡住，早放弃才能早重试。 */
+const SHOT_TIMEOUT_MS = 20000
+/** 截图尝试次数（卡住的是那一帧、不是页面，所以重试一次；真挂了由下面的探活提前收敛）。 */
+const SHOT_ATTEMPTS = 2
+
+/**
+ * 截图（2026-11-02）。`Page.captureScreenshot` 会偶发卡到 CDP 超时，一次就把整轮走查带走，
+ * 而原始报错只有一句「CDP 超时：Page.captureScreenshot」——看不出卡在哪一场，也看不出渲染进程
+ * 是真死了还是只是那一帧没来。
+ *
+ * 排查记录（2026-11-02）：一段窗口里连跑 5 次，5 次全卡在第 11 张截图上（`stats-sparse`；也试过
+ * `--disable-gpu`，一样卡）。同一窗口里把 `client-src` 的改动 stash 回上一版同样复现，
+ * `pnpm test` 与前面 10 个场景一直正常，跑完立刻查进程也没有残留 Chrome
+ * （`--user-data-dir` 是固定路径 `.preview/chrome-profile`，起跑前会 `rmSync`，不存在多实例抢
+ * profile）。隔了半小时后再连跑 6 次，全部通过。结论是**环境侧**的偶发：无头 Chrome 那一帧的
+ * 合成迟迟不来，与本插件代码无关——但注释解释不掉「它下次又挂」这件事。
+ *
+ * 处置上不再当致命错误：卡住时先探一次渲染进程还活着没有，活着就重试一帧；两次都拿不到才失败，
+ * 并把「哪一场 · 渲染进程是否响应 · 每次耗时」写清楚——下次它再出现时不用重新排查一遍。
+ */
+async function captureShot(cdp, name) {
+  let last = null
+  for (let attempt = 1; attempt <= SHOT_ATTEMPTS; attempt += 1) {
+    const started = Date.now()
+    try {
+      const shot = await cdp.send(
+        'Page.captureScreenshot',
+        { format: 'png', captureBeyondViewport: false },
+        SHOT_TIMEOUT_MS,
+      )
+      if (attempt > 1) log('   · ' + name + ' 重试拿到截图（' + String(Date.now() - started) + 'ms）')
+      return shot
+    } catch (error) {
+      last = error
+      // 探活：渲染进程还答得上话，说明是合成帧没来（重试有意义）；答不上来就是它挂了（重试没意义）
+      const alive = await cdp
+        .send('Runtime.evaluate', { expression: '1 + 1', returnByValue: true }, 3000)
+        .then((result) => result?.result?.value === 2)
+        .catch(() => false)
+      log(
+        '   · ' + name + ' 截图超时（第 ' + String(attempt) + '/' + String(SHOT_ATTEMPTS) +
+        ' 次，' + String(Date.now() - started) + 'ms，渲染进程' + (alive ? '仍响应' : '无响应') + '）',
+      )
+      if (!alive) break
+    }
+  }
+  throw new Error('截图失败（' + name + '）：' + String((last && last.message) || last))
+}
+
 async function shoot(cdp, name, label) {
   const problems = []
   const off = cdp.on((msg) => {
@@ -533,7 +586,7 @@ async function shoot(cdp, name, label) {
       if (typeof diag?.result?.value === 'string') log('   · diag ' + diag.result.value)
     }
     await sleep(500)
-    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
+    const shot = await captureShot(cdp, name)
     const file = join(shotsDir, name + '.png')
     writeFileSync(file, Buffer.from(shot.data, 'base64'))
     return { file, problems }
