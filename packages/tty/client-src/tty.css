@@ -131,14 +131,23 @@
   --tt-term-stats-label: rgba(255, 255, 255, .5);
   --tt-term-stats-value: rgba(255, 255, 255, .86);
   --tt-term-stats-track: rgba(255, 255, 255, .14);
-  /* 极简条趋势线 / 网络双色：**必须取终端域的固定深色系**，不能借 --tt-success 等宿主
-     语义色——宿主浅色主题下那些是「深绿 / 深红」，压在 #0b0e14 上对比度掉一半。
-     值直接引用上面那块 ANSI 调色板，避免同一批十六进制值登记两遍。 */
-  --tt-term-stats-ok: var(--tt-an-green);
-  --tt-term-stats-warn: var(--tt-an-yellow);
-  --tt-term-stats-danger: var(--tt-an-red);
-  --tt-term-stats-rx: var(--tt-an-blue);
-  --tt-term-stats-tx: var(--tt-an-cyan);
+  /*
+   * 状态条 / 明细仪表盘的图表色：**必须取终端域的固定深色系**，不能借 --tt-success 等宿主
+   * 语义色——宿主浅色主题下那些是「深绿 / 深红」，压在 #0b0e14 上对比度只剩一半。
+   *
+   * 2026-11-01（用户反馈「条上的绿没有标签上那颗绿点好看」）：绿从 ANSI 的 #7ec699 换成
+   * #2ecc71。同一条终端上，宿主那颗「运行中」绿点是饱和翡翠（暗色主题实测 #22c55d），
+   * 而 #7ec699 是灰调鼠尾草——2px 折线 / 7px 每核柱本来就吃饱和度，并排看像「一个是彩的、
+   * 一个是旧照片」。橙 / 红一并提亮一档，免得三档之间饱和度和绿不成套。
+   *
+   * **只改这组图表色，不动 `--tt-an-green`**：那个同时是终端正文里 `\e[32m` 的绿
+   * （xterm 的 `theme.green`），改它会把用户实际看到的命令输出配色一起换掉——那是另一件事。
+   */
+  --tt-term-stats-ok: #2ecc71;
+  --tt-term-stats-warn: #f0b45c;
+  --tt-term-stats-danger: #ff6f7a;
+  --tt-term-stats-rx: #5c9dff;
+  --tt-term-stats-tx: #2fd6c9;
   /* 退出提示条（issue #7①）：终端域固定深色，与状态条同族的浅白系 */
   --tt-term-exit-bg: rgba(255, 255, 255, .06);
   --tt-term-exit-border: rgba(255, 255, 255, .10);
@@ -1387,6 +1396,9 @@
   top: 0;
   left: 0;
   right: 0;
+  /* 右侧「负载 / 时钟」要按**条自己的宽度**让位（窄面板藏时钟），容器查询比 JS 量宽度稳定：
+     面板缩放 / dock 挂载 / 嵌入终端都只改这一层的宽度，不需要再挂一圈 resize 监听 */
+  container-type: inline-size;
   z-index: 4; /* 高于 .tt_term(1)、低于 .tt_overlay(5)：出错浮层仍能盖住 */
   display: flex;
   align-items: center;
@@ -1400,7 +1412,8 @@
 }
 /*
  * 条目滚动区（完整模式可能溢出；窄窗口下横向滚动，0.19.0 的 D33 口径不变）。
- * 滚动条隐藏，滚轮/触控板横扫到达右侧；条目同时带 title。
+ * 滚动条隐藏，滚轮/触控板横扫到达右侧；条目带 `aria-label`，悬停信息见
+ * `.tt_statsTip`（2026-11-01 起不再用原生 title：它慢、只一行、还会跟卡片叠成两层）。
  */
 .tt_statsScroll {
   display: flex;
@@ -1434,6 +1447,17 @@
   align-items: center;
   flex: 0 0 auto;
 }
+/*
+ * 条目可能整格隐藏（目前只有「温度」：这台机器从来没报过温度 —— macOS / Windows / 多数云主机）。
+ *
+ * 只藏这一格就够：分隔线是**后一格**的 `::before`（`A + B::before` 画在 B 左边），所以
+ * 藏掉温度时它自己那条跟着消失、而「温度 → 网络」那条仍然存在，正好变成 `TCP │ 网络`。
+ * 别再去禁后一格的 ::before —— 那会把 TCP 与「网络」之间的竖线也删掉，两个值直接粘在一起
+ * （实测过一次：`572网络`）。
+ */
+.tt_statsItem[hidden] {
+  display: none;
+}
 /* 条目分隔线：不用 │ 字符（字体差异会抖动基线），改用一条自适应高度的竖线 */
 .tt_statsItem + .tt_statsItem::before {
   content: '';
@@ -1456,6 +1480,19 @@
   color: var(--tt-term-stats-value);
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+/*
+ * 取值的档位色（目前只有 Ping）：绿=跟手 / 橙=偏高 / 红=明显卡顿。
+ * 与迷你条、趋势线、悬停卡片共用同一组 `--tt-term-stats-*`，条上不会出现第三套绿。
+ */
+.tt_statsValue[data-level="ok"] {
+  color: var(--tt-term-stats-ok);
+}
+.tt_statsValue[data-level="warn"] {
+  color: var(--tt-term-stats-warn);
+}
+.tt_statsValue[data-level="danger"] {
+  color: var(--tt-term-stats-danger);
 }
 .tt_statsMeter {
   display: inline-block;
@@ -1484,6 +1521,59 @@
 .tt_statsMeter[data-level="danger"] .tt_statsMeterFill {
   background: var(--tt-term-stats-danger);
 }
+/* ---------------- 状态条右侧的「负载 / 时钟」（2026-11-01） ---------------- */
+
+/*
+ * 固定一格，挂在滚动区外面（挨着 ▾）：它回答的是「这台机器累不累、现在几点」，不跟着
+ * 条目横向滚动——条一窄就滚没了的信息，等于没有。
+ */
+.tt_statsExtra {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--tt-gap-md);
+  padding-left: var(--tt-gap-md);
+  color: var(--tt-term-stats-label);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.tt_statsExtraItem {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+/* 显式兜底：display 是作者样式，[hidden] 的 display:none 来自 UA 表（同 .tt_statsBar[hidden]） */
+.tt_statsExtra[hidden],
+.tt_statsExtraItem[hidden] {
+  display: none;
+}
+/* 两格之间的竖线：与条目分隔线同一套写法（1px、自适应高度、吃主题的 divider 令牌） */
+.tt_statsExtraItem + .tt_statsExtraItem::before {
+  content: '';
+  width: 1px;
+  align-self: stretch;
+  margin: 6px 0;
+  background: var(--tt-term-stats-divider);
+}
+.tt_statsExtraLabel {
+  color: var(--tt-term-stats-label);
+}
+.tt_statsExtraValue,
+.tt_statsClock {
+  color: var(--tt-term-stats-value);
+  font-variant-numeric: tabular-nums;
+}
+/*
+ * 窄面板：**时钟先让位**（负载是真指标，时间到处都有）。容器查询的判据是条自己的宽度，
+ * 不是视口——面板在 1680 的视口里也可能只有 500 宽（dock 挂载 / 嵌入终端）。
+ */
+@container (max-width: 620px) {
+  .tt_statsClock {
+    display: none;
+  }
+}
+
 /* ---------------- 极简模式：CPU / 内存 / 网络 + 趋势线 ---------------- */
 
 /*
@@ -1501,6 +1591,15 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+/*
+ * 显式兜底：`.tt_statsMinItem` 的 display 是**作者样式**（inline-flex），UA 表里那条
+ * `[hidden] { display: none }` 盖不住它——漏了这条，隐藏的格子会留下一个空的「标签 + 空值」。
+ * 用户截到的就是这个：本地会话没有 Ping，条上却留着一个孤零零的 `Ping`（2026-11-01）。
+ * 同型的兜底还有 `.tt_statsFull[hidden]` / `.tt_statsItem[hidden]` / `.tt_statsExtra[hidden]`。
+ */
+.tt_statsMinItem[hidden] {
+  display: none;
 }
 .tt_statsMinItem + .tt_statsMinItem::before {
   content: '';
@@ -1563,11 +1662,140 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* 极简条里的纯文本格子（Ping / Swap）：没有趋势线，只有一个值 */
+.tt_statsMinText {
+  font-size: 12px;
+  line-height: 18px;
+}
+.tt_statsMinText[data-level="ok"] {
+  color: var(--tt-term-stats-ok);
+}
+.tt_statsMinText[data-level="warn"] {
+  color: var(--tt-term-stats-warn);
+}
+.tt_statsMinText[data-level="danger"] {
+  color: var(--tt-term-stats-danger);
+}
 .tt_statsMinDown {
   color: var(--tt-term-stats-rx);
 }
 .tt_statsMinUp {
   color: var(--tt-term-stats-tx);
+}
+
+/* ---------------- 状态条条目的悬停卡片（2026-11-01） ---------------- */
+
+/*
+ * 材质与明细仪表盘同源（深色终端卡片，不是宿主主题卡片）：它由深色状态条开出、压在
+ * 终端区上，用终端域令牌才和条连成一体。
+ *
+ * 与仪表盘的两处**有意不同**：
+ * ① 不写 `box-shadow`——高层级表面「中性 border + elevation 投影」的配对是规范明确
+ *    拒绝的（check 八），仪表盘那处是历史写法；这张卡片靠 `.5px` 发丝描边 + 背景的
+ *    模糊背衬分层，与图二的观感也一致。
+ * ② `pointer-events: none`：卡片贴在条下面，指针落上去会触发条目的 pointerout ——
+ *    那会让卡片自己把自己闪没。它只是读数，本来也不需要接收指针。
+ */
+.tt_statsTip {
+  box-sizing: border-box;
+  position: fixed;
+  /* 低于明细仪表盘(1350)：两张浮层锚在同一根条上，同时在场时仪表盘在上 */
+  z-index: 1340;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tt-gap-sm);
+  min-width: 132px;
+  max-width: 260px;
+  padding: 7px 10px;
+  border: .5px solid var(--tt-term-card-border);
+  border-radius: var(--tt-r-md);
+  background: var(--tt-term-card-bg);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: var(--tt-term-fg);
+  font-family: var(--tt-mono);
+  font-size: 11px;
+  line-height: 16px;
+  pointer-events: none;
+  animation: ttPopIn var(--tt-dur) var(--tt-ease);
+}
+/* 显式兜底：display:flex 是作者样式，[hidden] 的 display:none 来自 UA 表，老引擎不保证 */
+.tt_statsTip[hidden] {
+  display: none;
+}
+/*
+ * 第一行：当前读数。标签弱、值亮且等宽（每秒刷新时数字不跳位）。
+ * 标签与值**挨着**（不 space-between）：卡片宽度由最长的那行（峰值行）撑开，
+ * 两端对齐会让「当前」与数字之间空出一大段，读起来像两列不相关的数（图二是挨着的）。
+ */
+.tt_statsTipHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: var(--tt-gap-sm);
+}
+.tt_statsTipLabel {
+  flex: none;
+  color: var(--tt-term-stats-label);
+}
+.tt_statsTipValue {
+  color: var(--tt-term-stats-value);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/*
+ * 第一行取值跟着**该格的档位**着色（绿 / 橙 / 红），与条上的迷你条、极简条的趋势线同一套色
+ * ——同一份数据点开变成白色，会像两回事（2026-11-01 用户反馈）。只有按档位着色的那几格
+ * （CPU / 内存 / 磁盘）会落 `data-level="ok"`；在线 / 核心 / TCP / 温度在条上本来就是白的。
+ * 阈值与状态条同源（`stats-bar.js` 的 `STATS_WARN_LIMIT`）。
+ */
+.tt_statsTip[data-level="ok"] .tt_statsTipValue {
+  color: var(--tt-term-stats-ok);
+}
+.tt_statsTip[data-level="warn"] .tt_statsTipValue {
+  color: var(--tt-term-stats-warn);
+}
+.tt_statsTip[data-level="danger"] .tt_statsTipValue {
+  color: var(--tt-term-stats-danger);
+}
+/*
+ * 网络那一格的值分两段着色：下行走 `--tt-term-stats-rx`（浅蓝）、上行走 `--tt-term-stats-tx`
+ * （青绿），与状态条 / 极简条里那两个箭头同一对令牌（2026-11-01 用户反馈「这个文字颜色没对上」：
+ * 条上是蓝 / 青，点开是一整个中性白）。
+ */
+.tt_statsTipPart--rx {
+  color: var(--tt-term-stats-rx);
+}
+.tt_statsTipPart--tx {
+  color: var(--tt-term-stats-tx);
+}
+/* 第二行起：峰值 + 上下文。窄卡片里放不下就整行换行，不截断（数字截断等于没有信息） */
+.tt_statsTipMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--tt-gap-md);
+  row-gap: 2px;
+  color: var(--tt-term-stats-label);
+}
+.tt_statsTipRow {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.tt_statsTipRowValue {
+  color: var(--tt-term-stats-fg);
+  font-variant-numeric: tabular-nums;
+}
+/* 脚注：只修饰「峰值」那一行的时间窗口（近 1 分钟）。虚线上沿把它与读数分开一档 */
+.tt_statsTipFoot {
+  padding-top: 4px;
+  border-top: 1px dashed var(--tt-term-stats-divider);
+  color: var(--tt-term-stats-label);
+}
+.tt_statsTipFoot[hidden] {
+  display: none;
 }
 
 /* ---------------- 明细仪表盘（状态条最右端的 ▴ 展开） ---------------- */

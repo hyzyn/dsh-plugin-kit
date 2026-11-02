@@ -40,6 +40,9 @@ export interface TermExit {
   signal: string | null
 }
 
+/** 连接往返探针的超时：一条健康链路的 RTT 是几十毫秒，5 秒没回音就不必再等。 */
+const PROBE_RTT_TIMEOUT_MS = 5000
+
 export interface TermHandle {
   readonly kind: 'local' | 'ssh'
   /** SSH 会话没有本地 pid，为 null。 */
@@ -73,6 +76,12 @@ export interface TermHandle {
    * 只有 SSH 实现提供：本地会话由宿主自己采（见 stats.ts 的本地采样器）。
    */
   statsExec?(command: string, onLine: (line: string) => void, onError: () => void): { stop(): void }
+  /**
+   * 连接往返（毫秒，2026-11-01）：在**这条连接**上开一条 exec channel，从发起到服务端
+   * 确认 channel 计时。刻意**不**等命令跑完——那会把「远端起一个 shell」的开销也算进去，
+   * 数字会比真实网络 RTT 大一截。本地会话没有这一项（没有网络对端）。
+   */
+  probeRtt?(): Promise<number | null>
   /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
   startupNotice?: string
 }
@@ -1594,11 +1603,51 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
     }
   }
 
+  /**
+   * 连接往返的一次采样（见 `TermHandle.probeRtt` 的说明）。失败一律返回 null：
+   * 探针是附加信息，量不到就不报，绝不因为一次 exec 被拒而影响终端或采集。
+   */
+  const probeRtt = (): Promise<number | null> => new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve(null)
+    }, PROBE_RTT_TIMEOUT_MS)
+    timer.unref?.()
+    const started = performance.now()
+    try {
+      conn.exec('true', (error, ch) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error !== null && error !== undefined) {
+          resolve(null)
+          return
+        }
+        // channel 一确认就关：`true` 在远端自己会退出，我们不需要它的输出
+        try {
+          ch.close()
+        } catch {
+          /* 已关闭 */
+        }
+        resolve(Math.round(performance.now() - started))
+      })
+    } catch {
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+      }
+      resolve(null)
+    }
+  })
+
   return {
     kind: 'ssh',
     pid: null,
     output,
     done,
+    probeRtt,
     write: (data: string) => {
       channel.write(data)
       return Promise.resolve(true)

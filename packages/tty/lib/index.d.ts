@@ -438,6 +438,13 @@ interface TtySession {
     statsSubs: Set<string>;
     /** 最近一帧服务器状态指标（tty_stats 的一条数据源；未采过为 null）。 */
     lastStats: StatsFrame | null;
+    /**
+     * 连接往返（毫秒，仅 SSH 会话；2026-11-01）：宿主每 5 秒在同一条连接上探一次，
+     * 并进每帧顺手带给前端（`pingMs`）。null = 还没探到 / 不是网络会话。
+     */
+    pingMs: number | null;
+    /** 往返探针的定时器；null = 没起（本地会话 / 已收尾）。 */
+    pingTimer: NodeJS.Timeout | null;
     /** 采集器句柄；null = 未启动（懒启动：首个 statsOn 才起）。 */
     stats: StatsCollector | null;
     /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
@@ -1045,6 +1052,14 @@ export declare class TtyServer {
     private stopStats;
     private stopAllStats;
     /** 帧只发给订阅了该会话的客户端（绑定键寻址，回帧带各连接自己的 sid，跨窗口共享也成立）。 */
+    /**
+     * SSH 会话的连接往返采样（2026-11-01）：每 5 秒在**同一条连接**上开一条 exec channel，
+     * 量「发起到服务端确认」的往返（见 `TermHandle.probeRtt`）。本地会话没有网络对端，不起；
+     * 远端拒绝 exec / 连接断开时静默跳过——探针是附加信息，量不到就不报。
+     *
+     * 为什么不用远端采集脚本量：那个脚本跑在对端，它量不了「到对端」的往返。
+     */
+    private startPingProbe;
     private sendStats;
     /** registerUpgrade 的 handler（loopback 围栏 + ws 握手）。 */
     handleUpgrade(req: ReqLike, socket: SocketLike, head: Buffer): void;

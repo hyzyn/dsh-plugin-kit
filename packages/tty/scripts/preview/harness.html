@@ -51,6 +51,21 @@
   <div class="main"><div class="mainCard">DSH 主区域（预览占位）</div></div>
 
   <script>
+    /*
+     * **先清上一次场景留下的本地存储**，再让 client.js 加载。
+     *
+     * 这条必须在最前面：客户端半体在**模块求值**时就读 `dsh-tty:stats-style` 这类本地偏好，
+     * 而 harness.js 里那句 `localStorage.clear()` 是第 73 行以后才执行的——太晚。后果是
+     * 「上一个场景把状态条切成极简」会被下一个场景继承（实测：批次里 stats-minimal 之后跑
+     * stats-tip，后者开局就是极简，再点一下切换按钮直接跳到「隐藏」，断言数到 0 个条目）。
+     * 各场景共用同一个 Chrome user-data-dir，所以这条泄漏是必然的、只是取决于执行顺序。
+     */
+    try {
+      localStorage.clear()
+      sessionStorage.clear()
+    } catch {
+      /* file:// 下偶尔不可用：不影响其余流程 */
+    }
     // 场景开关（必须在 mock-host.js 之前执行）
     const _q = new URLSearchParams(location.search)
     if (_q.get('sftp')) window.__PREVIEW_SFTP_STYLE = _q.get('sftp')

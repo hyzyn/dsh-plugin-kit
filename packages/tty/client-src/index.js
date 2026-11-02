@@ -99,7 +99,8 @@ import { planResume } from './download-resume.js'
 import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { SEARCH_CLOSED_DISPLAY, nextSearchOpen, searchDisplayFor } from './search-state.js'
-import { PROC_SORT_DEFAULT, STATS_WARN_LIMIT, chartCeiling, coresLevel, formatBytes, formatRate, hasUsableStats, mergeOptionalStats, netScaleCeiling, nextProcSort, nextStatsStyle, procRows, sparklineArea, sparklinePath, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel, statsNum, statsRateCompact, truncateMiddle } from './stats-bar.js'
+import { PROC_SORT_DEFAULT, STATS_WARN_LIMIT, chartCeiling, clockText, coresLevel, formatBytes, formatRate, hasUsableStats, mergeOptionalStats, netScaleCeiling, nextProcSort, nextStatsStyle, procRows, sparklineArea, sparklinePath, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel, statsNum, statsPair, statsRateCompact, truncateMiddle } from './stats-bar.js'
+import { statsTipModel } from './stats-tip.js'
 import { TERMINAL_LOOK_DEFAULTS, readTerminalLook, terminalFontFamilyValue, terminalLookChanged, terminalLookDrift } from './terminal-look.js'
 
 /* ================================ CSS ================================ */
@@ -606,6 +607,7 @@ const I18N_ZH = {
   'meta.uptime': '在线',
   'meta.temp': 'CPU温度',
   'meta.net': '网络',
+  'meta.load': '负载',
   'stats.fullTitle': '状态条：完整模式（点击切到极简）',
   'stats.minimalTitle': '状态条：极简模式（点击隐藏）',
   'stats.offTitle': '状态条：已隐藏（点击恢复完整）',
@@ -632,6 +634,11 @@ const I18N_ZH = {
   'statsDash.coreTip': '第 {index} 核 {pct}%',
   'statsDash.noCoresHint': '宿主还没上报每核占用：多半是宿主进程仍是旧版本（需重启），或该远端平台不提供每核数据',
   'statsDash.noProcsHint': '宿主还没上报进程列表：多半是宿主进程仍是旧版本（需重启），或该远端平台不支持 ps',
+  // 状态条条目的悬停卡片（2026-11-01）：第一行是当前读数，第二行起是「近 1 分钟峰值」+ 上下文
+  'statsTip.current': '当前',
+  'statsTip.peak': '峰值',
+  'statsTip.used': '已用',
+  'statsTip.occupied': '占用',
   'error.tunnelNoBook': '请先在连接簿里添加 SSH 条目',
   'error.tunnelRemotePortRequired': '远程监听端口与本地目标端口必填（1~65535）',
   'error.tunnelLocalRequired': '本地端口、远程主机、远程端口必填',
@@ -1119,6 +1126,7 @@ const I18N_EN = {
   'meta.uptime': 'Uptime',
   'meta.temp': 'CPU temp',
   'meta.net': 'Network',
+  'meta.load': 'Load',
   'stats.fullTitle': 'Status bar: full mode (click for minimal)',
   'stats.minimalTitle': 'Status bar: minimal mode (click to hide)',
   'stats.offTitle': 'Status bar: hidden (click to restore full)',
@@ -1145,6 +1153,10 @@ const I18N_EN = {
   'statsDash.coreTip': 'Core {index} {pct}%',
   'statsDash.noCoresHint': 'The host has not reported per-core usage yet — usually an older host process (restart it), or a remote platform without per-core data',
   'statsDash.noProcsHint': 'The host has not reported processes yet — usually an older host process (restart it), or a remote platform without ps',
+  'statsTip.current': 'Current',
+  'statsTip.peak': 'Peak',
+  'statsTip.used': 'Used',
+  'statsTip.occupied': 'Usage',
   'error.tunnelNoBook': 'Add an SSH entry to the host book first',
   'error.tunnelRemotePortRequired': 'A remote listen port and a local target port are required (1–65535)',
   'error.tunnelLocalRequired': 'Local port, remote host, and remote port are required',
@@ -1623,6 +1635,19 @@ let statsStaleTimer = null
  * 文件头：用户报的「定期闪动」）。
  */
 let statsItemEls = null
+/**
+ * 按**机器能力**出现的条目（2026-11-01）：没报过就整格不画（不是显示「无」）。
+ * 判据存在会话上（`tab.seenItems`），见帧到达处的注释。
+ */
+const OPTIONAL_ITEM_KEYS = new Set(['tempC', 'ping', 'swap'])
+/**
+ * 空间不够时**先藏哪些条目**（2026-11-01）：条宽是有限的，加到 10 项之后 1280px 的面板
+ * 已经装不下了。让位顺序按「这条信息有多不可替代」排：
+ *   ① `cores`（核心数）——静态的机器事实，明细卡片里每核都在（`16 核`那行脚注）；
+ *   ② `uptimeSec`（在线时长）——同样是静态信息，`tty_stats` 里还能读到。
+ * 活指标（CPU / 内存 / 磁盘 / TCP / Ping / Swap / 网络）不参与让位——那是状态条存在的理由。
+ */
+const ITEM_YIELD_ORDER = ['cores', 'uptimeSec']
 /** 已渲染的数据签名（sid + 帧时间）：同一条数据不重复渲染（1s 陈旧检测也走 applyStatsBar）。 */
 let statsRenderKey = null
 /** 状态条滚动容器（完整 / 极简两种呈现共用）与两个条目容器。 */
@@ -1818,6 +1843,8 @@ function onStatsToggleClick() {
   // 切模式时强制重画一次：`applyStatsBar` 的数据签名没变（同一帧），不重置就只换了显隐、
   // 极简条会停在上一次刷新（<1s）的值上
   statsRenderKey = null
+  // 切呈现会换掉条目 DOM（完整 ↔ 极简），旧 anchor 即将不可见：卡片先收
+  hideStatsTip()
   applyStatsBar()
   // 「显示 ↔ 隐藏」改变订阅；「完整 ↔ 极简」改变条高（24 ↔ 36px）——两件事都得跟
   syncStatsSubscription()
@@ -1834,6 +1861,7 @@ function ensureStatsBarShell() {
   statsBarEl.textContent = ''
   statsScrollEl = document.createElement('div')
   statsScrollEl.className = 'tt_statsScroll'
+  bindStatsScrollEvents(statsScrollEl)
   statsBarEl.appendChild(statsScrollEl)
   /*
    * 展开按钮**不随条目滚动**：它挂在滚动区外面、条的最右端。放里面会被长服务器名
@@ -1856,6 +1884,22 @@ function ensureStatsBarShell() {
   return true
 }
 
+/**
+ * 悬浮提示的事件挂在**滚动容器**上（委托，不逐个绑条目）：条目在完整 / 极简两种呈现里
+ * 各建各的，逐个绑会随重建漏绑。
+ *
+ * 要绑两次的原因：模板里**已经带**一颗 `.tt_statsScroll`（面板打开时直接 query 出来复用），
+ * `ensureStatsBarShell` 只在「那条不在文档里」时才重建另一颗——两处都得绑，否则常见路径
+ * （模板那颗）上永远收不到 pointerover。元素随面板 / 外壳一起销毁，不需要解绑。
+ */
+function bindStatsScrollEvents(el) {
+  if (el === null) return
+  el.addEventListener('pointerover', onStatsPointerOver)
+  el.addEventListener('pointerout', onStatsPointerOut)
+  el.addEventListener('pointerdown', hideStatsTip)
+  el.addEventListener('scroll', hideStatsTip, { passive: true })
+}
+
 /** 条目 DOM 全没了（隐藏 / 兜底清空）之后，所有引用一起作废，避免往游离节点上写。 */
 function forgetStatsDom() {
   statsScrollEl = null
@@ -1863,8 +1907,13 @@ function forgetStatsDom() {
   statsMinEl = null
   statsMinRefs = null
   statsExpandEl = null
-  // 仪表盘挂在 body 上、锚在状态条上：条没了（面板关闭 / 隐藏）它必须跟着收
+  // 右侧那组「负载 / 时钟」随条一起销毁：引用与定时器都作废
+  statsExtraEl = null
+  statsExtraRefs = null
+  stopStatsClockTimer()
+  // 仪表盘 / 悬浮提示挂在 body 上、锚在状态条上：条没了（面板关闭 / 隐藏）必须跟着收
   closeStatsDash()
+  hideStatsTip()
   discardStatsItems()
 }
 
@@ -1901,7 +1950,7 @@ function buildStatsBarDom() {
     fragment.appendChild(item)
     // slot 先记 null（而不是 spec.slot）：网络条的槽位随「有没有速率」变（0 / 23），
     // 首帧必须按实际值设一次，不能想当然套用 spec 里的默认值
-    refs.push({ item, value, meter, fill, slot: null })
+    refs.push({ key: spec.key, item, value, meter, fill, slot: null })
   }
   statsFullEl.appendChild(fragment)
   buildStatsMinimalDom()
@@ -2015,9 +2064,32 @@ function buildStatsMinimalDom() {
     statsMinEl.appendChild(item)
     return { item, area, path, value }
   }
+  /**
+   * 纯文本格子（无趋势线）：Ping 与 Swap 在极简条里也是「标签 + 一个值」——
+   * 它们没有「这一分钟在涨还是在抖」这层信息（Ping 的抖动在悬停卡片的峰值里，
+   * Swap 是单调量），再画一条 112px 的线只是白占宽度。
+   */
+  const makeTextItem = (labelText, kind) => {
+    const item = document.createElement('span')
+    item.className = 'tt_statsMinItem'
+    item.dataset.kind = kind
+    const label = document.createElement('span')
+    label.className = 'tt_statsMinLabel'
+    label.textContent = labelText
+    item.appendChild(label)
+    const value = document.createElement('span')
+    value.className = 'tt_statsMinValue tt_statsMinText'
+    item.appendChild(value)
+    statsMinEl.appendChild(item)
+    return { item, value }
+  }
   const cpu = makeItem('CPU', 'cpu', { limit: true })
   const mem = makeItem(t('meta.mem'), 'mem', { limit: true })
   const net = makeItem(t('meta.net'), 'net')
+  const ping = makeTextItem('Ping', 'ping')
+  const swap = makeTextItem('Swap', 'swap')
+  ping.item.hidden = true
+  swap.item.hidden = true
   // 网络的值是「↓下行 ↑上行」两段，分开着色（下行走强调色、上行走成功色）
   net.value.textContent = ''
   const down = document.createElement('span')
@@ -2032,11 +2104,11 @@ function buildStatsMinimalDom() {
   net.value.appendChild(document.createTextNode(' '))
   net.value.appendChild(up)
   net.value.appendChild(none)
-  statsMinRefs = { cpu, mem, net, down, up, none }
+  statsMinRefs = { cpu, mem, net, down, up, none, ping, swap }
   statsScrollEl.appendChild(statsMinEl)
 }
 
-/** 历史里的一帧（只留趋势线要用的四个字段；`null` = 这一帧没有该数据）。 */
+/** 历史里的一帧（趋势线要用的四个字段 + 悬浮卡片算峰值的三项；`null` = 这一帧没有该数据）。 */
 function pushStatsHistory(sid, stats) {
   if (typeof sid !== 'string' || sid === '') return
   const sample = {
@@ -2044,6 +2116,13 @@ function pushStatsHistory(sid, stats) {
     memPct: statsNum(stats, 'memPct'),
     rxRate: statsNum(stats, 'rxRate'),
     txRate: statsNum(stats, 'txRate'),
+    // 2026-11-01 起悬浮卡片要报「近 1 分钟峰值」，所以要额外留三项；趋势线不读它们，
+    // 60 个样本 × 3 个数字，内存代价可以忽略
+    diskPct: statsNum(stats, 'diskPct'),
+    tcpConns: statsNum(stats, 'tcpConns'),
+    tempC: statsNum(stats, 'tempC'),
+    // 悬停卡片的「峰值」：Ping 要看**最差**的一次（抖动才是终端最难用的状态）
+    pingMs: statsNum(stats, 'pingMs'),
   }
   const list = statsHistory.get(sid) ?? []
   list.push(sample)
@@ -2074,7 +2153,16 @@ function updateStatsMinimal() {
     return values.length === 0 ? null : Math.max(...values)
   })
   const peak = netSeries.reduce((max, value) => (value !== null && value > max ? value : max), 0)
-  setPath(statsMinRefs.net, netSeries, { min: 0, max: netScaleCeiling(peak), logarithmic: true })
+  /*
+   * 网络那条用**平方根刻度**，不是对数（2026-11-01，用户报「这个小的网络图是不是有问题，
+   * 数据没变化」）。对数在 16 单位高的缩略图上把整段压成贴顶的一条平线：量程由
+   * `netScaleCeiling` 的 ×4 阶梯给出（峰值 163 KB/s → 量程 256 KB/s），而
+   * `58K ↔ 163K` 只映射到 1.9 ↔ 0.6 单位——不足 2px 的起伏，看上去就是「没数据」。
+   * 平方根在同一个量程下给出 8.4 ↔ 3.2 单位（≈5px 起伏），既保住了同量级内的波动，
+   * 又不会像线性那样把一次突发以外的部分全压到底——与明细仪表盘的网络图同一个刻度选择，
+   * 理由与实测数字见 `test/stats-bar.test.ts` 里那条 power=0.5 的用例。
+   */
+  setPath(statsMinRefs.net, netSeries, { min: 0, max: netScaleCeiling(peak), power: 0.5 })
   const setText = (ref, text) => {
     if (ref.value.textContent !== text) ref.value.textContent = text
   }
@@ -2104,6 +2192,419 @@ function updateStatsMinimal() {
   } else {
     if (statsMinRefs.none.textContent !== t('list.none')) statsMinRefs.none.textContent = t('list.none')
   }
+  /*
+   * Ping / Swap：与完整条同一套「按机器能力出现」的判据（`seenItems`）与同一套取值
+   * （Ping 取整毫秒 + 手感档位；Swap 是「已用/总量」）。极简条只是少了趋势线。
+   */
+  const pingRef = statsMinRefs.ping
+  const ping = statsNum(stats, 'pingMs')
+  const pingShown = tab !== undefined && tab.seenItems !== undefined && tab.seenItems.ping === true
+  if (pingRef.item.hidden === pingShown) pingRef.item.hidden = !pingShown
+  if (pingShown) {
+    const text = ping === null ? t('list.none') : Math.round(ping) + 'ms'
+    if (pingRef.value.textContent !== text) pingRef.value.textContent = text
+    const tone = ping === null ? '' : ping < 120 ? 'ok' : ping < 300 ? 'warn' : 'danger'
+    if ((pingRef.value.dataset.level ?? '') !== tone) {
+      if (tone === '') delete pingRef.value.dataset.level
+      else pingRef.value.dataset.level = tone
+    }
+  }
+  const swapRef = statsMinRefs.swap
+  const swapShown = tab !== undefined && tab.seenItems !== undefined && tab.seenItems.swap === true
+  if (swapRef.item.hidden === swapShown) swapRef.item.hidden = !swapShown
+  if (swapShown) {
+    const text = statsPair(statsNum(stats, 'swapUsed'), statsNum(stats, 'swapTotal'), t)
+    if (swapRef.value.textContent !== text) swapRef.value.textContent = text
+  }
+}
+
+/* ---------------- 状态条右侧的「负载 / 时钟」（2026-11-01） ---------------- */
+
+/**
+ * 条的最右边、▾ 左边的固定一格：**1 分钟负载 + 本地时钟**。
+ *
+ * 为什么挂在滚动区**外面**：条目区回答的是「这台机器有什么」，负载也属于同一类信息，但它不该
+ * 被挤走——放进滚动区，条一窄就滚没了；放外面就一直在。代价是它占固定宽度，所以窄面板下按时钟 →
+ * 负载的顺序让位（见 CSS 的 `@container`）。
+ *
+ * 时钟走自己的 1s 定时器、**不挂 stats 帧**：宿主采样慢的时候（SSH 上 4s 一帧）挂在帧上的时钟
+ * 会每 4 秒跳 4 下。
+ */
+let statsExtraEl = null
+let statsExtraRefs = null
+let statsClockTimer = null
+
+function ensureStatsExtra() {
+  if (statsBarEl === null) return
+  if (statsExtraEl !== null && statsExtraEl.isConnected) return
+  const group = document.createElement('div')
+  group.className = 'tt_statsExtra'
+  const load = document.createElement('span')
+  load.className = 'tt_statsExtraItem tt_statsLoad'
+  load.hidden = true
+  const loadLabel = document.createElement('span')
+  loadLabel.className = 'tt_statsExtraLabel'
+  loadLabel.textContent = t('meta.load')
+  const loadValue = document.createElement('span')
+  loadValue.className = 'tt_statsExtraValue'
+  load.appendChild(loadLabel)
+  load.appendChild(loadValue)
+  const clock = document.createElement('span')
+  clock.className = 'tt_statsExtraItem tt_statsClock'
+  group.appendChild(load)
+  group.appendChild(clock)
+  /*
+   * 插在 ▾ **前面**：那颗按钮固定在条的最右端（不随条目滚动），这一组挨着它——
+   * 平时看上去是「…… 网络 ↓1.2M ↑300K │ 负载 0.15 │ 10:45:23  ▾」。
+   */
+  if (statsExpandEl !== null && statsExpandEl.parentNode === statsBarEl) statsBarEl.insertBefore(group, statsExpandEl)
+  else statsBarEl.appendChild(group)
+  statsExtraEl = group
+  statsExtraRefs = { load, loadValue, clock }
+}
+
+/** 每帧写一次：负载缺失时整格隐藏（Windows 本地没有 loadavg，不显示 0.00）。 */
+function updateStatsExtra(tab) {
+  ensureStatsExtra()
+  if (statsExtraRefs === null) return
+  const stats = tab !== undefined && tab.stats !== null && typeof tab.stats === 'object' && !Array.isArray(tab.stats) ? tab.stats : null
+  const load1 = stats === null ? null : statsNum(stats, 'load1')
+  const text = load1 === null ? '' : load1.toFixed(2)
+  if (statsExtraRefs.loadValue.textContent !== text) statsExtraRefs.loadValue.textContent = text
+  const loadHidden = load1 === null
+  if (statsExtraRefs.load.hidden !== loadHidden) statsExtraRefs.load.hidden = loadHidden
+  const now = clockText(new Date())
+  if (statsExtraRefs.clock.textContent !== now) statsExtraRefs.clock.textContent = now
+  fitStatsExtra()
+}
+
+/**
+ * 条目区自己先让位：按 `ITEM_YIELD_ORDER` 逐级藏「静态信息」，直到条不溢出。
+ *
+ * 为什么不能只靠横向滚动：溢出时**最后一个值会被切一半**（`↑57.0 KB/`），看上去像坏了；
+ * 而状态条是「一眼扫完」的东西，不该要求用户去横滚。让掉的都是悬停卡片 / 明细里还在的静态项，
+ * 活指标一个都不让。
+ */
+function fitStatsItems() {
+  if (statsItemEls === null || statsScrollEl === null) return
+  const overflow = () => statsScrollEl.scrollWidth > statsScrollEl.clientWidth + 1
+  const refs = statsItemEls.filter((ref) => ITEM_YIELD_ORDER.indexOf(ref.key) >= 0)
+  if (refs.length === 0) return
+  // 每帧从「全显示」重新算：窗口变宽 / 切模式后要能自动长回来
+  for (const ref of refs) ref.item.hidden = false
+  if (!overflow()) return
+  for (const key of ITEM_YIELD_ORDER) {
+    const ref = refs.find((item) => item.key === key)
+    if (ref === undefined) continue
+    ref.item.hidden = true
+    if (!overflow()) return
+  }
+}
+
+/**
+ * 空间不够时**逐级让位**：条目区一旦溢出就先藏时钟，还溢出就整组藏起来。
+ *
+ * 为什么不能只靠容器宽度：条目总宽随值变（网络那格有速率才占 23ch），同样 1280 宽的面板
+ * 有时塞得下、有时塞不下。判据只能是**真实的溢出**（scrollWidth > clientWidth）。
+ * 三次读都在同一个任务里完成，浏览器还没 paint，用户看不到中间态；调用频率是每帧一次（≈1s），
+ * 外加窗口缩放后的一帧。
+ */
+function fitStatsExtra() {
+  if (statsExtraEl === null || statsExtraRefs === null || statsScrollEl === null) return
+  const overflow = () => statsScrollEl.scrollWidth > statsScrollEl.clientWidth + 1
+  statsExtraEl.hidden = false
+  statsExtraRefs.clock.hidden = false
+  if (!overflow()) return
+  statsExtraRefs.clock.hidden = true
+  if (!overflow()) return
+  statsExtraEl.hidden = true
+}
+
+function tickStatsClock() {
+  if (statsExtraRefs === null) return
+  const now = clockText(new Date())
+  if (statsExtraRefs.clock.textContent !== now) statsExtraRefs.clock.textContent = now
+  /*
+   * 让位判据**也要在定时器里重算**：stats 帧可能很稀（SSH 上 4s 一帧），只挂在帧上时，
+   * 一次瞬时布局（刚切回完整模式、值还没填进去）会把时钟按住不放，而后续没有帧来纠正它。
+   * 每秒钟复算一次就能收敛，代价是三次布局读取。
+   */
+  fitStatsExtra()
+}
+
+function ensureStatsClockTimer() {
+  if (statsClockTimer !== null) return
+  statsClockTimer = setInterval(tickStatsClock, 1000)
+}
+
+function stopStatsClockTimer() {
+  if (statsClockTimer === null) return
+  clearInterval(statsClockTimer)
+  statsClockTimer = null
+}
+
+/* ---------------- 状态条条目的悬浮提示（2026-11-01） ---------------- */
+
+/*
+ * 条目的悬停卡片：`当前 / 峰值 / 上下文`（用户提议，参考 FinalShell 的服务器状态浮窗）。
+ *
+ * 为什么不用原生 `title`：它慢（约 1s）、样式不可控、只放得下一行「CPU: 18%」，而这里要
+ * 同时说「现在多少 / 刚才最高多少 / 几核」。所以条目改挂 `aria-label`（至少留下一条文本，
+ * 辅助技术读得到；这些格子本身不是交互控件），视觉信息交给这张卡片。
+ *
+ * 卡片**只建一次**、隐藏走 `hidden`（与状态条条目同一条纪律）：每次悬停重建 DOM 会让
+ * 卡片在指针下闪一下，也会把 `data-level` 的配色过渡打断。
+ */
+
+/** 悬停多久后出现：太短会在指针横扫状态条时连闪（一格只有几十像素宽），太长像卡住。 */
+const STATS_TIP_DELAY_MS = 140
+
+/** 悬浮卡片（挂在 body 上、锚在状态条下沿）。 */
+let statsTipEl = null
+let statsTipRefs = null
+/** 当前展示的条目：键取自 `statsItemSpecs(t)`（极简条映射到同一组键），anchor 用于定位。 */
+let statsTipKey = null
+let statsTipAnchor = null
+/** 延迟显示的定时器：指针横扫状态条时要能取消。 */
+let statsTipTimer = null
+
+function statsTipRow() {
+  const row = document.createElement('span')
+  row.className = 'tt_statsTipRow'
+  const label = document.createElement('span')
+  label.className = 'tt_statsTipRowLabel'
+  const value = document.createElement('span')
+  value.className = 'tt_statsTipRowValue'
+  row.appendChild(label)
+  row.appendChild(value)
+  return { row, label, value, cache: { shape: null, parts: [] } }
+}
+
+/**
+ * 把一个「可能分段着色」的值写进节点：不传分段就是一个整段文本。
+ *
+ * 分段只在**形状变了**（有没有分段 / 各段的色调）时重建子节点，其余情况只改文本：卡片每秒
+ * 都在刷，每帧重建会让那两段箭头在指针下面闪一下。形状记忆挂在调用方传进来的 `cache` 上，
+ * 与节点同生命周期。
+ */
+function paintStatsTipText(el, text, segments, cache) {
+  const list = Array.isArray(segments) ? segments : []
+  const shape = list.length === 0 ? '' : list.map((part) => part.tone || '').join('|')
+  if (cache.shape !== shape) {
+    cache.shape = shape
+    cache.parts = []
+    el.textContent = ''
+    for (const part of list) {
+      const span = document.createElement('span')
+      // 空色调那一段就是分隔符（网络那两段中间的空格），不必多包一层类名
+      if (part.tone !== '') span.className = 'tt_statsTipPart tt_statsTipPart--' + part.tone
+      el.appendChild(span)
+      cache.parts.push(span)
+    }
+    if (list.length === 0) el.textContent = text
+  }
+  if (list.length === 0) {
+    if (el.textContent !== text) el.textContent = text
+    return
+  }
+  for (let index = 0; index < list.length; index += 1) {
+    const span = cache.parts[index]
+    if (span.textContent !== list[index].text) span.textContent = list[index].text
+  }
+}
+
+function ensureStatsTipEl() {
+  if (statsTipEl !== null) {
+    if (statsTipEl.isConnected) return
+    // 被外部移出文档（宿主重渲染 / 手改 DOM）：旧节点连同它的 resize 监听一起扔掉重建，
+    // 不能只新建一颗——那样每重建一次就多挂一个 window 监听
+    window.removeEventListener('resize', positionStatsTip, false)
+    statsTipEl.remove()
+    statsTipEl = null
+    statsTipRefs = null
+  }
+  const tip = document.createElement('div')
+  tip.className = 'tt_statsTip'
+  tip.setAttribute('role', 'tooltip')
+  tip.hidden = true
+  const head = document.createElement('div')
+  head.className = 'tt_statsTipHead'
+  const label = document.createElement('span')
+  label.className = 'tt_statsTipLabel'
+  const value = document.createElement('span')
+  value.className = 'tt_statsTipValue'
+  head.appendChild(label)
+  head.appendChild(value)
+  const meta = document.createElement('div')
+  meta.className = 'tt_statsTipMeta'
+  meta.hidden = true
+  const foot = document.createElement('div')
+  foot.className = 'tt_statsTipFoot'
+  foot.hidden = true
+  tip.appendChild(head)
+  tip.appendChild(meta)
+  tip.appendChild(foot)
+  document.body.appendChild(tip)
+  statsTipRefs = { label, value, valueCache: { shape: null, parts: [] }, meta, foot, rows: [] }
+  statsTipEl = tip
+  window.addEventListener('resize', positionStatsTip, false)
+}
+
+/** 把模型写进卡片：只改真的变了的文本（每帧都会经过这里）。 */
+function paintStatsTip(model) {
+  if (statsTipEl === null || statsTipRefs === null) return
+  const refs = statsTipRefs
+  if (refs.label.textContent !== model.label) refs.label.textContent = model.label
+  paintStatsTipText(refs.value, model.value, model.segments, refs.valueCache)
+  const level = typeof model.level === 'string' ? model.level : ''
+  if ((statsTipEl.dataset.level ?? '') !== level) {
+    if (level === '') delete statsTipEl.dataset.level
+    else statsTipEl.dataset.level = level
+  }
+  // 行数随条目变（CPU 两行、在线没有次要行）：池化复用，只增删差额
+  while (refs.rows.length < model.rows.length) {
+    const built = statsTipRow()
+    refs.meta.appendChild(built.row)
+    refs.rows.push(built)
+  }
+  for (let index = refs.rows.length - 1; index >= model.rows.length; index -= 1) {
+    refs.rows[index].row.remove()
+    refs.rows.pop()
+  }
+  for (let index = 0; index < model.rows.length; index += 1) {
+    const target = refs.rows[index]
+    const next = model.rows[index]
+    if (target.label.textContent !== next.label) target.label.textContent = next.label
+    paintStatsTipText(target.value, next.value, next.segments, target.cache)
+  }
+  refs.meta.hidden = model.rows.length === 0
+  if (refs.foot.textContent !== model.foot) refs.foot.textContent = model.foot
+  refs.foot.hidden = model.foot === ''
+}
+
+/**
+ * 贴着状态条下沿、居中对齐到条目。
+ *
+ * 为什么是**下方**而不是图二那样浮在上方：状态条在本面板里顶在终端区最上面（上面紧挨着
+ * 标签栏），朝上弹会盖住标签页签；朝下弹正好落在终端区那一片暗底上，与明细仪表盘同一侧。
+ *
+ * 边界先按**面板**收窄再夹视口（与 `positionStatsDash` 同一个理由：面板通常比视口窄，
+ * 只按 innerWidth 夹会让卡片伸到面板外面，压在应用背景上）。
+ */
+function positionStatsTip() {
+  if (statsTipEl === null || statsTipAnchor === null || statsTipEl.hidden) return
+  const anchor = statsTipAnchor.getBoundingClientRect()
+  const bar = statsBarEl !== null ? statsBarEl.getBoundingClientRect() : anchor
+  // 夹边界的对象是**面板本身**（`.tt_modal`），不是它的全屏背衬（`.tt_modalBackdrop`，
+  // 那是 inset:0）——按背衬夹等于没夹，卡片会伸出面板右缘、压在应用背景上
+  const panelEl = modalEl !== null ? modalEl.querySelector('.tt_modal') : null
+  const panel = panelEl !== null ? panelEl.getBoundingClientRect() : bar
+  const width = statsTipEl.offsetWidth
+  const height = statsTipEl.offsetHeight
+  const minLeft = Math.max(8, panel.left + 8)
+  const maxLeft = Math.min(window.innerWidth - width - 8, panel.right - width - 8)
+  const left = Math.max(minLeft, Math.min(anchor.left + anchor.width / 2 - width / 2, maxLeft))
+  // 视口太矮时兜底贴顶：宁可压住状态条，也不让最后一行掉到视口外
+  const maxTop = Math.max(8, window.innerHeight - height - 8)
+  statsTipEl.style.left = String(Math.round(left)) + 'px'
+  statsTipEl.style.top = String(Math.round(Math.min(bar.bottom + 6, maxTop))) + 'px'
+}
+
+/** 条目 → `statsItemSpecs(t)` 的键（极简条只有 cpu / mem / net 三种，映射到同一组键）。 */
+function statsTipKeyFor(item) {
+  if (item.classList.contains('tt_statsMinItem')) {
+    const kind = item.dataset.kind
+    if (kind === 'cpu') return 'cpuPct'
+    if (kind === 'mem') return 'mem'
+    if (kind === 'net') return 'net'
+    return null
+  }
+  if (statsFullEl === null) return null
+  const specs = statsItemSpecs(t)
+  const index = Array.prototype.indexOf.call(statsFullEl.children, item)
+  return index >= 0 && index < specs.length ? specs[index].key : null
+}
+
+function showStatsTip(item) {
+  const key = statsTipKeyFor(item)
+  if (key === null) {
+    hideStatsTip()
+    return
+  }
+  statsTipKey = key
+  statsTipAnchor = item
+  ensureStatsTipEl()
+  if (statsTipEl === null) return
+  statsTipEl.hidden = false
+  refreshStatsTip()
+}
+
+/** 卡片跟着本帧刷新（没弹着就是一次 null 判断）。 */
+function refreshStatsTip() {
+  if (statsTipEl === null || statsTipKey === null || statsTipAnchor === null) return
+  const tab = activeTab()
+  const stats = tab !== undefined ? tab.stats : null
+  const history = tab !== undefined ? statsHistory.get(tab.sid) ?? [] : []
+  const model = statsTipModel(statsTipKey, stats, history, t)
+  // 这一格根本没有数据（macOS 的温度 / 采集失败的帧）：不弹一张只有「当前 无」的卡片
+  if (model.empty || statsTipAnchor.isConnected !== true) {
+    hideStatsTip()
+    return
+  }
+  paintStatsTip(model)
+  positionStatsTip()
+}
+
+function hideStatsTip() {
+  if (statsTipTimer !== null) {
+    clearTimeout(statsTipTimer)
+    statsTipTimer = null
+  }
+  statsTipKey = null
+  statsTipAnchor = null
+  if (statsTipEl !== null) statsTipEl.hidden = true
+}
+
+/** 面板关闭时连元素一起摘掉（`hideStatsTip` 只隐藏）。 */
+function destroyStatsTip() {
+  hideStatsTip()
+  if (statsTipEl !== null) {
+    window.removeEventListener('resize', positionStatsTip, false)
+    statsTipEl.remove()
+    statsTipEl = null
+  }
+  statsTipRefs = null
+}
+
+/** 指针进入条目：延迟一下再弹（横扫状态条时不该连闪）。 */
+function onStatsPointerOver(event) {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const item = target.closest('.tt_statsItem, .tt_statsMinItem')
+  if (item === null || item === statsTipAnchor) return
+  if (statsTipTimer !== null) clearTimeout(statsTipTimer)
+  statsTipTimer = setTimeout(() => {
+    statsTipTimer = null
+    showStatsTip(item)
+  }, STATS_TIP_DELAY_MS)
+}
+
+/** 指针离开条目：立即收起；在条目**内部**（标签 ↔ 进度条 ↔ 值）移动不算离开。 */
+function onStatsPointerOut(event) {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const item = target.closest('.tt_statsItem, .tt_statsMinItem')
+  if (item === null) return
+  const next = event.relatedTarget
+  if (next instanceof Node && item.contains(next)) return
+  if (item !== statsTipAnchor) {
+    if (statsTipTimer !== null) {
+      clearTimeout(statsTipTimer)
+      statsTipTimer = null
+    }
+    return
+  }
+  hideStatsTip()
 }
 
 /* ---------------- 明细仪表盘（悬浮卡片，2026-10-31） ---------------- */
@@ -2206,6 +2707,8 @@ function positionStatsDash() {
 function openStatsDash() {
   if (modalEl === null || statsBarEl === null || statsBarEl.hidden) return
   closeStatsDash()
+  // 两张浮层锚在同一根条上，同时开只会互相压住：开仪表盘就收起悬停卡片
+  hideStatsTip()
   const pop = document.createElement('div')
   pop.className = 'tt_statsDash'
   pop.setAttribute('role', 'dialog')
@@ -2693,7 +3196,23 @@ function updateStatsItems(refs, tab) {
       ref.value.style.minWidth = next.slot > 0 ? next.slot + 'ch' : ''
     }
     if (ref.value.textContent !== next.value) ref.value.textContent = next.value
-    if (ref.item.getAttribute('title') !== next.title) ref.item.setAttribute('title', next.title)
+    // 取值档位（目前只有 Ping）：绿=跟手 / 橙=偏高 / 红=卡顿；其余条目是空串（中性白）
+    const tone = typeof next.tone === 'string' ? next.tone : ''
+    if ((ref.value.dataset.level ?? '') !== tone) {
+      if (tone === '') delete ref.value.dataset.level
+      else ref.value.dataset.level = tone
+    }
+    /*
+     * 可选指标（温度 / Ping / Swap）：这个会话**从来没报过**就整格不画。
+     * 不是「这一帧没有就藏」——那会在传感器偶发读失败时每秒闪一次。
+     * 分隔线不用管：它是后一格画的，藏掉这一格后「左邻 │ 右邻」照样成立（见 CSS 注释）。
+     */
+    if (OPTIONAL_ITEM_KEYS.has(ref.key)) {
+      const hidden = tab === undefined || tab.seenItems === undefined || tab.seenItems[ref.key] !== true
+      if (ref.item.hidden !== hidden) ref.item.hidden = hidden
+    }
+    // 悬停信息走自绘卡片（stats-tip.js），`title` 会让原生 tooltip 叠成两层——这里只留 aria-label
+    if (ref.item.getAttribute('aria-label') !== next.summary) ref.item.setAttribute('aria-label', next.summary)
     if (ref.fill !== null && ref.meter !== null) {
       const width = next.pct === null ? '0%' : Math.max(0, Math.min(100, next.pct)).toFixed(1) + '%'
       if (ref.fill.style.width !== width) ref.fill.style.width = width
@@ -2772,8 +3291,10 @@ function applyStatsBarInner() {
   const changed = (bodyEl.dataset.stats !== undefined) !== visible
   if (!visible) {
     closeStatsDash()
+    hideStatsTip()
     if (changed) delete bodyEl.dataset.stats
     statsBarEl.hidden = true
+    stopStatsClockTimer()
     // 隐藏时把条目一起丢掉（省 DOM）：下次显示重建外壳与条目，也就自然拿到了新标签的数据
     if (statsItemEls !== null) {
       statsBarEl.textContent = ''
@@ -2795,13 +3316,18 @@ function applyStatsBarInner() {
   if (key !== statsRenderKey) {
     statsRenderKey = key
     updateStatsItems(statsItemEls, tab)
+    fitStatsItems()
     updateStatsMinimal()
+    updateStatsExtra(tab)
   }
+  // 时钟自己走 1s 定时器（宿主帧慢时挂在帧上会「几秒跳几下」）
+  ensureStatsClockTimer()
   if (changed) {
     bodyEl.dataset.stats = ''
     refitActiveTab()
   }
-  // 仪表盘开着时跟着每帧刷新（关着就是一次 null 判断）
+  // 仪表盘 / 悬浮提示开着时跟着每帧刷新（关着就是一次 null 判断）
+  refreshStatsTip()
   updateStatsDash()
 }
 
@@ -9466,6 +9992,16 @@ function connect() {
            */
           tab.stats = hasUsableStats(stats) ? mergeOptionalStats(tab.stats, stats) : null
           tab.statsAt = Date.now()
+          /*
+           * 可选指标（温度 / Ping / Swap）按**会话**记一次「这台机器报过没有」（2026-11-01）：
+           * macOS / Windows 本地没有温度传感器、本地会话没有网络对端、没配 swap 的机器没有交换
+           * 分区——这些格子会永远是「无」，白占状态条的宽度（条上每个字符都是抢来的）。
+           * 判据是「这个会话**曾经**报过」，不是「这一帧有没有」：传感器偶发读失败不该让格子每秒闪一下。
+           */
+          const seenItems = tab.seenItems ?? (tab.seenItems = {})
+          if (statsNum(tab.stats, 'tempC') !== null) seenItems.tempC = true
+          if (statsNum(tab.stats, 'pingMs') !== null) seenItems.ping = true
+          if ((statsNum(tab.stats, 'swapTotal') ?? 0) > 0) seenItems.swap = true
           // 趋势线历史（极简模式）：坏帧也记一帧「缺口」，不补值——线断开比假装平滑诚实
           pushStatsHistory(sid, stats)
           if (sid === activeSid) applyStatsBar()
@@ -9704,6 +10240,7 @@ function openModal() {
   bodyEl = modalEl.querySelector('.tt_body')
   statsBarEl = modalEl.querySelector('.tt_statsBar')
   statsScrollEl = modalEl.querySelector('.tt_statsScroll')
+  bindStatsScrollEvents(statsScrollEl)
   statsExpandEl = modalEl.querySelector('.tt_statsExpand')
   if (statsExpandEl !== null) statsExpandEl.addEventListener('click', onStatsExpandClick)
   statsToggleEl = modalEl.querySelector('[data-act=stats]')
@@ -10136,6 +10673,7 @@ function closeModal() {
   closeConnbarMoreMenu()
   statsHistory.clear()
   forgetStatsDom()
+  destroyStatsTip()
   statsToggleEl = null
   statsToggleMode = null
   stopStatsStaleTimer()

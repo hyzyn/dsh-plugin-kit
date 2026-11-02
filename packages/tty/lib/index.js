@@ -299,6 +299,15 @@ export function reapedOrphansMessage(sids, graceSec) {
 }
 /** 服务器状态条的采集/推送间隔（mvp 固定 1s，不做配置项）。 */
 const STATS_INTERVAL_MS = 1000;
+/** 连接往返的采样间隔（毫秒）：5 秒够画出趋势，又不会每帧都去开一条 channel。 */
+const PING_PROBE_INTERVAL_MS = 5000;
+/** 停掉往返探针（会话收尾时调用；重复调用无害）。 */
+function stopPingProbe(session) {
+    if (session.pingTimer === null)
+        return;
+    clearInterval(session.pingTimer);
+    session.pingTimer = null;
+}
 /**
  * 采集失败后的退避重挂：`base × 2^(失败次数-1)`，上限 `MAX`（D83）。
  *
@@ -2175,6 +2184,7 @@ export class SessionManager {
     /** 同步退役：移出全局表 + 释放虚拟屏（幂等，不杀进程）。 */
     retire(session) {
         session.closed = true;
+        stopPingProbe(session);
         this.sessions.delete(session.id);
         clearScreenWatchdog(session.screenHeartbeat);
         try {
@@ -2267,6 +2277,7 @@ export class SessionManager {
         this.sessions.clear();
         await Promise.all(all.map((session) => {
             session.closed = true;
+            stopPingProbe(session);
             clearScreenWatchdog(session.screenHeartbeat);
             try {
                 session.screen?.dispose();
@@ -2513,7 +2524,39 @@ export class TtyServer {
         this.sessions.forEach((session) => this.stopStats(session));
     }
     /** 帧只发给订阅了该会话的客户端（绑定键寻址，回帧带各连接自己的 sid，跨窗口共享也成立）。 */
+    /**
+     * SSH 会话的连接往返采样（2026-11-01）：每 5 秒在**同一条连接**上开一条 exec channel，
+     * 量「发起到服务端确认」的往返（见 `TermHandle.probeRtt`）。本地会话没有网络对端，不起；
+     * 远端拒绝 exec / 连接断开时静默跳过——探针是附加信息，量不到就不报。
+     *
+     * 为什么不用远端采集脚本量：那个脚本跑在对端，它量不了「到对端」的往返。
+     */
+    startPingProbe(session) {
+        const probe = session.handle.probeRtt;
+        if (probe === undefined)
+            return;
+        const tick = () => {
+            if (session.closed)
+                return;
+            void probe.call(session.handle).then((ms) => {
+                if (ms !== null && !session.closed)
+                    session.pingMs = ms;
+            }).catch(() => {
+                /* 探针失败不留痕：下一次再看 */
+            });
+        };
+        tick(); // 首个采样立刻来一次，别让那格空等 5 秒
+        const timer = setInterval(tick, PING_PROBE_INTERVAL_MS);
+        timer.unref?.();
+        session.pingTimer = timer;
+    }
     sendStats(session, frame) {
+        /*
+         * 连接往返（仅 SSH）由宿主侧探针提供，**不来自**远端采集脚本：采集脚本跑在对端，
+         * 它量不了「到对端」的往返。这里把它并进同一帧，前端一个通道就能拿到全部字段。
+         */
+        if (session.pingMs !== null)
+            frame = { ...frame, pingMs: session.pingMs };
         // agent 侧 tty_stats 的数据源：不留档的话「没有面板订阅」的会话（agent 开的
         // 终端天然没有面板订阅）永远拿不到指标
         session.lastStats = frame;
@@ -2798,6 +2841,11 @@ export class TtyServer {
      * 失败不抛给 agent 的判断链：返回 available:false + 原因。
      */
     async sampleStats(session) {
+        /**
+         * 连接往返由宿主探针提供（远端采集脚本量不了「到对端」的往返），这里把它并进返回值：
+         * `tty_stats` 与面板拿到的是同一份形状。
+         */
+        const attachPing = (frame) => (session.pingMs !== null ? { ...frame, pingMs: session.pingMs } : frame);
         if (session.kind === 'local') {
             try {
                 const frame = await localStatsSampler().sample();
@@ -2841,8 +2889,8 @@ export class TtyServer {
                     if (frame === null)
                         return;
                     clearTimeout(timer);
-                    session.lastStats = frame;
-                    finish({ available: true, frame });
+                    session.lastStats = attachPing(frame);
+                    finish({ available: true, frame: session.lastStats });
                 }, () => {
                     clearTimeout(timer);
                     // 一帧未读就结束：远端可能非 POSIX（Windows 远端走 PowerShell 版）
@@ -2954,6 +3002,8 @@ export class TtyServer {
                 tmuxName,
                 statsSubs: new Set(),
                 lastStats: null,
+                pingMs: null,
+                pingTimer: null,
                 stats: null,
                 statsFailed: false,
                 statsRetryAt: 0,
@@ -3254,6 +3304,8 @@ export class TtyServer {
                         tmuxName,
                         statsSubs: new Set(),
                         lastStats: null,
+                        pingMs: null,
+                        pingTimer: null,
                         stats: null,
                         statsFailed: false,
                         statsRetryAt: 0,
@@ -3278,6 +3330,7 @@ export class TtyServer {
                     }
                     this.attachOutput(next);
                     this.watchDone(next, local);
+                    this.startPingProbe(next);
                     return next;
                 })();
                 if (persistName !== null) {
@@ -5597,7 +5650,7 @@ const plugin = definePlugin({
                         name: 'tty_stats',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '读取某个终端会话所在机器的实时指标（CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长）——本地会话取宿主机，SSH 会话取那台远程主机（另开一条非 PTY 通道，不影响终端）。部署、压测、排查「机器是不是满了」之前先看它。仅 Linux 远端字段齐全，Windows 远端部分字段可采，macOS/BSD 远端取不到。',
+                        description: '读取某个终端会话所在机器的实时指标（CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长 / 1 分钟负载）——本地会话取宿主机，SSH 会话取那台远程主机（另开一条非 PTY 通道，不影响终端）。部署、压测、排查「机器是不是满了」之前先看它。仅 Linux 远端字段齐全，Windows 远端部分字段可采，macOS/BSD 远端取不到。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（tty_list 提供）' },
                         },
@@ -5623,6 +5676,7 @@ const plugin = definePlugin({
                                     txRate: { type: 'number' },
                                     tempC: { type: 'number' },
                                     uptimeSec: { type: 'number' },
+                                    load1: { type: 'number' },
                                     /*
                                      * 每核使用率与 Top 进程：宿主帧里的**可选**字段，`execute` 把它整帧摊平进返回值，
                                      * 所以这里必须声明——否则违反 `additionalProperties: false`（B33 那条端到端断言
@@ -5656,6 +5710,7 @@ const plugin = definePlugin({
                                     v.rxRate !== undefined ? `网速 ↓${humanFileSize(v.rxRate)}/s ↑${humanFileSize(v.txRate ?? 0)}/s` : null,
                                     v.tempC !== undefined ? `温度 ${v.tempC.toFixed(0)}°C` : null,
                                     v.uptimeSec !== undefined ? `在线 ${humanDuration(v.uptimeSec)}` : null,
+                                    v.load1 !== undefined ? `负载 ${v.load1.toFixed(2)}` : null,
                                     v.procs !== undefined && v.procs.length > 0
                                         ? 'Top 进程 ' + v.procs.slice(0, 3).map((proc) => `${proc.cmd} ${proc.cpuPct.toFixed(0)}%`).join(' / ')
                                         : null,

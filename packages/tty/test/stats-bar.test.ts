@@ -19,6 +19,7 @@ import {
   STATS_STALE_MS,
   STATS_WARN_LIMIT,
   chartCeiling,
+  clockText,
   coresLevel,
   formatBytes,
   formatRate,
@@ -123,11 +124,11 @@ describe('状态条的固定槽位（本 bug：值位数变化不该推挤后面
     const specs = statsItemSpecs(t)
     const net = specs[specs.length - 1]
     expect(net.key).toBe('net')
-    expect(valuesOf(MACOS_LOCAL)[7].slot).toBe(0) // macOS 本地：网络 无
-    const withRates = valuesOf({ ...MACOS_LOCAL, rxRate: 112.5 * 1024 ** 2, txRate: 112.5 * 1024 ** 2 })[7]
+    expect(valuesOf(MACOS_LOCAL)[9].slot).toBe(0) // macOS 本地：网络 无
+    const withRates = valuesOf({ ...MACOS_LOCAL, rxRate: 112.5 * 1024 ** 2, txRate: 112.5 * 1024 ** 2 })[9]
     expect(withRates.slot).toBe(net.slot)
     expect(withRates.value.length).toBeLessThanOrEqual(withRates.slot)
-    expect(valuesOf({ ...MACOS_LOCAL, rxRate: 2 ** 40, txRate: 2 ** 40 })[7].value.length).toBeLessThanOrEqual(net.slot)
+    expect(valuesOf({ ...MACOS_LOCAL, rxRate: 2 ** 40, txRate: 2 ** 40 })[9].value.length).toBeLessThanOrEqual(net.slot)
   })
 
   it('值与 spec 一一对应（DOM 层按同序建节点，错位就会写错格子）', () => {
@@ -149,6 +150,8 @@ describe('statsItemValues 的渲染口径', () => {
       '2% (12.7/862 GB)', // 磁盘：同上
       '3w6d20h18m', // 在线
       '36', // TCP
+      'list.none', // Ping（本地会话没有网络对端 → 整格隐藏，模型里仍是「无」）
+      'list.none', // Swap（没配交换分区 → 整格隐藏）
       'list.none', // CPU温度（macOS 没有 sysfs）
       'list.none', // 网络（macOS 本地取不到速率时）
     ])
@@ -159,9 +162,9 @@ describe('statsItemValues 的渲染口径', () => {
     expect(values[0].pct).toBe(5)
     expect(values[2].pct).toBe(56)
     expect(values[3].pct).toBe(2)
-    expect(values[6].value).toBe('list.none')
-    expect(values[6].pct).toBeNull()
-    expect(values[7].pct).toBeNull()
+    expect(values[8].value).toBe('list.none')
+    expect(values[8].pct).toBeNull()
+    expect(values[9].pct).toBeNull()
   })
 
   it('合并项只画缺的那一半（不拼「86% (无)」，也不把缺失的百分比画成 0%）', () => {
@@ -170,20 +173,26 @@ describe('statsItemValues 的渲染口径', () => {
     expect(valuesOf({})[2]).toMatchObject({ value: 'list.none', pct: null })
   })
 
-  it('title 是「标签: 值」（窄窗口被裁时悬停可读全），不做 HTML 转义（DOM 层用 setAttribute）', () => {
+  it('summary 是「标签: 值」（写进 aria-label；悬停由 stats-tip.js 的自绘卡片承担），不做 HTML 转义', () => {
     const values = valuesOf(MACOS_LOCAL)
-    expect(values[0].title).toBe('CPU: 5%')
-    expect(values[4].title).toBe('meta.uptime: 3w6d20h18m')
-    expect(values[2].title).toBe('meta.mem: 56% (16.6/29.8 GB)')
+    expect(values[0].summary).toBe('CPU: 5%')
+    expect(values[4].summary).toBe('meta.uptime: 3w6d20h18m')
+    expect(values[2].summary).toBe('meta.mem: 56% (16.6/29.8 GB)')
   })
 
   it('有速率时网络条显示 ↓/↑（B/s 走整数量级，KB/s 起复用 formatRate）', () => {
-    expect(valuesOf({ ...MACOS_LOCAL, rxRate: 92.3 * 1024, txRate: 93.1 * 1024 })[7].value).toBe('↓92.3 KB/s ↑93.1 KB/s')
-    expect(valuesOf({ ...MACOS_LOCAL, rxRate: 0, txRate: 512 })[7].value).toBe('↓0 B/s ↑512 B/s')
+    expect(valuesOf({ ...MACOS_LOCAL, rxRate: 92.3 * 1024, txRate: 93.1 * 1024 })[9].value).toBe('↓92.3 KB/s ↑93.1 KB/s')
+    expect(valuesOf({ ...MACOS_LOCAL, rxRate: 0, txRate: 512 })[9].value).toBe('↓0 B/s ↑512 B/s')
   })
 
   it('温度保留一位小数（Linux 上才有）', () => {
-    expect(valuesOf({ ...MACOS_LOCAL, tempC: 62.45 })[6].value).toBe('62.5°C')
+    expect(valuesOf({ ...MACOS_LOCAL, tempC: 62.45 })[8].value).toBe('62.5°C')
+  })
+
+  it('Ping 取整毫秒、Swap 成对（两者都按机器能力出现，见 DOM 层的「报过才画」）', () => {
+    expect(valuesOf({ ...MACOS_LOCAL, pingMs: 24.4 })[6].value).toBe('24ms')
+    expect(valuesOf({ ...MACOS_LOCAL, swapUsed: 1.2e9, swapTotal: 4e9 })[7].value).toBe('1.1/3.7 GB')
+    expect(valuesOf({ ...MACOS_LOCAL, swapTotal: 0, swapUsed: 0 })[7].value).toBe('list.none')
   })
 })
 
@@ -308,6 +317,12 @@ describe('极简模式：趋势线与网络量纲（2026-10-31）', () => {
       'M0 20 L0 15 L25 10 L25 20 Z M75 20 L75 5 L100 0 L100 20 Z',
     )
     expect(sparklineArea(null, 100, 16)).toBe('')
+  })
+
+  it('clockText：24 小时制、两位补零（不随语言变宽）', () => {
+    expect(clockText(new Date(2026, 10, 1, 9, 5, 3))).toBe('09:05:03')
+    expect(clockText(new Date(2026, 10, 1, 23, 59, 59))).toBe('23:59:59')
+    expect(clockText(new Date(2026, 10, 1, 0, 0, 0))).toBe('00:00:00')
   })
 
   it('sparklinePath：少于两个点不画（一个点画出来是误导）', () => {

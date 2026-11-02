@@ -471,11 +471,22 @@
             tcpConns: 570 + (tick % 7),
             rxRate: (58 + (tick % 7) * 17.5) * 1024,
             txRate: (34 + (tick % 5) * 11.5) * 1024,
+            // 1 分钟负载（2026-11-01）：状态条右侧那一格用它；0.12~0.66 之间缓慢漂
+            load1: Math.round((0.12 + (tick % 9) * 0.06) * 100) / 100,
+            // 交换分区与 SSH 连接往返（2026-11-01）：Ping / Swap 两格用它
+            swapTotal: 4 * 1024 ** 3,
+            swapUsed: Math.round((1.2 + (tick % 4) * 0.25) * 1024 ** 3),
+            pingMs: 18 + (tick % 5) * 6,
             // tempC 缺席：走「CPU温度 无」的降级渲染（与 macOS 本机一致）
             // 明细仪表盘：每核 + Top 进程（宿主真实采集是可选字段，这里给 16 核的形状）
             cpuCores: makeCores(tick),
           }
           if (withProcs) frame.procs = makeProcs(tick)
+          /*
+           * 场景可以点名**不发的字段**（`window.__PREVIEW_STATS_OMIT = ['pingMs','swapTotal']`）：
+           * 用来验「这台机器没有这个能力时那一格整格隐藏」——本地会话没有 Ping 就是这条路。
+           */
+          for (const key of window.__PREVIEW_STATS_OMIT ?? []) delete frame[key]
           this._deliver({ t: 'stats', sid, stats: frame })
         }
         push()

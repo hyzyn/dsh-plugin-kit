@@ -30,6 +30,23 @@ export interface StatsFrame {
     txRate?: number;
     /** CPU 温度（摄氏度）。 */
     tempC?: number;
+    /** 交换分区已用 / 总量（bytes）。Windows 远端不采（显示「无」）。 */
+    swapUsed?: number;
+    swapTotal?: number;
+    /**
+     * SSH 会话的连接往返（毫秒）：宿主在这条 ssh2 连接上每 5 秒跑一次 `true`，
+     * 量「写命令 → 收到退出」的**整体**往返，含远端起一个 shell 的开销，比纯网络 RTT 略高。
+     * 本地会话没有这一项（没有网络对端）。
+     */
+    pingMs?: number;
+    /**
+     * 1 分钟平均负载（`/proc/loadavg` 的第一个数，macOS 走 `os.loadavg()`）。
+     *
+     * 2026-11-01 加：状态条右侧那组「负载 / 时间」用它。**Windows 拿不到**（没有 loadavg，
+     * 且 `os.loadavg()` 在 Windows 上恒返回 `[0,0,0]`——那不是「负载 0」，所以本地采样器会
+     * 显式省略这个字段，前端显示「无」而不是 0.00）。保留两位小数（loadavg 的惯例）。
+     */
+    load1?: number;
     /** 每核使用率 0~100（按 cpuN 顺序）。明细仪表盘的「CPU 核心」卡片用它。 */
     cpuCores?: number[];
     /**
@@ -178,6 +195,22 @@ export declare function parseMeminfo(text: string): {
     total: number;
     used: number;
     pct: number;
+} | null;
+/**
+ * /proc/meminfo → 交换分区 `{used,total}`（bytes）。**没有 swap 的机器返回 null**
+ * （`SwapTotal: 0`）：那是「没有这个能力」，不是「已用 0」，客户端据此整格隐藏。
+ */
+export declare function parseSwapMeminfo(text: string): {
+    used: number;
+    total: number;
+} | null;
+/**
+ * macOS 的 `sysctl -n vm.swapusage` → `total = 2048.00M  used = 512.25M  free = …`。
+ * 单位按 1024 进（与 sysctl 自己的换算一致）；解析不出来返回 null。
+ */
+export declare function parseSwapUsage(text: string): {
+    used: number;
+    total: number;
 } | null;
 /** /proc/net/dev → 非 lo 接口收发字节累计（速率由调用方差值）。 */
 export declare function parseNetDev(text: string): {

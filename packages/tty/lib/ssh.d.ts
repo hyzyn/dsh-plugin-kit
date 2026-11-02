@@ -61,6 +61,12 @@ export interface TermHandle {
     statsExec?(command: string, onLine: (line: string) => void, onError: () => void): {
         stop(): void;
     };
+    /**
+     * 连接往返（毫秒，2026-11-01）：在**这条连接**上开一条 exec channel，从发起到服务端
+     * 确认 channel 计时。刻意**不**等命令跑完——那会把「远端起一个 shell」的开销也算进去，
+     * 数字会比真实网络 RTT 大一截。本地会话没有这一项（没有网络对端）。
+     */
+    probeRtt?(): Promise<number | null>;
     /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
     startupNotice?: string;
 }

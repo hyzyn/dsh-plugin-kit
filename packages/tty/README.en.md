@@ -169,7 +169,7 @@ The plugin injects nineteen tools into the agent (operations show up live in the
 | `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of code in the host shell’s syntax** — on a POSIX shell `cd x && cmd`, `a; b` and multi-line scripts work, while **Windows cmd / PowerShell use their own syntax**; the current shell and syntax are restated every turn in the systemPrompt terminal line; it is *not* subject to the “single line ≤2000” client rule below — D78), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
 | `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (by default it is retained **until explicitly closed**, never on a timer) |
 | `tty_run` | **One-shot command** (0.23.0): open a session, run `command`, wait for it to finish and return the tail output + exit code directly — collapsing “`tty_open` → wait → `tty_capture{last}` → `tty_close`” into a single call. It **closes the session once the command finishes** by default (the result is already in this call); `keep:true` leaves it in read-only retention instead. If it is still running at `timeoutSec` (1~600, default 120) it returns `running:true` and **does not kill the session** (whether to keep waiting or close it is the caller’s call). When to use this instead of the bash tool: when the user should **see** the command, or when it must run inside a terminal session; for purely non-interactive commands bash is more direct |
-| `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
+| `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime / 1-minute load / swap / SSH round-trip (last three since 2026-11-01). Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0). **A command-type session (`tty_open command=` / `tty_run`) has no “previous command”** (it injects no shell-integration hooks), so `last:true` on one errors explicitly and points at `lines` (0.23.0, D87) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus. The text is tail-capped at 32KB: beyond that it returns `truncated:true` and the rendered text ends with a hint to use `tty_capture` for the full scrollback (only large screens full of text reach the cap) |
 | `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; **the echo of the command just sent never counts as a hit** (via the OSC 133 A..B boundary, or via the send record where there are no markers — see the next section; when only the echo ever matched, the timeout result carries `echoOnly:true`); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72; echo exclusion, see D75) |
@@ -776,11 +776,21 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   the mini meter and used/total share one group (`Mem 78% (49.6/62.3 GB)`), so the `Mem` / `Disk` label
   appears only once and a shared unit is written once. Previously it was `Mem 78%` next to a separate
   `Mem 49.6 GB/62.3 GB` item — duplicate labels with the eye bouncing between them.
+- **The temperature cell only exists on machines that have one** (2026-11-01): `CPU Temp` is drawn only
+  when **this session has ever reported** a temperature (Linux `/sys/class/thermal`; macOS local, Windows
+  local and most cloud hosts have no such sensor). The rule is “ever reported”, not “present in this frame”
+  — an intermittently failing sensor read must not make the cell blink once a second. Dividers are painted
+  by the **following** cell (`A + B::before`), so hiding the cell drops the one on its left while the
+  `TCP │ Network` divider stays put — the cell simply looks as if it never existed. This also hands the width
+  back to the Load / clock group on the right (measured: after dropping it, the full mode on a 1280px panel
+  fits the clock too).
+
 - **Minimal mode** (2026-10-31): a **three-state button** in the top-right of the panel header (next to
   search / clear) cycles **full → minimal → hidden → full** (the preference lives in the browser’s
   `localStorage`, not in the profile — it is a display form, not configuration; “hidden” also stops
   collection for the current tab, so the host collector and the remote exec channel stop too). The
-  minimal bar keeps only **CPU / memory / network**, each as “small label +
+  minimal bar keeps only **CPU / memory / network** (plus two text-only cells, **Ping / Swap**, when the machine
+  has them — 2026-11-01), each of the three as “small label +
   last-60-seconds trend line + large number”: a sparkline also tells you whether the value is *climbing*
   or *jittering*, which a momentary meter cannot, and under the line sits an **area fill that fades
   downward** (the gradient is anchored to the chart height rather than the curve’s bounding box — anchored
@@ -793,13 +803,24 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   follows the byte-rate range, where “80%” means nothing). Line and fill change colour by level: **<80 green
   / 80–90 amber / ≥90 red** (`STATS_WARN_LIMIT`, one value shared with the dashed line’s position — let the
   threshold and the line drift apart and a 72% curve turns amber while sitting *below* the marker), drawn
-  from the terminal’s fixed dark palette instead of theme semantic colours (a light theme’s dark green
-  loses half its contrast on the dark bar). The network cell colours **↓ down
-  traffic light blue / ↑ up traffic teal**, each side on its own. The minimal bar is slightly taller (36px) to
-  give the lines room, and the terminal re-fits its rows accordingly. Network uses a **log scale with a
-  64 KB/s floor** (rates span orders of magnitude; linear scaling flattens idle traffic into a line at the
-  bottom), and dropped frames leave a **gap** instead of a made-up point. Disk / uptime / TCP / temperature
-  stay in full mode.
+  from a fixed set of **chart colours** for the dark terminal (`--tt-term-stats-*`: green `#2ecc71` / amber
+  `#f0b45c` / red `#ff6f7a`) instead of theme semantic colours (a light theme’s dark green loses half its
+  contrast on the dark bar). **Lifted one step off the ANSI palette on 2026-11-01** (the green used to be
+  `#7ec699`): on the same terminal the host’s running dot is a saturated emerald (`#22c55d` measured on the
+  dark theme), while the ANSI green reads grey on a 2px trace or a 7px core bar — side by side it looked
+  like one was in colour and the other in an old photograph. **Only the chart colours moved;
+  `--tt-an-green` did not** — that one is also `\e[32m` in terminal text (xterm’s `theme.green`), so
+  changing it would repaint real command output. The network cell colours **↓ down
+  traffic light blue (`#5c9dff`) / ↑ up traffic teal (`#2fd6c9`)**, each side on its own — and that pair is
+  **decoupled from ANSI too** (it used to borrow ANSI blue / cyan, `#7aa2f7` / `#7fdbca`): lifting only the
+  three level colours left the same dashboard card showing bright core bars next to an old-toned uplink. The minimal bar is slightly taller (36px) to
+  give the lines room, and the terminal re-fits its rows accordingly. Network uses a **square-root scale
+  with a 64 KB/s floor** (rates span orders of magnitude; linear scaling squashes everything but a burst
+  onto the bottom, while a log scale squashes too hard the other way — a user reported “this little network
+  chart looks broken, the data never changes” on 2026-11-01, and measurement showed `58K ↔ 163K` spanning
+  just **1.32 units** (about 2px) on a log scale versus **5 units** on square root, so the variation inside
+  one order of magnitude comes back. The dashboard's network chart picks the same scale), and dropped
+  frames leave a **gap** instead of a made-up point. Disk / uptime / TCP / temperature stay in full mode.
 - **Resource details (floating dashboard, 2026-10-31)**: the **▾** at the far right of the bar opens a
   floating card with three cells — **CPU** (one bar per core, turning amber/red at the 80/90 thresholds,
   with an **80% dashed guide line** above the bars because a bar chart without a Y axis cannot tell 50%
@@ -855,6 +876,60 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   failed”, otherwise the process cell flips between the list and “no data” once per second. The merge only
   covers `cpuCores` / `procs` (unit-tested, guarded by the `stats-sparse` preview scenario); per-second
   measurements such as CPU / memory / network are never carried over.
+
+- **Item hover card** (2026-11-01): rest the pointer on one cell of the bar for 140ms and a small card pops
+  **below** the bar (6px under its bottom edge — above it is the tab strip): the first line is the **current**
+  reading, the second line onward carries the **last-minute peak** plus that cell's context (core count for
+  CPU, used/total for memory), and the footer names the window (“Last minute”). Why: the bar only shows an
+  instant, and whether “18%” just dropped from 45% or has been sitting there is a question about *moments
+  ago*; the cell used to carry nothing but a native `title` (“CPU: 18%”), no more informative than the bar,
+  roughly a second late and unstylable — so cells now carry an `aria-label` and the visual information
+  moved into this card (the `title` is gone on purpose: two tooltips would stack). **The peak can only come
+  from history the client keeps itself** (the host exposes no history API): the same `statsHistory` the
+  minimal-mode sparklines read (60 samples ≈ one minute), and gaps (`null`) **neither count toward the peak
+  nor read as 0** — letting one failed sample flatten a 45% peak to 0 is a wrong reading, not a conservative
+  one. Monotonic values (disk / uptime) get no peak row and therefore no footer; **a cell with no data pops
+  nothing** (CPU temperature on macOS shows “N/A”, and a card saying “Current N/A” helps nobody). The three
+  minimal-mode cells share the same logic (cpu / mem / net map onto the same keys). **The first line is
+  tinted by that cell's level** (green / amber / red, the same palette as the mini meter and the sparklines;
+  requested on 2026-11-01 — the same data read green on the bar and plain white once opened, which looked
+  like two different things). The network cell is **segmented**: ↓ light blue / ↑ teal, matching the two
+  arrows on the bar, and the peak row is segmented the same way; uptime / cores / TCP / temperature stay
+  neutral because they are neutral on the bar too. The card reuses the
+  dashboard's material (`.5px` hairline, dark terminal surface, blurred backdrop) but **carries no shadow**
+  (the spec explicitly rejects a neutral border paired with an elevation shadow); it is
+  `pointer-events: none` — it is a readout only, and a pointer landing on it would fire the cell's
+  pointerout and make the card dismiss itself. The `stats-tip` preview scenario pins: the current / peak /
+  context text, current ≤ peak, the card sitting below the bar and inside the panel, dismiss on leave, the
+  minimal bar, and no card for empty cells.
+
+- **Load / clock on the right** (2026-11-01): the far right of the bar, **left of the ▾**, holds a fixed
+  group — `Load 0.15 │ 10:45:23`. Load is the first field of `/proc/loadavg` (macOS goes through
+  `os.loadavg()`; **Windows cannot provide it, so the cell hides rather than showing 0.00**), and the clock
+  runs on **its own 1-second timer** instead of the stats frames (with 4s frames a frame-bound clock jumps
+  four seconds at a time). The group sits **outside** the scrolling area, so it never scrolls away with the
+  items; the cost is fixed width, hence a **yield ladder**: once the item strip actually overflows
+  (`scrollWidth > clientWidth`) the clock goes first, and the whole group goes if that is still not enough —
+  the criterion is real overflow, not container width, because the items' total width changes with their
+  values (the network cell only takes its slot when a rate exists). On a 1280px panel the full mode (8 items)
+  is already full, so that mode shows just `Load`; minimal mode (3 items) shows both. The decision is
+  re-evaluated in the timer as well, so a resize or a mode switch settles within a second instead of waiting
+  for the next stats frame.
+
+- **Ping and Swap** (2026-11-01): both cells exist only where the machine has them — a local session has no
+  network peer (no Ping) and a host without swap has none to report; the rule is the same as temperature
+  (“this session has ever reported the field”). **Ping measures the round trip on that SSH connection**: the
+  host opens an exec channel on the same connection every 5 seconds and times “send → channel confirmed”,
+  deliberately **excluding** the remote command's own runtime (otherwise “spawn a shell” inflates the number).
+  It answers “how laggy does typing feel”, so the tiers are by feel: `<120ms` green, `120–300ms` amber,
+  `≥300ms` red. `Swap` is used/total (Linux reads SwapTotal/SwapFree from `/proc/meminfo`, macOS goes through
+  `sysctl -n vm.swapusage`).
+- **Items yield when the bar is full** (2026-11-01): with ten cells a 1280px panel no longer fits, so the item
+  strip has its own ladder — **cores first, then uptime** (both are static machine facts that stay available in
+  the dashboard and `tty_stats`); **live metrics (CPU / memory / disk / TCP / Ping / Swap / network) never
+  yield**. The criterion is real overflow again, recomputed from “everything visible” every frame, so a wider
+  window brings them back; only after that does the Load / clock group start yielding (clock first, then the
+  whole group).
 
 - **Two collection paths, one frame shape**: for an SSH session a second **non-PTY exec channel** is opened
   on **the same ssh2 connection**, running a resident loop on the remote that emits one line of JSON per
@@ -1217,7 +1292,7 @@ ctx.inject(['ttyPanel'], (c) => {
 | C→S | `{t:'statsOn' \| 'statsOff', sid}` | Subscribe/unsubscribe that session’s server status bar (0.17.0): driven by tab visibility, and the host collects only while a subscription exists (lazy start + unsubscribing stops the meter and closes the remote channel) |
 | S→C | `{t:'ready', sid, pid, kind, target?, persist?, reattached?}` | Session ready; `kind:'local'` carries a pid, while `kind:'ssh'` has pid=null and target=user@host[:port]; attach reuses this frame with `reattached:true`; `persist:true` means a tmux persistent session (0.10.0) |
 | S→C | `{t:'data', sid, d}` | Terminal output (utf8 text, StringDecoder covers multi-byte sequences split across frames); **coalesced into frames over a 12ms window / 64KB threshold** (0.4.1), with a forced flush before exit/kill to guarantee frame order — **the last batch before exit is always sent** (D76: it used to be swallowed whole by the exit path’s own `closed` guard, so a process that printed and exited immediately was permanently missing its final lines) |
-| S→C | `{t:'stats', sid, stats}` | Resource metric frame (0.17.0): `{cpuPct, cores, memUsed, memTotal, memPct, diskUsed, diskTotal, diskPct, uptimeSec, tcpConns, rxRate, txRate, tempC?}`; missing fields are omitted (best-effort, the frontend shows “n/a”), byte fields are bytes and rates are B/s |
+| S→C | `{t:'stats', sid, stats}` | Resource metric frame (0.17.0): `{cpuPct, cores, memUsed, memTotal, memPct, diskUsed, diskTotal, diskPct, uptimeSec, tcpConns, rxRate, txRate, tempC?, load1?, swapUsed?, swapTotal?, pingMs?}` (`load1` / `swapUsed` / `swapTotal` since 2026-11-01; `pingMs` is filled in by the **host** probe, never by the remote script); missing fields are omitted (best-effort, the frontend shows “n/a”), byte fields are bytes and rates are B/s |
 | S→C | `{t:'exit', sid, code, signal}` | The PTY exit fact (exactly once; after attach moves to a new connection it is still delivered over the current connection) |
 | S→C | `{t:'error', sid?, m}` | Error |
 | S→C | `{t:'sessions', list, tmux?}` | Session snapshot (`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable, persist?}`); `tmux` = the persistent session names alive on the dedicated socket + retained SSH persistent session names (0.10.1, an observable field) |

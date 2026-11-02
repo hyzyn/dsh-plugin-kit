@@ -28,6 +28,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { tmuxSocketName } from './tmux.js';
 import { shSingleQuote } from './shell-integration.js';
 import { StatsLineBuffer } from './stats.js';
+/** 连接往返探针的超时：一条健康链路的 RTT 是几十毫秒，5 秒没回音就不必再等。 */
+const PROBE_RTT_TIMEOUT_MS = 5000;
 let credentialsProvider = null;
 /** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
 export function setCredentialResolver(resolver) {
@@ -1352,11 +1354,54 @@ export async function spawnSsh(spec, options) {
             },
         };
     };
+    /**
+     * 连接往返的一次采样（见 `TermHandle.probeRtt` 的说明）。失败一律返回 null：
+     * 探针是附加信息，量不到就不报，绝不因为一次 exec 被拒而影响终端或采集。
+     */
+    const probeRtt = () => new Promise((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            resolve(null);
+        }, PROBE_RTT_TIMEOUT_MS);
+        timer.unref?.();
+        const started = performance.now();
+        try {
+            conn.exec('true', (error, ch) => {
+                if (settled)
+                    return;
+                settled = true;
+                clearTimeout(timer);
+                if (error !== null && error !== undefined) {
+                    resolve(null);
+                    return;
+                }
+                // channel 一确认就关：`true` 在远端自己会退出，我们不需要它的输出
+                try {
+                    ch.close();
+                }
+                catch {
+                    /* 已关闭 */
+                }
+                resolve(Math.round(performance.now() - started));
+            });
+        }
+        catch {
+            if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+            }
+            resolve(null);
+        }
+    });
     return {
         kind: 'ssh',
         pid: null,
         output,
         done,
+        probeRtt,
         write: (data) => {
             channel.write(data);
             return Promise.resolve(true);

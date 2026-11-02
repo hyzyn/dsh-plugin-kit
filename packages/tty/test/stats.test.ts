@@ -34,6 +34,8 @@ import {
   parseDfKb,
   parseLoadavg,
   parseMeminfo,
+  parseSwapMeminfo,
+  parseSwapUsage,
   parseNetDev,
   parseNetstatIb,
   parseProcCpuRows,
@@ -84,6 +86,8 @@ const PROC_MEMINFO = [
   'MemAvailable:    9045120 kB',
   'Buffers:          123456 kB',
   'Cached:          5000000 kB',
+  'SwapTotal:       4194300 kB',
+  'SwapFree:        3145725 kB',
 ].join('\n')
 
 const PROC_NET_DEV = [
@@ -276,6 +280,19 @@ describe('parseVmStat（macOS 内存口径）', () => {
 })
 
 describe('sanitizeStatsFrame（帧清洗）', () => {
+  it('交换分区：/proc/meminfo 与 macOS sysctl 两种写法都解析成 bytes', () => {
+    const fromProc = parseSwapMeminfo(PROC_MEMINFO)
+    expect(fromProc?.total).toBe(4194300 * 1024)
+    expect(fromProc?.used).toBe((4194300 - 3145725) * 1024)
+    // 没有 swap 的机器：SwapTotal 为 0 —— 那是「没有这个能力」，不是「已用 0」
+    expect(parseSwapMeminfo('MemTotal: 1000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n')).toBeNull()
+    // macOS：sysctl -n vm.swapusage
+    const mac = parseSwapUsage('total = 4096.00M  used = 1228.50M  free = 2867.50M  (encrypted)')
+    expect(mac?.total).toBe(Math.round(4096 * 1024 ** 2))
+    expect(mac?.used).toBe(Math.round(1228.5 * 1024 ** 2))
+    expect(parseSwapUsage('')).toBeNull()
+  })
+
   it('未知键丢弃、保留一位小数、整数取整', () => {
     expect(sanitizeStatsFrame({ cpuPct: 12.34, cores: 8.6, evil: 1, note: 'x' })).toEqual({ cpuPct: 12.3, cores: 9 })
   })
@@ -284,6 +301,13 @@ describe('sanitizeStatsFrame（帧清洗）', () => {
     for (const bad of [null, undefined, 'x', 42, [], [{ cpuPct: 1 }]]) {
       expect(sanitizeStatsFrame(bad)).toBeNull()
     }
+  })
+
+  it('负载保留两位小数（loadavg 惯例），负数 / 超上限丢弃', () => {
+    expect(sanitizeStatsFrame({ load1: 0.154 })).toEqual({ load1: 0.15 })
+    expect(sanitizeStatsFrame({ load1: 12.34 })).toEqual({ load1: 12.34 })
+    expect(sanitizeStatsFrame({ load1: -0.01 })).toEqual({})
+    expect(sanitizeStatsFrame({ load1: 200_000 })).toEqual({})
   })
 
   it('越界与非法类型丢弃（NaN/Infinity/负数/超上限）', () => {
@@ -596,6 +620,7 @@ describe('远端采集脚本 / 命令拼接', () => {
       writeFileSync(join(dir, 'meminfo'), PROC_MEMINFO + '\n', 'utf8')
       writeFileSync(join(dir, 'net', 'dev'), PROC_NET_DEV + '\n', 'utf8')
       writeFileSync(join(dir, 'uptime'), '1000.00 4000.00\n', 'utf8')
+      writeFileSync(join(dir, 'loadavg'), '0.15 0.20 0.25 2/345 6789\n', 'utf8')
       const probe = remoteStatsAwk()
         .replaceAll('/proc', dir)
         .replace('while (1) {', 'while (tick < 6) {')
@@ -607,6 +632,11 @@ describe('远端采集脚本 / 命令拼接', () => {
       expect(frames.length).toBe(6)
       const first = frames[0]
       expect(typeof first.diskTotal).toBe('number')
+      // 1 分钟负载：远端 awk 从 /proc/loadavg 取第一个数，保留两位小数
+      expect(first.load1).toBe(0.15)
+      // 交换分区：与内存同一个 /proc/meminfo；SwapTotal 为 0 时整段不出现（客户端据此隐藏那格）
+      expect(first.swapTotal).toBe(4194300 * 1024)
+      expect(first.swapUsed).toBe((4194300 - 3145725) * 1024)
       /*
        * 只断言**沿用拍**（第 2~5 拍）：第 6 拍（tick 6）本来就该重跑 `df`（`tick % 5 == 1`）。
        * 原来这里遍历全部 6 帧、要求磁盘字段与第 1 拍逐字段相等——本机盘一秒内不变时恒过，
@@ -802,6 +832,21 @@ describe('Windows 远端分支（PowerShell）', () => {
 })
 
 describe('createLocalSampler（本机 best-effort）', () => {
+  /*
+   * 1 分钟负载（2026-11-01）：Linux 走 `/proc/loadavg`；Windows 上 `os.loadavg()` 恒返回
+   * `[0,0,0]`——那不是「负载 0」，所以显式不给这个字段（状态条显示「无」而不是 0.00）。
+   */
+  it('1 分钟负载：Linux 读 /proc/loadavg，Windows 显式省略', async () => {
+    const linux = createLocalSampler({
+      platform: 'linux',
+      exec: async () => '',
+      readFile: (path) => (path === '/proc/loadavg' ? '0.42 0.30 0.10 1/100 1234\n' : undefined),
+    })
+    expect((await linux.sample()).load1).toBe(0.42)
+    const win = createLocalSampler({ platform: 'win32', exec: async () => '', readFile: () => undefined })
+    expect((await win.sample()).load1).toBeUndefined()
+  })
+
   it('内存/核心数/uptime 必有，速率在第二次采样后出现', async () => {
     const sampler = createLocalSampler()
     const first = await sampler.sample()

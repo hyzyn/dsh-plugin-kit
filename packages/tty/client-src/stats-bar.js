@@ -111,6 +111,20 @@ export function formatUptime(sec, t) {
   return parts.length > 0 ? parts.map(([value, unit]) => String(value) + unit).join('') : total + 's'
 }
 
+/**
+ * 时钟文本（24 小时制、两位补零）：`09:05:03`。
+ *
+ * 不用 `toLocaleTimeString()`：它按宿主 locale 给 12 小时制或 `上午/AM` 这类前后缀，宽度随语言变
+ * （`10:45:23 AM` 比 `10:45:23` 宽三分之一），而这一格是状态条右侧的**固定**宽度区，条宽不该被
+ * 语言的时钟格式推着走。中文与英文界面都读得懂 24 小时制。
+ *
+ * @param {Date} date 取本地时间（用户看的是自己的时钟，不是 UTC）
+ */
+export function clockText(date) {
+  const pad = (value) => (value < 10 ? '0' + value : String(value))
+  return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+}
+
 /** 「已用/总量」对：任一侧缺失或总量为 0 都退化成「无」。 */
 export function statsPair(used, total, t) {
   if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return t('list.none')
@@ -144,6 +158,8 @@ export function statsNum(stats, key) {
   if (key === 'uptimeSec') return value >= 0 && value <= 100 * 365 * 24 * 3600 ? value : null
   if (key === 'tcpConns') return value >= 0 && value <= 10000000 ? value : null
   if (key === 'rxRate' || key === 'txRate') return value >= 0 && value <= 2 ** 40 ? value : null
+  if (key === 'load1') return value >= 0 && value <= 100000 ? value : null // 与服务端 LIMITS 同口径
+  if (key === 'pingMs') return value >= 0 && value <= 600000 ? value : null
   return value >= 0 && value <= 2 ** 50 ? value : null // 字节类
 }
 
@@ -251,6 +267,13 @@ export function statsItemSpecs(t) {
     { key: 'disk', label: t('meta.disk'), kind: 'pctpair', pctKey: 'diskPct', used: 'diskUsed', total: 'diskTotal', slot: 24 },
     { key: 'uptimeSec', label: t('meta.uptime'), kind: 'uptime', slot: 13 }, // 上限 100 年 = 5217w6d23h59m = 13
     { key: 'tcpConns', label: 'TCP', kind: 'count', slot: 6 }, // 999999 = 6（1000 万连接只存在于脏数据里）
+    /*
+     * Ping 与 Swap（2026-11-01，对齐 FinalShell 的状态栏）：两者都是**按机器能力**出现的格子——
+     * 本地会话没有网络对端（没有 ping）、没配 swap 的机器没有交换分区。判据在渲染层
+     * （「这个会话曾经报过这个字段」），没报过就整格不画，不是显示「无」。
+     */
+    { key: 'ping', label: 'Ping', kind: 'ping', slot: 6 }, // 常态 `24ms` = 4；9999ms 也装得下
+    { key: 'swap', label: 'Swap', kind: 'pair', used: 'swapUsed', total: 'swapTotal', slot: 14 }, // `1.7/4.0 GB` = 10；`1023.0/1024.0 GB` = 17 属于脏数据，宁可让它撑一下也不常年白占 3 字符
     { key: 'tempC', label: t('meta.temp'), kind: 'temp', slot: 8 }, // 199.9°C = 7 字符，但「°」在部分字体里按全角渲染，留一位
     { key: 'net', label: t('meta.net'), kind: 'net', slot: NET_SLOT }, // 有速率时用固定槽位；「无」时不留（见 statsItemValues）
   ]
@@ -260,9 +283,11 @@ export function statsItemSpecs(t) {
  * 一帧 stats → 每条的显示值（与 `statsItemSpecs(t)` 同序、等长）。
  *
  * 值只来自宿主发来的数值帧，标签 / 槽位是本地常量；`pct` 只有带迷你进度条的条目有，
- * 其余为 `null`。`slot` 允许被单条覆盖（网络：有速率才占槽位）。`title` 是悬停提示
- * （窄窗口溢出被裁时仍能看到完整值），由调用方用 `setAttribute` 写进去，因此这里
- * **不做** HTML 转义。
+ * 其余为 `null`。`slot` 允许被单条覆盖（网络：有速率才占槽位）。
+ *
+ * `summary`（`标签: 值`）的归宿是条目的 **`aria-label`**，由调用方 `setAttribute` 写入，
+ * 因此这里**不做** HTML 转义。2026-11-01 起它**不再**写进 `title`：悬停改由自绘的
+ * 悬浮卡片（`stats-tip.js`）承担，原生 tooltip 会跟它叠成两层（一个慢、一个样式不可控）。
  *
  * @param stats 宿主 stats 帧；`null` / 非对象 / 脏数据一律渲染成「无」（不抛）。
  * @param t 翻译函数（标签与「无」走目录，见 `statsRate` 的说明）
@@ -271,14 +296,16 @@ export function statsItemValues(stats, t) {
   const frame = stats !== null && typeof stats === 'object' && !Array.isArray(stats) ? stats : {}
   const num = (key) => statsNum(frame, key)
   /** 入口：值与槽位一起返回，DOM 层不必再回头查 spec。 */
-  const make = (spec, value, pct, slot = spec.slot) => ({
+  const make = (spec, value, pct, slot = spec.slot, tone = '') => ({
     key: spec.key,
     label: spec.label,
     kind: spec.kind,
     slot,
     pct: pct ?? null,
     value,
-    title: spec.label + ': ' + value,
+    // 颜色档位（目前只有 Ping 用：绿=跟手、橙=偏高、红=明显卡顿）；其余条目空串 = 中性
+    tone,
+    summary: spec.label + ': ' + value,
   })
   return statsItemSpecs(t).map((spec) => {
     if (spec.kind === 'pct') {
@@ -303,6 +330,17 @@ export function statsItemValues(stats, t) {
       return make(spec, value, pct)
     }
     if (spec.kind === 'pair') return make(spec, statsPair(num(spec.used), num(spec.total), t), null)
+    /*
+     * Ping：取整毫秒（`24ms`）。档位按**手感**分档而不是按百分比：<120 正常、120~300 偏高、
+     * ≥300 明显卡顿——这三档对应的是「敲命令有没有延迟感」，不是资源占用率。
+     */
+    if (spec.kind === 'ping') {
+      const ms = num('pingMs')
+      if (ms === null) return make(spec, t('list.none'), null, spec.slot)
+      // 手感分档（不是占用率）：<120 跟手（绿）、120~300 偏高（橙）、≥300 明显卡顿（红）
+      const tone = ms < 120 ? 'ok' : ms < 300 ? 'warn' : 'danger'
+      return make(spec, Math.round(ms) + 'ms', null, spec.slot, tone)
+    }
     if (spec.kind === 'uptime') return make(spec, formatUptime(num(spec.key), t), null)
     if (spec.kind === 'temp') {
       const value = num(spec.key)
@@ -377,7 +415,9 @@ function sparklineSegments(values, width, height, options = {}) {
  * - `values` 里的 `null` / 非有限值 = **采样缺口**：断线（重新 `M`），不补值、不插值；
  * - 少于两个点返回 `''`（一条线至少要两个点；一个点画出来是误导）；
  * - `options.min/max` 是**显示量程**，越界值夹紧；`max <= min` 时按 `min+1` 兜底；
- * - `options.logarithmic`：极端量级差（极简条的 64 KB/s 地板 → GB/s）用对数刻度；
+ * - `options.logarithmic`：对数刻度。**当前没有调用方**——极简条 2026-11-01 从对数换成
+ *   `power: 0.5`（16 单位高的缩略图上对数会把 `58K ↔ 163K` 压成不到 2 单位，看着像没数据）；
+ *   保留这个变换是因为它是本函数的一种量纲映射，且下面那条用例用它记录「为什么不用它」；
  * - `options.power`：幂次刻度（1 线性 / 0.5 平方根）。**仪表盘的网络图用它**——理由见
  *   `updateNetCard`：线性会把「一次突发 + 一段常态」压成贴底直线，而纯对数在同一个
  *   数量级里几乎不动（58 KB/s 与 163 KB/s 只差 8% 高度），把日常波动一起抹平。

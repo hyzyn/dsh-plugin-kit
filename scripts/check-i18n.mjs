@@ -203,6 +203,8 @@ export const KEY_DOMAINS = new Set([
   'stats',
   // 状态条展开的「资源明细」悬浮仪表盘（tty，2026-10-31）
   'statsDash',
+  // 状态条条目的悬停卡片（tty，2026-11-01）：当前 / 峰值 / 已用
+  'statsTip',
   // 面板内的说明与元信息
   'hint', 'banner', 'meta', 'elev',
   // 具体动作的提示与确认

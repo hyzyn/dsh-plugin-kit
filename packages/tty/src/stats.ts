@@ -56,6 +56,23 @@ export interface StatsFrame {
   txRate?: number
   /** CPU 温度（摄氏度）。 */
   tempC?: number
+  /** 交换分区已用 / 总量（bytes）。Windows 远端不采（显示「无」）。 */
+  swapUsed?: number
+  swapTotal?: number
+  /**
+   * SSH 会话的连接往返（毫秒）：宿主在这条 ssh2 连接上每 5 秒跑一次 `true`，
+   * 量「写命令 → 收到退出」的**整体**往返，含远端起一个 shell 的开销，比纯网络 RTT 略高。
+   * 本地会话没有这一项（没有网络对端）。
+   */
+  pingMs?: number
+  /**
+   * 1 分钟平均负载（`/proc/loadavg` 的第一个数，macOS 走 `os.loadavg()`）。
+   *
+   * 2026-11-01 加：状态条右侧那组「负载 / 时间」用它。**Windows 拿不到**（没有 loadavg，
+   * 且 `os.loadavg()` 在 Windows 上恒返回 `[0,0,0]`——那不是「负载 0」，所以本地采样器会
+   * 显式省略这个字段，前端显示「无」而不是 0.00）。保留两位小数（loadavg 的惯例）。
+   */
+  load1?: number
   /** 每核使用率 0~100（按 cpuN 顺序）。明细仪表盘的「CPU 核心」卡片用它。 */
   cpuCores?: number[]
   /**
@@ -75,7 +92,7 @@ export interface StatsProc {
   memPct: number
 }
 
-const STATS_KEYS = ['cpuPct', 'cores', 'memUsed', 'memTotal', 'memPct', 'diskUsed', 'diskTotal', 'diskPct', 'uptimeSec', 'tcpConns', 'rxRate', 'txRate', 'tempC'] as const
+const STATS_KEYS = ['cpuPct', 'cores', 'memUsed', 'memTotal', 'memPct', 'diskUsed', 'diskTotal', 'diskPct', 'uptimeSec', 'tcpConns', 'rxRate', 'txRate', 'tempC', 'load1', 'swapUsed', 'swapTotal', 'pingMs'] as const
 /** 每核数组的上限：超过就是别人塞的垃圾，不上送（正常物理机 ≤ 256 核）。 */
 const MAX_CORES_REPORTED = 128
 /**
@@ -95,7 +112,7 @@ export const MAX_PROCS_REPORTED = 5
 const MAX_PROCS_CANDIDATES = MAX_PROCS_REPORTED * 2
 
 /** 数值边界：超出即视为解析垃圾丢弃（远端脚本被改写、df 输出异常、计数器回绕）。 */
-const LIMITS: Record<(typeof STATS_KEYS)[number], { min: number; max: number; int: boolean }> = {
+const LIMITS: Record<(typeof STATS_KEYS)[number], { min: number; max: number; int: boolean; decimals?: number }> = {
   cpuPct: { min: 0, max: 100, int: false },
   cores: { min: 1, max: 4096, int: true },
   memUsed: { min: 0, max: 2 ** 50, int: true },
@@ -109,6 +126,14 @@ const LIMITS: Record<(typeof STATS_KEYS)[number], { min: number; max: number; in
   rxRate: { min: 0, max: 2 ** 40, int: true },
   txRate: { min: 0, max: 2 ** 40, int: true },
   tempC: { min: -100, max: 200, int: false },
+  // 负载没有上界（100 核跑满就是 100），给一个「明显是解析垃圾」的天花板即可；
+  // 两位小数是 loadavg 的惯例（`0.15`），与 pct / 温度那位小数不同
+  load1: { min: 0, max: 100_000, int: false, decimals: 2 },
+  swapUsed: { min: 0, max: 2 ** 50, int: true },
+  // swapTotal 允许 0：没有交换分区的机器，客户端据此整格隐藏（不是「已用 0」）
+  swapTotal: { min: 0, max: 2 ** 50, int: true },
+  // 5 位数的毫秒已经是不健康的连接了，但别把慢连接的读数当垃圾丢掉
+  pingMs: { min: 0, max: 600_000, int: true },
 }
 
 /**
@@ -126,7 +151,8 @@ export function sanitizeStatsFrame(input: unknown): StatsFrame | null {
     if (typeof value !== 'number' || !Number.isFinite(value)) continue
     const limit = LIMITS[key]
     if (value < limit.min || value > limit.max) continue
-    out[key] = limit.int ? Math.round(value) : Math.round(value * 10) / 10
+    const decimals = limit.decimals ?? 1
+    out[key] = limit.int ? Math.round(value) : Math.round(value * 10 ** decimals) / 10 ** decimals
   }
   const cores = sanitizeCpuCores(raw.cpuCores)
   if (cores !== undefined) out.cpuCores = cores
@@ -478,6 +504,41 @@ export function parseMeminfo(text: string): { total: number; used: number; pct: 
   const available = availableKb > 0 ? availableKb : freeKb + buffersKb + cachedKb
   const usedKb = Math.max(0, totalKb - available)
   return { total: totalKb * 1024, used: usedKb * 1024, pct: Math.round((usedKb * 10000) / totalKb) / 100 }
+}
+
+/**
+ * /proc/meminfo → 交换分区 `{used,total}`（bytes）。**没有 swap 的机器返回 null**
+ * （`SwapTotal: 0`）：那是「没有这个能力」，不是「已用 0」，客户端据此整格隐藏。
+ */
+export function parseSwapMeminfo(text: string): { used: number; total: number } | null {
+  let totalKb = 0
+  let freeKb = 0
+  for (const line of text.split('\n')) {
+    const cols = line.trim().split(/\s+/)
+    const value = Number(cols[1])
+    if (!Number.isFinite(value)) continue
+    if (cols[0] === 'SwapTotal:') totalKb = value
+    else if (cols[0] === 'SwapFree:') freeKb = value
+  }
+  if (totalKb <= 0) return null
+  return { total: totalKb * 1024, used: Math.max(0, totalKb - Math.max(0, freeKb)) * 1024 }
+}
+
+/**
+ * macOS 的 `sysctl -n vm.swapusage` → `total = 2048.00M  used = 512.25M  free = …`。
+ * 单位按 1024 进（与 sysctl 自己的换算一致）；解析不出来返回 null。
+ */
+export function parseSwapUsage(text: string): { used: number; total: number } | null {
+  const pick = (label: string): number => {
+    const match = new RegExp(label + '\\s*=\\s*([\\d.]+)([KMGT])').exec(text)
+    if (match === null) return Number.NaN
+    const scale = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[match[2] as 'K' | 'M' | 'G' | 'T']
+    return Number(match[1]) * scale
+  }
+  const total = pick('total')
+  const used = pick('used')
+  if (!Number.isFinite(total) || !Number.isFinite(used) || total <= 0) return null
+  return { total: Math.round(total), used: Math.round(Math.min(used, total)) }
 }
 
 /** /proc/net/dev → 非 lo 接口收发字节累计（速率由调用方差值）。 */
@@ -859,6 +920,8 @@ BEGIN {
         if (f[1] == "MemTotal:") memTot = f[2] + 0
         else if (f[1] == "MemAvailable:") memAvail = f[2] + 0
         else if (f[1] == "MemFree:" && memAvail == 0) memAvail = f[2] + 0
+        else if (f[1] == "SwapTotal:") swapTot = f[2] + 0
+        else if (f[1] == "SwapFree:") swapFree = f[2] + 0
       }
     }
     if (memTot > 0) {
@@ -867,6 +930,14 @@ BEGIN {
       jput("memTotal", sprintf("%.0f", memTot * 1024))
       jput("memUsed", sprintf("%.0f", memUsed * 1024))
       jput("memPct", sprintf("%.1f", memUsed * 100 / memTot))
+    }
+    # 交换分区：同一份 /proc/meminfo 里就有。SwapTotal 为 0 = 这台机器没有 swap，
+    # 整段省略（客户端据此隐藏那一格），而不是报「已用 0」
+    if (swapTot > 0) {
+      swapUsed = swapTot - swapFree
+      if (swapUsed < 0) swapUsed = 0
+      jput("swapTotal", sprintf("%.0f", swapTot * 1024))
+      jput("swapUsed", sprintf("%.0f", swapUsed * 1024))
     }
 
     nd = slurp("/proc/net/dev")
@@ -896,6 +967,13 @@ BEGIN {
     nowSec = 0
     if (up != "") { split(up, f, /[ \t]+/); nowSec = f[1] + 0 }
     if (nowSec > 0) jput("uptimeSec", sprintf("%.0f", nowSec))
+    # 1 分钟平均负载：读不到的机器（没有 /proc/loadavg 的 BSD 变种）整段省略，前端显示「无」。
+    # 变量名刻意不复用 f / L：它们在后面几段里还要重新 split，复用容易出「读到上一段残留」的错
+    laText = slurp("/proc/loadavg")
+    if (laText != "") {
+      split(laText, laCols, /[ \t]+/)
+      if (laCols[1] != "" && (laCols[1] + 0) >= 0) jput("load1", sprintf("%.2f", laCols[1] + 0))
+    }
     if (haveNet == 1) {
       if (seenNet == 1 && nowSec > pNow && rx >= pRx && tx >= pTx) {
         el = nowSec - pNow
@@ -1280,20 +1358,32 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
   const diskSlot = emptySlot<{ used: number; total: number }>()
   const tcpSlot = emptySlot<number>()
   const vmSlot = emptySlot<{ used: number; total: number; pct: number }>()
+  const swapSlot = emptySlot<{ used: number; total: number }>()
   const procSlot = emptySlot<StatsProc[]>()
   let memo: { at: number; value: StatsFrame } | null = null
   let inflight: Promise<StatsFrame> | null = null
 
+  /**
+   * 1 分钟平均负载（`/proc/loadavg` → `os.loadavg()` 兜底）。
+   *
+   * Windows 上**两处都拿不到**：没有 `/proc`，而 `os.loadavg()` 恒返回 `[0,0,0]`——那不能当成
+   * 「负载 0」，所以显式返回 undefined（状态条显示「无」）。Linux / macOS 都走得到真值
+   * （Linux 优先 `/proc/loadavg`，与 `uptime` 同一个口径）。
+   */
+  const loadOne = (): number | undefined => {
+    const fromProc = parseLoadavg(readOptional('/proc/loadavg') ?? '')
+    if (fromProc !== null) return fromProc.load1
+    if (platform === 'win32') return undefined
+    const values = loadavg()
+    const first = values.length > 0 ? values[0] : Number.NaN
+    return Number.isFinite(first) ? first : undefined
+  }
+
   /** 首次采样没有差值窗口：退化为 load1/核心数（明确标注的 best-effort 近似）。 */
   const loadApprox = (cores: number): number | undefined => {
     if (cores <= 0) return undefined
-    const fromProc = parseLoadavg(readTextFile('/proc/loadavg'))
-    let load1 = fromProc !== null ? fromProc.load1 : Number.NaN
-    if (!Number.isFinite(load1)) {
-      const values = loadavg()
-      load1 = values.length > 0 ? values[0] : Number.NaN
-    }
-    if (!Number.isFinite(load1)) return undefined
+    const load1 = loadOne()
+    if (load1 === undefined) return undefined
     return Math.min(100, Math.round((load1 / cores) * 1000) / 10)
   }
 
@@ -1486,6 +1576,25 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
     return readSlot(diskSlot, SLOW_TTL_MS, diskRun)
   }
 
+  /**
+   * 交换分区：Linux 从 /proc/meminfo 拿（同步、零成本），macOS 走 `sysctl -n vm.swapusage`
+   * 并压到慢槽位（每秒 fork 一个 sysctl 不值得）。没有 swap 的机器返回 null —— 那不是
+   * 「已用 0」，客户端据此整格隐藏。
+   */
+  const swapRun = async (): Promise<{ used: number; total: number } | null> => {
+    const info = readOptional('/proc/meminfo')
+    if (info !== undefined) return parseSwapMeminfo(info)
+    if (platform === 'darwin') {
+      const text = await exec('sysctl', ['-n', 'vm.swapusage'])
+      if (text !== '') return parseSwapUsage(text)
+    }
+    return null
+  }
+  const swapNow = async (): Promise<{ used: number; total: number } | null> => {
+    await primeSlot(swapSlot, swapRun)
+    return readSlot(swapSlot, SLOW_TTL_MS, swapRun)
+  }
+
   const collect = async (): Promise<StatsFrame> => {
     const raw: StatsFrame = {}
     const cpu = cpuNow()
@@ -1499,6 +1608,13 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
     }
     const up = uptimeNow()
     if (up !== undefined) raw.uptimeSec = up
+    const load1 = loadOne()
+    if (load1 !== undefined) raw.load1 = load1
+    const swap = await swapNow()
+    if (swap !== null) {
+      raw.swapUsed = swap.used
+      raw.swapTotal = swap.total
+    }
     const net = await netNow()
     if (net !== null) {
       // 本地采样器自己就是「采集端」：速率在前后两次采样之间算，宿主不再二次差值

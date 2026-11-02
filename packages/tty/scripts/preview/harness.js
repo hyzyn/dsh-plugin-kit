@@ -397,6 +397,54 @@
         return null
       }
     },
+    /*
+     * 没有 Ping / Swap 的机器（本地会话 / 没配 swap）：那两格必须**整格消失**，不是留一个空标签。
+     * 2026-11-01 用户截图就是这个 bug：`.tt_statsMinItem` 的 display 是作者样式，UA 的
+     * `[hidden]{display:none}` 盖不住它，于是条上剩一个孤零零的 `Ping`。
+     * 关键在「从第一帧起就没有」——`seenItems` 是「曾经报过就常驻」的语义，中途摘掉字段验不了这条路。
+     */
+    async 'stats-minimal-noping'() {
+      window.__PREVIEW_STATS_INTERVAL_MS = 300
+      window.__PREVIEW_STATS_OMIT = ['pingMs', 'swapTotal']
+      await openPanel()
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(800)
+      const toggle = q('[data-act=stats]')
+      if (toggle === null) {
+        window.__previewAssert = async () => '头部缺少状态条切换按钮'
+        return
+      }
+      toggle.click() // 完整 → 极简
+      let cells = null
+      try {
+        cells = await waitFor(() => {
+          const list = qa('.tt_statsMinItem')
+          return list.length === 5 ? list : null
+        }, 3000)
+      } catch {
+        cells = qa('.tt_statsMinItem')
+      }
+      window.__previewAssert = async () => {
+        if (cells.length !== 5) return '极简条应有 5 个条目（DOM 保留），实得 ' + String(cells.length)
+        for (const kind of ['ping', 'swap']) {
+          const cell = q('.tt_statsMinItem[data-kind=' + kind + ']')
+          if (cell === null) return '缺少 ' + kind + ' 格子的 DOM（应保留、只是隐藏）'
+          const rect = cell.getBoundingClientRect()
+          if (rect.width > 0 || rect.height > 0) {
+            return kind + ' 没有数据时没有隐藏（' + Math.round(rect.width) + '×' + Math.round(rect.height) + 'px，条上会剩一个空标签）'
+          }
+        }
+        // 另外三格照常
+        for (const kind of ['cpu', 'mem', 'net']) {
+          const cell = q('.tt_statsMinItem[data-kind=' + kind + ']')
+          if (cell === null || cell.getBoundingClientRect().width === 0) return kind + ' 格子没有正常显示'
+        }
+        return null
+      }
+    },
     /* 极简模式（2026-10-31）：条上切换按钮 → 只留 CPU / 内存 / 网络 三项 + 趋势线 */
     async 'stats-minimal'() {
       await openPanel()
@@ -422,7 +470,21 @@
         if (min.hidden === true) return '切到极简后极简容器仍隐藏'
         if (full.hidden !== true) return '极简模式下完整容器仍然可见'
         const items = qa('.tt_statsMinItem')
-        if (items.length !== 3) return '极简模式应只有 CPU / 内存 / 网络 3 项，实得 ' + String(items.length)
+        // CPU / 内存 / 网络 + Ping / Swap（后两个按机器能力出现，夹具三项都有数据）
+        if (items.length !== 5) return '极简模式应有 CPU / 内存 / 网络 / Ping / Swap 5 项，实得 ' + String(items.length)
+        /*
+         * 网络那条的**纵向行程**：最小值 58 KB/s、峰值 163 KB/s，量程由 ×4 阶梯给到 256 KB/s。
+         * 平方根下这段映射成约 8.4 ↔ 3.2 单位（≈5px）；对数下只有 1.9 ↔ 0.6（不足 2px），
+         * 看上去就是「数据没变化」——用户报的就是这一条（2026-11-01）。所以这里断言行程，
+         * 而不是「路径有几何」：几何在但压成一条平线，正是要防的那个回归。
+         */
+        const netLine = qa('.tt_statsSparkLine')[2]
+        const netYs = ((netLine && netLine.getAttribute('d')) || '').match(/-?\d+(?:\.\d+)?/g) || []
+        const ys = netYs.map(Number).filter((_n, index) => index % 2 === 1)
+        if (ys.length < 3) return '网络趋势线没有足够的点：' + String(ys.length)
+        const span = Math.max(...ys) - Math.min(...ys)
+        if (span < 2.5) return '网络趋势线被压成平线（纵向行程 ' + span.toFixed(2) + ' 单位，应 > 2.5）'
+        if (Math.min(...ys) < 1) return '网络趋势线贴住了顶边（最小 y=' + Math.min(...ys).toFixed(2) + '，量程/刻度把整段顶死）'
         const paths = qa('.tt_statsSparkLine')
         const areas = qa('.tt_statsSparkArea')
         if (paths.length !== 3) return '趋势线路径应有 3 条，实得 ' + String(paths.length)
@@ -436,7 +498,8 @@
          * （2026-11-01 起 warn 从 70 收到 80：折线上那条虚线与换色阈值必须是同一个数）。
          */
         const sparkColor = (item) => getComputedStyle(item.querySelector('.tt_statsSpark')).color
-        const levelColor = { '': 'rgb(126, 198, 153)', warn: 'rgb(230, 182, 115)', danger: 'rgb(240, 113, 120)' }
+        // 图表色的固定取值（2026-11-01 提亮一档；与 client-src/tty.css 的 --tt-term-stats-* 对齐）
+        const levelColor = { '': 'rgb(46, 204, 113)', warn: 'rgb(240, 180, 92)', danger: 'rgb(255, 111, 122)' }
         const levelOf = (pct) => (pct >= 90 ? 'danger' : pct >= 80 ? 'warn' : '')
         for (let i = 0; i < 2; i += 1) {
           const item = items[i]
@@ -489,8 +552,8 @@
         const down = q('.tt_statsMinDown')
         const up = q('.tt_statsMinUp')
         if (down === null || up === null) return '网络双向数值缺失'
-        if (getComputedStyle(down).color !== 'rgb(122, 162, 247)') return '下行数值应为浅蓝，实得 ' + getComputedStyle(down).color
-        if (getComputedStyle(up).color !== 'rgb(127, 219, 202)') return '上行数值应为青绿，实得 ' + getComputedStyle(up).color
+        if (getComputedStyle(down).color !== 'rgb(92, 157, 255)') return '下行数值应为浅蓝，实得 ' + getComputedStyle(down).color
+        if (getComputedStyle(up).color !== 'rgb(47, 214, 201)') return '上行数值应为青绿，实得 ' + getComputedStyle(up).color
         // 填充面渐变锚在「图表高度」上（userSpaceOnUse）：锚包围盒时，一条几乎水平的线
         // 会把首档压成整条实色带，看着像进度条
         const gradient = document.getElementById(areas[0].getAttribute('fill').replace(/^url\(#|\)$/g, ''))
@@ -749,6 +812,337 @@
     },
     /* 低频字段（2026-10-31）：宿主每 5 拍才带一次 `procs`（SSH 远端 awk 的真实节奏），
        缺席的帧**不能**把进程卡片打回「暂无进程数据」——那会让卡片每秒翻一次 */
+    /*
+     * 状态条右侧的「负载 / 时钟」（2026-11-01）：时钟走**自己的 1s 定时器**，不挂 stats 帧。
+     * 所以这里把帧间隔故意压到 4s——如果时钟挂在帧上，1.2 秒内它的文本不会变。
+     */
+    async 'stats-extra'() {
+      window.__PREVIEW_STATS_INTERVAL_MS = 4000
+      await openPanel()
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 6000)
+      await sleep(600)
+      if (q('.tt_statsExtra') === null || q('.tt_statsClock') === null) {
+        window.__previewAssert = async () => '状态条右侧缺少「负载 / 时钟」那一组'
+        return
+      }
+      /*
+       * 时钟走**自己的 1s 定时器**：抓两次文本，1.3 秒内必须变过。帧间隔故意压到 4s——
+       * 挂 stats 帧的实现会在这里露馅（4s 才跳一次）。
+       */
+      const firstClock = q('.tt_statsClock').textContent || ''
+      await sleep(1300)
+      const secondClock = q('.tt_statsClock').textContent || ''
+      /*
+       * 让位阶梯：完整模式 8 项在 1280px 面板上本来就占满，溢出时时钟先藏、再不够整组藏。
+       * 这里只断言「要么看得见时钟，要么确实是溢出才藏的」，不硬编码某一档。
+       */
+      window.__previewAssert = async () => {
+        /*
+         * 断言里**重新取节点**：切隐藏/完整会把整条清空重建（`statsBarEl.textContent = ''`），
+         * 之前抓到的引用会变成游离节点——量出来全是 0，看着像「不在条目区右边」。
+         */
+        const group = q('.tt_statsExtra')
+        const load = q('.tt_statsLoad')
+        const loadValue = q('.tt_statsExtraValue')
+        const clock = q('.tt_statsClock')
+        const scroll = q('.tt_statsScroll')
+        const expand = q('[data-act=stats-expand]')
+        if (group === null || load === null || clock === null || scroll === null || expand === null) {
+          return '重建后右侧这组或它的邻居不见了'
+        }
+        /*
+         * 完整模式 10 项 + 右侧一组在 1280px 面板上放不下：让位阶梯会先藏「核心 / 在线」，
+         * 还不够就把这一组整个收起来。所以这里只要求「要么看得见，要么确实是溢出才藏的」，
+         * 真正的「有空间时必须显示」由下面的极简模式验。
+         */
+        if (group.hidden === true) {
+          /*
+           * 反事实判据：藏起来之后当然不溢出，所以要把它临时露出来再量——真的溢出才算让位成立。
+           * 量完立刻还原，不给后续断言留下中间态。
+           */
+          group.hidden = false
+          const overflowWithGroup = scroll.scrollWidth > scroll.clientWidth + 1
+          group.hidden = true
+          if (!overflowWithGroup) return '右侧这组被藏了，但把它露出来条目区也不溢出（让位判据失效）'
+          return null
+        }
+        if (load.hidden === true) return '有 load1 数据时「负载」不该隐藏'
+        if (!/^\d+\.\d{2}$/.test(loadValue.textContent || '')) return '负载不是两位小数：' + (loadValue.textContent || '')
+        if (load.textContent.indexOf('负载') === -1 && load.textContent.indexOf('Load') === -1) return '「负载」格子没有标签：' + load.textContent
+        for (const text of [firstClock, secondClock]) {
+          if (!/^\d{2}:\d{2}:\d{2}$/.test(text)) return '时钟不是 HH:MM:SS：' + text
+        }
+        if (firstClock === secondClock) return '时钟 1.3 秒没动（说明它挂在 stats 帧上，而不是自己的定时器）'
+        const groupRect = group.getBoundingClientRect()
+        if (!(scroll.getBoundingClientRect().right <= groupRect.left + 1)) return '右侧这组不在条目区右边'
+        if (!(groupRect.right <= expand.getBoundingClientRect().left + 1)) return '右侧这组压住了 ▾ 按钮'
+        if (clock.hidden === true) {
+          /*
+           * 「藏了时钟之后当然不溢出」——所以判据要取**反事实**：临时把它露出来再量一次，
+           * 确实溢出才算让位成立（量完立刻还原，不留下中间态）。
+           */
+          clock.hidden = false
+          const overflowWithClock = scroll.scrollWidth > scroll.clientWidth + 1
+          clock.hidden = true
+          if (!overflowWithClock) return '时钟被藏了，但把它露出来条目区也不溢出（让位判据失效）'
+        }
+        return null
+      }
+      // 极简模式只有三项：右侧这组必然放得下，时钟必须看得见
+      const toggle = q('[data-act=stats]')
+      if (toggle !== null) {
+        toggle.click() // 完整 → 极简
+        await sleep(600)
+        if (q('.tt_statsClock') === null || q('.tt_statsClock').hidden === true) {
+          const previous = window.__previewAssert
+          window.__previewAssert = async () => (await previous()) ?? '极简模式下右侧的时钟被藏了（三项之外还有整条空白）'
+          await sleep(50)
+          return
+        }
+        toggle.click() // 极简 → 隐藏
+        await sleep(200)
+        toggle.click() // 隐藏 → 完整
+        await sleep(500)
+      }
+    },
+    /*
+     * 网络那一格的悬停卡片（2026-11-01）：↓ / ↑ 两段各自着色，与条上那两个箭头同色。
+     * 单独一个场景是为了**截图**——`stats-tip` 结束在 CPU 那张上，那一张看不出分段配色。
+     */
+    async 'stats-tip-net'() {
+      window.__PREVIEW_STATS_INTERVAL_MS = 300
+      await openPanel()
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(3500)
+      const items = qa('.tt_statsFull .tt_statsItem')
+      if (items.length !== 10) {
+        window.__previewAssert = async () => '完整模式应有 10 个条目，实得 ' + String(items.length)
+        return
+      }
+      items[9].dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+      await sleep(420)
+      window.__previewAssert = async () => {
+        const tip = q('.tt_statsTip')
+        if (tip === null || tip.hidden === true) return '悬停网络条目没有出现卡片'
+        const headValue = tip.querySelector('.tt_statsTipValue')
+        const parts = headValue === null ? [] : [...headValue.querySelectorAll('.tt_statsTipPart')]
+        if (parts.length !== 2) return '当前值没有分段着色（实得 ' + String(parts.length) + ' 段）'
+        const rxColor = getComputedStyle(parts[0]).color
+        const txColor = getComputedStyle(parts[1]).color
+        if (rxColor !== 'rgb(92, 157, 255)') return '↓ 段颜色不对：' + rxColor
+        if (txColor !== 'rgb(47, 214, 201)') return '↑ 段颜色不对：' + txColor
+        return null
+      }
+    },
+    /* 条目悬停卡片（2026-11-01）：当前 / 峰值 / 上下文，锚在状态条下沿 */
+    async 'stats-tip'() {
+      /*
+       * 峰值只能来自客户端自己攒的历史（宿主没有历史接口），夹具把帧间隔压到 300ms：
+       * 等 4.5 秒 ≈ 15 个采样，CPU 锯齿已经跨过好几个值，峰值才有东西可报。
+       */
+      window.__PREVIEW_STATS_INTERVAL_MS = 300
+      await openPanel()
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(4500)
+      /** 首条失败即记（后面的用例依赖同一套正式代码，不能一条失败就静默跳过其余断言）。 */
+      const problems = []
+      const note = (message) => {
+        if (message !== null && problems.length === 0) problems.push(message)
+      }
+      const items = qa('.tt_statsFull .tt_statsItem')
+      if (items.length !== 10) {
+        note('完整模式应有 10 个条目，实得 ' + String(items.length))
+        window.__previewAssert = async () => problems.join('；')
+        return
+      }
+      const hover = async (el) => {
+        el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+        await sleep(360) // 140ms 延迟 + 入场动画
+      }
+      const leave = async (el) => {
+        el.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: document.body }))
+        await sleep(90)
+      }
+      const tipOf = () => q('.tt_statsTip')
+      const shown = () => {
+        const tip = tipOf()
+        return tip !== null && tip.hidden !== true
+      }
+      const describe = (message) => {
+        const tip = tipOf()
+        const state = tip === null ? '卡片不存在' : '卡片 hidden=' + String(tip.hidden) + ' 文本=「' + (tip.textContent || '') + '」'
+        return message + '（诊断：' + state + '）'
+      }
+      // 条目上不该再有原生 title（会和卡片叠成两层），信息挪到 aria-label
+      note(items.filter((item) => item.hasAttribute('title')).length > 0
+        ? '仍有条目挂着原生 title（会与悬停卡片叠成两层 tooltip）'
+        : null)
+      note(items.some((item) => (item.getAttribute('aria-label') || '') === '')
+        ? '条目缺少 aria-label（原生 tooltip 撤掉后无障碍读不到内容）'
+        : null)
+
+      // ① CPU：当前 / 峰值 / 核心 + 「近 1 分钟」脚注
+      await hover(items[0])
+      if (!shown()) {
+        note(describe('悬停 CPU 条目没有出现卡片'))
+      } else {
+        const tip = tipOf()
+        const text = (tip.textContent || '')
+        for (const word of [['当前', 'Current'], ['峰值', 'Peak'], ['核心', 'Cores']]) {
+          if (!word.some((label) => text.includes(label))) note('CPU 卡片缺少「' + word[0] + '」：' + text)
+        }
+        const headText = tip.querySelector('.tt_statsTipValue')?.textContent || ''
+        const rows = [...tip.querySelectorAll('.tt_statsTipRowValue')].map((el) => el.textContent || '')
+        if (!/^\d+%$/.test(headText)) note('CPU 当前值不是百分比：' + headText)
+        if (!/^\d+%$/.test(rows[0] || '')) note('CPU 峰值不是百分比：' + String(rows[0]))
+        if (parseInt(headText, 10) > parseInt(rows[0] || '0', 10)) {
+          note('当前值（' + headText + '）不该高于近 1 分钟峰值（' + String(rows[0]) + '）')
+        }
+        if (!/^\d+$/.test(rows[1] || '')) note('CPU 卡片缺少核心数：' + rows.join(' | '))
+        const foot = tip.querySelector('.tt_statsTipFoot')
+        if (foot === null || foot.hidden) note('CPU 卡片缺少「近 1 分钟」脚注')
+        else if (!says(foot, '近 1 分钟', 'Last minute')) note('脚注文案不对：' + foot.textContent)
+        /*
+         * 几何：卡片必须落在**状态条下沿之下**（朝上弹会盖住标签栏），且不伸出面板左右缘。
+         * 面板边界不是视口：卡片伸到面板外那截背后是应用背景，看着就是「文字被盖了一块」。
+         */
+        const bar = q('.tt_statsBar').getBoundingClientRect()
+        const panel = q('.tt_modal').getBoundingClientRect()
+        const rect = tip.getBoundingClientRect()
+        if (rect.top < bar.bottom - 1) {
+          note('卡片没有落在状态条下方（top=' + rect.top.toFixed(1) + ' < bar.bottom=' + bar.bottom.toFixed(1) + '）')
+        }
+        if (rect.right > panel.right + 1) note('卡片伸出了面板右缘')
+        if (rect.left < panel.left - 1) note('卡片伸出了面板左缘')
+        // 卡片是读数、不该截走指针：否则指针落到它上面会触发条目的 pointerout，把自己闪没
+        if (getComputedStyle(tip).pointerEvents !== 'none') {
+          note('卡片必须 pointer-events: none（否则会截走指针、把自己闪没）')
+        }
+      }
+
+      /*
+       * ①b 取值颜色跟着**档位**走（2026-11-01 用户要求「文字颜色和折线统一」）：把负载钉在 30%
+       * 再读一次，第一行必须是绿（`--tt-term-stats-ok` #2ecc71），而不是卡片里那句中性白。
+       */
+      window.__PREVIEW_STATS_LOAD = 30
+      await sleep(800)
+      if (shown()) {
+        const headColor = getComputedStyle(tipOf().querySelector('.tt_statsTipValue')).color
+        if (headColor !== 'rgb(46, 204, 113)') {
+          note('正常档的当前值没有跟档位配色（应 rgb(46, 204, 113)，实得 ' + headColor + '）')
+        }
+      }
+      window.__PREVIEW_STATS_LOAD = undefined
+
+      // ② 网络：两个方向都有读数 + 峰值行
+      await leave(items[0])
+      note(shown() ? '指针离开条目后卡片仍然可见' : null)
+      await hover(items[9])
+      if (!shown()) {
+        note(describe('悬停网络条目没有出现卡片'))
+      } else {
+        const text = tipOf().textContent || ''
+        if (!/↓/.test(text) || !/↑/.test(text)) note('网络卡片缺 ↓/↑ 读数：' + text)
+        if (![...tipOf().querySelectorAll('.tt_statsTipRowLabel')].some((el) => says(el, '峰值', 'Peak'))) {
+          note('网络卡片缺峰值行：' + text)
+        }
+        /*
+         * 两个方向**分段着色**，与条上那两个箭头同色（2026-11-01 用户报「这个文字颜色没对上」）。
+         * 这里取的是当前值那一行的两段；峰值行的两段同样分段，但断言只钉当前行——
+         * 峰值在窗口里可能只有单侧数据，颜色不是稳定的判据。
+         */
+        const headValue = tipOf().querySelector('.tt_statsTipValue')
+        const parts = headValue === null ? [] : [...headValue.querySelectorAll('.tt_statsTipPart')]
+        if (parts.length !== 2) {
+          note('网络那一格的当前值没有分段着色（应 ↓ / ↑ 两段，实得 ' + String(parts.length) + ' 段）')
+        } else {
+          const rxColor = getComputedStyle(parts[0]).color
+          const txColor = getComputedStyle(parts[1]).color
+          if (rxColor !== 'rgb(92, 157, 255)') note('↓ 段颜色没跟上下行色（应 rgb(92, 157, 255)，实得 ' + rxColor + '）')
+          if (txColor !== 'rgb(47, 214, 201)') note('↑ 段颜色没跟上下行色（应 rgb(47, 214, 201)，实得 ' + txColor + '）')
+        }
+      }
+
+      // ③ 在线：单调量，没有峰值行，也就没有「近 1 分钟」脚注
+      await leave(items[9])
+      await hover(items[4])
+      if (!shown()) {
+        note(describe('悬停「在线」条目没有出现卡片'))
+      } else {
+        const tip = tipOf()
+        const meta = tip.querySelector('.tt_statsTipMeta')
+        const foot = tip.querySelector('.tt_statsTipFoot')
+        if (meta === null || meta.hidden !== true) note('「在线」卡片不该有峰值行（单调量没有可对照的窗口）')
+        if (foot !== null && foot.hidden !== true) note('「在线」卡片不该有脚注')
+      }
+
+      // ④ 离开即收：卡片不留在屏幕上跟着走
+      await leave(items[4])
+      note(shown() ? '指针离开后卡片没有收起' : null)
+
+      /*
+       * ⑤ 采不到的格子不弹卡：夹具没有 tempC（macOS 真实环境同理），那一格现在整格隐藏；
+       * 即便被程序化地悬停，卡片也该因为「empty」而不出现——弹一张只有「当前 无」的卡片没有意义。
+       */
+      await hover(items[8])
+      note(shown() ? '「无数据」的格子不该弹卡片：' + (tipOf()?.textContent || '') : null)
+      await leave(items[8])
+
+      // ⑥ 极简条：三种 kind 映射到同一组键（条上两条呈现共用一套卡片逻辑）
+      q('[data-act=stats]').click() // 完整 → 极简
+      /*
+       * 等 DOM 落地再断言：切档会走 applyStatsBar，而「条刚好处于隐藏态」时那一帧是清空重建，
+       * 500ms 的固定睡眠偶发会撞在重建中间（实测过一次 acquired 0 项的红）。这里给 3 秒余量。
+       */
+      let minItems = []
+      try {
+        await waitFor(() => {
+          const list = qa('.tt_statsMinItem')
+          return list.length === 5 ? list : null
+        }, 3000).then((list) => {
+          minItems = list
+        })
+      } catch {
+        minItems = qa('.tt_statsMinItem')
+      }
+      if (minItems.length !== 5) {
+        const bar = q('.tt_statsBar')
+        const body = q('.tt_body')
+        note('极简模式应有 3 个条目，实得 ' + String(minItems.length)
+          + '（style=' + String(window.localStorage.getItem('dsh-tty:stats-style'))
+          + ' dataStyle=' + String(body === null ? 'nobody' : (body.dataset.statsStyle || ''))
+          + ' bar=' + (bar === null ? 'nobar' : String(bar.hidden))
+          + ' minEl=' + String(qa('.tt_statsMin').length)
+          + ' bodyStats=' + String(body !== null && body.dataset.stats !== undefined) + '）')
+      } else {
+        await hover(minItems[0])
+        if (!shown()) note(describe('悬停极简条 CPU 条目没有出现卡片'))
+        else if (!says(tipOf(), '当前', 'Current')) note('极简条 CPU 卡片缺「当前」：' + (tipOf().textContent || ''))
+        await leave(minItems[0])
+      }
+      // 回到完整模式（极简 → 隐藏 → 完整）：截图停在最有信息量的那一态
+      q('[data-act=stats]').click() // 极简 → 隐藏
+      await sleep(300)
+      q('[data-act=stats]').click() // 隐藏 → 完整
+      await sleep(1200) // 重新订阅 + 等几帧，条目才有读数
+      const restored = qa('.tt_statsFull .tt_statsItem')
+      if (restored.length !== 10) {
+        note('回到完整模式后条目数不对：' + String(restored.length))
+      } else {
+        await hover(restored[0])
+        note(shown() ? null : describe('回到完整模式后悬停没有出现卡片'))
+      }
+      window.__previewAssert = async () => (problems.length > 0 ? problems.join('；') : null)
+    },
     async 'stats-sparse'() {
       window.__PREVIEW_STATS_INTERVAL_MS = 300
       window.__PREVIEW_STATS_SPARSE = 5
