@@ -43,10 +43,14 @@ const READ_ONLY = [
   'docker_logs_grep',
   'docker_stats',
   'docker_events',
+  'docker_top',
+  'docker_diagnose',
+  'docker_run_command',
   'docker_images',
   'docker_image_inspect',
   'docker_networks',
   'docker_volumes',
+  'docker_disk_usage',
 ]
 
 /** 变更工具（生命周期 / 删镜像 / 清理 / 拉取 / exec）：必须保持独占。 */

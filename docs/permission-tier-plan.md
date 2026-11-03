@@ -122,7 +122,7 @@ const policy = approval?.overrideOf(exec.agent.session) ?? 'ask'        // 服�
 
 | 类 | 工具 | 判据 |
 |---|---|---|
-| `read` | `docker_targets` `docker_connect_local` `docker_ps` `docker_attention` `docker_inspect` `docker_logs` `docker_logs_grep` `docker_stats` `docker_events` `docker_images` `docker_image_inspect` `docker_networks` `docker_volumes` | 纯读 / 固定二进制探测（connect_local 不在能力开关里，见其注释）；`docker_logs_grep` 是**服务端检索**，与 `docker_logs` 同档（2026-10-12 补齐：它注册了却漏在这张表里，而此前**没有任何守卫**看着这张表——守卫见 [scripts/test/tier-plan-table.test.ts](../scripts/test/tier-plan-table.test.ts)） |
+| `read` | `docker_targets` `docker_connect_local` `docker_ps` `docker_attention` `docker_inspect` `docker_logs` `docker_logs_grep` `docker_stats` `docker_events` `docker_images` `docker_image_inspect` `docker_networks` `docker_volumes` `docker_diagnose` `docker_top` `docker_disk_usage` `docker_run_command` | 纯读 / 固定二进制探测（connect_local 不在能力开关里，见其注释）；`docker_logs_grep` 是**服务端检索**，与 `docker_logs` 同档（2026-10-12 补齐：它注册了却漏在这张表里，而此前**没有任何守卫**看着这张表——守卫见 [scripts/test/tier-plan-table.test.ts](../scripts/test/tier-plan-table.test.ts)）。2026-11-02 新增四条同为 `read`：`docker_diagnose`（一次采集状态 / 日志 / 事件 / 资源占用，只做判据）、`docker_top`（进程快照）、`docker_disk_usage`（`system df` 与「谁在用」）、`docker_run_command`（**只推导**等价 `docker run` 文本，不执行） |
 | `write` | `docker_action` `docker_image_remove` `docker_image_prune` `docker_image_pull` | 容器与镜像的变更（pull 是拉取非破坏，但改本地状态，且已在 `allowMutations` 组里） |
 | `exec` | `docker_exec` | 容器内一次性命令 |
 

@@ -11,6 +11,8 @@
  */
 import type { ExecResult, HostKeyStore, SshSpec, ExecLogger, StreamHandlers, StreamResult } from './ssh-exec.js';
 import { RemoteExec } from './ssh-exec.js';
+import type { Diagnosis } from './diagnose.js';
+import type { RecreateResult } from './recreate.js';
 export type { StreamHandlers, StreamResult } from './ssh-exec.js';
 /** 校验一个 docker 引用（容器名 / ID / 镜像）。不合法直接抛错，绝不拼接进命令。 */
 export declare function assertRef(value: unknown, field: string): string;
@@ -142,6 +144,48 @@ export interface ContainerStats {
 }
 /** `docker stats --no-stream --format '{{json .}}'` → ContainerStats[]。 */
 export declare function parseStatsJson(text: string): ContainerStats[];
+/**
+ * `docker top <id> -eo <列>` 的列清单：**唯一构造点**（argv 与解析共用同一份顺序）。
+ *
+ * 为什么钉这八列：本机实测（docker 28.3.2）`docker top <id> -eo <这串>` 的表头稳定，
+ * 且 `-eo` 选的列名与 `docker top` 的默认列不同（默认给 `PID TTY TIME CMD`，那是
+ * 「容器里那个 tty 在跑什么」，排障没用）。`pcpu` / `pmem` 的表头是 `%CPU` / `%MEM`
+ * （ps 的默认 header），所以解析**按表头名归一**而不是按下标猜——见 TOP_HEADER_ALIASES。
+ */
+export declare const TOP_PS_FORMAT = "pid,ppid,user,stat,etime,pcpu,pmem,cmd";
+/** `docker top` 单次返回的进程行上限（第二道闸：字节闸之外按行兜一层，超了给 truncated）。 */
+export declare const TOP_MAX_ROWS = 500;
+/** 容器内一个进程（字段**全 string**：docker 打印什么就是什么，不做单位换算）。 */
+export interface TopProcessRow {
+    pid: string;
+    ppid: string;
+    user: string;
+    stat: string;
+    /** ps 的 `etime`（已运行时长，如 `03:24:48`）。 */
+    elapsed: string;
+    /** ps 的 `pcpu`（%CPU）。 */
+    cpu: string;
+    /** ps 的 `pmem`（%MEM）。 */
+    mem: string;
+    /** ps 的 `cmd`（可能含空格，由剩余列合并）。 */
+    command: string;
+}
+/**
+ * `docker top -eo …` 的文本输出 → 结构化的进程行。
+ *
+ * 解析规则（全部由**表头行**驱动）：
+ *   - 第一行非空行是表头；每个单元格归一成字段名（`PID` → pid、`%CPU` → cpu）；
+ *   - 之后的每一行按空白切成 token：**token 数少于表头列数 → 丢弃该行**（半行 / 被
+ *     字节闸切断的行不能当成一条进程）;
+ *   - 多出来的 token 全部并进**命令列**（`cmd` 是唯一可以含空格的列，无论它排在
+ *     第几列）——其余列各取一个 token，这样列顺序变了也不会错位；
+ *   - 表头里认不出的列（不同 ps 版本多给的列）忽略，认不出的行照样保留；
+ *   - 输出为空（容器里没有进程 / docker 没打印）→ 空数组，不是错误。
+ */
+export declare function parseTopOutput(text: string): {
+    rows: TopProcessRow[];
+    truncated: boolean;
+};
 /** 一条容器事件（SSE 帧协议与 docker_events 工具共用同一形状）。 */
 export interface ContainerEvent {
     /** 完整动作串；health_status 带状态后缀（如 'health_status: healthy'）。 */
@@ -346,8 +390,118 @@ export interface ContainerDetail {
 }
 /** `docker inspect <id…>` 的 JSON 数组 → ContainerDetail[]。 */
 export declare function parseInspectJson(text: string): ContainerDetail[];
+/**
+ * `docker inspect` 里的**资源上限**（`diagnose()` 用）。
+ *
+ * 刻意不进 `ContainerDetail` 契约：那是「面板详情页要显示什么」的形状，而这两个字段
+ * 只有诊断判据（内存 / CPU 逼近上限）需要。0 一律归一成 `null`——docker 用 0 表示
+ * **不限制**，把 0 当成上限会让「内存上限 0B」这种假象混进判据与文案里。
+ */
+export declare function parseInspectLimits(text: string): {
+    memoryLimitBytes: number | null;
+    cpuQuota: number | null;
+};
 /** inspect 的 `NetworkSettings.Ports`：`{ "80/tcp": [{HostIp, HostPort}] }`。 */
 export declare function parseInspectPorts(value: unknown): PortMapping[];
+/**
+ * 明细每类最多回多少行（宿主侧闸）。客户端要的是「治理视图」，不是迁移清单：
+ * 259 个匿名卷全列出来既读不了、也顶爆模型上下文。
+ */
+export declare const DISK_DETAIL_LIMIT = 100;
+/**
+ * 明细采集的字节预算下限（与配置的单命令上限取较大者）。
+ *
+ * `docker system df -v --format '{{json .}}'` 是**一条**大 JSON（真机实测 259 个卷
+ * ≈120KB），卷多时会线性涨；512KB 的默认上限在几千个卷的机器上会截断，而截断会让
+ * JSON 解析失败 → 白白降级成「只有汇总」。给一份独立预算（同 logsGrep / diagnose 的
+ * events 采集），超了仍然如实降级。
+ */
+export declare const DISK_DETAIL_SCAN_BYTES: number;
+/** `docker system df` 的汇总行（`Type` 原样保留 docker 的英文分类）。 */
+export interface DiskSummaryRow {
+    type: string;
+    totalCount: number;
+    active: number;
+    size: string;
+    reclaimable: string;
+}
+/** 镜像明细（`containers` 就是「谁在用」：`Images[].Containers`，不是按 ps 反推的）。 */
+export interface DiskImageRow {
+    id: string;
+    repository: string;
+    tag: string;
+    size: string;
+    sharedSize: string;
+    uniqueSize: string;
+    containers: number;
+}
+/** 卷明细（`links` 就是「谁在用」：`Volumes[].Links`）。 */
+export interface DiskVolumeRow {
+    name: string;
+    driver: string;
+    size: string;
+    links: number;
+}
+export interface DiskBuildCacheRow {
+    id: string;
+    type: string;
+    size: string;
+    inUse: boolean;
+}
+export interface DiskUsageTruncated {
+    images: boolean;
+    volumes: boolean;
+    buildCache: boolean;
+}
+/** 每类明细的**真实条数**（截断前；agent 工具据此在 20 行上限下仍报得准）。 */
+export interface DiskUsageTotals {
+    images: number;
+    volumes: number;
+    buildCache: number;
+}
+/** `docker system df` 的完整结果（路由与 agent 工具共用形状）。 */
+export interface DiskUsage {
+    summary: DiskSummaryRow[];
+    images: DiskImageRow[];
+    volumes: DiskVolumeRow[];
+    buildCache: DiskBuildCacheRow[];
+    /** 截断前的条数（**不进 HTTP 契约**：客户端靠 truncated 就够，工具要报 total）。 */
+    totals: DiskUsageTotals;
+    truncated: DiskUsageTruncated;
+    /** 只拿到汇总（明细取不到）时为 true；`summary` 仍然可用。 */
+    degraded: boolean;
+    degradedReason: string | null;
+}
+/** 明细解析结果（`null` = 输出解析不了，调用方据此降级）。 */
+export interface DiskDetail {
+    images: DiskImageRow[];
+    volumes: DiskVolumeRow[];
+    buildCache: DiskBuildCacheRow[];
+    totals: DiskUsageTotals;
+    truncated: DiskUsageTruncated;
+}
+/**
+ * `docker system df --format '{{json .}}'` → 汇总行。
+ *
+ * 每行一个 JSON 对象（真机实测四行：Images / Containers / Local Volumes / Build Cache）。
+ * `type` 原样保留英文——翻译是客户端 i18n 的事（`status.diskTypeImages` 等）。
+ */
+export declare function parseDiskSummary(text: string): DiskSummaryRow[];
+/**
+ * `docker system df -v --format '{{json .}}'` → 明细（images / volumes / buildCache）。
+ *
+ * 真机实测：整个输出是**一个 JSON 对象**（键 `Images` / `Containers` / `Volumes` /
+ * `BuildCache`），`--format` 把它序列化成一行。`Containers` 段刻意不解析——容器明细
+ * 与 `docker ps` 重复，而磁盘治理关心的是「谁在用」（Images[].Containers / Volumes[].Links）。
+ *
+ * **排序**：镜像按 `UniqueSize`、卷按 `Size` 降序（同值保持 docker 原序）。磁盘页要的
+ * 「先看占用最大的」在这里就成立，客户端不必再排一遍、也不会排错（字符串大小不可比）。
+ * 截断在排序**之后**（`truncated` 如实置位），否则名额会被一堆 0B 的空卷占满。
+ *
+ * 解析不了（老 docker 不支持 `-v --format`、输出被截断、JSON 坏了）→ `null`：
+ * 降级由调用方决定，这里不抛——「明细没有」不该把汇总也带走。
+ */
+export declare function parseDiskDetail(text: string, limit?: number): DiskDetail | null;
 /**
  * 一次性命令的选项**子集**（Runner 面）：= `ExecOptions` 去掉 `input`（这条通道喂不了
  * stdin）并加上 `signal`。
@@ -476,6 +630,28 @@ export interface ProbeResult {
      */
     timedOut: boolean;
 }
+/** 诊断默认抓多少行日志（契约 §1.2）。 */
+export declare const DIAGNOSE_LOG_TAIL_DEFAULT = 80;
+/** 诊断日志行数的上限（与 `docker_logs` 的夹紧风格一致：越界夹到边界，不报错）。 */
+export declare const DIAGNOSE_LOG_TAIL_MAX = 500;
+/** 诊断默认的事件窗口（契约 §1.2）。 */
+export declare const DIAGNOSE_SINCE_DEFAULT = "1h";
+/**
+ * 诊断的事件扫描预算（字节，下限；实际取与配置上限的较大者）。
+ *
+ * 这不是「调大上限」：`docker_events` 工具的默认预算不变。单容器 + `--since 1h` 的
+ * 事件里，健康检查每个周期产生 exec_create / exec_start / exec_die 三条，每条都带
+ * 整份镜像标签（真机实测 ≈2.3KB/条、256 条/小时、合计 588KB），而这三类在解析时会被
+ * 白名单整条丢掉——花 512KB 的预算把 95% 的字节买来再扔掉，正是「时间线永远是空」的成因。
+ */
+export declare const DIAGNOSE_EVENTS_SCAN_BYTES: number;
+/** `diagnose()` 的结果：结论 + 三路降级的**原因**（原因同时进 findings，这里留给宿主胶水）。 */
+export interface DiagnoseResult {
+    diagnosis: Diagnosis;
+    logError: string | null;
+    eventError: string | null;
+    statsError: string | null;
+}
 /** 单个目标上的 Docker 操作集合。 */
 export declare class DockerApi {
     private readonly runner;
@@ -557,9 +733,22 @@ export declare class DockerApi {
      * 事件快照（agent 工具用）：必须先有 --until 才能让它退出——docker events
      * 只给 --since 时会一直 follow 下去，run() 会挂到超时。这里把 until 取成**请求
      * 时刻的 RFC3339**（不是字符串 'now'：docker 的 --until 只认时间戳或时长）。
+     *
+     * `container`（诊断用）补一条 `--filter container=<id>`：过滤在**服务端**做，
+     * 宿主侧绝不按名字匹配（名字会在 rename / compose 重建后对不上，而 id 不会）。
+     * 不传时 argv 与引入前逐字一致。
+     *
+     * `options`（诊断用）只调**采集预算**，不动 argv：单容器窗口的事件里混着大量
+     * `exec_*` 噪音（每次健康检查三连，每条都带着整份镜像标签），真机实测一个
+     * 20s 健康检查的容器 1h 就 588KB——而 `exec_*` 在解析时本来就会被白名单丢掉。
+     * 所以诊断给一份独立的扫描预算（同 `logsGrep` 的做法）并 `keepTail`（溢出丢最旧：
+     * 判断「现在为什么不行」要的是最近的一段）。既有调用点不传，行为逐字不变。
      */
-    events(since: string): Promise<ContainerEvent[]>;
-    /** 事件 argv 的唯一构造点：流式与快照只差 --since / --until。 */
+    events(since: string, container?: string, options?: {
+        maxBytes?: number;
+        keepTail?: boolean;
+    }): Promise<ContainerEvent[]>;
+    /** 事件 argv 的唯一构造点：流式与快照只差 --since / --until，诊断再多一条 container 过滤。 */
     private eventsArgv;
     images(): Promise<ImageSummary[]>;
     /**
@@ -637,6 +826,27 @@ export declare class DockerApi {
         message: string;
     }>;
     /**
+     * 磁盘占用（`docker system df`）：**两条命令、两份预算**。
+     *
+     *   - 汇总 `system df --format '{{json .}}'`：失败即整体失败（连汇总都拿不到，
+     *     这个视图没有意义）；
+     *   - 明细 `system df -v --format '{{json .}}'`：**独立失败**——老 docker 不认
+     *     `-v --format`（unknown flag）、输出被截断、JSON 坏了，都只让 `degraded=true`
+     *     并带一句人话原因，汇总照常返回。
+     *
+     * 两条命令不合并（契约 §2.1）：`-v` 是重活（会去 stat 每个卷），而汇总很便宜——
+     * 合并后一个慢/一个失败就互相拖累。
+     */
+    systemDf(): Promise<DiskUsage>;
+    /**
+     * 现场还原：从 inspect 的原始 JSON 反推等价 `docker run`（只生成文本，**不执行**）。
+     *
+     * 为什么另起一条读 inspect 的路径而不是复用 `inspect()`：`ContainerDetail` 刻意不含
+     * env / binds / hostConfig（那会把凭证灌进 `docker_inspect` 的模型上下文），而还原
+     * 需要它们。所以这里拿**原始行**交给纯模块 `src/recreate.ts`，产出纯文本。
+     */
+    recreate(id: string): Promise<RecreateResult>;
+    /**
      * 拉取镜像（`docker pull`）。逐层进度天然是流：非 TTY 下 docker 按状态行输出
      * （Pulling fs layer / Downloading / Extracting / Pull complete），直接复用
      * ssh-exec 的长流通道（runLocalStream / RemoteExec.stream），无总超时，
@@ -710,6 +920,51 @@ export declare class DockerApi {
         truncated: boolean;
         durationMs: number;
     }>;
+    /**
+     * 容器内的进程快照（`docker top <id> -eo <TOP_PS_FORMAT>`）。
+     *
+     * **容器名要单独取一次**：`docker top` 的输出里没有容器名（本机实测表头就是那八列），
+     * 而契约要求返回 `name`。这条是**次要信息**——只读、输出一行、失败不影响 top 的
+     * 成功路径（回落成传入的 id，绝不编造）。所以它**不在** top 的 fail-fast 里：
+     * top 自己失败照旧走 assertOk 抛错（容器不存在 / 未运行时 docker 就是这么答的）。
+     *
+     * 容器没在运行时 `docker top` 报错 → assertOk 抛错，**不返回空列表**：空列表会被
+     * 读成「容器里没有进程」，而真实情况是「问不了」。
+     */
+    top(id: string): Promise<{
+        id: string;
+        name: string;
+        rows: TopProcessRow[];
+        truncated: boolean;
+    }>;
+    /**
+     * 容器名（`docker inspect --format '{{.Name}}'`）。
+     *
+     * `.Name` 带前导斜杠（`/dsh-remote-server`），必须 strip；strip 后为空、或这条命令
+     * 失败，都回落成传入的 id——名字是次要信息，不该把已经成功的 top 带下去。
+     */
+    private containerName;
+    /** 容器名 argv 的唯一构造点（`docker top` 的输出里没有名字，top 用这条补）。 */
+    private containerNameArgv;
+    /**
+     * 「容器为什么不行」：一次采集四路，交给纯判据（`src/diagnose.ts`）出结论。
+     *
+     * **顺序与预算**（契约 §1.2）：
+     *   ① 先 `inspect`——它是权威状态（退出码 / OOM / 重启次数 / 健康），**失败即整体失败**；
+     *   ② 再并发 `logs` / `events`（带 `--filter container=<id>`，服务端过滤）/ `stats`——
+     *      任何一路失败**只降级不抛**：该路给 `null`（与「确实是空的」区分），
+     *      findings 里多一条 `*-unavailable` 说明原因，evidence 对应字段给 null。
+     *
+     * 三路各自独立 catch 而不是 `Promise.allSettled`：失败原因要变成给人看的文案
+     * （`*Error`），而 allSettled 的 reason 还得再剖一层。
+     *
+     * `logTail` 夹到 1~500（默认 80），`since` 走 `assertSince`（D45 同一口径，默认 1h）——
+     * 两处夹紧都在这里做，HTTP 路由与 agent 工具拿到的是同一套语义。
+     */
+    diagnose(id: string, options?: {
+        logTail?: number;
+        since?: string;
+    }): Promise<DiagnoseResult>;
     private assertOk;
 }
 /** 目标定义（settings 里的 `targets[]`）。 */

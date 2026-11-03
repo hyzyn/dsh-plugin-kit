@@ -1,4 +1,6 @@
 import { RemoteExec, runLocal, runLocalStream, sshTarget } from './ssh-exec.js';
+import { diagnose } from './diagnose.js';
+import { buildRunCommand } from './recreate.js';
 /* ------------------------------------------------------------------ *
  * 通用：校验与解析工具
  * ------------------------------------------------------------------ */
@@ -467,6 +469,101 @@ export function parseStatsJson(text) {
     });
 }
 /* ------------------------------------------------------------------ *
+ * 进程快照（docker top）
+ * ------------------------------------------------------------------ */
+/**
+ * `docker top <id> -eo <列>` 的列清单：**唯一构造点**（argv 与解析共用同一份顺序）。
+ *
+ * 为什么钉这八列：本机实测（docker 28.3.2）`docker top <id> -eo <这串>` 的表头稳定，
+ * 且 `-eo` 选的列名与 `docker top` 的默认列不同（默认给 `PID TTY TIME CMD`，那是
+ * 「容器里那个 tty 在跑什么」，排障没用）。`pcpu` / `pmem` 的表头是 `%CPU` / `%MEM`
+ * （ps 的默认 header），所以解析**按表头名归一**而不是按下标猜——见 TOP_HEADER_ALIASES。
+ */
+export const TOP_PS_FORMAT = 'pid,ppid,user,stat,etime,pcpu,pmem,cmd';
+/** `docker top` 单次返回的进程行上限（第二道闸：字节闸之外按行兜一层，超了给 truncated）。 */
+export const TOP_MAX_ROWS = 500;
+/** 表头名（归一后）→ 输出字段。表头驱动：列顺序变了也不会错位。 */
+const TOP_HEADER_ALIASES = {
+    pid: 'pid',
+    ppid: 'ppid',
+    user: 'user',
+    uname: 'user',
+    stat: 'stat',
+    etime: 'elapsed',
+    elapsed: 'elapsed',
+    pcpu: 'cpu',
+    cpu: 'cpu',
+    pmem: 'mem',
+    mem: 'mem',
+    cmd: 'command',
+    command: 'command',
+    args: 'command',
+};
+/** 表头单元格归一：小写、去掉 ps 给百分比列的 `%` 前缀。 */
+function normalizeTopHeader(cell) {
+    return cell.trim().toLowerCase().replace(/^%/, '');
+}
+/** 空进程行（所有字段都是 string，缺列给空串）。 */
+function emptyTopRow() {
+    return { pid: '', ppid: '', user: '', stat: '', elapsed: '', cpu: '', mem: '', command: '' };
+}
+/**
+ * `docker top -eo …` 的文本输出 → 结构化的进程行。
+ *
+ * 解析规则（全部由**表头行**驱动）：
+ *   - 第一行非空行是表头；每个单元格归一成字段名（`PID` → pid、`%CPU` → cpu）；
+ *   - 之后的每一行按空白切成 token：**token 数少于表头列数 → 丢弃该行**（半行 / 被
+ *     字节闸切断的行不能当成一条进程）;
+ *   - 多出来的 token 全部并进**命令列**（`cmd` 是唯一可以含空格的列，无论它排在
+ *     第几列）——其余列各取一个 token，这样列顺序变了也不会错位；
+ *   - 表头里认不出的列（不同 ps 版本多给的列）忽略，认不出的行照样保留；
+ *   - 输出为空（容器里没有进程 / docker 没打印）→ 空数组，不是错误。
+ */
+export function parseTopOutput(text) {
+    const lines = text.split(/\r?\n/);
+    let headerAt = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if ((lines[i] ?? '').trim() !== '') {
+            headerAt = i;
+            break;
+        }
+    }
+    if (headerAt === -1)
+        return { rows: [], truncated: false };
+    const headers = (lines[headerAt] ?? '').trim().split(/\s+/).map(normalizeTopHeader);
+    const mapped = headers.map((cell) => TOP_HEADER_ALIASES[cell] ?? null);
+    if (mapped.every((key) => key === null))
+        return { rows: [], truncated: false };
+    // 命令列的位置：表头里说是 cmd 的那一列；认不出来就按「最后一列」处理（ps 的惯例）
+    const commandAt = mapped.indexOf('command') === -1 ? headers.length - 1 : mapped.indexOf('command');
+    const rows = [];
+    for (let i = headerAt + 1; i < lines.length; i++) {
+        const line = (lines[i] ?? '').trim();
+        if (line === '')
+            continue;
+        const tokens = line.split(/\s+/);
+        // 行数不足 → 丢弃（契约）：半行当成一行进程，比少一行糟得多
+        if (tokens.length < headers.length)
+            continue;
+        const row = emptyTopRow();
+        // 多出来的 token 全给命令列；其余列各取一个 token
+        const extra = tokens.length - headers.length;
+        let cursor = 0;
+        for (let column = 0; column < headers.length; column++) {
+            const take = column === commandAt ? extra + 1 : 1;
+            const value = tokens.slice(cursor, cursor + take).join(' ');
+            cursor += take;
+            const key = mapped[column];
+            if (key !== null)
+                row[key] = value;
+        }
+        rows.push(row);
+        if (rows.length >= TOP_MAX_ROWS)
+            return { rows, truncated: true };
+    }
+    return { rows, truncated: false };
+}
+/* ------------------------------------------------------------------ *
  * 事件（docker events）
  * ------------------------------------------------------------------ */
 /**
@@ -836,6 +933,22 @@ function dockerTime(value) {
         return null;
     return value;
 }
+/**
+ * `docker inspect` 里的**资源上限**（`diagnose()` 用）。
+ *
+ * 刻意不进 `ContainerDetail` 契约：那是「面板详情页要显示什么」的形状，而这两个字段
+ * 只有诊断判据（内存 / CPU 逼近上限）需要。0 一律归一成 `null`——docker 用 0 表示
+ * **不限制**，把 0 当成上限会让「内存上限 0B」这种假象混进判据与文案里。
+ */
+export function parseInspectLimits(text) {
+    const row = parseJsonLines(text)[0];
+    const hostConfig = asRecord(row?.HostConfig);
+    const positive = (value) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null);
+    return {
+        memoryLimitBytes: positive(hostConfig.Memory),
+        cpuQuota: positive(hostConfig.NanoCpus),
+    };
+}
 /** inspect 的 `NetworkSettings.Ports`：`{ "80/tcp": [{HostIp, HostPort}] }`。 */
 export function parseInspectPorts(value) {
     const ports = asRecord(value);
@@ -883,6 +996,115 @@ export function parseInspectPorts(value) {
     }
     return out;
 }
+/* ------------------------------------------------------------------ *
+ * 磁盘占用（docker system df）
+ * ------------------------------------------------------------------ */
+/**
+ * 明细每类最多回多少行（宿主侧闸）。客户端要的是「治理视图」，不是迁移清单：
+ * 259 个匿名卷全列出来既读不了、也顶爆模型上下文。
+ */
+export const DISK_DETAIL_LIMIT = 100;
+/**
+ * 明细采集的字节预算下限（与配置的单命令上限取较大者）。
+ *
+ * `docker system df -v --format '{{json .}}'` 是**一条**大 JSON（真机实测 259 个卷
+ * ≈120KB），卷多时会线性涨；512KB 的默认上限在几千个卷的机器上会截断，而截断会让
+ * JSON 解析失败 → 白白降级成「只有汇总」。给一份独立预算（同 logsGrep / diagnose 的
+ * events 采集），超了仍然如实降级。
+ */
+export const DISK_DETAIL_SCAN_BYTES = 8 * 1024 * 1024;
+/** 计数字段在 `{{json .}}` 里是**字符串**（`"TotalCount":"14"`），解析失败给 0。 */
+function countOf(value) {
+    const n = typeof value === 'number' ? value : Number(value);
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+}
+/**
+ * `docker system df --format '{{json .}}'` → 汇总行。
+ *
+ * 每行一个 JSON 对象（真机实测四行：Images / Containers / Local Volumes / Build Cache）。
+ * `type` 原样保留英文——翻译是客户端 i18n 的事（`status.diskTypeImages` 等）。
+ */
+export function parseDiskSummary(text) {
+    return parseJsonLines(text)
+        .map((row) => ({
+        type: str(row, 'Type'),
+        totalCount: countOf(row.TotalCount),
+        active: countOf(row.Active),
+        size: str(row, 'Size'),
+        reclaimable: str(row, 'Reclaimable'),
+    }))
+        .filter((row) => row.type !== '');
+}
+/**
+ * `docker system df -v --format '{{json .}}'` → 明细（images / volumes / buildCache）。
+ *
+ * 真机实测：整个输出是**一个 JSON 对象**（键 `Images` / `Containers` / `Volumes` /
+ * `BuildCache`），`--format` 把它序列化成一行。`Containers` 段刻意不解析——容器明细
+ * 与 `docker ps` 重复，而磁盘治理关心的是「谁在用」（Images[].Containers / Volumes[].Links）。
+ *
+ * **排序**：镜像按 `UniqueSize`、卷按 `Size` 降序（同值保持 docker 原序）。磁盘页要的
+ * 「先看占用最大的」在这里就成立，客户端不必再排一遍、也不会排错（字符串大小不可比）。
+ * 截断在排序**之后**（`truncated` 如实置位），否则名额会被一堆 0B 的空卷占满。
+ *
+ * 解析不了（老 docker 不支持 `-v --format`、输出被截断、JSON 坏了）→ `null`：
+ * 降级由调用方决定，这里不抛——「明细没有」不该把汇总也带走。
+ */
+export function parseDiskDetail(text, limit = DISK_DETAIL_LIMIT) {
+    const root = parseJsonLines(text)[0];
+    if (root === undefined)
+        return null;
+    const imagesRaw = Array.isArray(root.Images) ? root.Images : null;
+    const volumesRaw = Array.isArray(root.Volumes) ? root.Volumes : null;
+    // 三个数组一个都没有 = 这不是 `system df -v` 的形状（老版本会直接报 unknown flag）
+    if (imagesRaw === null && volumesRaw === null && !Array.isArray(root.BuildCache))
+        return null;
+    const cap = Math.max(Math.trunc(limit), 1);
+    const images = (imagesRaw ?? [])
+        .map((item) => asRecord(item))
+        .map((row) => ({
+        id: str(row, 'ID'),
+        repository: str(row, 'Repository'),
+        tag: str(row, 'Tag'),
+        size: str(row, 'Size'),
+        sharedSize: str(row, 'SharedSize'),
+        // 老 docker 没有 UniqueSize：用 VirtualSize 兜底、都没有就空串（客户端显示 —）
+        uniqueSize: str(row, 'UniqueSize') || str(row, 'VirtualSize'),
+        containers: countOf(row.Containers),
+    }))
+        .sort((a, b) => sizeBytesOf(b.uniqueSize) - sizeBytesOf(a.uniqueSize));
+    const volumes = (volumesRaw ?? [])
+        .map((item) => asRecord(item))
+        .map((row) => ({
+        name: str(row, 'Name'),
+        driver: str(row, 'Driver'),
+        size: str(row, 'Size'),
+        links: countOf(row.Links),
+    }))
+        .sort((a, b) => sizeBytesOf(b.size) - sizeBytesOf(a.size));
+    const buildCache = (Array.isArray(root.BuildCache) ? root.BuildCache : [])
+        .map((item) => asRecord(item))
+        .map((row) => ({
+        id: str(row, 'ID'),
+        type: str(row, 'Type'),
+        size: str(row, 'Size'),
+        inUse: boolish(row.InUse),
+    }));
+    return {
+        images: images.slice(0, cap),
+        volumes: volumes.slice(0, cap),
+        buildCache: buildCache.slice(0, cap),
+        totals: { images: images.length, volumes: volumes.length, buildCache: buildCache.length },
+        truncated: {
+            images: images.length > cap,
+            volumes: volumes.length > cap,
+            buildCache: buildCache.length > cap,
+        },
+    };
+}
+/** 大小字符串 → 字节（`264.1MB` → 字节）；解析失败给 0，保证排序稳定。 */
+function sizeBytesOf(text) {
+    return parseDockerSize(text) ?? 0;
+}
 /**
  * logsGrep 的**返回侧行闸**（与扫描侧的 8~32MB 字节预算是两件事）。
  *
@@ -893,6 +1115,41 @@ export function parseInspectPorts(value) {
  * `matched` 不受此闸影响：全量命中数仍如实上报，那是缩小窗口时最有用的信号。
  */
 export const MAX_RESULT_LINES = 4000;
+/** 诊断默认抓多少行日志（契约 §1.2）。 */
+export const DIAGNOSE_LOG_TAIL_DEFAULT = 80;
+/** 诊断日志行数的上限（与 `docker_logs` 的夹紧风格一致：越界夹到边界，不报错）。 */
+export const DIAGNOSE_LOG_TAIL_MAX = 500;
+/** 诊断默认的事件窗口（契约 §1.2）。 */
+export const DIAGNOSE_SINCE_DEFAULT = '1h';
+/**
+ * 诊断的事件扫描预算（字节，下限；实际取与配置上限的较大者）。
+ *
+ * 这不是「调大上限」：`docker_events` 工具的默认预算不变。单容器 + `--since 1h` 的
+ * 事件里，健康检查每个周期产生 exec_create / exec_start / exec_die 三条，每条都带
+ * 整份镜像标签（真机实测 ≈2.3KB/条、256 条/小时、合计 588KB），而这三类在解析时会被
+ * 白名单整条丢掉——花 512KB 的预算把 95% 的字节买来再扔掉，正是「时间线永远是空」的成因。
+ */
+export const DIAGNOSE_EVENTS_SCAN_BYTES = 8 * 1024 * 1024;
+/** 采集失败的一句话原因（给 `*-unavailable` 判据与面板文案用；空错误也要有话说）。 */
+function describeCollectedError(error, what) {
+    const message = error instanceof Error ? error.message : String(error);
+    const trimmed = message.trim();
+    return trimmed === '' ? `${what}采集失败（无错误信息）` : trimmed;
+}
+/**
+ * 统计日志行数（`--tail N` 采到的原文）。
+ *
+ * 与 D136 同一口径：docker logs 每一行都以 `\n` 结尾，`text.split('\n')` 末尾会多出
+ * 一个空串——那个终止符不是一行，计数时必须去掉，否则「抓 80 行」会显示成 81。
+ */
+function countLogLines(text) {
+    if (text === '')
+        return 0;
+    const lines = text.split('\n');
+    if (lines.length > 0 && lines[lines.length - 1] === '')
+        lines.pop();
+    return lines.length;
+}
 /** 单个目标上的 Docker 操作集合。 */
 export class DockerApi {
     runner;
@@ -1150,20 +1407,34 @@ export class DockerApi {
      * 事件快照（agent 工具用）：必须先有 --until 才能让它退出——docker events
      * 只给 --since 时会一直 follow 下去，run() 会挂到超时。这里把 until 取成**请求
      * 时刻的 RFC3339**（不是字符串 'now'：docker 的 --until 只认时间戳或时长）。
+     *
+     * `container`（诊断用）补一条 `--filter container=<id>`：过滤在**服务端**做，
+     * 宿主侧绝不按名字匹配（名字会在 rename / compose 重建后对不上，而 id 不会）。
+     * 不传时 argv 与引入前逐字一致。
+     *
+     * `options`（诊断用）只调**采集预算**，不动 argv：单容器窗口的事件里混着大量
+     * `exec_*` 噪音（每次健康检查三连，每条都带着整份镜像标签），真机实测一个
+     * 20s 健康检查的容器 1h 就 588KB——而 `exec_*` 在解析时本来就会被白名单丢掉。
+     * 所以诊断给一份独立的扫描预算（同 `logsGrep` 的做法）并 `keepTail`（溢出丢最旧：
+     * 判断「现在为什么不行」要的是最近的一段）。既有调用点不传，行为逐字不变。
      */
-    async events(since) {
-        const result = await this.runner.run(this.eventsArgv({ since, until: new Date().toISOString() }), {
+    async events(since, container, options) {
+        const requested = typeof container === 'string' ? container.trim() : '';
+        const scoped = requested === '' ? undefined : assertRef(requested, 'container');
+        const result = await this.runner.run(this.eventsArgv({ since, until: new Date().toISOString(), ...(scoped === undefined ? {} : { container: scoped }) }), {
             // 跨 10m 窗口的事件量取决于容器活动量，给足超时但别学流那样无上限
             timeoutMs: Math.max(this.limits.timeoutMs, 30_000),
-            maxBytes: this.limits.maxBytes,
+            maxBytes: options?.maxBytes ?? this.limits.maxBytes,
+            ...(options?.keepTail === true ? { keepTail: true } : {}),
         });
         this.assertComplete(result, '读取容器事件', '缩小 since 窗口（如 10m）');
         return parseEventsJson(result.stdout);
     }
-    /** 事件 argv 的唯一构造点：流式与快照只差 --since / --until。 */
+    /** 事件 argv 的唯一构造点：流式与快照只差 --since / --until，诊断再多一条 container 过滤。 */
     eventsArgv(options) {
         const since = options.since === undefined ? '' : options.since.trim();
         const until = options.until === undefined ? '' : options.until.trim();
+        const container = options.container === undefined ? '' : options.container.trim();
         return [
             this.bin,
             'events',
@@ -1171,6 +1442,7 @@ export class DockerApi {
             ...(until === '' ? [] : ['--until', until]),
             '--format', '{{json .}}',
             '--filter', 'type=container',
+            ...(container === '' ? [] : ['--filter', `container=${container}`]),
         ];
     }
     async images() {
@@ -1376,6 +1648,75 @@ export class DockerApi {
         });
         this.assertOk(result, '清理未使用的卷');
         return { message: result.stdout.trim() || 'ok' };
+    }
+    /**
+     * 磁盘占用（`docker system df`）：**两条命令、两份预算**。
+     *
+     *   - 汇总 `system df --format '{{json .}}'`：失败即整体失败（连汇总都拿不到，
+     *     这个视图没有意义）；
+     *   - 明细 `system df -v --format '{{json .}}'`：**独立失败**——老 docker 不认
+     *     `-v --format`（unknown flag）、输出被截断、JSON 坏了，都只让 `degraded=true`
+     *     并带一句人话原因，汇总照常返回。
+     *
+     * 两条命令不合并（契约 §2.1）：`-v` 是重活（会去 stat 每个卷），而汇总很便宜——
+     * 合并后一个慢/一个失败就互相拖累。
+     */
+    async systemDf() {
+        const summaryResult = await this.runner.run([this.bin, 'system', 'df', '--format', '{{json .}}'], {
+            timeoutMs: Math.max(this.limits.timeoutMs, 30_000),
+            maxBytes: this.limits.maxBytes,
+        });
+        this.assertComplete(summaryResult, '读取磁盘占用汇总', '换到目标机本地执行 `docker system df`');
+        const summary = parseDiskSummary(summaryResult.stdout);
+        try {
+            const detailResult = await this.runner.run([this.bin, 'system', 'df', '-v', '--format', '{{json .}}'], {
+                // `-v` 会去 stat 每个卷 / 镜像层：比汇总慢得多，超时给两档
+                timeoutMs: Math.max(this.limits.timeoutMs, 60_000),
+                maxBytes: Math.max(this.limits.maxBytes, DISK_DETAIL_SCAN_BYTES),
+            });
+            this.assertOk(detailResult, '读取磁盘占用明细');
+            if (detailResult.truncated) {
+                throw new Error(`明细输出超过上限被截断（明细 ${String(Math.round(Math.max(this.limits.maxBytes, DISK_DETAIL_SCAN_BYTES) / 1024 / 1024))}MB 档）`);
+            }
+            const detail = parseDiskDetail(detailResult.stdout);
+            if (detail === null)
+                throw new Error('无法解析明细（这个 docker 版本可能不支持 `system df -v --format`）');
+            return { summary, ...detail, degraded: false, degradedReason: null };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                summary,
+                images: [],
+                volumes: [],
+                buildCache: [],
+                // 明细没拿到 ≠ 明细是空的：三个 truncated 都给 false（它们描述的是「有但被截」），
+                // totals 也归零（与「明细取到了但一条都没有」由 degraded 区分）
+                totals: { images: 0, volumes: 0, buildCache: 0 },
+                truncated: { images: false, volumes: false, buildCache: false },
+                degraded: true,
+                degradedReason: `只拿到汇总：${message}`,
+            };
+        }
+    }
+    /**
+     * 现场还原：从 inspect 的原始 JSON 反推等价 `docker run`（只生成文本，**不执行**）。
+     *
+     * 为什么另起一条读 inspect 的路径而不是复用 `inspect()`：`ContainerDetail` 刻意不含
+     * env / binds / hostConfig（那会把凭证灌进 `docker_inspect` 的模型上下文），而还原
+     * 需要它们。所以这里拿**原始行**交给纯模块 `src/recreate.ts`，产出纯文本。
+     */
+    async recreate(id) {
+        const safe = assertRef(id, 'container');
+        const result = await this.runner.run([this.bin, 'inspect', safe], {
+            timeoutMs: this.limits.timeoutMs,
+            maxBytes: this.limits.maxBytes,
+        });
+        this.assertComplete(result, '读取容器详情', '改用更少的容器 id 分批读取');
+        const row = parseJsonLines(result.stdout)[0];
+        if (row === undefined)
+            throw new Error(`容器不存在或输出无法解析：${safe}`);
+        return buildRunCommand(row);
     }
     /**
      * 拉取镜像（`docker pull`）。逐层进度天然是流：非 TTY 下 docker 按状态行输出
@@ -1628,6 +1969,125 @@ export class DockerApi {
             stderr: result.stderr,
             truncated: result.truncated,
             durationMs: result.durationMs,
+        };
+    }
+    /* ---------------------------------------------------------------- *
+     * 诊断（批一）：进程快照 + 「为什么不行」的结构化结论
+     * ---------------------------------------------------------------- */
+    /**
+     * 容器内的进程快照（`docker top <id> -eo <TOP_PS_FORMAT>`）。
+     *
+     * **容器名要单独取一次**：`docker top` 的输出里没有容器名（本机实测表头就是那八列），
+     * 而契约要求返回 `name`。这条是**次要信息**——只读、输出一行、失败不影响 top 的
+     * 成功路径（回落成传入的 id，绝不编造）。所以它**不在** top 的 fail-fast 里：
+     * top 自己失败照旧走 assertOk 抛错（容器不存在 / 未运行时 docker 就是这么答的）。
+     *
+     * 容器没在运行时 `docker top` 报错 → assertOk 抛错，**不返回空列表**：空列表会被
+     * 读成「容器里没有进程」，而真实情况是「问不了」。
+     */
+    async top(id) {
+        const safe = assertRef(id, 'container');
+        const result = await this.runner.run([this.bin, 'top', safe, '-eo', TOP_PS_FORMAT], {
+            timeoutMs: this.limits.timeoutMs,
+            maxBytes: this.limits.maxBytes,
+        });
+        this.assertOk(result, '读取容器进程');
+        const parsed = parseTopOutput(result.stdout);
+        const name = await this.containerName(safe);
+        // 两道截断取或：字节闸（runner）与行闸（TOP_MAX_ROWS）任一触发都算「不全」
+        return { id: safe, name, rows: parsed.rows, truncated: parsed.truncated || result.truncated };
+    }
+    /**
+     * 容器名（`docker inspect --format '{{.Name}}'`）。
+     *
+     * `.Name` 带前导斜杠（`/dsh-remote-server`），必须 strip；strip 后为空、或这条命令
+     * 失败，都回落成传入的 id——名字是次要信息，不该把已经成功的 top 带下去。
+     */
+    async containerName(id) {
+        try {
+            const result = await this.runner.run(this.containerNameArgv(id), {
+                timeoutMs: this.limits.timeoutMs,
+                maxBytes: 64 * 1024,
+            });
+            if (result.code !== 0)
+                return id;
+            const name = result.stdout.trim().replace(/^\//, '');
+            return name === '' ? id : name;
+        }
+        catch {
+            return id;
+        }
+    }
+    /** 容器名 argv 的唯一构造点（`docker top` 的输出里没有名字，top 用这条补）。 */
+    containerNameArgv(id) {
+        return [this.bin, 'inspect', '--format', '{{.Name}}', id];
+    }
+    /**
+     * 「容器为什么不行」：一次采集四路，交给纯判据（`src/diagnose.ts`）出结论。
+     *
+     * **顺序与预算**（契约 §1.2）：
+     *   ① 先 `inspect`——它是权威状态（退出码 / OOM / 重启次数 / 健康），**失败即整体失败**；
+     *   ② 再并发 `logs` / `events`（带 `--filter container=<id>`，服务端过滤）/ `stats`——
+     *      任何一路失败**只降级不抛**：该路给 `null`（与「确实是空的」区分），
+     *      findings 里多一条 `*-unavailable` 说明原因，evidence 对应字段给 null。
+     *
+     * 三路各自独立 catch 而不是 `Promise.allSettled`：失败原因要变成给人看的文案
+     * （`*Error`），而 allSettled 的 reason 还得再剖一层。
+     *
+     * `logTail` 夹到 1~500（默认 80），`since` 走 `assertSince`（D45 同一口径，默认 1h）——
+     * 两处夹紧都在这里做，HTTP 路由与 agent 工具拿到的是同一套语义。
+     */
+    async diagnose(id, options) {
+        const safe = assertRef(id, 'container');
+        // 非有限数（NaN / Infinity）不能进 argv：String(NaN) 会变成字面量 "NaN"，docker 报的是参数错误
+        const requestedTail = typeof options?.logTail === 'number' && Number.isFinite(options.logTail)
+            ? Math.trunc(options.logTail)
+            : DIAGNOSE_LOG_TAIL_DEFAULT;
+        const logTail = Math.min(Math.max(requestedTail, 1), DIAGNOSE_LOG_TAIL_MAX);
+        const since = assertSince(typeof options?.since === 'string' && options.since.trim() !== '' ? options.since : DIAGNOSE_SINCE_DEFAULT);
+        /* ① 权威状态：失败即整体失败（其余三路都是以它为前提的补充证据） */
+        const inspectResult = await this.runner.run([this.bin, 'inspect', safe], {
+            timeoutMs: this.limits.timeoutMs,
+            maxBytes: this.limits.maxBytes,
+        });
+        this.assertComplete(inspectResult, '读取容器详情', '改用更少的容器 id 分批读取');
+        const detail = parseInspectJson(inspectResult.stdout)[0];
+        if (detail === undefined)
+            throw new Error(`容器不存在或输出无法解析：${safe}`);
+        const limits = parseInspectLimits(inspectResult.stdout);
+        /* ② 三路并发采集：任何一路失败只降级，不抛 */
+        const logsOutcome = this.logs(safe, { tail: logTail, since })
+            .then((logs) => ({ ok: true, text: logs.text }))
+            .catch((error) => ({ ok: false, error: describeCollectedError(error, '日志') }));
+        const eventsOutcome = this.events(since, safe, {
+            maxBytes: Math.max(this.limits.maxBytes, DIAGNOSE_EVENTS_SCAN_BYTES),
+            keepTail: true,
+        })
+            .then((events) => ({ ok: true, events }))
+            .catch((error) => ({ ok: false, error: describeCollectedError(error, '事件') }));
+        const statsOutcome = this.stats([safe])
+            .then((rows) => ({ ok: true, row: rows[0] ?? null }))
+            .catch((error) => ({ ok: false, error: describeCollectedError(error, '资源统计') }));
+        const [logsSettled, eventsSettled, statsSettled] = await Promise.all([logsOutcome, eventsOutcome, statsOutcome]);
+        const diagnosis = diagnose({
+            detail,
+            memoryLimitBytes: limits.memoryLimitBytes,
+            cpuQuota: limits.cpuQuota,
+            logText: logsSettled.ok ? logsSettled.text : null,
+            logLines: logsSettled.ok ? countLogLines(logsSettled.text) : null,
+            events: eventsSettled.ok ? eventsSettled.events : null,
+            stats: statsSettled.ok ? statsSettled.row : null,
+            logError: logsSettled.ok ? null : logsSettled.error,
+            eventError: eventsSettled.ok ? null : eventsSettled.error,
+            statsError: statsSettled.ok ? null : statsSettled.error,
+            // 只给 evidence.status 的相对时长用（如 `Up 4 hours`）；判据本身仍然不读时钟
+            nowMs: Date.now(),
+        });
+        return {
+            diagnosis,
+            logError: logsSettled.ok ? null : logsSettled.error,
+            eventError: eventsSettled.ok ? null : eventsSettled.error,
+            statsError: statsSettled.ok ? null : statsSettled.error,
         };
     }
     assertOk(result, what) {

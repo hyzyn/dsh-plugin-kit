@@ -9,7 +9,7 @@
  *
  * ## 这里钉住四件不许退化的事
  *
- * 1. **只读档只露出 13 个 read**：5 个写 / 执行工具从该 agent 的 `schemas()` 里消失，read 一个不少；
+ * 1. **只读档只露出 17 个 read**：5 个写 / 执行工具从该 agent 的 `schemas()` 里消失，read 一个不少；
  * 2. **不裁的三档照旧不裁**：`danger-full-access` / auto review / 服务未组合（与
  *    `shouldRestrictForTier` 的三条 `false` 一一对应）；
  * 3. **能力开关关闭时不许抛**（本轮最重要的回归）：`allowMutations` / `allowExec` 为 false 时那
@@ -67,7 +67,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-/** 只读工具（13 个）：任何档位下都该留在工具表里。 */
+/** 只读工具（17 个）：任何档位下都该留在工具表里。 */
 const READ_TOOLS = [
   'docker_targets',
   'docker_connect_local',
@@ -78,10 +78,14 @@ const READ_TOOLS = [
   'docker_logs_grep',
   'docker_stats',
   'docker_events',
+  'docker_top',
+  'docker_diagnose',
+  'docker_run_command',
   'docker_images',
   'docker_image_inspect',
   'docker_networks',
   'docker_volumes',
+  'docker_disk_usage',
 ]
 
 /** 写 / 执行工具（5 个）：只读 / 工作区内修改档下必须看不见；能力开关关闭时压根没注册。 */
@@ -364,7 +368,7 @@ async function flush(): Promise<void> {
  * ------------------------------------------------------------------ */
 
 describe('只读档：写 / 执行工具从该 agent 的工具表里消失，read 一个不少', () => {
-  it('13 个 read 全在、5 个 write/exec 全不在；全局注册集与别的 agent 都不受影响', async () => {
+  it('17 个 read 全在、5 个 write/exec 全不在；全局注册集与别的 agent 都不受影响', async () => {
     const mounted = mountPlugin({
       allowMutations: true,
       allowExec: true,
@@ -379,11 +383,11 @@ describe('只读档：写 / 执行工具从该 agent 的工具表里消失，rea
     for (const name of WRITE_EXEC_TOOLS) {
       expect(mounted.host.namesFor(restricted), `${name} 应被裁掉`).not.toContain(name)
     }
-    // 口径必须是「宿主全局工具集」：18 个都还注册着（裁的是影子，不是注册）
+    // 口径必须是「宿主全局工具集」：22 个都还注册着（裁的是影子，不是注册）
     expect(mounted.host.names().sort()).toEqual([...READ_TOOLS, ...WRITE_EXEC_TOOLS].sort())
-    // 只影响这个 agent：另一个 agent（同一份全局注册集）看到全部 18 个
-    expect(mounted.host.namesFor(untouched)).toHaveLength(18)
-    expect(mounted.logs().some((line) => line.includes('mode=read-only → docker 工具 18 → 13'))).toBe(true)
+    // 只影响这个 agent：另一个 agent（同一份全局注册集）看到全部 22 个
+    expect(mounted.host.namesFor(untouched)).toHaveLength(22)
+    expect(mounted.logs().some((line) => line.includes('mode=read-only → docker 工具 22 → 17'))).toBe(true)
     mounted.unmount()
   })
 
@@ -391,13 +395,13 @@ describe('只读档：写 / 执行工具从该 agent 的工具表里消失，rea
     const mounted = mountPlugin({ allowMutations: true, allowExec: true, tier: { mode: 'workspace-write', policy: 'ask' } })
     const agent = mounted.createAgent('agent-workspace')
     await flush()
-    expect(mounted.host.namesFor(agent)).toHaveLength(13)
+    expect(mounted.host.namesFor(agent)).toHaveLength(17)
     mounted.unmount()
   })
 })
 
 describe('不裁的三档（与 shouldRestrictForTier 的三条 false 一一对应）', () => {
-  it('完全权限：18 个全在（含 5 个写 / 执行）', async () => {
+  it('完全权限：22 个全在（含 5 个写 / 执行）', async () => {
     const mounted = mountPlugin({ allowMutations: true, allowExec: true, tier: { mode: 'danger-full-access', policy: 'never' } })
     const agent = mounted.createAgent('agent-full')
     await flush()
@@ -410,7 +414,7 @@ describe('不裁的三档（与 shouldRestrictForTier 的三条 false 一一对�
     const mounted = mountPlugin({ allowMutations: true, allowExec: true, tier: { mode: 'read-only', policy: 'ask', auto: true } })
     const agent = mounted.createAgent('agent-auto')
     await flush()
-    expect(mounted.host.namesFor(agent)).toHaveLength(18)
+    expect(mounted.host.namesFor(agent)).toHaveLength(22)
     expect(mounted.host.restrictionCount(agent)).toBe(0)
     mounted.unmount()
   })
@@ -419,7 +423,7 @@ describe('不裁的三档（与 shouldRestrictForTier 的三条 false 一一对�
     const mounted = mountPlugin({ allowMutations: true, allowExec: true })
     const agent = mounted.createAgent('agent-no-services')
     await flush()
-    expect(mounted.host.namesFor(agent)).toHaveLength(18)
+    expect(mounted.host.namesFor(agent)).toHaveLength(22)
     expect(mounted.host.restrictionCount(agent)).toBe(0)
     expect(mounted.logs().some((line) => line.includes('sandboxPolicy 未组合'))).toBe(true)
     mounted.unmount()
@@ -458,7 +462,7 @@ describe('撤销：effect 的清理函数把限制撤干净', () => {
     const agent = mounted.createAgent('agent-unmount')
     await flush()
     expect(mounted.host.restrictionCount(agent)).toBe(1)
-    expect(mounted.host.namesFor(agent)).toHaveLength(13)
+    expect(mounted.host.namesFor(agent)).toHaveLength(17)
 
     mounted.unmount()
 

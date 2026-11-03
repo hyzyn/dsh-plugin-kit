@@ -131,6 +131,107 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 
 ## 已完成（落点 + 门槛）
 
+### ✅ 诊断历史：把「一次诊断」变成「趋势判断」（2026-11-03 完成）
+
+**动机**：单次诊断只回答「现在怎么样」。**缓慢变坏**（内存一点点涨、重启越来越频繁、报错逐渐变多）
+在单次结果里根本看不出来——而这正是「容器还能撑几天」这类问题的真实形状。所以把每次诊断落成样本，
+让它变成一条时间序列 + 一组判据。
+
+**落点**
+
+- `src/history.ts`（新，纯逻辑零 IO）：`DiagnosisSample` 压缩、30 秒去重判据、per-container / 整文件
+  两级配额、`historyTrend()` 七条判据（restart-growth / oom-recurring / memory-creep / error-growth /
+  new-serious-findings / severity-creep / stable）+ `insufficient`；时钟由调用方注入（文件里 0 处
+  `Date.now()`，与 `diagnose.ts` 同一口径）。
+- `src/history-store.ts`（新，薄 IO）：`diagnosisHistoryPaths()` 是**唯一**拼路径处
+  （`<DSH home>/dsh-docker/diagnosis-history.jsonl`，目录 0700 / 文件 0600，`DSH_DOCKER_HISTORY_DIR` 可覆写）；
+  追加 = 读全文 → 去重/裁剪 → 超限才**原子重写**（临时文件 + rename）；坏行 / 半行 / 未知 `v` 一律跳过。
+- `src/index.ts`：`/diagnose` 与 `docker_diagnose` 各加一个 `history?` 参数（0~50，默认 10，越界夹紧），
+  响应与工具输出加 `history:{samples, trend, recorded}`。**没有新增工具**——历史不是新的采集面，
+  只是同一份诊断的第二种视图（与 `logs` / `logs_grep` 那种「预算模型不同才拆」不是一回事）。
+  写盘失败只降级（`recorded=false` + stdout 一行），绝不拖垮诊断本身。
+- `client-src/index.js`：诊断页在**结论卡之后、「发现」之前**加「历史」块——严重度色带（hover 给时间与
+  code）、趋势句（`aggravating` 走既有 warning 视觉）、只列真变化的数字行、判据「新出现 / 已消失」两行、
+  样本 <2 的空态、底部一句「历史只记结论与数字，不存日志原文」。`recorded` 做成**三态**
+  （`true` / `false` / 字段缺失）——缺字段时**不猜**，否则老宿主会被说成「本次与上次一致」。
+
+**隐私边界（这是本轮的硬取舍）**：样本**只存结论与数字**，**绝不落盘**日志原文与 finding 的 detail
+（detail 里会嵌日志行，可能带凭证）。代价写进 README：那份文件不能用来回放排障现场。
+
+**刻意不做**：历史不按时间自动采样（只在「有人诊断」时落点——后台定时诊断要给每个目标跑四条命令，
+在 SSH 上就是定时烧通道，且没人看的时候它在写盘）；不做跨容器/跨目标的历史聚合（趋势是「这个容器
+在不在变坏」，聚合会让判据互相污染）；不给文件加锁（丢一次更新的代价远小于加锁的复杂度与死锁面）；
+不加 `history.*` i18n 域（那是按特性开域，与既有**语义域**白名单口径不一致）。
+
+**门槛**：单测 **+49**（history 40 + 噪声闸与归一 9；包内 31 files / **630** 例）；
+`route-smoke` **86/86**（84 → 86，含「两次调用第二次被去重」与 `history:0` 不返回样本）；
+`client-smoke` **120/120**（113 → 120）；`client-lint` 十六条全过；全仓 `pnpm -r typecheck` 与
+`vitest run` 全绿。**判别性已实测**：去掉 30 秒窗口（2 条红）、把 `logTail` 塞进样本（1 条红）、
+关掉每容器配额（1 条红）、去掉噪声闸（4 条红）、去掉归一（4 条红）、客户端去掉 `data-aggravating`
+（1 条红）、未知指标回落字段名（1 条红）、去重提示无条件显示（1 条红）。
+
+**真机实测（2026-11-03，隔离 profile 副本 + 真宿主 + 真 SSH 目标 + 真 Chrome）**：
+① 首调 `/diagnose` → `samples=1, recorded=true`；② **立刻再调 → `recorded=false`**（30 秒去重真的生效）；
+③ 32 秒后 → `samples=2, recorded=true`；④ 面板「诊断」页色带 3 格、`title` 为本地时间 + code、
+趋势句为「容器状态没有明显变化」、数字行为「报错行数 22 → 21」；⑤ 落盘文件 `0600`、内含 0 处日志关键词
+（隐私自证：`grep ERROR|Exception` 命中 0）。
+
+**真机数据反过来改了实现**（本轮最有价值的一处）：第一次真机跑出来的 `trend.numbers` 是
+`{"key":"cpuPercent","from":1.11,"to":1.09,"delta":-0.020000000000000018}` ——**瞬时采样噪声**进了趋势，
+还带着浮点尾巴。于是补了两条：① 每个指标的**最小有意义变化**（重启 ≥1 / 内存 ≥1 个百分点 /
+CPU ≥5 个百分点 / 报错 ≥3 行 / 事件 ≥5 / 日志行数 ≥50）；② 输出前**归一**（百分比 1 位小数、计数取整，
+delta 由归一后的值相减再归一）。第二轮真机再验：CPU 噪声消失；又发现「报错行数 22 → 21」仍是
+**滑动窗口漂移**（一条老报错滑出去就 −1），把 `errorLines` 阈值从 1 提到 3 才收口。
+——这三步都不是设计阶段想得到的，是**真数据**逼出来的。
+
+**一处与契约的偏离（已报备）**：工具侧样本的 `null` 字段是「省略」而不是 `null`——`defineTool` 的输出
+schema 没有 null 类型，写 null 会让宿主校验挡掉**整条**结果（`toToolEvidence` 的注释里记着同一个坑）；
+HTTP 侧仍是 `null`（JSON 无此限制），两处各有断言。
+
+### ✅ 排障闭环 + 存储治理：诊断单、进程快照、磁盘与「谁在用」、等价 `docker run`（2026-11-02 完成）
+
+**动机**：能力面已经齐了（14 只读 + 5 变更、7 个视图、四条 SSE），但缺的是**把数据变成判断**的那一层——
+`attention` 只给 `reasons` 列表，用户仍得自己把 inspect + logs + events 拼起来；`ContainerDetail` 里
+`exitCode / oomKilled / restartCount / healthLogTail` 全都采到了，只差判据。另一块空白是**存储治理**：
+全仓 0 处 `system df`，镜像 / 卷没有「谁在用我」，只能靠 `rm` 失败后看报错（真机盘点：镜像 2.0GB /
+可回收 1.1GB，SSH 目标上可回收 **159GB**）。
+
+**落点**
+
+- `src/diagnose.ts`（新，纯函数零 IO）：15 条判据表（OOM / 非零退出 / 反复重启 / 不健康 / 健康检查未通过 /
+  正常退出 / 未运行 / 内存压力 / CPU 压力 / 日志报错 / 无健康检查 + 三条 `*-unavailable`）、
+  `containerStatusText()` 复刻 docker 的 ps 风格状态串（`Up 4 hours (healthy)`）、`buildTimeline()`。
+  时钟由调用方注入（`nowMs`），模块不读时钟。
+- `src/docker.ts`：`top()`（`-eo` 八列，表头驱动解析）、`diagnose()`（inspect 先跑，日志 / 事件 / 统计三路
+  并发且**任一失败只降级**）、`systemDf()`（汇总与明细两条命令两份预算）、`recreate()`；
+  `events()` 新增可选 `container` 过滤（既有调用点 argv 逐字不变）。
+- `src/recreate.ts`（新，纯模块零 IO）：从 inspect **原始行**反推等价 `docker run`；`omittedArgs()` 是
+  「故意没还原」的唯一出口；敏感键名只进 `secretKeys`，**值不改写**。
+- `src/index.ts`：四条只读工具（`docker_diagnose` / `docker_top` / `docker_disk_usage` / `docker_run_command`，
+  17 只读 / 22 总数）+ 四条路由（`/diagnose` `/top` `/system-df` `/run-command`）+ `toToolEvidence` /
+  render；引用白名单与 `assertSince` 都放在**路由层的 400 段**（D37 / D45 同口径，别让客户端错误落成 500）。
+- `client-src/index.js`：容器详情五页签（新增「诊断」「进程」）、磁盘视图（第六段）、概览底部可折叠的
+  等价 `docker run`；i18n 67 键 × 2 语言（**语义域**，不新开 `diag.*` —— 扩 `KEY_DOMAINS` 要给
+  `scripts/check-i18n.mjs` 与 `docs/i18n.md` 同时加行，为两个特性不值得）；`formatCollectedAt()` 让
+  **界面显示本地时间、投递文本仍是 ISO**。
+
+**刻意不做**：agent 侧网络 / 卷删除（ROADMAP 待办第 1 项，那扩大的是破坏面，不是亮点）；镜像 build /
+push / save（要目标机文件上下文，违背只读定位）；容器内文件浏览（要写临时文件 + SSH 拉取，成本与安全面
+都不划算）；磁盘页的 prune 入口（逐行删除 + 确认框更安全，prune 已在镜像 / 卷页各有一个）；
+`--filter event=`（9 个动作要拼 9 个 filter，漏一个就静默丢事件，换 3 倍字节不划算）。
+
+**门槛**：单测 **+126**（diagnose 58 / top 18 / recreate 35 / disk-usage 15；包内 30 files / **581** 例）；
+`route-smoke` **84/84**（79 → 84，含 5 条端到端）；`client-smoke` **113/113**（104 → 113）；
+`client-lint` 十六条全过；全仓 `pnpm -r typecheck` 与 `vitest run`（3982 例）全绿。
+**判别性已实测**（每条都真红过再改回）：去掉 `--filter container`（2 条红）、改内存压力阈值（1 条红）、
+去掉明细排序（2 条红）、去掉敏感键名识别（2 条红 + route-smoke 82/84）、去掉客户端排序（冒烟 1 条红）、
+把「点开才请求」退成「只看 open」（冒烟 1 条红）、删掉投递文本里的「目标」行（冒烟 1 条红）。
+**真机验收**（隔离 profile 副本 + 真宿主 + 真 Chrome，SSH 目标 `root@…:22`）：五页签 `概览 | 日志 | 统计 |
+诊断 | 进程`；诊断页出结论卡（真实命中「日志里有 31 行疑似报错」）+ 三个折叠块 + 三个动作；结论卡时间
+为本地 `2026-11-02 23:39:32`；进程表 8 列有真实行；磁盘视图四卡 + 合计可回收 **159 GB** + 镜像 / 卷明细
+（按独占降序、`未使用` 徽标、截断提示）；「等价 docker run」展开后真的取到命令且带「复制命令」。
+15 项断言 15 通过（其中一条是我驱动脚本的正则转义写错，产品侧无误）。
+
 ### ✅ 活动条不再假绿：宿主发 `ready`，客户端只认它（D166 / D167，2026-10-11 完成）
 
 **现场甲（D166）**：用户拿着一张面板截图问「重连中的文案不对」——切目标 / 重连期间活动条已经是

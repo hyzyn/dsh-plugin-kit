@@ -58,7 +58,7 @@ afterAll(() => {
 
 /**
  * 只读工具（与 test/tool-concurrency.test.ts 的 READ_ONLY 同一份名单）。
- * 零目标时只剩前两条（空态出路），有目标时 13 条都必须回来。
+ * 零目标时只剩前两条（空态出路），有目标时 17 条都必须回来（顺序 = 注册顺序）。
  */
 const READ_ONLY = [
   'docker_targets',
@@ -70,10 +70,14 @@ const READ_ONLY = [
   'docker_logs_grep',
   'docker_stats',
   'docker_events',
+  'docker_top',
+  'docker_diagnose',
+  'docker_run_command',
   'docker_images',
   'docker_image_inspect',
   'docker_networks',
   'docker_volumes',
+  'docker_disk_usage',
 ]
 
 /** 零目标时（也是能力全关时）应当注册的**全部**工具。 */
@@ -203,7 +207,7 @@ describe('零目标：只注册空态的两条工具', () => {
 })
 
 describe('有目标：只读工具全部注册', () => {
-  it('一个 {name:本机, kind:local} 目标 → 13 个只读工具都在（能力开关关着时注册面就是这 13 条）', () => {
+  it('一个 {name:本机, kind:local} 目标 → 17 个只读工具都在（能力开关关着时注册面就是这 17 条）', () => {
     const harness = mountPlugin({ dockerBin: 'docker', allowMutations: false, allowExec: false, targets: [{ name: '本机', kind: 'local' }] })
     expect(toolNames(harness)).toEqual(READ_ONLY)
   })

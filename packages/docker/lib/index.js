@@ -5,6 +5,8 @@ import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofH
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { auditCapabilityUse, audited } from './audit.js';
 import { DockerApi, MAX_RESULT_LINES, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
+import { historyTrend, sampleFromDiagnosis } from './history.js';
+import { DiagnosisHistoryStore, HISTORY_SCHEMA_VERSION, diagnosisHistoryPaths } from './history-store.js';
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
 import { auditLoadedGrants, attachTierGate, attachTierRestrict, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGranted, capabilityGrantVia, capabilityPaths, createElevationManager, dshHome, sharedGrantStore, } from '@hyzyn/dsh-kit';
 /*
@@ -26,6 +28,13 @@ export const DOCKER_TIER_CLASS = {
     docker_logs_grep: 'read',
     docker_stats: 'read',
     docker_events: 'read',
+    // 批一的两条诊断工具：四路采集全是只读（inspect / logs / events / stats + top），
+    // 对账由 test/tier-gate.test.ts 从 add() 调用处现算——漏分类会让档位闸静默放行
+    docker_top: 'read',
+    docker_diagnose: 'read',
+    // 批二：磁盘汇总（system df）与等价 docker run 推导——都是只读采集/纯文本生成
+    docker_disk_usage: 'read',
+    docker_run_command: 'read',
     docker_images: 'read',
     docker_image_inspect: 'read',
     docker_networks: 'read',
@@ -100,6 +109,60 @@ const KNOWN_CONFIG_KEYS = new Set([
     /** 显式删除 SSH 主机密钥记录：[{host, port}]（hostKeys 是并集合并，删除必须显式）。 */
     'hostKeysRemove',
 ]);
+/** 磁盘工具每类明细回多少行（契约 §2.2）：模型要的是「有没有可回收的」，不是迁移清单。 */
+const DISK_TOOL_ROWS = 20;
+/** HTTP 契约（null 到齐）→ 工具 schema 形状（null 变「省略」）。 */
+function toToolEvidence(evidence) {
+    return {
+        state: evidence.state,
+        status: evidence.status,
+        oomKilled: evidence.oomKilled,
+        ...(evidence.health === null ? {} : { health: evidence.health }),
+        ...(evidence.healthLastOutput === null ? {} : { healthLastOutput: evidence.healthLastOutput }),
+        ...(evidence.exitCode === null ? {} : { exitCode: evidence.exitCode }),
+        ...(evidence.restartCount === null ? {} : { restartCount: evidence.restartCount }),
+        ...(evidence.startedAt === null ? {} : { startedAt: evidence.startedAt }),
+        ...(evidence.finishedAt === null ? {} : { finishedAt: evidence.finishedAt }),
+        ...(evidence.memoryLimitBytes === null ? {} : { memoryLimitBytes: evidence.memoryLimitBytes }),
+        ...(evidence.cpuQuota === null ? {} : { cpuQuota: evidence.cpuQuota }),
+        ...(evidence.logLines === null ? {} : { logLines: evidence.logLines }),
+        ...(evidence.errorLines === null ? {} : { errorLines: evidence.errorLines }),
+        ...(evidence.eventCount === null ? {} : { eventCount: evidence.eventCount }),
+        ...(evidence.cpuPercent === null ? {} : { cpuPercent: evidence.cpuPercent }),
+        ...(evidence.memBytes === null ? {} : { memBytes: evidence.memBytes }),
+        ...(evidence.memPercent === null ? {} : { memPercent: evidence.memPercent }),
+    };
+}
+/**
+ * 历史视图 → 工具输出形状。
+ *
+ * 两处压缩都是**有意的**：
+ *   - 样本最多 10 条（再多模型也读不动，而 `trend` 已经把结论给出来了）；
+ *   - `null` 字段省略（工具 schema 没有 null 类型，见 `toToolEvidence` 的同款说明）。
+ */
+function toToolHistory(history) {
+    return {
+        samples: history.samples.slice(-10).map((sample) => ({
+            at: sample.at,
+            severity: sample.severity,
+            code: sample.code,
+            findings: sample.findings,
+            ...(sample.restartCount === null ? {} : { restartCount: sample.restartCount }),
+            ...(sample.memPercent === null ? {} : { memPercent: sample.memPercent }),
+            ...(sample.errorLines === null ? {} : { errorLines: sample.errorLines }),
+        })),
+        trend: {
+            count: history.trend.count,
+            ...(history.trend.window === null ? {} : { window: history.trend.window }),
+            verdict: history.trend.verdict,
+            numbers: history.trend.numbers,
+            newFindings: history.trend.newFindings,
+            resolvedFindings: history.trend.resolvedFindings,
+            aggravating: history.trend.aggravating,
+        },
+        recorded: history.recorded,
+    };
+}
 /* ------------------------------------------------------------------ *
  * 列表分页（docker_ps / docker_images / docker_networks / docker_volumes 共用口径）
  * ------------------------------------------------------------------ */
@@ -967,6 +1030,70 @@ const plugin = definePlugin({
         const logger = {
             info: (msg) => ctx.logger.info(msg),
             warn: (msg) => ctx.logger.warn(msg),
+        };
+        /*
+         * 诊断历史（批三）：把「一次诊断」变成时间序列，回答「它在慢慢变坏吗」。
+         *
+         * **为什么历史不是新工具 / 新路由**：它不是新的采集面，只是同一份 diagnosis 的第二种视图。
+         * `docker_logs` 与 `docker_logs_grep` 之所以拆成两条，是因为预算模型不同（前者「返回 = 收到」、
+         * 后者「扫得多、返回少」）；这里预算完全相同，多拆一条只会让模型多试一次。
+         *
+         * **写盘失败绝不能让诊断失败**：历史是辅助信息，读不到只是没有趋势，而诊断本身仍然有价值。
+         * 所以整段 catch 住、记一行日志、回空历史（`recorded: false`）——「加了个新功能，结果老功能
+         * 因为磁盘满了不能用了」是本仓最不能接受的那类回归。
+         *
+         * 落点只在 `diagnosisHistoryPaths()` 里拼一次（见 history-store.ts 文件头）；store 构造**不碰磁盘**。
+         */
+        const historyStore = new DiagnosisHistoryStore(diagnosisHistoryPaths(dshHome()).dir);
+        const HISTORY_DEFAULT = 10;
+        const HISTORY_LIMIT_MAX = 50;
+        /** `history` 参数：非有限数回落默认、越界夹紧——与 `tail` / `logTail` 的既有风格一致（不报错）。 */
+        const clampHistoryCount = (value) => {
+            if (typeof value !== 'number' || !Number.isFinite(value))
+                return HISTORY_DEFAULT;
+            return Math.min(Math.max(Math.trunc(value), 0), HISTORY_LIMIT_MAX);
+        };
+        /**
+         * 采集 → 压缩成样本 → 落盘（受去重窗口约束）→ 读回最近 N 条 → 趋势。
+         *
+         * 索引键用**容器名**（`target + container`）：改名会开一段新历史。这是可见的行为变化，
+         * 但比「改名后把两个容器的历史混在一起」好——混起来会让趋势说出根本没发生过的变化。
+         */
+        const diagnoseWithHistory = async (api, target, id, options) => {
+            const since = typeof options.since === 'string' && options.since.trim() !== '' ? assertSince(options.since) : undefined;
+            const result = await api.diagnose(id, {
+                ...(typeof options.logTail === 'number' ? { logTail: options.logTail } : {}),
+                ...(since === undefined ? {} : { since }),
+            });
+            const diagnosis = result.diagnosis;
+            const limit = clampHistoryCount(options.history);
+            const container = diagnosis.name === '' ? diagnosis.id : diagnosis.name;
+            let recorded = false;
+            try {
+                recorded = historyStore.append({
+                    v: HISTORY_SCHEMA_VERSION,
+                    target,
+                    container,
+                    id: diagnosis.id,
+                    // 时钟在**这里**读（history.ts 是纯逻辑，时钟由调用方注入，同 diagnose.ts）
+                    sample: sampleFromDiagnosis(diagnosis, Date.now()),
+                });
+            }
+            catch (error) {
+                logger.warn(`[dsh-docker] 诊断历史写入失败（本次只回空历史）：${error instanceof Error ? error.message : String(error)}`);
+                return { diagnosis, history: { samples: [], trend: historyTrend([]), recorded: false } };
+            }
+            let samples = [];
+            // `history: 0` = 明确不要历史（但**仍然记录**：记录是默认行为，读不读是调用方的选择）
+            if (limit > 0) {
+                try {
+                    samples = historyStore.read(target, container).slice(-limit);
+                }
+                catch (error) {
+                    logger.warn(`[dsh-docker] 诊断历史读取失败（趋势本次不可用）：${error instanceof Error ? error.message : String(error)}`);
+                }
+            }
+            return { diagnosis, history: { samples, trend: historyTrend(samples), recorded } };
         };
         /* ---------- 主机指纹（TOFU，本插件自持；tty 记录作种子） ---------- */
         let settingsScope;
@@ -1916,6 +2043,113 @@ const plugin = definePlugin({
                 return `\n- ${at} ${row.name} ${row.action}${exit}${compose} image=${row.image}`;
             }).join('');
         };
+        /*
+         * 进程快照的渲染：表头 + 行。0 行时给一句「容器内没有进程」——注意 top 在容器没在
+         * 运行时是**抛错**的（docker 就是这么答的），所以走到这里 0 行只能是 docker 没打印
+         * 任何进程行（极少数运行时）；空列表本身不是错误。
+         */
+        const renderTop = (target, row) => {
+            const head = `容器 ${row.name === '' ? row.id : row.name}（id=${row.id}，目标 ${target}）的进程`;
+            const rows = row.processes ?? [];
+            if (rows.length === 0)
+                return `${head}：容器内没有进程（容器可能未运行）。`;
+            const body = rows.map((proc) => {
+                const cell = (value) => String(value ?? '');
+                return `\n${cell(proc.pid).padStart(7)} ${cell(proc.ppid).padStart(7)} ${cell(proc.user).padEnd(8)} ${cell(proc.stat).padEnd(4)} ${cell(proc.elapsed).padStart(10)} ${cell(proc.cpu).padStart(5)} ${cell(proc.mem).padStart(5)} ${cell(proc.command)}`;
+            }).join('');
+            const cut = row.truncated ? '\n（进程数超过上限已截断：要全量请在容器内跑 ps）' : '';
+            return `${head}（${String(rows.length)} 个${row.truncated ? '，已截断' : ''}）：\n     PID    PPID USER     STAT    ELAPSED  CPU%  MEM% COMMAND${body}${cut}`;
+        };
+        /*
+         * 诊断的渲染：**只给结论**，不把 80 行日志灌进模型上下文（契约 §2）。
+         * 返回值里仍然带着 `logTail` 全量、`evidence` 全字段与 `timeline`，模型要细看可以
+         * 自己读；这里只显示 verdict + findings + 建议 + 日志行数（外加三路降级的提示，
+         * 那是「结论可不可信」的一部分，不能藏）。
+         */
+        /**
+         * 历史压成**一行**（不逐条铺样本）：模型要的是「它在变坏吗」的结论，不是 10 行时间戳。
+         *
+         * 时间只保留到分钟（`2026-11-03 07:12`）：秒对趋势判断没有意义，却会把这一行撑长两倍。
+         */
+        const historyLine = (history) => {
+            if (history === undefined || history.samples.length === 0)
+                return '';
+            const trend = history.trend;
+            const from = history.samples[0]?.at ?? '';
+            const to = history.samples[history.samples.length - 1]?.at ?? '';
+            const short = (iso) => iso.replace('T', ' ').slice(0, 16);
+            const window = from === '' || to === '' ? '' : `（最早 ${short(from)} → 最近 ${short(to)}）`;
+            const note = history.recorded ? '' : '；本次与上一条重复，未追加';
+            return `\n历史 ${String(trend.count)} 次${window}：${trend.verdict.summary}${note}`;
+        };
+        const renderDiagnosis = (target, row) => {
+            const verdict = row.verdict ?? { severity: '?', code: '?', summary: '' };
+            // 标题里用短 id（与 docker_inspect 的 shortId 口径一致）：全量 64 位在返回值里，不占正文
+            const shortId = row.id.length > 12 ? row.id.slice(0, 12) : row.id;
+            const head = `容器 ${row.name === '' ? shortId : row.name}（id=${shortId}，目标 ${target}）诊断结论：**[${verdict.severity}] ${verdict.summary}**（${verdict.code}）`;
+            const findings = (row.findings ?? []).length === 0
+                ? '\n判据：没有命中任何问题判据。'
+                : `\n判据（${String(row.findings.length)} 条）：` + row.findings.map((finding) => `\n- [${finding.severity}] ${finding.title}：${finding.detail}`).join('');
+            const suggestions = (row.suggestions ?? []).length === 0
+                ? ''
+                : '\n建议：' + row.suggestions.map((item) => `\n- ${item}`).join('');
+            const evidence = row.evidence ?? {};
+            const logLines = evidence.logLines === undefined ? '未取到' : `${String(evidence.logLines)} 行`;
+            const errorLines = evidence.errorLines === undefined ? '未取到' : `${String(evidence.errorLines)} 行`;
+            const foot = `\n日志：抓取 ${logLines}（疑似报错 ${errorLines}），时间线 ${String((row.timeline ?? []).length)} 条；证据全字段与日志原文在返回值里（要更多日志 / 找关键词用 docker_logs_grep）。`;
+            return head + findings + suggestions + historyLine(row.history) + foot;
+        };
+        /*
+         * 磁盘占用：四行汇总 + 可回收最多的镜像（前 10）+ 一句判据。
+         *
+         * 「可回收」只算 `containers === 0` 的镜像——镜像的「独占大小」只有在没有容器使用时
+         * 才真的能回收；还在用的镜像删了会牵连容器。这句话必须写出来，否则模型看到一张
+         * 「大镜像」表就建议用户 `image prune`。
+         */
+        const renderDiskUsage = (target, row) => {
+            const lines = [`目标 ${target} 的磁盘占用（docker system df）：`];
+            for (const item of row.summary ?? []) {
+                lines.push(`- ${item.type}：${String(item.totalCount)} 个（活跃 ${String(item.active)}）占用 ${item.size}，可回收 ${item.reclaimable}`);
+            }
+            if (row.degraded) {
+                lines.push(`\n明细未取到：${row.degradedReason ?? '未知原因'}（汇总仍可用）`);
+                return lines.join('\n');
+            }
+            const unused = (row.images ?? []).filter((image) => image.containers === 0).slice(0, 10);
+            const used = (row.images ?? []).filter((image) => image.containers > 0).length;
+            lines.push('\n可回收最多的镜像（独占大小降序，只列没有被任何容器使用的）：');
+            if (unused.length === 0) {
+                lines.push(`- （没有未被使用的镜像；还有 ${String(used)} 个镜像在用）`);
+            }
+            else {
+                lines.push(unused.map((image) => `- ${image.repository === '' ? image.id : `${image.repository}:${image.tag}`} 独占 ${image.uniqueSize}（大小 ${image.size}）`).join('\n'));
+            }
+            lines.push('\n删之前先看 `containers` 是不是 0：0 才是没人用，>0 的镜像删了会牵连容器。');
+            if (row.truncated.images || row.truncated.volumes || row.truncated.buildCache) {
+                lines.push(`明细已截断（镜像 ${String(row.images.length)}/${String(row.totals.images)}、卷 ${String(row.volumes.length)}/${String(row.totals.volumes)}、构建缓存 ${String(row.buildCache.length)}/${String(row.totals.buildCache)}）；面板的磁盘页可看全量。`);
+            }
+            return lines.join('\n');
+        };
+        /*
+         * 等价 docker run：命令用**围栏块**原样给出（可直接复制），后面才列提醒。
+         *
+         * 为什么不折行或加省略：这条命令的全部价值就是「能复制粘贴后跑起来」，
+         * 任何为了排版做的改动都会让它变成一条错的命令。
+         */
+        const renderRunCommand = (target, row) => {
+            const head = `容器 ${row.name}（id=${row.id.slice(0, 12)}，目标 ${target}）的等价 docker run——**只生成命令，没有执行任何操作**：`;
+            const body = '```sh\n' + (row.command === '' ? '（命令生成失败）' : row.command) + '\n```';
+            const warnings = (row.warnings ?? []).length === 0
+                ? ''
+                : '\n提醒：' + row.warnings.map((item) => `\n- ${item}`).join('');
+            const secrets = (row.secretKeys ?? []).length === 0
+                ? ''
+                : `\n可能含凭证的环境变量键：${row.secretKeys.join('、')}（命令里是原值，贴出去前先确认）`;
+            const omitted = (row.omitted ?? []).length === 0
+                ? ''
+                : '\n故意没还原（需要你手动补）：' + row.omitted.map((item) => `\n- ${item}`).join('');
+            return `${head}\n${body}${warnings}${secrets}${omitted}`;
+        };
         const renderDetail = (detail) => {
             const lines = [
                 `容器 ${detail.name}（${detail.shortId}）`,
@@ -2779,6 +3013,346 @@ const plugin = definePlugin({
                     };
                 },
             }));
+            add('docker_top', defineTool({
+                name: 'docker_top',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
+                description: '列出容器内的进程快照（docker top）：PID / PPID / USER / STAT / 运行时长 / CPU% / 内存% / 命令。**只读**；看「谁在吃 CPU / 内存」先看这里，整体「为什么不行」用 docker_diagnose。容器没在运行会直接报错（不是空列表）。',
+                parameters: {
+                    target: targetParam,
+                    id: { type: 'string', required: true, description: '容器名或 ID（来自 docker_ps）' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            id: { type: 'string', required: true },
+                            name: { type: 'string', required: true },
+                            truncated: { type: 'boolean', required: true },
+                            processes: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        pid: { type: 'string', required: true },
+                                        ppid: { type: 'string', required: true },
+                                        user: { type: 'string', required: true },
+                                        stat: { type: 'string', required: true },
+                                        elapsed: { type: 'string', required: true },
+                                        cpu: { type: 'string', required: true },
+                                        mem: { type: 'string', required: true },
+                                        command: { type: 'string', required: true },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderTop(v.target ?? '?', { target: v.target ?? '?', id: v.id ?? '?', name: v.name ?? '', processes: v.processes ?? [], truncated: v.truncated === true }) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    if (typeof input.id !== 'string')
+                        throw new Error('id 必填');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const top = await api.top(input.id);
+                    return {
+                        target: picked.name,
+                        id: top.id,
+                        name: top.name,
+                        processes: top.rows.map((row) => ({
+                            pid: row.pid,
+                            ppid: row.ppid,
+                            user: row.user,
+                            stat: row.stat,
+                            elapsed: row.elapsed,
+                            cpu: row.cpu,
+                            mem: row.mem,
+                            command: row.command,
+                        })),
+                        truncated: top.truncated,
+                    };
+                },
+            }));
+            add('docker_diagnose', defineTool({
+                name: 'docker_diagnose',
+                // 只读工具：四路全是只读采集（inspect / logs / events / stats），与同轮其它工具并发执行
+                isConcurrencySafe: () => true,
+                description: '诊断容器「为什么不行」（**只读**）：一次采集 inspect + logs + events + stats 四路，按固定判据给出结论——OOM / 非零退出 / 反复重启 / 健康检查失败 / 内存或 CPU 逼近上限 / 日志里有报错。结论是**判据**不是猜测：每条 finding 都带证据（detail），evidence 给结构化字段，**没采到的字段是缺席而不是 0**（findings 里另有 *-unavailable 说明原因）。日志默认只抓尾部 80 行：要更多日志 / 找关键词用 docker_logs_grep。',
+                parameters: {
+                    target: targetParam,
+                    id: { type: 'string', required: true, description: '容器名或 ID（来自 docker_ps）' },
+                    logTail: { type: 'number', description: '日志尾部行数（1~500，默认 80；越界值会被夹紧到边界）' },
+                    since: { type: 'string', description: '事件与日志的时间窗（docker --since 语法，默认 1h，如 30m、2h、2026-09-09T10:00:00）' },
+                    history: { type: 'number', description: '返回多少条历史样本（0~50，默认 10；越界值会被夹紧）。每次调用都会记录本次诊断（30 秒内完全相同的重复不重复记），所以多调几次就能看出「它在慢慢变坏吗」' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            id: { type: 'string', required: true },
+                            name: { type: 'string', required: true },
+                            verdict: {
+                                type: 'object',
+                                required: true,
+                                additionalProperties: false,
+                                properties: {
+                                    severity: { type: 'string', required: true },
+                                    code: { type: 'string', required: true },
+                                    summary: { type: 'string', required: true },
+                                },
+                            },
+                            findings: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        code: { type: 'string', required: true },
+                                        severity: { type: 'string', required: true },
+                                        title: { type: 'string', required: true },
+                                        detail: { type: 'string', required: true },
+                                    },
+                                },
+                            },
+                            evidence: {
+                                type: 'object',
+                                required: true,
+                                additionalProperties: false,
+                                properties: {
+                                    state: { type: 'string' },
+                                    status: { type: 'string' },
+                                    health: { type: 'string' },
+                                    healthLastOutput: { type: 'string' },
+                                    exitCode: { type: 'number' },
+                                    oomKilled: { type: 'boolean' },
+                                    restartCount: { type: 'number' },
+                                    startedAt: { type: 'string' },
+                                    finishedAt: { type: 'string' },
+                                    memoryLimitBytes: { type: 'number' },
+                                    cpuQuota: { type: 'number' },
+                                    logLines: { type: 'number' },
+                                    errorLines: { type: 'number' },
+                                    eventCount: { type: 'number' },
+                                    cpuPercent: { type: 'number' },
+                                    memBytes: { type: 'number' },
+                                    memPercent: { type: 'number' },
+                                },
+                            },
+                            timeline: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        at: { type: 'string' },
+                                        kind: { type: 'string', required: true },
+                                        text: { type: 'string', required: true },
+                                    },
+                                },
+                            },
+                            suggestions: { type: 'array', required: true, items: { type: 'string' } },
+                            // 批三：历史与趋势（不是新工具，理由见 diagnoseWithHistory 的注释）。
+                            // `window` 在样本 <2 时**不出现**（schema 没有 null 类型，见 toToolEvidence 的同款说明）
+                            history: {
+                                type: 'object',
+                                required: true,
+                                additionalProperties: false,
+                                properties: {
+                                    samples: {
+                                        type: 'array',
+                                        required: true,
+                                        items: {
+                                            type: 'object',
+                                            additionalProperties: false,
+                                            properties: {
+                                                at: { type: 'string', required: true },
+                                                severity: { type: 'string', required: true },
+                                                code: { type: 'string', required: true },
+                                                findings: { type: 'array', required: true, items: { type: 'string' } },
+                                                restartCount: { type: 'number' },
+                                                memPercent: { type: 'number' },
+                                                errorLines: { type: 'number' },
+                                            },
+                                        },
+                                    },
+                                    trend: {
+                                        type: 'object',
+                                        required: true,
+                                        additionalProperties: false,
+                                        properties: {
+                                            count: { type: 'number', required: true },
+                                            window: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: { from: { type: 'string', required: true }, to: { type: 'string', required: true } },
+                                            },
+                                            verdict: {
+                                                type: 'object',
+                                                required: true,
+                                                additionalProperties: false,
+                                                properties: {
+                                                    severity: { type: 'string', required: true },
+                                                    code: { type: 'string', required: true },
+                                                    summary: { type: 'string', required: true },
+                                                },
+                                            },
+                                            numbers: {
+                                                type: 'array',
+                                                required: true,
+                                                items: {
+                                                    type: 'object',
+                                                    additionalProperties: false,
+                                                    properties: {
+                                                        key: { type: 'string', required: true },
+                                                        from: { type: 'number', required: true },
+                                                        to: { type: 'number', required: true },
+                                                        delta: { type: 'number', required: true },
+                                                    },
+                                                },
+                                            },
+                                            newFindings: { type: 'array', required: true, items: { type: 'string' } },
+                                            resolvedFindings: { type: 'array', required: true, items: { type: 'string' } },
+                                            aggravating: { type: 'boolean', required: true },
+                                        },
+                                    },
+                                    recorded: { type: 'boolean', required: true },
+                                },
+                            },
+                            logTail: { type: 'string', required: true },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderDiagnosis(v.target ?? '?', {
+                                    target: v.target ?? '?',
+                                    id: v.id ?? '?',
+                                    name: v.name ?? '',
+                                    verdict: v.verdict ?? { severity: '?', code: '?', summary: '' },
+                                    findings: v.findings ?? [],
+                                    evidence: v.evidence ?? {},
+                                    timeline: v.timeline ?? [],
+                                    suggestions: v.suggestions ?? [],
+                                    logTail: v.logTail ?? '',
+                                    // render 只在「schema 校验前」跑；正常路径一定有 history，兜底给空样本（形状走同一份转换）
+                                    history: v.history ?? toToolHistory({ samples: [], trend: historyTrend([]), recorded: false }),
+                                }) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    if (typeof input.id !== 'string')
+                        throw new Error('id 必填');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    // logTail / since / history 的夹紧与默认值统一在 diagnoseWithHistory 里做（HTTP 路由与工具
+                    // 同一份语义）；非法 since 在这里抛成可读错误（与 docker_logs 同一个 assertSince）
+                    const { diagnosis, history } = await diagnoseWithHistory(api, picked.name, input.id, {
+                        logTail: input.logTail,
+                        since: input.since,
+                        history: input.history,
+                    });
+                    return {
+                        target: picked.name,
+                        id: diagnosis.id,
+                        name: diagnosis.name,
+                        verdict: diagnosis.verdict,
+                        findings: diagnosis.findings.map((finding) => ({
+                            code: finding.code,
+                            severity: finding.severity,
+                            title: finding.title,
+                            detail: finding.detail,
+                        })),
+                        evidence: toToolEvidence(diagnosis.evidence),
+                        timeline: diagnosis.timeline.map((entry) => ({
+                            ...(entry.at === null ? {} : { at: entry.at }),
+                            kind: entry.kind,
+                            text: entry.text,
+                        })),
+                        suggestions: diagnosis.suggestions,
+                        logTail: diagnosis.logTail,
+                        // 给模型的样本最多 10 条（再多也读不动）；`window` 为 null 时省略（schema 没有 null）
+                        history: toToolHistory(history),
+                    };
+                },
+            }));
+            add('docker_run_command', defineTool({
+                name: 'docker_run_command',
+                // 只读工具：只读 inspect + 纯文本推导，没有任何副作用
+                isConcurrencySafe: () => true,
+                description: '从容器配置反推一条**等价的 docker run 命令**（只生成命令文本，**不执行任何操作**）：端口 / 挂载 / 网络 / 环境变量 / 资源限制 / 设备都会还原。**故意没还原的**东西（--privileged、匿名卷、自定义 ENTRYPOINT、健康检查等）在 omitted 里点名，不许静默丢；命中敏感键名的环境变量在 secretKeys 里（**值不改写**，命令里是原值——贴出去前先确认）。适合手动复现 / 迁移。Compose 管理的容器只是近似。',
+                parameters: {
+                    target: targetParam,
+                    id: { type: 'string', required: true, description: '容器名或 ID（来自 docker_ps）' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            id: { type: 'string', required: true },
+                            name: { type: 'string', required: true },
+                            command: { type: 'string', required: true },
+                            warnings: { type: 'array', required: true, items: { type: 'string' } },
+                            secretKeys: { type: 'array', required: true, items: { type: 'string' } },
+                            omitted: { type: 'array', required: true, items: { type: 'string' } },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderRunCommand(v.target ?? '?', {
+                                    target: v.target ?? '?',
+                                    id: v.id ?? '?',
+                                    name: v.name ?? '',
+                                    command: v.command ?? '',
+                                    warnings: v.warnings ?? [],
+                                    secretKeys: v.secretKeys ?? [],
+                                    omitted: v.omitted ?? [],
+                                }) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    if (typeof input.id !== 'string')
+                        throw new Error('id 必填');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const result = await api.recreate(input.id);
+                    return {
+                        target: picked.name,
+                        id: result.id,
+                        name: result.name,
+                        command: result.command,
+                        warnings: result.warnings,
+                        secretKeys: result.secretKeys,
+                        omitted: result.omitted,
+                    };
+                },
+            }));
             add('docker_images', defineTool({
                 name: 'docker_images',
                 // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
@@ -3007,6 +3581,146 @@ const plugin = definePlugin({
                         })),
                         total: paged.total,
                         truncated: paged.truncated,
+                    };
+                },
+            }));
+            add('docker_disk_usage', defineTool({
+                name: 'docker_disk_usage',
+                // 只读工具：`docker system df` 是纯查询（-v 会去 stat 卷，但没有任何写操作）
+                isConcurrencySafe: () => true,
+                description: '读取目标上的磁盘占用（docker system df）：四类汇总 + 镜像 / 卷 / 构建缓存明细，并给出**谁在用**（镜像的容器数、卷的链接数）——这两个数字来自 docker 自己的 `Images[].Containers` / `Volumes[].Links`，不是按 ps 反推的。只读；明细每类最多 20 行（超了给 truncated 与 total）。**删之前先看 containers 是不是 0**：0 才是没人用。老 docker 取不到明细时 degraded=true，汇总仍可用。',
+                parameters: { target: targetParam },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            summary: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        type: { type: 'string', required: true },
+                                        totalCount: { type: 'number', required: true },
+                                        active: { type: 'number', required: true },
+                                        size: { type: 'string', required: true },
+                                        reclaimable: { type: 'string', required: true },
+                                    },
+                                },
+                            },
+                            images: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        id: { type: 'string', required: true },
+                                        repository: { type: 'string', required: true },
+                                        tag: { type: 'string', required: true },
+                                        size: { type: 'string', required: true },
+                                        sharedSize: { type: 'string', required: true },
+                                        uniqueSize: { type: 'string', required: true },
+                                        containers: { type: 'number', required: true },
+                                    },
+                                },
+                            },
+                            volumes: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        name: { type: 'string', required: true },
+                                        driver: { type: 'string', required: true },
+                                        size: { type: 'string', required: true },
+                                        links: { type: 'number', required: true },
+                                    },
+                                },
+                            },
+                            buildCache: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        id: { type: 'string', required: true },
+                                        type: { type: 'string', required: true },
+                                        size: { type: 'string', required: true },
+                                        inUse: { type: 'boolean', required: true },
+                                    },
+                                },
+                            },
+                            // 截断前的真实条数（每类）：工具只回 20 行，模型靠它知道「还有多少」
+                            totals: {
+                                type: 'object',
+                                required: true,
+                                additionalProperties: false,
+                                properties: {
+                                    images: { type: 'number', required: true },
+                                    volumes: { type: 'number', required: true },
+                                    buildCache: { type: 'number', required: true },
+                                },
+                            },
+                            truncated: {
+                                type: 'object',
+                                required: true,
+                                additionalProperties: false,
+                                properties: {
+                                    images: { type: 'boolean', required: true },
+                                    volumes: { type: 'boolean', required: true },
+                                    buildCache: { type: 'boolean', required: true },
+                                },
+                            },
+                            degraded: { type: 'boolean', required: true },
+                            degradedReason: { type: 'string' },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderDiskUsage(v.target ?? '?', {
+                                    target: v.target ?? '?',
+                                    summary: v.summary ?? [],
+                                    images: v.images ?? [],
+                                    volumes: v.volumes ?? [],
+                                    buildCache: v.buildCache ?? [],
+                                    totals: v.totals ?? { images: 0, volumes: 0, buildCache: 0 },
+                                    truncated: v.truncated ?? { images: false, volumes: false, buildCache: false },
+                                    degraded: v.degraded === true,
+                                    ...(v.degradedReason === undefined ? {} : { degradedReason: v.degradedReason }),
+                                }) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const usage = await api.systemDf();
+                    // 工具是给模型看的：每类只回 20 行（宿主侧上限 100，客户端看全量）
+                    const take = (list) => list.slice(0, DISK_TOOL_ROWS);
+                    return {
+                        target: picked.name,
+                        summary: usage.summary,
+                        images: take(usage.images),
+                        volumes: take(usage.volumes),
+                        buildCache: take(usage.buildCache),
+                        totals: usage.totals,
+                        truncated: {
+                            images: usage.truncated.images || usage.images.length > DISK_TOOL_ROWS,
+                            volumes: usage.truncated.volumes || usage.volumes.length > DISK_TOOL_ROWS,
+                            buildCache: usage.truncated.buildCache || usage.buildCache.length > DISK_TOOL_ROWS,
+                        },
+                        degraded: usage.degraded,
+                        ...(usage.degradedReason === null ? {} : { degradedReason: usage.degradedReason }),
                     };
                 },
             }));
@@ -4138,7 +4852,7 @@ const plugin = definePlugin({
                         // D97：`/action` 的 id、`/stats` 的 ids[] 与 `/exec` 的空 command 原先漏在外，
                         // 于是同一类错误在有的路由是 400、有的是 500。
                         try {
-                            if ((sub === '/inspect' || sub === '/logs' || sub === '/exec' || sub === '/action') && typeof body.id === 'string')
+                            if ((sub === '/inspect' || sub === '/logs' || sub === '/exec' || sub === '/action' || sub === '/top' || sub === '/diagnose' || sub === '/run-command') && typeof body.id === 'string')
                                 assertRef(body.id, 'container');
                             if (sub === '/stats' && Array.isArray(body.ids)) {
                                 for (const id of body.ids)
@@ -4151,6 +4865,10 @@ const plugin = definePlugin({
                                 assertName(body.name, 'network');
                             if ((sub === '/volumes/inspect' || sub === '/volumes/remove') && typeof body.name === 'string')
                                 assertName(body.name, 'volume');
+                            // /diagnose 的 since 也在这里先校验（与 /logs 的 since 同一口径，D45）：放进
+                            // switch 里抛的话会被外层 catch 写成 500，而非法 since 是**客户端**错误。
+                            if (sub === '/diagnose' && typeof body.since === 'string' && body.since.trim() !== '')
+                                assertSince(body.since);
                             if (sub === '/exec' && typeof body.command === 'string' && body.command.trim() === '') {
                                 writeJson(res, 400, { error: 'command 不能为空' });
                                 return;
@@ -4209,6 +4927,47 @@ const plugin = definePlugin({
                                             ...(typeof body.since === 'string' && body.since.trim() !== '' ? { since: assertSince(body.since) } : {}),
                                         }),
                                     });
+                                    return;
+                                }
+                                // 批一的两条只读路由：位置紧挨 /logs /stats（同一段「单容器采集」语义）。
+                                // 都不是 MUTATION_SUBROUTES 成员——只读、不走审计、不要求同源证明。
+                                case '/top': {
+                                    if (typeof body.id !== 'string') {
+                                        writeJson(res, 400, { error: 'id 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, top: await api.top(body.id) });
+                                    return;
+                                }
+                                case '/diagnose': {
+                                    if (typeof body.id !== 'string') {
+                                        writeJson(res, 400, { error: 'id 必填' });
+                                        return;
+                                    }
+                                    /*
+                                     * 批三：多一个 `history` 字段（最近 N 条样本 + 趋势）。**没有新路由**——历史不是新的
+                                     * 采集面，只是同一份诊断的第二种视图（理由见 `diagnoseWithHistory` 的注释）。
+                                     *
+                                     * logTail / since 的默认值与夹紧仍在 api.diagnose 里做（agent 工具同一份语义）；
+                                     * 非法 since 已经在上面的引用白名单段拦成 400。
+                                     */
+                                    const { diagnosis, history } = await diagnoseWithHistory(api, picked.name, body.id, {
+                                        logTail: body.logTail,
+                                        since: body.since,
+                                        history: body.history,
+                                    });
+                                    // 三路降级的**原因**不进 HTTP 契约（客户端按 evidence 的 null 渲染 `—`，
+                                    // findings 里已有 *-unavailable 说明）；这里只回契约里的 diagnosis + history。
+                                    writeJson(res, 200, { ok: true, diagnosis: { ...diagnosis, history } });
+                                    return;
+                                }
+                                // 批二：现场还原。只读（inspect + 纯文本推导），不执行任何命令、不走审计。
+                                case '/run-command': {
+                                    if (typeof body.id !== 'string') {
+                                        writeJson(res, 400, { error: 'id 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, recreate: await api.recreate(body.id) });
                                     return;
                                 }
                                 case '/images': {
@@ -4281,6 +5040,24 @@ const plugin = definePlugin({
                                 }
                                 case '/volumes': {
                                     writeJson(res, 200, { ok: true, volumes: await api.volumes() });
+                                    return;
+                                }
+                                // 批二：磁盘占用（只读）。`totals` 是宿主内部字段（工具用它报「还有多少」），
+                                // 契约 §2.1 里没有它，所以这里显式挑字段，不做整对象透传。
+                                case '/system-df': {
+                                    const usage = await api.systemDf();
+                                    writeJson(res, 200, {
+                                        ok: true,
+                                        disk: {
+                                            summary: usage.summary,
+                                            images: usage.images,
+                                            volumes: usage.volumes,
+                                            buildCache: usage.buildCache,
+                                            truncated: usage.truncated,
+                                            degraded: usage.degraded,
+                                            degradedReason: usage.degradedReason,
+                                        },
+                                    });
                                     return;
                                 }
                                 case '/volumes/inspect': {

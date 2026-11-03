@@ -11,6 +11,29 @@
 - **显式一键连接本机**：两个**非常驻**入口——一个目标都没有时是「还没有配置 Docker 目标」空态里的主按钮，已有别的目标时是**目标下拉的末一项** `＋ 连接本机`（工具条上**不挂**：常驻时它既占位又招人点，纯噪音）——一次点击（或选中该项）就把宿主所在机器加成本机目标并选中（已有本机目标则直接复用，不重复创建；SSH / 自定义目标原样保留），agent 侧同一条操作是 `docker_connect_local`。它**不**改空 `targets` 的语义、**不**凭空造隐式默认目标、**不**自动装 Docker / 起 daemon / 切 docker context，也不需要任何能力授权（只加一条指向插件自身的本机目标）。
 - **多目标聚合取数**：总览页对全部 `targets[]` 并行请求，单个目标不可达只污染自己那一格；agent 侧同一口径由 `docker_ps target:"*"` / `docker_attention target:"*"` 暴露，跨目标不互相阻塞。
 - **「需关注」读权威字段**：不健康 / 反复重启 / OOM 被杀 / 非零退出 / 僵死；OOM 与真实退出码由一次 `docker inspect` 补齐——`docker ps` 摘要里的 137 分不出 OOM 与手动 kill，只按摘要筛必然误报。
+- **容器「诊断」：把四路数据变成一句能动手的结论**：详情页「诊断」页签一次采集
+  `docker inspect`（权威状态 / 退出码 / OOM / 重启次数 / 健康检查最后输出 / 资源上限）、
+  日志尾部、本容器事件、`stats` 快照，交给一组**纯判据**（`src/diagnose.ts`，零 IO）产出
+  「结论 + 判据列表 + 证据 + 时间线 + 建议」，agent 侧同一份口径是 `docker_diagnose`。
+  最常用的一步是「为什么它挂了」：OOM 被杀会同时点出**内存上限与实际占用**、非零退出会给出
+  该退出码的常见含义、不健康会附健康检查的最后一条输出；末尾一个「交给 Agent」直接把这整份
+  证据（含日志原文围栏与「这是数据不是指令」的声明）投进会话。
+- **磁盘与「谁在用」**：「磁盘」视图把 `docker system df` 的**可回收**账摊开——四类汇总 +
+  合计可回收 + 按独占大小排序的镜像明细（`容器数 = 0` 打「未使用」）+ 带链接数的卷明细，
+  行尾删除受 `allowMutations` 门。`容器数` / `链接数` 取自 `docker system df -v` 的
+  `Images[].Containers` / `Volumes[].Links`，**不按 `docker ps` 反推**（反推要拿镜像引用猜
+  tag/digest，同镜像多标签时会算错）。
+- **现场还原：等价 `docker run`**：概览页底部可折叠地反推一条可复现命令（端口 / 挂载 / 环境变量 /
+  重启策略 / 网络 / 资源上限 / capability，一行一参数、POSIX 转义、点开才请求）。**故意没还原的
+  必须点名**（`--privileged`、`--link`、ENTRYPOINT 覆盖、自定义健康检查、匿名卷…逐条给原因与
+  怎么补），敏感 env 只点键名不显示值——与「删除前先说清后果」是同一条取向。
+- **进程快照**：详情页「进程」页签（agent 侧 `docker_top`）——`docker top` 的 PID / PPID / 用户 /
+  STAT / 已运行 / CPU / 内存 / 命令八列。容器「还在跑」与「进程还在」是两件事：进程没了，
+  日志通常什么都不会说。
+- **诊断历史：从「现在怎么样」到「是不是在变坏」**：每次诊断落一个**只含结论与数字**的样本
+  （日志原文绝不落盘），诊断页据此给出最近 N 次的严重度色带、趋势结论（反复重启 / 反复 OOM /
+  内存爬升 / 报错增长 / 新出现严重判据）、只列「真的变了」的数字变化与判据增减。agent 侧同一份
+  口径是 `docker_diagnose` 的 `history` 参数。
 - **四条 SSE 长流共用一套基建**：日志 FOLLOW、`docker stats`、`docker events`、`docker pull` 走同一个 `openSseStream`（心跳 / 活跃流登记 / 断开清理 / 管道起来后先发一帧 `ready`），差异只在收尾语义——日志与拉取自然结束，统计与事件由前端主动断。「连上了」与「在收数据」是两件事：客户端只认 `ready`，响应头到达不算（见「SSE 事件协议」）。多选 / Compose 项目的聚合日志把多个容器装进**一条** `/logs/stream?ids=…`（D168），按 `--timestamps` 前缀还原跨容器真实时序，「暂停」只冻结渲染（流继续接收，恢复时一次性补齐）。
 - **默认只读，能力开关分三级**：启停删 / exec / 镜像变更各自独立开关，未开启时 agent 工具**不注册**、HTTP 路由 403（能力不存在，而非调用后报错）；开关的**提权走两条带外通道**（启动环境变量 / 卡片里就地确认，见下条）；容器名与 ID 过白名单，命令一律 argv 构造 + 单引号转义，密码 / 口令以 `env:NAME` **凭据引用**（官方凭据层解析，缺失时退回环境变量）且永不回传浏览器。
 - **与 dsh-tty 数据级复用、代码级不耦合**：不 import 任何 tty 代码，tty 也无需改一行源码，两者可各自安装与升级；装了 tty 则消费三个可选扩展点——连接栏动作（`ttyConnbar`）、终端承载（`ttyTerminal`：标签 / dock 承载下经 `open` 新开标签，模态下经 `mount` 就地嵌入抽屉）、以及只在兜底路径用到的终端右侧 dock（`ttyPanel.mountPane`）；未装或版本不足逐项静默降级。
@@ -228,8 +251,9 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；「Docker 容
   stop + restart + remove 这类互相打断的命令。镜像的删除 / 清理走同一套确认框，
   同样有执行中态。点卡片本体进入概览。
 - **容器详情（整栏视图）**：顶部为「返回 + 容器名 + 状态徽标 + 目标主机」，
-  下方三个标签页——概览（`docker inspect` 权威数据 + 一次性 exec）、日志、
-  统计。从卡片的日志 / 统计图标可直接落到对应标签页。
+  下方五个标签页——概览（`docker inspect` 权威数据 + 一次性 exec + 等价 `docker run`）、日志、
+  统计、诊断、进程。从卡片的日志 / 统计图标可直接落到对应标签页；诊断与进程**只在该页签被打开时
+  才取数**（切走即不再请求，也没有轮询）。
 - **日志视图（紧凑两行）**：第一行 = 返回 + 容器名 + 状态 + 目标主机 +
   `LINES`（尾部行数）/ `TIMESTAMPS` / **`FOLLOW`（实时跟随，见下）** /
   `AUTO REFRESH`（开关 + 2/3/5/10s 间隔，仅日志页轮询）+ 刷新 / 关闭；
@@ -303,7 +327,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；「Docker 容
   `docker history` 的逐层命令与大小）。**删除**（需 `allowMutations`）二次确认
   后执行 `docker image rm`（不带 `-f`，镜像被引用时会失败并给出「先删相关
   容器」的提示）。
-- **网络 / 卷（第五、六段）**：工具条分段扩到「容器 / 镜像 / Compose / 网络 / 卷」
+- **网络 / 卷**：工具条分段扩到「容器 / 镜像 / Compose / 网络 / 卷」（最后一段是「磁盘」，见「磁盘与可回收」）
   （窄栏里放不下时分段容器自己横向滚动，不做二级菜单）。两页都是「表格 + 整栏详情」
   的同构布局：
   - **网络**：名称 / 驱动 / 范围 / internal 徽标 / ID，行点击进详情——概览（ID / 驱动 /
@@ -474,6 +498,111 @@ context、不改任何环境变量；空 `targets`（= 用户没配）的语义�
 - **排序**：OOM > 僵死 > 不健康 > 反复重启 > 非零退出；同权重按「最近一次结束时间」倒序，
   刚崩的排在最上面（行 hover 显示结束/启动时间、重启次数、退出码）。
 
+### 容器诊断（「为什么不行」）
+
+容器详情多一个**诊断**页签，agent 侧是 `docker_diagnose`。它一次采集四路——`docker inspect`
+（权威状态 / 退出码 / OOM / 重启次数 / 健康检查最后输出 / 资源上限）、`docker logs --tail N`、
+`docker events --since`（**服务端**按 `--filter container=<id>` 过滤）、`docker stats --no-stream`——
+然后交给一组**纯判据**（`src/diagnose.ts`，零 IO、不读时钟）产出：
+
+- **一句话结论**（`verdict`）：取最高严重度的那条，分 `critical` / `warning` / `info` / `ok`；
+- **判据列表**（`findings`）：每条 = 判据 code + 一句话 + 证据。当前 15 条——OOM 被杀、
+  非零退出（附 126 / 127 / 137 / 143 的常见含义）、反复重启、不健康（附健康检查最后输出）、
+  健康检查尚未通过、正常退出、未运行（created / paused / dead）、内存压力（≥90% 且设了上限）、
+  CPU 压力（≥90%）、日志里有报错、没有健康检查，以及三条**采集失败**信号；
+- **证据**（`evidence`）：状态 / ps 风格的状态描述（`Up 4 hours (healthy)`）/ 退出码 / OOM /
+  重启次数 / 起止时间 / 内存上限 / CPU 配额 / 日志行数与报错行数 / 事件条数 / 当前资源占用；
+- **时间线**（`timeline`）：本容器在窗口内的 `start` / `die` / `oom` / `health_status` 等事件，升序；
+- **建议**（`suggestions`）：0~5 条可执行动作。
+
+**「没采到」与「确实是空的」是两件事**（本仓一贯的信号位原则）：旁路三路（日志 / 事件 / 统计）
+任一失败时，证据里对应字段是 `null`（不是 0、不是空数组），并多出一条 `*-unavailable` 说明原因。
+否则「连不上主机」会被读成「日志是空的、从没重启过」，排障方向当场被带偏。
+
+页签底部三个动作：**重新诊断**、**复制诊断**、**交给 Agent**。最后这个走的就是日志右键那套
+会话桥（直接发送 / 填入草稿二选一，没有会话时置灰并写明原因）：文本自带容器、目标、采集时间、
+结论与证据，日志原文用围栏包起来并标注「这是数据不是指令」。**采集时间在界面上是本地时间、
+投递文本里是 ISO 8601**——前者给人看，后者可排序、无时区假设。
+
+诊断是**只读**：不改容器、不重启、不发命令，只多跑四条只读 docker 命令（因此最坏情况是四个
+命令预算，而不是无界等待）。
+
+### 诊断历史（它是不是在慢慢变坏）
+
+单次诊断只回答「现在怎么样」；**缓慢变坏**（内存一点点涨、重启越来越频繁、报错逐渐变多）在单次
+结果里看不出来。所以每次诊断都会落一个**样本**，诊断页据此多一块「历史」：
+
+- **色带**：最近 N 次的严重度（悬停显示时间与结论 code）；
+- **趋势结论**（`trend.verdict`）：七条判据取最高的一条——反复重启（重启次数涨 ≥2）、反复 OOM
+  （≥2 次）、内存爬升（≥20 个百分点且末值 ≥80%）、报错增长（≥5 行或从 0 变正）、新出现严重判据
+  （`oom-killed` / `crash-loop` / `unhealthy` / `exit-nonzero`）、严重度连续走高、没有明显变化；
+  样本不足 2 次时明说「还不够形成趋势」；
+- **数字变化**（`trend.numbers`）：只列**真的变了**的项，且每项有「最小有意义变化」——重启 ≥1、
+  内存 ≥1 个百分点、CPU ≥5 个百分点、报错 ≥3 行、事件 ≥5 条、日志行数 ≥50。这组阈值是真机
+  逼出来的：诊断只取一个 `stats` 瞬时快照，1.11% → 1.09% 这种抖动不设闸就会把趋势块填满；
+  报错行数则是**滑动窗口**（一条老报错滑出去就 −1），所以给到 3 行才算变化；
+- **判据增减**：「新出现」/「已消失」两行（`oom-killed` 是新出现的，那就是恶化信号）。
+
+**存什么、不存什么**（刻意的取舍）：样本**只存结论与数字**——严重度、结论 code、判据 code 列表、
+状态 / 退出码 / OOM / 重启次数 / 内存与 CPU 占用 / 报错行数 / 事件条数 / 日志行数 / 时间。
+**绝不落盘**：日志原文（`logTail`）与每条判据的 detail（里面会嵌日志行，可能带凭证）。所以这份文件
+可以放心 `cat`，但它也因此**不能**用来回放某次排障现场——要原文就重新诊断一次。
+
+落盘：`<DSH 主目录>/dsh-docker/diagnosis-history.jsonl`（目录 `0700`、文件 `0600`），一行一条。
+上限：**每个容器 50 条**、整文件 **2000 条**，超了丢最旧并**原子重写**（临时文件 + rename）。
+**30 秒去重**：同一容器、30 秒内、且严重度 + 结论 + 判据集合 + 重启次数完全相同时**不追加**
+（连点「重新诊断」不该在趋势里制造假波动），界面会写明「本次与上次一致，30 秒内不重复记录」。
+`DSH_DOCKER_HISTORY_DIR` 可覆写目录（**测试 / 排障专用**），空串视为未设。
+
+三条已知边界：① **容器改名 = 开一段新历史**（索引键是「目标 + 容器名」）——比让两段历史混在一起、
+趋势说出没发生过的变化好；② **并发追加没加锁**（两个诊断同时写可能丢一次更新），历史是辅助信息，
+为它加文件锁不值；③ **写盘失败只降级不报错**：诊断照常返回、`recorded = false`、宿主 stdout 留一行。
+
+### 磁盘与可回收（存储治理）
+
+**磁盘**是工具条分段的最后一段（容器 / 镜像 / Compose / 网络 / 卷 / 磁盘），agent 侧是 `docker_disk_usage`。
+数据来自两条命令：`docker system df`（四类汇总）与 `docker system df -v`（逐项明细）。
+
+- 四张汇总卡：镜像 / 容器 / 本地卷 / 构建缓存各自的**条目数、活跃数、占用、可回收**
+  （分类名保留 docker 原文，界面负责翻译）；
+- **合计可回收**：四类 `reclaimable` 的字节和（任一行解析不出就给 `—`，宁可不说也不给错数）；
+- **镜像明细**（按独占大小降序）：仓库:标签 / 大小 / 独占 / **容器数**——`containers === 0`
+  打「未使用」徽标，行尾删除图标（受 `allowMutations` 门、走既有确认框）；
+- **卷明细**（按大小降序）：名称 / 驱动 / 大小 / **链接数**——`links === 0` 同样打「未使用」。
+
+三条刻意的取舍：
+
+- **先排序再截断**：真机实测 259 个卷里 258 个是 0B，先截断会把 100 个名额全给空卷，明细表
+  看起来「全是没用的」而真正占空间的反而没进来；
+- **明细上限 100 行**，超了在表头写「明细已截断，只显示前 100 行」（工具侧另按 20 行截，
+  两个 `truncated` 取或）——截断要留痕，不静默少列；
+- **老 docker 只降级不报错**：不支持 `-v --format '{{json .}}'`、或输出被截断/形状不对时，
+  `degraded: true` + 一句人话原因，汇总卡照常显示、明细表**不渲染**（渲染空表会让人以为「没有」）。
+
+磁盘页**不轮询**（`system df -v` 比 `docker images` 贵），也**没有 prune 按钮**：逐行删除 +
+确认框比「一键清空一类」安全，而那类入口已经在镜像 / 卷页的工具条上各有一个。
+
+### 等价 `docker run`（现场还原）
+
+概览页底部有一块可折叠的**等价 docker run**，agent 侧是 `docker_run_command`。它从 `docker inspect`
+的**原始行**反推一条可复现命令——**不扩 `ContainerDetail`**，因为那会把 env 顺带灌进
+`docker_inspect` 的模型上下文。覆盖：名称、重启策略、端口映射（没绑 hostPort 的用 `--expose`）、
+bind / 命名卷 / tmpfs、非默认网络、环境变量、用户 / 工作目录 / 主机名（等于默认值时省略）、
+内存与 CPU 上限、cap-add / cap-drop / device，以及镜像与命令本身。
+
+**点开才请求**（折叠区展开才打 `/run-command`），一行一个参数、POSIX 单引号转义，可直接复制。
+
+三条刻意的取舍：
+
+- **环境变量原值保留**（改写过就不是等价命令），命中
+  `/(PASS|PWD|SECRET|TOKEN|KEY|CRED|AUTH|PRIVATE)/i` 的**键名**收进 `secretKeys`：界面在命令上方
+  给一条「含疑似凭证」的警告，**只点键名、不显示值**；命令本身不脱敏——脱敏后的命令跑不起来，
+  而它的用途正是「拿出去跑」；
+- **故意没还原的必须点名**（`omitted`）：`--privileged`、`--link`、非默认日志驱动、
+  `--pid/--ipc/--uts`、`--sysctl`、`--add-host`、`--security-opt`、特殊挂载类型、匿名卷、
+  ENTRYPOINT 覆盖、自定义健康检查——逐条给出「为什么没写」与「怎么自己补上」，**绝不静默丢**；
+- **compose 管理的容器只是近似**：网络别名 / labels / depends_on 不在命令里，界面直说。
+
 ## 配置（保存即热生效）
 
 未获宿主授权时，设置卡片里那两个开关**点它会就地发起一次授权**：面板给出一条「在宿主终端执行」
@@ -585,14 +714,18 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
 | `docker_connect_local` | 恒注册 | —（无参数） | **连接本机**：确保存在一条 `kind=local` 目标并选中它（已存在则复用，不重复创建；SSH / 自定义目标原样保留），随后只读探测 daemon：返回 `{name, kind, created, saved, reachable, serverVersion?}`。没有任何目标时其余工具不注册（见下方「零目标」那条），用它一步补上。**不需要任何能力授权**（只写插件自己的配置 + 只读探测）；不会安装 Docker / 启动 daemon / 切 context / 改环境变量。daemon 不可达时在结果文本里说清成因（CLI 缺失 / 探测超时 / daemon 未启动 / socket 无权；CLI 缺失时还会点名 PATH 里找到的别的容器 CLI，但不会替你改 dockerBin），不是只报空列表 |
 | `docker_ps` | 有目标即注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（同一次 `-p` 不再出现两遍，D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
 | `docker_attention` | 有目标即注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`（ps 摘要里 137 无法区分手动 kill）。排障入口：不确定从哪台/哪个容器看起时先调它 |
+| `docker_diagnose` | 有目标即注册 | `target?`、`id`（必填）、`logTail?`（1~500，默认 80）、`since?`（docker 语法，默认 `1h`）、`history?`（0~50，默认 10，0 = 不要历史） | **容器「为什么不行」**：一次采集 inspect + 日志尾部 + 本容器事件（服务端 `--filter container`）+ `stats` 快照，产出 `verdict`（一句话结论）/ `findings`（判据表，每条带 code、severity、title、detail）/ `evidence`（退出码、OOM、重启次数、内存与 CPU 上限、日志与事件条数、当前占用）/ `timeline` / `suggestions`。**只读**；「没采到」给 `null` 并附 `*-unavailable` 判据，绝不写成 0。要更多日志 / 找关键词用 `docker_logs_grep`。返回里还带 `history`（最近 N 个**只含结论与数字**的样本 + 趋势结论 `trend`）——`trend.verdict.summary` 就是「它是不是在慢慢变坏」那一句 |
 | `docker_inspect` | 有目标即注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
 | `docker_logs` | 有目标即注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?`、`until?` | `docker logs --tail` 尾部；`since` / `until` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）圈时间窗；超上限标记 `truncated`；截断时（`truncated`）结果里会说明可传更小的 `tail`、加 `since`/`until`，或改用 `docker_logs_grep` |
 | `docker_logs_grep` | 有目标即注册 | `target?`、`id`、`pattern`（必填，≤512 字符）、`regexp?`、`ignoreCase?`、`since?`、`until?`、`context?`（0~20，默认 2）、`limit?`（1~500，默认 200）、`tail?`（缺省 = 扫全部历史）、`timestamps?`（默认开） | **日志服务端检索**：宿主侧逐行过滤（不碰远端 shell、不拼 `\| grep`），返回命中行 + 前后上下文，并如实报告 `matched`（全量命中数，即使没返回）/ `scanned` / `limited` / `truncated`——「只扫到这些」与「扫完了没更多」可区分；扫描窗口**对齐到行边界**（按字节截断处的半行不当作一行返回，所以 `lines` 里每一行都是完整的行）；返回行数另有上限：最多 4000 行（`MAX_RESULT_LINES`），超了截到上限并给 `truncatedForSize` 与 `notes`（缩小 `limit` / 减小 `context` / 加 `since`·`until` 圈时间窗），`matched` 仍报全量。与 `docker_logs` 的分工：报错就在最近尾部 → `docker_logs`（便宜）；埋在深处 / 特定时间窗 / 找关键词、异常码、请求 ID → 本工具。默认字面子串（grep -F 语义，零 ReDoS），`regexp: true` 才按 JS 正则 |
 | `docker_stats` | 有目标即注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器。实时跟随是面板能力（SSE），工具保持单值快照语义 |
 | `docker_images` | 有目标即注册 | `target?`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 镜像列表（仓库:标签 / 大小 / 创建时间 / 短 ID） |
+| `docker_top` | 有目标即注册 | `target?`、`id`（必填） | 容器内进程快照（`docker top <id> -eo pid,ppid,user,stat,etime,pcpu,pmem,cmd`）：PID / PPID / 用户 / STAT / 已运行 / CPU / 内存 / 命令，字段全是 docker 打印的原文。容器「还在跑」与「进程还在」是两件事 |
 | `docker_events` | 有目标即注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
 | `docker_networks` | 有目标即注册 | `target?`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 网络列表（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表不进列表行——详情页会连坐 inspect，列表逐行 inspect 就是 N 次 docker 调用 |
 | `docker_volumes` | 有目标即注册 | `target?`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 卷列表（名称 / 驱动 / 范围 / 挂载点） |
+| `docker_disk_usage` | 有目标即注册 | `target?` | 磁盘占用与**「谁在用」**：`docker system df` 四类汇总（条目 / 活跃 / 占用 / 可回收）+ `-v` 明细（镜像的 `containers`、卷的 `links`，各截 20 行）。删之前先看 `containers` 是不是 0；汇总与明细是两条命令，明细失败只降级（`degraded`） |
+| `docker_run_command` | 有目标即注册 | `target?`、`id`（必填） | **只推导、不执行**：从 `docker inspect` 原始数据反推等价 `docker run` 命令文本（端口 / 挂载 / env / 重启策略 / 网络 / 资源上限 / capability）+ `warnings` / `secretKeys`（只给键名，值不脱敏）/ `omitted`（故意没还原的，逐条给原因）。compose 容器只是近似 |
 | `docker_image_inspect` | 有目标即注册 | `target?`、`ref`（必填） | `docker image inspect` + `docker history`：大小 / 含父层大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 构建历史（每步命令与大小） |
 | `docker_action` | `allowMutations` + 有目标 | `target?`、`action`（`start` \| `stop` \| `restart` \| `remove`）、`id` | 容器生命周期操作。`remove` 是破坏性的：删除容器配置与可写层（数据卷不在其中），执行前必须向用户确认目标容器 |
 | `docker_image_remove` | `allowMutations` + 有目标 | `target?`、`ref`（必填） | 删除镜像（`docker image rm`，不带 `-f`）。**破坏性**：被容器或子镜像引用时会失败；执行前须确认目标镜像并复述后果 |
@@ -619,10 +752,12 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
   `tier-gate: services absent (…), per-call gate disabled`。它与上面两个静态开关是**双层**：
   静态开关管注册（宿主级、持久授权），档位闸管已注册调用的放行（逐调用、随档位即时变）。
   机制见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)。
-- 推荐排障顺序：`docker_targets` → `docker_ps` → `docker_logs`（尾部看不到成因就
-  `docker_logs_grep` 带 `pattern` / `since` / `until` 检索深处）→
-  `docker_inspect` → `docker_stats`；镜像排查 `docker_images` →
-  `docker_image_inspect`。
+- 推荐排障顺序：`docker_targets` → `docker_ps` → **`docker_diagnose`**（一次拿到结论 + 判据 +
+  证据，多数「它为什么挂了 / 为什么不动」到这里就有方向了）→ `docker_logs`（尾部看不到成因就
+  `docker_logs_grep` 带 `pattern` / `since` / `until` 检索深处）→ `docker_inspect`（原始字段）→
+  `docker_stats` / `docker_top`（活着但不对劲：先看资源，再看进程还在不在）；镜像排查
+  `docker_images` → `docker_image_inspect`；要清磁盘先 `docker_disk_usage`（看 `containers` /
+  `links` 谁在用），再决定删什么。
 - `announceToAgent` 开启时，插件向 systemPrompt 注入一段精简公告：插件与面板位置、「默认
   只读」与「docker socket ≈ 目标主机 root」的约束、「`allowExec` 只管一次性 exec 通道」的
   边界（卡片「终端」按钮不受它门控）、`target` 的 `*` 适用范围，以及跨工具排障顺序；它不
@@ -664,6 +799,8 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
+| `/top` | POST | `{target?, id}`（必填） | `{ok:true, top:{id, name, rows:[{pid, ppid, user, stat, elapsed, cpu, mem, command}], truncated}}`——字段全是 `docker top` 打印的原文；未运行 / 不存在时走既有错误通道（不是 200 空列表） |
+| `/diagnose` | POST | `{target?, id}`（必填）、`logTail?`（1~500，默认 80）、`since?`（默认 `1h`）、`history?`（0~50，默认 10） | `{ok:true, diagnosis:{verdict, findings, evidence, timeline, logTail, suggestions, history:{samples, trend, recorded}}}`。`history` 是本次记录**之后**的最近 N 条样本与趋势（`recorded` 说明本次有没有真的追加——30 秒去重命中时为 `false`）。四路采集，旁路失败只降级（evidence 对应字段 `null` + `*-unavailable` 判据）；非法 `since` 在引用白名单段就 400 |
 | `/logs/stream` | GET | query：`target?`、`id`（单容器，与 `ids` 二选一）或 `ids`（逗号分隔的多个容器，**一条连接装下全部**，最多 32 个）、`tail?`（**0**~5000；`0` = 不补历史只跟随，客户端重连用）、`timestamps?`（`1`/`true`）、`since?` | `200 text/event-stream` 长连接，事件协议见下；参数错误 / 未知目标 / 非 loopback 返回常规 JSON 错误 |
 | `/stats/stream` | GET | query：`target?`、`ids?`（逗号分隔；省略 = 全部运行中） | `200 text/event-stream`：每秒一帧 `stats`（ContainerStats，形状与 /stats 快照一致）；不会自然结束，靠客户端断连收尾 |
 | `/events/stream` | GET | query：`target?` | `200 text/event-stream`：一帧 `event` 一个容器事件（服务端已过白名单，值缺失的字段省略）；不会自然结束，靠客户端断连收尾 |
@@ -680,6 +817,8 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
 | `/volumes/inspect` | POST | `{target?, name}`（必填） | `{ok:true, volume:{name, detail: VolumeDetail}}`（挂载点 / 选项 / 标签） |
 | `/volumes/remove` | POST | `{target?, name}`（必填） | 需 `allowMutations`（否则 403）；`docker volume rm`（**数据随卷一起没**）；`{ok:true, result:{name, message}}` |
 | `/volumes/prune` | POST | `{target?}` | 需 `allowMutations`（否则 403）；`docker volume prune -f`（**删数据**，见已知限制）；`{ok:true, result:{message}}` |
+| `/system-df` | POST | `{target?}` | `{ok:true, disk:{summary, images, volumes, buildCache, truncated, degraded, degradedReason}}`：`summary` 是四类汇总，明细各上限 100 行（**先排序再截断**）；老 docker 只降级不报错 |
+| `/run-command` | POST | `{target?, id}`（必填） | `{ok:true, recreate:{id, name, command, warnings, secretKeys, omitted}}`——**只推导，不执行**；`omitted` 是「故意没还原」的唯一出口 |
 | `/action` | POST | `{target?, action, id}` | 需 `allowMutations`（否则 403）；`{ok:true, result:{id, action, message}}` |
 | `/exec` | POST | `{target?, id, command, timeoutSec?}` | 需 `allowExec`（否则 403）；`{ok:true, result:{id, command, code, stdout, stderr, truncated, durationMs}}` |
 
@@ -911,6 +1050,22 @@ abort）、客户端断开静默中止，以及**管道起来后先发一帧 `re
 - **没有镜像构建 / Compose 编排变更**：镜像支持拉取 / 删除 / 清理 dangling，
   但没有 `docker build`、`docker save` / `load`、`docker push`；Compose 是**只读**
   项目视图（按项目分组 + 项目级聚合日志），不提供 `compose up` / `down` / `restart`。
+- **诊断是判据，不是专家**：15 条判据覆盖的是「容器自报的客观证据」（退出码 / OOM /
+  重启次数 / 健康检查 / 资源压力 / 日志里的报错行），**不理解业务**。它给出的结论是
+  「证据指向什么」，不会替你判断「这个报错是否可忽略」——那一步交给「交给 Agent」之后的人或模型。
+  代价也说清：诊断一次跑**四条**只读命令（inspect + logs + events + stats），在 SSH 目标上
+  就是最多四条 channel（短命令闸会把并发压到 2，所以是两批），慢机器上会感觉到等。
+- **事件采集给的是独立预算（8MB + 留尾）**：单容器一小时的事件里，`exec_create` /
+  `exec_start` / `exec_die` 这种解析阶段就被白名单丢掉的三连占绝大多数（真机实测 1h / 256 条 /
+  588KB 里绝大多数是它们），按通用的 512KB 档会让时间线**永远为空**。所以诊断的事件采集单独
+  放宽到 8MB 并保留尾部——窗口内事件特别多的容器，时间线只覆盖**最近的**一段。
+- **等价 `docker run` 是近似，不是备份**：compose 管理的容器不带网络别名 / labels / depends_on；
+  `--privileged` / `--link` / ENTRYPOINT 覆盖 / 自定义健康检查 / 匿名卷等**故意不还原**，逐条列在
+  `omitted` 里。**它不能替代 `docker commit` / 卷备份**，只是「手边有一条能读懂、能改、能复现的命令」。
+- **磁盘明细的两处截断各自独立**：宿主侧每类 100 行（`truncated`）、工具侧 20 行；真机上
+  卷多到几千个时，`system df -v` 的输出本身也可能撞 8MB 预算（那时 `degraded: true`，
+  汇总仍然可用）。`system df` 的人工可读大小是 docker 自己算的（SI 单位），
+  「合计可回收」由字符串解析成字节再相加——**解析不出就整条显示 `—`**，不给近似值。
 - **`volume prune` 会删数据，且行为随版本变**：docker ≥ 23 的 `docker volume prune`
   有 `-a/--all`，**不带时只删匿名卷**（本插件就不带）；但 docker < 23 没有这个开关，
   plain prune 会把未被使用的**命名卷**一起删掉。所以卷清理的确认文案把版本差异写明了，

@@ -16,7 +16,7 @@
  * 用法：pnpm --filter @hyzyn/dsh-docker build && node scripts/route-smoke.mjs
  */
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,6 +27,13 @@ import { join } from 'node:path'
  */
 process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'
 process.env.DSH_DOCKER_ALLOW_EXEC = '1'
+/*
+ * 诊断历史的落盘目录（批三）：**必须**在 import 插件之前指到临时目录——`/diagnose` 现在会真的
+ * 写盘，不隔离就会落到用户的 `~/.dsh/dsh-docker/`。冒烟脚本污染真实配置是本仓明令禁止的，
+ * 所以这里不是「可选隔离」：变量在 import 之前设，收尾连同假 CLI 的目录一起删。
+ */
+const historyDir = mkdtempSync(join(tmpdir(), 'dsh-docker-history-smoke-'))
+process.env.DSH_DOCKER_HISTORY_DIR = historyDir
 
 const host = await import('../lib/index.js')
 
@@ -69,8 +76,25 @@ const INSPECT_JSON = JSON.stringify([{
   Image: 'sha256:deadbeef',
   RestartCount: 1,
   State: { Status: 'running', ExitCode: 0, Pid: 123, Health: { Status: 'healthy', Log: [] } },
-  Config: { Image: 'nginx:1.27', Cmd: ['nginx'], Labels: {} },
-  HostConfig: { RestartPolicy: { Name: 'unless-stopped' } },
+  // Entrypoint / Env / Hostname 同时服务于 /run-command：hostname 等于容器 ID 前 12 位
+  // = docker 的默认值，等价命令里**不该**出现 --hostname（e2e 顺带钉住这条判据）
+  Config: {
+    Image: 'nginx:1.27',
+    Entrypoint: ['docker-entrypoint.sh'],
+    Cmd: ['nginx'],
+    Env: ['PATH=/usr/bin', 'DB_PASSWORD=secret-value'],
+    Labels: {},
+    User: '',
+    WorkingDir: '/app',
+    Hostname: '9f2c1d4e5a6b',
+  },
+  HostConfig: {
+    RestartPolicy: { Name: 'unless-stopped' },
+    PortBindings: { '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '8080' }] },
+    NetworkMode: 'shop_default',
+    Memory: 0,
+    NanoCpus: 0,
+  },
   Mounts: [],
   NetworkSettings: { Ports: { '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '8080' }] }, Networks: {} },
 }])
@@ -86,6 +110,33 @@ const INSPECT_BAD_JSON = JSON.stringify([{
   Mounts: [],
   NetworkSettings: { Ports: {}, Networks: {} },
 }])
+/** `docker system df --format '{{json .}}'`：四行 NDJSON（真机形状，计数是字符串）。 */
+const DISK_SUMMARY_TEXT = [
+  '{"Active":"10","Reclaimable":"1.134GB (56%)","Size":"2.011GB","TotalCount":"14","Type":"Images"}',
+  '{"Active":"1","Reclaimable":"0B (0%)","Size":"162B","TotalCount":"1","Type":"Containers"}',
+  '{"Active":"1","Reclaimable":"0B (0%)","Size":"197B","TotalCount":"2","Type":"Local Volumes"}',
+  '{"Active":"0","Reclaimable":"0B","Size":"0B","TotalCount":"0","Type":"Build Cache"}',
+].join('\n')
+
+/** `docker system df -v --format '{{json .}}'`：一个 JSON 对象（Images / Volumes / BuildCache）。 */
+const DISK_DETAIL_JSON = JSON.stringify({
+  Images: [
+    { Containers: '1', ID: 'sha256:aaaa1111bbbb2222', Repository: 'nginx', Tag: '1.27', Size: '142MB', SharedSize: '0B', UniqueSize: '142MB', VirtualSize: '142MB' },
+    { Containers: '0', ID: 'sha256:cccc3333dddd4444', Repository: 'alpine', Tag: '3.19', Size: '7MB', SharedSize: '7MB', UniqueSize: '0B', VirtualSize: '7MB' },
+  ],
+  Volumes: [
+    { Name: 'pgdata', Driver: 'local', Size: '197B', Links: '1' },
+    { Name: 'empty-vol', Driver: 'local', Size: '0B', Links: '0' },
+  ],
+  BuildCache: [{ ID: 'cache1', Type: 'regular', Size: '0B', InUse: 'false' }],
+})
+
+/** `docker top` 的假输出：表头是 ps 的默认写法（%CPU / %MEM），CMD 含空格。 */
+const TOP_TEXT = `PID                 PPID                USER                STAT                ELAPSED             %CPU                %MEM                CMD
+3149                3125                1000                Ss                  03:24:48            0.0                 0.0                 /sbin/docker-init -- docker-entrypoint.sh node dist/main.js
+3177                3149                1000                Sl                  03:24:48            0.4                 1.2                 node dist/main.js
+`
+
 const STATS_LINE = JSON.stringify({ ID: '9f2c1d4e5a6b', Name: 'shop-web-1', CPUPerc: '0.50%', MemUsage: '128MiB / 7.66GiB', MemPerc: '1.60%', NetIO: '1kB / 2kB', BlockIO: '0B / 0B', PIDs: '5' })
 const IMAGES_LINE = JSON.stringify({ ID: 'sha256:aaaa1111bbbb2222', Repository: 'nginx', Tag: '1.27', Size: '142MB', CreatedSince: '2 weeks ago' })
 const IMAGE_INSPECT_JSON = JSON.stringify([{
@@ -128,7 +179,8 @@ cmd="$1"
 case "$cmd" in
   version) echo "27.3.1" ;;
   ps) printf '%s\\n' '${PS_LINE}'; printf '%s\\n' '${PS_BAD_LINE}' ;;
-  inspect) case "$*" in *bad0c0ffee*) printf '%s' '${INSPECT_BAD_JSON}' ;; *) printf '%s' '${INSPECT_JSON}' ;; esac ;;
+  inspect) case "$*" in *--format*) printf '%s' '/shop-web-1' ;; *bad0c0ffee*) printf '%s' '${INSPECT_BAD_JSON}' ;; *) printf '%s' '${INSPECT_JSON}' ;; esac ;;
+  top) printf '%s' '${TOP_TEXT}' ;;
   logs) echo "stdout line 1"; echo "stderr line 1" >&2 ;;
   stats) printf '%s\\n' '${STATS_LINE}' ;;
   images) printf '%s\\n' '${IMAGES_LINE}' ;;
@@ -143,6 +195,12 @@ case "$cmd" in
   history) printf '%s\\n' '${IMAGE_HISTORY_LINE}' ;;
   pull) echo "Pulling from library/nginx"; echo "Status: Downloaded newer image for nginx:1.27" ;;
   events) printf '%s\\n' '${EVENT_START_LINE}'; printf '%s\\n' '${EVENT_NOISE_LINE}'; printf '%s\\n' '${EVENT_DIE_LINE}' ;;
+  system)
+    case "$*" in
+      *-v*) printf '%s' '${DISK_DETAIL_JSON}' ;;
+      *) printf '%s' '${DISK_SUMMARY_TEXT}' ;;
+    esac
+    ;;
   network)
     case "$2" in
       ls) printf '%s\\n' '${NETWORK_LS_LINE}' ;;
@@ -394,9 +452,9 @@ function toolNames() {
  * 1. 挂载面
  * ------------------------------------------------------------------ */
 
-await test('挂载：注册 13 个只读 agent 工具', () => {
+await test('挂载：注册 17 个只读 agent 工具', () => {
   const names = toolNames().sort()
-  assert.deepEqual(names, ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(names, ['docker_attention', 'docker_connect_local', 'docker_diagnose', 'docker_disk_usage', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_networks', 'docker_ps', 'docker_run_command', 'docker_stats', 'docker_targets', 'docker_top', 'docker_volumes'])
 })
 
 await test('挂载：注册能力公告 section', () => {
@@ -435,7 +493,7 @@ await test('GET /config：凭证脱敏 + 只读默认 + 复用 tty 连接簿名'
   const direct = config.targets.find((item) => item.name === '直连')
   assert.equal(direct.passwordSet, true)
   assert.equal(direct.passphraseSet, false)
-  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_connect_local', 'docker_diagnose', 'docker_disk_usage', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_networks', 'docker_ps', 'docker_run_command', 'docker_stats', 'docker_targets', 'docker_top', 'docker_volumes'])
 })
 
 await test('POST /config：未知键被拒绝', async () => {
@@ -495,6 +553,148 @@ await test('POST /logs：合并 stdout 与 stderr', async () => {
   assert.equal(res.status, 200)
   assert.match(res.body.logs.text, /stdout line 1/)
   assert.match(res.body.logs.text, /stderr line 1/)
+})
+
+await test('POST /top：容器内进程快照（docker top + 名字单独取一次）', async () => {
+  const res = await call('POST', '/top', { target: '本机', id: 'shop-web-1' })
+  assert.equal(res.status, 200)
+  const top = res.body.top
+  assert.equal(top.id, 'shop-web-1')
+  // 名字来自 `docker inspect --format '{{.Name}}'`（docker top 的输出里没有名字），前导斜杠已 strip
+  assert.equal(top.name, 'shop-web-1')
+  assert.equal(top.truncated, false)
+  assert.equal(top.rows.length, 2)
+  // 八列逐字：字段全是 string（docker 打印什么就是什么，不做单位换算）
+  assert.deepEqual(top.rows[0], {
+    pid: '3149',
+    ppid: '3125',
+    user: '1000',
+    stat: 'Ss',
+    elapsed: '03:24:48',
+    cpu: '0.0',
+    mem: '0.0',
+    command: '/sbin/docker-init -- docker-entrypoint.sh node dist/main.js',
+  })
+  for (const value of Object.values(top.rows[0])) assert.equal(typeof value, 'string')
+})
+
+await test('POST /top：缺 id 400 / 非法 id 400（白名单在路由层先跑，不进 docker）', async () => {
+  const missing = await call('POST', '/top', { target: '本机' })
+  assert.equal(missing.status, 400)
+  assert.match(missing.body.error, /id 必填/)
+  const badId = await call('POST', '/top', { target: '本机', id: 'shop-web-1; rm -rf /' })
+  assert.equal(badId.status, 400)
+  assert.match(badId.body.error, /container 含非法字符/)
+})
+
+await test('POST /diagnose：首次诊断落一条历史（recorded true），样本里没有日志原文', async () => {
+  const res = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', logTail: 5, since: '30m' })
+  assert.equal(res.status, 200)
+  const history = res.body.diagnosis.history
+  assert.equal(history.samples.length, 1)
+  assert.equal(history.recorded, true)
+  // 样本 <2 → 趋势只能说「还不够」，不许编造结论
+  assert.equal(history.trend.verdict.code, 'insufficient')
+  assert.equal(history.trend.count, 1)
+  // 历史**只记结论与数字**：日志原文 / finding 的 detail 绝不能落盘（可能带凭证）
+  assert.equal(JSON.stringify(history).includes('stdout line 1'), false)
+  assert.equal(Object.hasOwn(history.samples[0], 'logTail'), false)
+
+  // 真的写到了隔离目录（正例：环境变量确实生效，否则这里读不到文件）
+  const file = join(historyDir, 'diagnosis-history.jsonl')
+  const text = readFileSync(file, 'utf8')
+  assert.match(text, /"container":"shop-web-1"/)
+  assert.equal(text.includes('stdout line 1'), false)
+})
+
+await test('POST /diagnose：30 秒内重复诊断不追加（去重）；history:0 不回样本但仍记录', async () => {
+  const again = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', logTail: 5 })
+  assert.equal(again.status, 200)
+  // 同签名 + 30s 内 → 不追加
+  assert.equal(again.body.diagnosis.history.recorded, false)
+  assert.equal(again.body.diagnosis.history.samples.length, 1)
+
+  const none = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', logTail: 5, history: 0 })
+  assert.equal(none.status, 200)
+  assert.deepEqual(none.body.diagnosis.history.samples, [])
+  assert.equal(none.body.diagnosis.history.trend.verdict.code, 'insufficient')
+  // 去重命中，所以「这次也没追加」
+  assert.equal(none.body.diagnosis.history.recorded, false)
+
+  // 越界的 history 夹紧（不报错）：100 → 最多 50，负数 → 0
+  const big = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', logTail: 5, history: 100 })
+  assert.equal(big.status, 200)
+  assert.equal(big.body.diagnosis.history.samples.length <= 50, true)
+  const negative = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', logTail: 5, history: -3 })
+  assert.equal(negative.status, 200)
+  assert.deepEqual(negative.body.diagnosis.history.samples, [])
+})
+
+await test('POST /diagnose：四路采集 → 契约形状（运行中且无异常 → running-ok）', async () => {
+  const res = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', logTail: 5, since: '30m' })
+  assert.equal(res.status, 200)
+  const diagnosis = res.body.diagnosis
+  assert.equal(diagnosis.id, '9f2c1d4e5a6b')
+  assert.equal(diagnosis.name, 'shop-web-1')
+  assert.deepEqual(diagnosis.verdict, { severity: 'ok', code: 'running-ok', summary: '容器在运行，未发现明确问题' })
+  assert.deepEqual(diagnosis.findings, [])
+  // evidence：可缺字段一律给 null（不是省略、也不是 0）
+  assert.equal(diagnosis.evidence.state, 'running')
+  // status 是 ps 风格的 STATUS（不是 State.Status 的裸值）：假 CLI 的 inspect 没有 StartedAt → 只有 'Up'
+  assert.equal(diagnosis.evidence.status, 'Up (healthy)')
+  assert.equal(diagnosis.evidence.health, 'healthy')
+  // 假 CLI 的 logs 是 stdout 一行 + stderr 一行；logs() 拼接时两段之间补了一个换行 → 3 行
+  assert.equal(diagnosis.evidence.logLines, 3)
+  assert.equal(diagnosis.evidence.errorLines, 0)
+  assert.equal(diagnosis.evidence.memoryLimitBytes, null)
+  assert.equal(diagnosis.evidence.cpuQuota, null)
+  assert.equal(diagnosis.evidence.cpuPercent, 0.5)
+  assert.equal(diagnosis.evidence.memPercent, 1.6)
+  // 三行事件里 exec_start 被服务端白名单丢掉 → 2 条
+  assert.equal(diagnosis.evidence.eventCount, 2)
+  assert.equal(diagnosis.timeline.length, 2)
+  assert.match(diagnosis.logTail, /stdout line 1/)
+  assert.deepEqual(diagnosis.suggestions, [])
+})
+
+await test('POST /run-command：反推等价 docker run（只生成文本，不执行）', async () => {
+  const res = await call('POST', '/run-command', { target: '本机', id: 'shop-web-1' })
+  assert.equal(res.status, 200)
+  const recreate = res.body.recreate
+  assert.equal(recreate.name, 'shop-web-1')
+  assert.match(recreate.command, /^docker run -d/)
+  // 端口 / 网络 / env 都还原
+  assert.match(recreate.command, /-p 0\.0\.0\.0:8080:80\/tcp/)
+  assert.match(recreate.command, /--network shop_default/)
+  assert.match(recreate.command, /-e DB_PASSWORD=secret-value/)
+  // hostname 等于容器 ID 前 12 位 = docker 默认值，不该写进命令
+  assert.equal(recreate.command.includes('--hostname'), false)
+  // 敏感键名进 secretKeys（值不改写），ENTRYPOINT 进 omitted
+  assert.deepEqual(recreate.secretKeys, ['DB_PASSWORD'])
+  assert.equal(recreate.omitted.some((line) => line.includes('ENTRYPOINT')), true)
+  assert.equal(recreate.warnings.length > 0, true)
+})
+
+await test('POST /run-command：缺 id 400 / 非法 id 400（不进 docker）', async () => {
+  const missing = await call('POST', '/run-command', { target: '本机' })
+  assert.equal(missing.status, 400)
+  assert.match(missing.body.error, /id 必填/)
+  const badId = await call('POST', '/run-command', { target: '本机', id: 'shop-web-1; rm -rf /' })
+  assert.equal(badId.status, 400)
+  assert.match(badId.body.error, /container 含非法字符/)
+})
+
+await test('POST /diagnose：缺 id 400 / 非法 id 400 / 非法 since 400（都在进 docker 之前）', async () => {
+  const missing = await call('POST', '/diagnose', { target: '本机' })
+  assert.equal(missing.status, 400)
+  assert.match(missing.body.error, /id 必填/)
+  const badId = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1; rm -rf /' })
+  assert.equal(badId.status, 400)
+  assert.match(badId.body.error, /container 含非法字符/)
+  // since 与 docker_logs 同一口径（D45）：非法值回 400，而不是被外层 catch 写成 500
+  const badSince = await call('POST', '/diagnose', { target: '本机', id: 'shop-web-1', since: '昨天' })
+  assert.equal(badSince.status, 400)
+  assert.match(badSince.body.error, /since 无法识别/)
 })
 
 await test('GET /logs/stream：SSE 事件序列（line stdout/stderr → end）', async () => {
@@ -867,6 +1067,30 @@ await test('开启变更后：网络 / 卷的 remove 与 prune 放行', async ()
   }
 })
 
+await test('POST /system-df：汇总 + 明细（计数是字符串→number；totals 不进 HTTP 契约）', async () => {
+  const res = await call('POST', '/system-df', { target: '本机' })
+  assert.equal(res.status, 200)
+  const disk = res.body.disk
+  assert.equal(disk.summary.length, 4)
+  assert.deepEqual(disk.summary[0], { type: 'Images', totalCount: 14, active: 10, size: '2.011GB', reclaimable: '1.134GB (56%)' })
+  // 明细按独占大小降序：nginx 142MB 在 alpine 0B 前面
+  assert.equal(disk.images[0].repository, 'nginx')
+  assert.equal(disk.images[0].containers, 1)
+  assert.equal(disk.images[1].containers, 0)
+  assert.deepEqual(disk.volumes.map((row) => row.name), ['pgdata', 'empty-vol'])
+  assert.equal(disk.buildCache[0].inUse, false)
+  assert.deepEqual(disk.truncated, { images: false, volumes: false, buildCache: false })
+  assert.equal(disk.degraded, false)
+  assert.equal(disk.degradedReason, null)
+  // totals 是宿主内部字段（工具层用它报「还有多少」），契约 §2.1 里没有它
+  assert.equal(Object.hasOwn(disk, 'totals'), false)
+})
+
+await test('POST /system-df：只读路由（GET 405）', async () => {
+  const wrongMethod = await call('GET', '/system-df')
+  assert.equal(wrongMethod.status, 405)
+})
+
 await test('agent 工具：docker_networks / docker_volumes 列清单（变更类不注册工具）', async () => {
   const netTool = state.tools.find((item) => item.name === 'docker_networks')
   assert.ok(netTool !== undefined)
@@ -934,6 +1158,10 @@ await test('agent 工具：每个工具的 render 都能跑，且输出里不出
     ['docker_images', { target: '本机' }],
     ['docker_image_inspect', { target: '本机', ref: 'nginx:1.27' }],
     ['docker_events', { target: '本机' }],
+    ['docker_top', { target: '本机', id: 'shop-web-1' }],
+    ['docker_diagnose', { target: '本机', id: 'shop-web-1' }],
+    ['docker_run_command', { target: '本机', id: 'shop-web-1' }],
+    ['docker_disk_usage', { target: '本机' }],
     ['docker_networks', { target: '本机' }],
     ['docker_volumes', { target: '本机' }],
     // 开关门禁的那几个：本用例跑在 allowMutations / allowExec 打开之后，所以它们此刻也注册着。
@@ -955,6 +1183,57 @@ await test('agent 工具：每个工具的 render 都能跑，且输出里不出
     assert.ok(text.trim() !== '', name + ' 渲染出空文本')
     assert.ok(!text.includes('undefined'), name + ' 的渲染里出现 undefined：\n' + text.slice(0, 400))
   }
+})
+
+await test('agent 工具：docker_disk_usage / docker_run_command 的结构化返回', async () => {
+  const diskTool = state.tools.find((item) => item.name === 'docker_disk_usage')
+  assert.ok(diskTool !== undefined, 'docker_disk_usage 未注册')
+  const disk = await diskTool.execute({ target: '本机' })
+  assert.equal(disk.summary.length, 4)
+  assert.equal(disk.images[0].containers, 1)
+  // 工具层把截断前的真实条数带出来（schema 要求每类都有 totals）
+  assert.deepEqual(disk.totals, { images: 2, volumes: 2, buildCache: 1 })
+  // degradedReason 为 null 时**省略这个键**（output.schema 没有 null 类型）
+  assert.equal(Object.hasOwn(disk, 'degradedReason'), false)
+  assert.equal(disk.degraded, false)
+
+  const cmdTool = state.tools.find((item) => item.name === 'docker_run_command')
+  assert.ok(cmdTool !== undefined, 'docker_run_command 未注册')
+  const cmd = await cmdTool.execute({ target: '本机', id: 'shop-web-1' })
+  assert.match(cmd.command, /^docker run -d/)
+  assert.deepEqual(cmd.secretKeys, ['DB_PASSWORD'])
+  assert.equal(cmd.omitted.some((line) => line.includes('ENTRYPOINT')), true)
+})
+
+await test('agent 工具：docker_top / docker_diagnose 的结构化返回（可缺字段省略而不是 null）', async () => {
+  const topTool = state.tools.find((item) => item.name === 'docker_top')
+  assert.ok(topTool !== undefined, 'docker_top 未注册')
+  const top = await topTool.execute({ target: '本机', id: 'shop-web-1' })
+  assert.equal(top.name, 'shop-web-1')
+  assert.equal(top.processes.length, 2)
+  assert.equal(typeof top.processes[0].pid, 'string')
+
+  const diagnoseTool = state.tools.find((item) => item.name === 'docker_diagnose')
+  assert.ok(diagnoseTool !== undefined, 'docker_diagnose 未注册')
+  const diagnosis = await diagnoseTool.execute({ target: '本机', id: 'shop-web-1' })
+  assert.equal(diagnosis.verdict.code, 'running-ok')
+  // 批三：工具侧也带历史（不是新工具——历史只是同一份诊断的第二种视图）
+  assert.equal(Array.isArray(diagnosis.history.samples), true)
+  assert.equal(diagnosis.history.samples.length >= 1, true)
+  assert.equal(typeof diagnosis.history.recorded, 'boolean')
+  assert.equal(typeof diagnosis.history.trend.verdict.summary, 'string')
+  // 工具 schema 没有 null 类型：样本里的可缺字段必须是「不出现」
+  for (const sample of diagnosis.history.samples) {
+    for (const value of Object.values(sample)) assert.notEqual(value, null)
+  }
+  // render 压成一行（不逐条铺样本）
+  const rendered = diagnoseTool.output.render({}, diagnosis)[0].text
+  assert.match(rendered, /历史 \d+ 次/)
+  assert.equal(rendered.includes('2026-11-03T'), false)
+  // output.schema 没有 null 类型：可缺字段必须「不出现」，写 null 会被宿主校验挡掉整条结果
+  for (const value of Object.values(diagnosis.evidence)) assert.notEqual(value, null)
+  assert.equal(Object.hasOwn(diagnosis.evidence, 'memoryLimitBytes'), false)
+  assert.match(diagnosis.logTail, /stdout line 1/)
 })
 
 await test('agent 工具：docker_ps 经假 CLI 返回容器', async () => {
@@ -1223,7 +1502,7 @@ await test('重新启用：工具（含能力开关项）、公告、数据路�
   assert.equal(res.status, 200)
   assert.equal(res.body.config.enabled, true)
   const names = toolNames()
-  for (const readonly of ['docker_targets', 'docker_ps', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_stats', 'docker_images', 'docker_image_inspect', 'docker_events', 'docker_networks', 'docker_volumes']) {
+  for (const readonly of ['docker_targets', 'docker_ps', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_stats', 'docker_images', 'docker_image_inspect', 'docker_events', 'docker_top', 'docker_diagnose', 'docker_run_command', 'docker_networks', 'docker_volumes', 'docker_disk_usage']) {
     assert.equal(names.includes(readonly), true, `缺少只读工具 ${readonly}`)
   }
   // allowMutations / allowExec 在此前的用例里已打开：重启用后对应工具一并回来
@@ -1410,6 +1689,8 @@ for (const result of results) {
 console.log(`\n[dsh-docker] route-smoke: ${String(results.length - failed)}/${String(results.length)} 通过`)
 // 清理假 CLI 临时目录（D25 顺带）：此前每次运行在 os.tmpdir() 留一份
 try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ }
+// 诊断历史的临时目录（与假 CLI 的目录同一收尾，别在 os.tmpdir() 留垃圾）
+try { rmSync(historyDir, { recursive: true, force: true }) } catch { /* 忽略 */ }
 clearTimeout(watchdog)
 // 成功路径也要显式退出（D121）：主体结束后仍有周期句柄漏着的话，
 // 关掉看门狗就再也没人兜底了 —— 直接 exit 既保证退出也省掉排空等待

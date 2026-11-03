@@ -19,6 +19,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { DockerApi, assertBin, assertImageRef, parseImageHistoryJson, parseImageHistoryText, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson } from './docker.js';
+import type { DiagnosisSample, HistoryTrend } from './history.js';
 import type { DockerTarget, ResolvedTarget } from './docker.js';
 import type { TierClass } from '@hyzyn/dsh-kit';
 import type { HostKeyRecord, SshSpec } from './ssh-exec.js';
@@ -83,6 +84,18 @@ interface LocalProbeHint {
     timedOut?: boolean;
     /** CLI 缺失时，PATH 里找到的别的容器 CLI（见 findAlternativeLocalCli），如 `podman`。 */
     alternativeCli?: string;
+}
+/**
+ * 诊断历史视图（HTTP 与 agent 工具共用的一份形状）：最近 N 条样本 + 趋势 + 本次是否真的记了一条。
+ *
+ * `samples` 里**没有日志原文**，这是刻意的（见 src/history.ts 文件头）：历史只记结论与数字，
+ * 日志原文可能带凭证。客户端在历史块下方也会把这句话写给用户看。
+ */
+export interface DiagnosisHistoryView {
+    samples: DiagnosisSample[];
+    trend: HistoryTrend;
+    /** 本次调用是否真的追加了一条（去重命中时为 false）。 */
+    recorded: boolean;
 }
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，

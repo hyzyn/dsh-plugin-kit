@@ -907,6 +907,15 @@
 .dk_badge[data-state="unhealthy"] { color: var(--dk-danger); }
 .dk_badge[data-state="created"] { color: var(--dk-label-2); }
 .dk_badge[data-state="unknown"] { color: var(--dk-label-3); }
+/*
+ * 诊断的严重度四档：**同一个类的 data-state 变体**，配色全部取既有令牌
+ * （danger / warn / accent / success）——不新造颜色、不新造徽标类。
+ * 与上面容器状态那几档同形，并排放也不是两种视觉语言。
+ */
+.dk_badge[data-state="critical"] { color: var(--dk-danger); border-color: color-mix(in srgb, var(--dk-danger) 36%, transparent); background: color-mix(in srgb, var(--dk-danger) 10%, transparent); }
+.dk_badge[data-state="warning"] { color: var(--dk-warn); border-color: color-mix(in srgb, var(--dk-warn) 36%, transparent); background: color-mix(in srgb, var(--dk-warn) 10%, transparent); }
+.dk_badge[data-state="info"] { color: var(--dk-accent); border-color: color-mix(in srgb, var(--dk-accent) 36%, transparent); background: color-mix(in srgb, var(--dk-accent) 10%, transparent); }
+.dk_badge[data-state="ok"] { color: var(--dk-success); border-color: color-mix(in srgb, var(--dk-success) 36%, transparent); background: color-mix(in srgb, var(--dk-success) 10%, transparent); }
 
 .dk_tag {
   display: inline-flex;
@@ -2520,3 +2529,471 @@
 
 /* 聚合日志的 [service] 前缀（同一份日志着色，只多一个来源标签） */
 .dk_logSvc { margin-right: 6px; color: var(--dk-accent); font-weight: 500; }
+
+/* ============================ 诊断页签 ============================ */
+
+/*
+ * 诊断页是**只读观察面**：一张结论卡 + 三段数据（发现 / 建议 / 折叠的原始证据）。
+ * 所有颜色经 --dk-* 令牌层取宿主主题；圆角走六档；中性边框一律 0.5px 发丝线
+ * （规范原文见 docs/conventions.md § 客户端半体 ⑥ 的检查七 ~ 十六）。
+ */
+
+.dk_diagView {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-md);
+  min-width: 0;
+}
+
+.dk_diagVerdict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  padding: var(--dk-gap-lg);
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-2);
+}
+
+.dk_diagVerdictHead {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+/* 容器名 · 目标 · 采集时间：等宽 + 省略号（长主机名不该把结论行挤变形） */
+.dk_diagMeta {
+  font-family: var(--dk-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dk-label-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk_diagSummary {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dk-label);
+}
+
+.dk_diagSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+.dk_diagSectionTitle {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  letter-spacing: .3px;
+  color: var(--dk-label-3);
+}
+
+.dk_diagFindings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+.dk_diagFinding {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+  padding: var(--dk-gap-sm) var(--dk-gap-md);
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-sm);
+  background: var(--dk-surface-2);
+}
+
+.dk_diagFindingBody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dk_diagFindingTitle { font-size: 13px; line-height: 20px; font-weight: 500; color: var(--dk-label); }
+.dk_diagFindingDetail { font-size: 12px; line-height: 18px; color: var(--dk-label-2); }
+
+/* 建议是**有序**列表：宿主给的是「先做什么」，序号本身带信息 */
+.dk_diagList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-xs);
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dk-label-2);
+}
+
+/* 折叠块：原生 <details>，键盘可达由浏览器负责（不自己实现展开状态机） */
+.dk_diagFolded {
+  min-width: 0;
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-sm);
+  background: var(--dk-surface-2);
+}
+
+.dk_diagFoldedHead {
+  padding: var(--dk-gap-sm) var(--dk-gap-md);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dk-label-3);
+  cursor: pointer;
+}
+
+.dk_diagFoldedHead:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+
+.dk_diagFoldedBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+  padding: 0 var(--dk-gap-md) var(--dk-gap-md);
+}
+
+.dk_diagTimeline { display: flex; flex-direction: column; gap: var(--dk-gap-xs); }
+
+.dk_diagEvent {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dk_diagAt { flex: none; font-family: var(--dk-mono); color: var(--dk-label-3); }
+.dk_diagEventText { min-width: 0; color: var(--dk-label-2); }
+
+/* 日志尾部：同日志正文的深色块，但自己滚（它嵌在折叠块里，不能把整页撑长） */
+.dk_diagLogTail { max-height: 320px; overflow: auto; }
+
+.dk_diagActions {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  flex-wrap: wrap;
+}
+
+/*
+ * 诊断历史（批三）：色带 + 趋势句 + 数字变化 + 判据增减。
+ *
+ * 整块是**一张卡**（与结论卡同材质：surface-2 + 0.5px 发丝线 + r-md）。`data-aggravating`
+ * 只换边框与底色（warning 档 36% / 8% 的 color-mix），**不新造颜色**——与 .dk_badge 的
+ * warning 变体同一配方，读屏与并排观感都一致。
+ */
+.dk_diagHistory {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  padding: var(--dk-gap-lg);
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-2);
+  min-width: 0;
+}
+
+.dk_diagHistory[data-aggravating="1"] {
+  border-color: color-mix(in srgb, var(--dk-warn) 36%, transparent);
+  background: color-mix(in srgb, var(--dk-warn) 8%, var(--dk-surface-2));
+}
+
+/* 色带：一格一次诊断。方块只表达轻重缓急，结论 code 与时间在 title 里。 */
+.dk_diagBand {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-xs);
+  flex-wrap: wrap;
+}
+
+.dk_diagBandCell {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--dk-r-xs);
+  background: color-mix(in srgb, var(--dk-label-3) 24%, transparent);
+}
+
+.dk_diagBandCell[data-severity="critical"] { background: color-mix(in srgb, var(--dk-danger) 72%, transparent); }
+.dk_diagBandCell[data-severity="warning"] { background: color-mix(in srgb, var(--dk-warn) 68%, transparent); }
+.dk_diagBandCell[data-severity="info"] { background: color-mix(in srgb, var(--dk-accent) 48%, transparent); }
+.dk_diagBandCell[data-severity="ok"] { background: color-mix(in srgb, var(--dk-success) 52%, transparent); }
+
+.dk_diagTrendRow {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+.dk_diagTrendText {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dk-label);
+  min-width: 0;
+}
+
+/* 数字变化：标签说人话、值等宽、箭头压暗、增量带符号（正数走 warning，负数保持中性）。 */
+.dk_diagNums {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dk_diagNumRow {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+.dk_diagNumLabel {
+  flex: none;
+  min-width: 64px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dk-label-3);
+}
+
+.dk_diagNumValue {
+  font-family: var(--dk-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dk-label);
+}
+
+.dk_diagNumArrow {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dk-label-3);
+}
+
+.dk_diagNumDelta {
+  font-family: var(--dk-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dk-label-3);
+}
+
+.dk_diagNumDelta[data-trend="up"] { color: var(--dk-warn); }
+
+/* 判据增减：徽标 + 若干 code 标签，一行一类。 */
+.dk_diagChipRow {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-xs);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dk_diagHistoryNote {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dk-label-3);
+}
+
+/* 趋势行右侧那句「本次与上次一致」：只在被去重时出现，不换行、不抢主轴（占位交给 headerSpacer）。 */
+.dk_diagDeduped {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* ============================ 进程页签 ============================ */
+
+.dk_procView {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dk_procBar { display: flex; align-items: center; gap: var(--dk-gap-sm); flex-wrap: wrap; }
+
+/*
+ * COMMAND 这一列可以很长：外侧横向滚动，单元格内用省略号 + `title` 全文
+ * （契约 §4：允许横向滚动或省略号 + title）。表头吸顶，长进程表滚到底也认得出列。
+ */
+.dk_procWrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-sm);
+}
+
+.dk_procTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dk_procTable th,
+.dk_procTable td {
+  padding: var(--dk-gap-sm) var(--dk-gap-md);
+  border-bottom: 0.5px solid var(--dk-border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.dk_procTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--dk-surface);
+  color: var(--dk-label-3);
+  font-weight: 500;
+}
+
+.dk_procTable tbody tr:last-child td { border-bottom: none; }
+
+.dk_procNum { font-family: var(--dk-mono); text-align: right; }
+.dk_procMono { font-family: var(--dk-mono); color: var(--dk-label-2); }
+.dk_procCmd {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--dk-mono);
+  color: var(--dk-label);
+}
+
+/* ============================ 磁盘占用（存储治理） ============================ */
+
+/*
+ * 四张汇总卡 + 「合计可回收」条 + 两张明细表。整个视图放在 .dk_mainImages 里
+ * （那一层自带 overflow:auto），所以这里只负责纵向排布与卡片材质，不自己再滚一次：
+ * 多段内容各滚各的，滚轮一会儿滚卡片一会儿滚表，读起来像两张页面。
+ */
+
+.dk_diskView {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-lg);
+  min-width: 0;
+}
+
+.dk_diskCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--dk-gap-md);
+}
+
+.dk_diskCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+  padding: var(--dk-gap-md) var(--dk-gap-lg);
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-2);
+}
+
+.dk_diskCardName {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dk-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk_diskCardRows {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--dk-gap-xs) var(--dk-gap-md);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dk_diskCardKey { color: var(--dk-label-3); white-space: nowrap; }
+.dk_diskCardVal {
+  font-family: var(--dk-mono);
+  color: var(--dk-label-2);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「合计可回收」条：一眼看到这台机器还能收回多少，所以数字比标签重 */
+.dk_diskTotal {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dk-gap-md);
+  padding: var(--dk-gap-sm) var(--dk-gap-lg);
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-2);
+}
+
+.dk_diskTotalLabel { font-size: 12px; line-height: 18px; color: var(--dk-label-3); }
+.dk_diskTotalValue {
+  font-family: var(--dk-mono);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dk-label);
+}
+
+.dk_diskSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+/* ============================ 等价 docker run（只读推导） ============================ */
+
+/*
+ * 概览底部的折叠区：默认收起，**展开时才请求**（见 ContainerView 的 onRecreateToggle）。
+ * 材质与诊断页的折叠块同一套：0.5px 发丝线 + surface-2，不叠投影（检查八不许配对）。
+ */
+.dk_runCmd {
+  margin-top: var(--dk-gap-xl);
+  border: 0.5px solid var(--dk-border);
+  border-radius: var(--dk-r-sm);
+  background: var(--dk-surface-2);
+  min-width: 0;
+}
+
+.dk_runCmdHead {
+  padding: var(--dk-gap-sm) var(--dk-gap-md);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dk-label-3);
+  cursor: pointer;
+}
+
+.dk_runCmdHead:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+
+.dk_runCmdBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  padding: 0 var(--dk-gap-md) var(--dk-gap-md);
+  min-width: 0;
+}
+
+/* 命令本体：等宽深色块（与日志正文同一套观感），自己滚，别把概览撑成一条长条 */
+.dk_runCmdBox { max-height: 360px; overflow: auto; }
+
+.dk_runCmdNotes { display: flex; flex-direction: column; gap: var(--dk-gap-xs); min-width: 0; }
+
+.dk_runCmdList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-xs);
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dk-label-2);
+}

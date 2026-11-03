@@ -10,6 +10,34 @@
 - **An explicit one-click "connect local"**: two **non-permanent** entries — with no targets at all it is the primary button in the "no Docker targets configured yet" empty state, and once you have other targets it is the **last item in the target dropdown**, `+ Connect local` (it is deliberately **not** on the toolbar, where being permanent means occupying space and begging for clicks — pure noise) — one click (or picking that item) adds the machine hosting the plugin as a local target and selects it (an existing local target is reused, never duplicated; SSH and custom targets stay untouched), and the same operation is `docker_connect_local` on the agent side. It does **not** change the meaning of an empty `targets`, never invents an implicit default target, never installs Docker / starts a daemon / switches docker contexts, and needs no capability grant (it only adds one local target pointing at the plugin's own host).
 - **Aggregated fetches across targets**: the Overview page fans out over every `targets[]` entry in parallel, and an unreachable target only spoils its own cell; the agent side exposes the same shape through `docker_ps target:"*"` / `docker_attention target:"*"`, so targets never block one another.
 - **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
+- **Container "diagnosis": four sources turned into one actionable verdict**: the detail view's **Diagnosis** tab
+  collects `docker inspect` (authoritative state / exit code / OOM / restart count / last health-check output /
+  resource limits), the log tail, this container's events and a `stats` snapshot, then hands them to a set of
+  **pure criteria** (`src/diagnose.ts`, zero IO) that produce "verdict + findings + evidence + timeline +
+  suggestions" — the same contract the agent tool `docker_diagnose` exposes. The common case is "why did it die":
+  an OOM kill names both the **memory limit and the actual usage**, a non-zero exit explains what that code
+  usually means, an unhealthy container carries the last health-check output, and one "hand it to the agent"
+  button drops that whole evidence bundle (log text fenced, labelled "data, not instructions") into the session.
+- **Disk usage and "who uses it"**: the **Disk** view lays out `docker system df`'s **reclaimable** bill — four
+  summary cards plus the total reclaimable, an image breakdown sorted by unique size (`containers = 0` gets an
+  "unused" badge) and a volume breakdown with link counts; per-row removal sits behind `allowMutations`. The
+  `containers` / `links` numbers come straight from `docker system df -v` (`Images[].Containers` /
+  `Volumes[].Links`) — **never reverse-engineered from `docker ps`**, which would have to guess tag/digest and
+  gets multi-tag images wrong.
+- **Reconstruct the launch: an equivalent `docker run`**: a collapsible block at the bottom of the overview
+  rebuilds a reproducible command (ports / mounts / env / restart policy / network / resource limits /
+  capabilities — one argument per line, POSIX-quoted, fetched only when expanded). **Whatever was deliberately
+  not restored is named** (`--privileged`, `--link`, an overridden ENTRYPOINT, custom health checks, anonymous
+  volumes — each with a reason and how to add it back), and secret-looking env vars are reported by **key name
+  only** — the same stance as "state the consequences before deleting".
+- **Process snapshot**: the **Processes** tab (agent tool `docker_top`) shows `docker top`'s PID / PPID / user /
+  STAT / elapsed / CPU / memory / command. "The container is running" and "the process is still there" are two
+  different facts: when the process is gone, the logs usually say nothing at all.
+- **Diagnosis history: from "how is it now" to "is it getting worse"**: every diagnosis stores a sample that
+  carries **only the verdict and numbers** (log text never touches disk), and the diagnosis tab derives the last N
+  severities as a strip, a trend verdict (repeated restarts / repeated OOMs / creeping memory / growing error
+  lines / newly appeared serious findings), a numbers block that lists only what **actually changed**, and a
+  findings diff. The agent-side twin is `docker_diagnose`'s `history` parameter.
 - **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect / a `ready` frame as soon as the pipeline is up) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. "Connected" and "receiving data" are two different things: the client only counts `ready`, never the arrival of the response headers (see "SSE event protocol"). Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
 - **Read-only by default, capability switches in three tiers**: start / stop / remove, exec and image mutations are independent switches; while one is off the agent tools are **not registered** and the HTTP routes return 403 (the capability does not exist, rather than failing when called). Container names and IDs pass a whitelist, every command is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:NAME` (resolved through the official credential layer, falling back to the environment) and never sent back to the browser.
 - **Right-click a log into the agent**: select the failing lines in the log view, then right-click for "send to the current session / fill the input box so I can edit first" — the selection travels with its target, container, time window and 20 lines of context on each side (the menu states plainly that the content enters the model context and may carry credentials). Delivery reports itself twice: a **viewport-level toast** (attached to `body`, above the panel and the terminal modal), and — when the terminal panel is open — an **automatic fold of the terminal** (`minimize()` on the `ttyPanel` v2 contract; sessions keep running and the sidebar "Terminal" entry's badge restores it), so the conversation is simply there. On older tty without that call it degrades to the toast's "the conversation is behind the panel" hint. To edit first, use the draft action — **the session input box is the only editing surface** (multi-line, with the full context in view, and exactly what the agent receives), instead of a second, weaker card editor. Locating the target session is version-tolerant: **≤0.1.5** reads `current` off the `sessions.list` snapshot, while **since 0.1.6** that field moved out of the session domain together with view selection, so it reads `retainedBy.mainView > 0` instead (the same test `dsh-client-ui-session` and this repo's codegraph use) — trusting only the legacy field greys out both menu items as "no session open". The same read drives "carry the containers tab across a session switch".
@@ -256,8 +284,10 @@ Inside the panel:
   stacking mutually interrupting commands such as stop + restart + remove. Image removal / pruning goes through the
   same confirmation dialog and also has a running state. Clicking a card body opens the overview.
 - **Container details (a full-column view)**: the top is "back + container name + status badge + target host",
-  with three tabs below — overview (`docker inspect` authoritative data + one-shot exec), logs and
-  stats. The log / stats icons on a card land directly on the corresponding tab.
+  with five tabs below — overview (`docker inspect` authoritative data + one-shot exec + an equivalent `docker run`),
+  logs, stats, diagnosis and processes. The log / stats icons on a card land directly on the corresponding tab;
+  diagnosis and processes **fetch only while that tab is open** (leaving the tab stops the requests, and there is
+  no polling).
 - **Log view (a compact two-row layout)**: the first row = back + container name + status + target host +
   `LINES` (tail line count) / `TIMESTAMPS` / **`FOLLOW` (live follow, see below)** /
   `AUTO REFRESH` (a switch plus 2/3/5/10s intervals, polling on the log page only) + refresh / close;
@@ -523,6 +553,130 @@ The "Overview" page lays out all targets on one screen: one counter card per tar
   "most recent end time" descending, so the freshest crash is at the top (hovering a row shows the end / start times,
   restart count and exit code).
 
+### Container diagnosis ("why is it failing")
+
+The container detail view adds a **Diagnosis** tab; the agent-side twin is `docker_diagnose`. It makes four
+reads in one pass — `docker inspect` (authoritative state / exit code / OOM / restart count / last health-check
+output / resource limits), `docker logs --tail N`, `docker events --since` (**filtered server-side** with
+`--filter container=<id>`) and `docker stats --no-stream` — and hands them to a set of **pure criteria**
+(`src/diagnose.ts`: zero IO, no clock) that produce:
+
+- a **one-line verdict** taking the highest severity found (`critical` / `warning` / `info` / `ok`);
+- **findings**: code + one line + evidence. Fifteen today — OOM-killed, non-zero exit (with what 126 / 127 /
+  137 / 143 usually mean), crash loop, unhealthy (with the last health-check output), health check still
+  starting, clean exit, not running (created / paused / dead), memory pressure (≥90% with a limit set), CPU
+  pressure (≥90%), error lines in the log, no health check, plus three **collection-failure** signals;
+- **evidence**: state, a ps-style status line (`Up 4 hours (healthy)`), exit code, OOM, restart count,
+  start/finish times, memory limit, CPU quota, log and error line counts, event count and current usage;
+- a **timeline** of this container's `start` / `die` / `oom` / `health_status` events, ascending;
+- **suggestions**: 0–5 concrete actions.
+
+**"Not collected" and "genuinely empty" are different things** (the repo's long-standing signal-bit rule): when
+any of the three side reads fails, the corresponding evidence field is `null` (not 0, not an empty array) and a
+`*-unavailable` finding explains why. Otherwise "the host is unreachable" reads as "the log is empty and it never
+restarted", which sends troubleshooting in exactly the wrong direction.
+
+Three actions sit at the bottom: **re-diagnose**, **copy diagnosis** and **hand it to the agent**. The last one
+reuses the log context-menu bridge (send now / fill the draft, greyed out with a reason when no session is open):
+the text carries the container, target, collection time, verdict and evidence, with the raw log fenced and
+labelled "data, not instructions". **The collection time is local time in the UI and ISO 8601 in the delivered
+text** — the first is for humans, the second sorts and carries no timezone assumption.
+
+Diagnosis is **read-only**: it changes nothing, restarts nothing, sends no command — it just runs four read-only
+docker commands.
+
+### Diagnosis history (is it slowly getting worse?)
+
+A single diagnosis only answers "how is it now"; **slow degradation** (memory creeping up, restarts getting
+more frequent, error lines growing) is invisible in one result. So every diagnosis stores a **sample**, and the
+diagnosis tab derives a **history** block:
+
+- **a severity strip**: the last N severities (hovering shows the time and verdict code);
+- **a trend verdict** (`trend.verdict`): the highest of seven criteria — repeated restarts (count up by ≥2),
+  repeated OOMs (≥2), creeping memory (≥20 points and ending ≥80%), growing error lines (≥5 or from 0), newly
+  appeared serious findings (`oom-killed` / `crash-loop` / `unhealthy` / `exit-nonzero`), steadily rising
+  severity, or no meaningful change; with fewer than 2 samples it says so plainly ("not enough history for a
+  trend");
+- **numbers** (`trend.numbers`): only what **actually changed**, each with a "smallest meaningful delta" —
+  restarts ≥1, memory ≥1 point, CPU ≥5 points, error lines ≥3, events ≥5, log lines ≥50. These thresholds came
+  out of real data: a diagnosis takes one instantaneous `stats` snapshot, and without a gate a 1.11% → 1.09%
+  wobble fills the block; error lines are a **sliding window** (an old error scrolling out drops the count by
+  one), hence 3;
+- **a findings diff**: "newly appeared" / "resolved" (`oom-killed` newly appearing is a degradation signal).
+
+**What is stored, and what is not** (a deliberate trade-off): a sample holds **only the verdict and numbers** —
+severity, verdict code, the finding codes, state / exit code / OOM / restart count / memory and CPU usage /
+error lines / event count / log lines / time. **Never persisted**: the raw log (`logTail`) and each finding's
+detail (it embeds log lines that may carry credentials). The file is therefore safe to `cat`, but it also
+**cannot** replay a past incident — re-run the diagnosis when you need the raw text.
+
+Location: `<DSH home>/dsh-docker/diagnosis-history.jsonl` (directory `0700`, file `0600`), one record per line.
+Caps: **50 per container**, **2000 per file**; past that the oldest are dropped and the file is rewritten
+**atomically** (temp file + rename). **30-second dedupe**: the same container within 30s, with an identical
+severity + verdict + finding set + restart count, is **not appended** (clicking "re-diagnose" repeatedly must not
+fake a wobbly trend), and the UI says so ("identical to the previous run; not recorded again within 30 seconds").
+`DSH_DOCKER_HISTORY_DIR` overrides the directory (**tests / troubleshooting only**); an empty string means unset.
+
+Three known edges: ① **renaming a container starts a new history** (the index key is "target + container name") —
+better than merging two segments and having the trend report changes that never happened; ② **appends are not
+locked** (two concurrent diagnoses may lose one update) — history is supporting information and a file lock is
+not worth it; ③ **a write failure only degrades**: the diagnosis still returns, `recorded = false`, and one line
+lands on the host's stdout.
+
+### Disk usage and reclaimable space
+
+**Disk** is the last segment of the toolbar (containers / images / Compose / networks / volumes / disk); the
+agent-side twin is `docker_disk_usage`. Two commands feed it: `docker system df` (the four summary classes) and
+`docker system df -v` (per-item detail).
+
+- four summary cards: images / containers / local volumes / build cache, each with **item count, active count,
+  size and reclaimable** (the class names stay as docker emits them; the UI translates);
+- **total reclaimable**: the byte sum of the four (if any row cannot be parsed the whole line shows `—` — better
+  to say nothing than to print a wrong number);
+- **image breakdown** (by unique size, descending): repository:tag / size / unique / **container count** —
+  `containers === 0` gets an "unused" badge, with a removal icon behind `allowMutations` and the existing
+  confirmation dialog;
+- **volume breakdown** (by size, descending): name / driver / size / **link count** — `links === 0` likewise
+  gets an "unused" badge.
+
+Three deliberate trade-offs:
+
+- **sort first, truncate second**: on a real host 258 of 259 volumes were 0B; truncating first would spend all
+  100 slots on empty volumes and leave the ones that actually cost space out of the table;
+- **the detail cap is 100 rows per class**, announced in the header ("detail truncated, showing the first 100")
+  — the tool side caps at 20 and the two `truncated` bits are OR-ed (truncation must leave a trace);
+- **an older docker only degrades, never errors**: no `-v --format '{{json .}}'`, a truncated output or an
+  unexpected shape all give `degraded: true` plus a plain-language reason, the summary cards stay usable and the
+  detail tables are **not rendered** (an empty table would read as "there is nothing").
+
+The disk view **does not poll** (`system df -v` costs more than `docker images`) and has **no prune button**:
+per-row removal behind a confirmation dialog is safer than "wipe a whole class", and that entry already exists
+once each on the images and volumes pages.
+
+### Equivalent `docker run` (reconstructing the launch)
+
+A collapsible **equivalent docker run** block at the bottom of the overview; the agent-side twin is
+`docker_run_command`. It rebuilds a reproducible command from the **raw rows** of `docker inspect` — it
+deliberately does **not** widen `ContainerDetail`, because that would drag env vars into `docker_inspect`'s model
+context. Covered: name, restart policy, port mappings (unbound ones become `--expose`), binds / named volumes /
+tmpfs, a non-default network, env vars, user / workdir / hostname (omitted when they equal the default), memory
+and CPU limits, cap-add / cap-drop / device, plus the image and command.
+
+It **fetches only when expanded**, one argument per line, POSIX single-quote escaping, ready to copy.
+
+Three deliberate trade-offs:
+
+- **env values are kept as-is** (rewriting them would break equivalence); keys matching
+  `/(PASS|PWD|SECRET|TOKEN|KEY|CRED|AUTH|PRIVATE)/i` are reported in `secretKeys`, the UI shows a "may contain
+  credentials" warning **naming keys only**, and the command itself is not redacted — a redacted command cannot
+  run, and running it is the whole point;
+- **whatever was deliberately not restored is named** (`omitted`): `--privileged`, `--link`, a non-default log
+  driver, `--pid/--ipc/--uts`, `--sysctl`, `--add-host`, `--security-opt`, exotic mount types, anonymous
+  volumes, an overridden ENTRYPOINT, custom health checks — each with "why it is missing" and "how to add it
+  back". **Nothing is dropped silently**;
+- **a Compose-managed container is only an approximation**: network aliases / labels / depends_on are not in the
+  command, and the UI says so.
+
 ## Configuration (saved and applied hot)
 
 ![Settings card: target CRUD, capability switches and parameters, saved and applied hot](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-setting.png)
@@ -615,14 +769,18 @@ and reconnect". The record list can be deleted / reset in the settings card (del
 | `docker_connect_local` | always registered | — (no parameters) | **Connect local**: makes sure a `kind=local` target exists and selects it (an existing one is reused, never duplicated; SSH / custom targets stay untouched), then probes the daemon read-only: returns `{name, kind, created, saved, reachable, serverVersion?}`. With no targets configured the other tools are not registered at all (see the zero-target note below) — this is the one step that fixes that. **Requires no capability grant** (it only writes the plugin's own config plus a read-only probe) and never installs Docker / starts a daemon / switches context / touches environment variables. When the daemon is unreachable the result text names the cause (CLI missing / probe timed out / daemon not running / no socket permission; when the CLI is missing it also names another container CLI found on PATH, but never rewrites dockerBin for you) instead of an empty list |
 | `docker_ps` | registered with ≥1 target | `target?` (**pass `*` = all targets**), `all?: boolean`, `limit?` (1–500, default 100), `offset?` (default 0) | lists containers (name / state / health / image / ports / compose project and service / short ID); by default only running ones, `all:true` includes stopped. With `target:'*'` it returns results grouped by target, and **one unreachable target does not affect the others** (that group carries `error`). Ports are merged across the IPv4/IPv6 dual-stack expansion (one `-p` no longer shows twice, D130); an empty `ports` does **not** mean "nothing exposed" — host-network containers publish on the host itself, and that case now carries a `net` field (D131). The first step of troubleshooting |
 | `docker_attention` | registered with ≥1 target | `target?` (supports `*`), `limit?: number` | a **needs-attention summary**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / zombie; every item carries `reasons`, `exitCode`, `oomKilled`, `restartCount`. OOM and the real exit code come from one `docker inspect` (a ps summary cannot distinguish a manual kill from 137). The troubleshooting entry point: call it first when you are unsure which machine or container to look at |
+| `docker_diagnose` | registered with ≥1 target | `target?`, `id` (required), `logTail?` (1–500, default 80), `since?` (docker syntax, default `1h`), `history?` (0–50, default 10; 0 = no history) | **"why is this container failing"**: one pass over inspect + log tail + this container's events (server-side `--filter container`) + a `stats` snapshot, yielding `verdict` (one line) / `findings` (the criteria table, each with code, severity, title, detail) / `evidence` (exit code, OOM, restart count, memory and CPU limits, log and event counts, current usage) / `timeline` / `suggestions`. **Read-only**; "not collected" becomes `null` plus a `*-unavailable` finding — never 0. For more logs or keyword searches use `docker_logs_grep`. The result also carries `history` (the last N samples holding **only the verdict and numbers**, plus the `trend` verdict) — `trend.verdict.summary` is the sentence answering "is it slowly getting worse" |
 | `docker_inspect` | registered with ≥1 target | `target?`, `id` (required) | `docker inspect`'s authoritative details: state / health check / exit code / restart count / ports / mounts / networks / startup command |
 | `docker_logs` | registered with ≥1 target | `target?`, `id`, `tail?` (1–5000, default `logTailDefault`), `timestamps?`, `since?`, `until?` | the tail from `docker logs --tail`; `since` / `until` use docker syntax (e.g. `10m`, `2026-09-09T10:00:00`) to bound a time window; over the cap it is marked `truncated`; when truncated (`truncated`) the result explains how to narrow it — a smaller `tail`, a `since`/`until` window, or `docker_logs_grep` |
 | `docker_logs_grep` | registered with ≥1 target | `target?`, `id`, `pattern` (required, ≤512 chars), `regexp?`, `ignoreCase?`, `since?`, `until?`, `context?` (0–20, default 2), `limit?` (1–500, default 200), `tail?` (omitted = scan all history), `timestamps?` (on by default) | **server-side log search**: line-by-line filtering in the host (never touches the remote shell, never pipes ` | grep`), returns hit lines plus ±context lines, and honestly reports `matched` (all hits even when not returned) / `scanned` / `limited` / `truncated` — "only scanned this far" is distinguishable from "scanned everything"; the scan window is **aligned to line boundaries** (the partial line left by a byte-level cut is never returned as a line, so every entry in `lines` is a complete line); returned lines have their own cap: at most 4000 lines (`MAX_RESULT_LINES`); over it the result is cut to the cap and carries `truncatedForSize` plus `notes` (lower `limit` / reduce `context` / bound the window with `since`·`until`), while `matched` still reports the full count. Division of labour with `docker_logs`: error in the recent tail → `docker_logs` (cheaper); buried deep / a specific time window / keywords, error codes, request IDs → this tool. Literal substring by default (grep -F semantics, zero ReDoS); JS regex only with `regexp: true` |
 | `docker_stats` | registered with ≥1 target | `target?`, `ids?` (comma-separated container names/IDs) | a `docker stats --no-stream` snapshot: CPU% / memory usage and share / network IO / block IO / PIDs; omitting `ids` means all running containers. Live following is a panel capability (SSE), and the tool keeps single-value snapshot semantics |
 | `docker_images` | registered with ≥1 target | `target?`、`limit?` (1–500, default 100), `offset?` (default 0) | image list (repository:tag / size / created / short ID) |
+| `docker_top` | registered with ≥1 target | `target?`, `id` (required) | a process snapshot inside the container (`docker top <id> -eo pid,ppid,user,stat,etime,pcpu,pmem,cmd`): PID / PPID / user / STAT / elapsed / CPU / memory / command, every field as docker prints it. "The container is running" and "the process is still there" are two different facts |
 | `docker_events` | registered with ≥1 target | `target?`, `since?` (docker `--since` syntax, default `10m`) | a container-event snapshot (`docker events --since <d> --until <now>`, likewise through the server-side allowlist): the nine kinds start / die / stop / kill / oom / health_status / destroy / rename / update, with noise such as `exec_*` already dropped server-side. For continuous observation have the user watch the "Activity" strip in the panel's container list |
 | `docker_networks` | registered with ≥1 target | `target?`、`limit?` (1–500, default 100), `offset?` (default 0) | network list (name / driver / scope / internal flag / short ID). The connected-container list stays out of the list rows — the details page does the inspect, whereas inspecting row by row would be N docker calls |
 | `docker_volumes` | registered with ≥1 target | `target?`、`limit?` (1–500, default 100), `offset?` (default 0) | volume list (name / driver / scope / mountpoint) |
+| `docker_disk_usage` | registered with ≥1 target | `target?` | disk usage and **"who uses it"**: the four `docker system df` summary classes (items / active / size / reclaimable) plus `-v` detail (an image's `containers`, a volume's `links`, 20 rows each). Check whether `containers` is 0 before deleting; summary and detail are two commands, and a detail failure only degrades (`degraded`) |
+| `docker_run_command` | registered with ≥1 target | `target?`, `id` (required) | **derives, never executes**: rebuilds an equivalent `docker run` command text from `docker inspect` (ports / mounts / env / restart policy / network / resource limits / capabilities) plus `warnings` / `secretKeys` (key names only, values unredacted) / `omitted` (what was deliberately not restored, each with a reason). A Compose container is only an approximation |
 | `docker_image_inspect` | registered with ≥1 target | `target?`, `ref` (required) | `docker image inspect` + `docker history`: size / size including parents / created / platform / layer count and layer list / entrypoint and command / exposed ports / digest / build history (each step's command and size) |
 | `docker_action` | `allowMutations` + ≥1 target | `target?`, `action` (`start` \| `stop` \| `restart` \| `remove`), `id` | container lifecycle operations. `remove` is destructive: it deletes the container config and writable layer (data volumes are not included), and the target container must be confirmed with the user before running |
 | `docker_image_remove` | `allowMutations` + ≥1 target | `target?`, `ref` (required) | removes an image (`docker image rm`, without `-f`). **Destructive**: it fails when the image is referenced by a container or a child image; confirm the target image and restate the consequences before running |
@@ -654,11 +812,13 @@ and reconnect". The record list can be deleted / reset in the settings card (del
   static switches above: the switches govern registration (host-level, persistent grant), the tier gate governs
   each registered call (per call, follows the tier immediately). Mechanism:
   [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
-- Recommended troubleshooting order: `docker_targets` → `docker_ps` → `docker_logs`
-  (when the tail does not explain the failure, `docker_logs_grep` with `pattern` /
-  `since` / `until` to search deeper) →
-  `docker_inspect` → `docker_stats`; for image problems `docker_images` →
-  `docker_image_inspect`.
+- Recommended troubleshooting order: `docker_targets` → `docker_ps` → **`docker_diagnose`** (one call gives
+  the verdict, the criteria and the evidence — most "why did it die / why is it stuck" questions have a
+  direction right here) → `docker_logs` (when the tail does not explain the failure, `docker_logs_grep` with
+  `pattern` / `since` / `until` to search deeper) → `docker_inspect` (raw fields) → `docker_stats` /
+  `docker_top` (alive but wrong: check resources first, then whether the process is still there); for image
+  problems `docker_images` → `docker_image_inspect`; before reclaiming disk, `docker_disk_usage` (see
+  `containers` / `links`, i.e. who uses what) and only then decide what to delete.
 - With `announceToAgent` on, the plugin injects a compact announcement into the systemPrompt: the plugin/panel
   location, the "read-only by default" and "docker socket ≈ root on the target host" boundaries, the
   "`allowExec` only governs the one-shot exec channel" split (the Terminal button is not gated by it), the `*`
@@ -704,6 +864,8 @@ returned 403 on Desktop — the symptom was the logs / stats / events / pull str
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
+| `/top` | POST | `{target?, id}` (required) | `{ok:true, top:{id, name, rows:[{pid, ppid, user, stat, elapsed, cpu, mem, command}], truncated}}` — every field exactly as `docker top` prints it; a stopped or missing container goes through the existing error channel (never a 200 with an empty list) |
+| `/diagnose` | POST | `{target?, id}` (required), `logTail?` (1–500, default 80), `since?` (default `1h`), `history?` (0–50, default 10) | `{ok:true, diagnosis:{verdict, findings, evidence, timeline, logTail, suggestions, history:{samples, trend, recorded}}}`. `history` is the last N samples **after** this run's recording plus the trend (`recorded` says whether this call actually appended — `false` when the 30-second dedupe hit). Four reads; a failed side read only degrades (the evidence field is `null` plus a `*-unavailable` finding); an invalid `since` is rejected with 400 in the allowlist block |
 | `/logs/stream` | GET | query: `target?`, `id` (single container, or use `ids` instead) or `ids` (comma-separated multiple containers, **one connection carries all of them**, at most 32), `tail?` (**0**–5000; `0` = follow only, no history backfill, used on client reconnect), `timestamps?` (`1`/`true`), `since?` | `200 text/event-stream` long connection, event protocol below; bad parameters / unknown target / non-loopback return ordinary JSON errors |
 | `/stats/stream` | GET | query: `target?`, `ids?` (comma-separated; omitted = all running) | `200 text/event-stream`: one `stats` frame per second (ContainerStats, same shape as the /stats snapshot); it does not end naturally and is finished off by the client disconnecting |
 | `/events/stream` | GET | query: `target?` | `200 text/event-stream`: one container event per `event` frame (already through the server-side allowlist, with missing-value fields omitted); it does not end naturally and is finished off by the client disconnecting |
@@ -720,6 +882,8 @@ returned 403 on Desktop — the symptom was the logs / stats / events / pull str
 | `/volumes/inspect` | POST | `{target?, name}` (required) | `{ok:true, volume:{name, detail: VolumeDetail}}` (mountpoint / options / labels) |
 | `/volumes/remove` | POST | `{target?, name}` (required) | requires `allowMutations` (otherwise 403); `docker volume rm` (**the data goes with the volume**); `{ok:true, result:{name, message}}` |
 | `/volumes/prune` | POST | `{target?}` | requires `allowMutations` (otherwise 403); `docker volume prune -f` (**deletes data**, see known limitations); `{ok:true, result:{message}}` |
+| `/system-df` | POST | `{target?}` | `{ok:true, disk:{summary, images, volumes, buildCache, truncated, degraded, degradedReason}}`: `summary` is the four classes and each detail list caps at 100 rows (**sorted before truncation**); an older docker degrades instead of erroring |
+| `/run-command` | POST | `{target?, id}` (required) | `{ok:true, recreate:{id, name, command, warnings, secretKeys, omitted}}` — **derives only, never executes**; `omitted` is the single outlet for "deliberately not restored" |
 | `/action` | POST | `{target?, action, id}` | requires `allowMutations` (otherwise 403); `{ok:true, result:{id, action, message}}` |
 | `/exec` | POST | `{target?, id, command, timeoutSec?}` | requires `allowExec` (otherwise 403); `{ok:true, result:{id, command, code, stdout, stderr, truncated, durationMs}}` |
 
@@ -959,6 +1123,27 @@ read-only first:
 - **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
   `stats` and `--format '{{json .}}'` differ from docker's, so only the parser's degradation paths are relied on;
   this has not been verified item by item.
+- **Diagnosis is a set of criteria, not an expert**: the fifteen criteria cover the objective evidence a container
+  reports about itself (exit code / OOM / restart count / health check / resource pressure / error lines in the
+  log) and **know nothing about the business**. The verdict says what the evidence points at; whether that error
+  can be ignored is a human (or model) decision on the other side of "hand it to the agent". The cost is stated
+  too: one diagnosis runs **four** read-only docker commands (inspect + logs + events + stats), which on an SSH
+  target means up to four channels (the short-command gate caps concurrency at 2, so two batches) — noticeable
+  on a slow host.
+- **Event collection gets its own budget (8MB, keeping the tail)**: in one hour of a single container's events the
+  `exec_create` / `exec_start` / `exec_die` triple dominates (dropped by the parser's allowlist; a real host
+  measured 256 events / 588KB in 1h, almost all of them that triple), so the generic 512KB budget would leave the
+  timeline **permanently empty**. Diagnosis therefore widens event collection to 8MB and keeps the tail — on a
+  container with very many events the timeline covers only the **most recent** span.
+- **The equivalent `docker run` is an approximation, not a backup**: a Compose-managed container loses network
+  aliases / labels / depends_on; `--privileged` / `--link` / an overridden ENTRYPOINT / custom health checks /
+  anonymous volumes are **deliberately not restored** and listed one by one in `omitted`. **It cannot replace
+  `docker commit` / volume backups** — it is "a command you can read, edit and reproduce".
+- **The disk view has two independent truncations**: 100 rows per class on the host side (`truncated`) and 20 rows
+  on the tool side; on a host with thousands of volumes the `system df -v` output itself can hit the 8MB budget
+  (then `degraded: true` and the summary stays usable). `system df`'s human-readable sizes are docker's own (SI
+  units) and the "total reclaimable" parses them into bytes and sums — **if a row cannot be parsed the whole line
+  shows `—`** rather than an approximation.
 - **No image builds / Compose orchestration changes**: images support pulling / removal / dangling pruning, but there
   is no `docker build`, `docker save` / `load` or `docker push`; Compose is a **read-only**
   project view (grouping by project + project-level merged logs) and provides no `compose up` / `down` / `restart`.
