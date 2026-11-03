@@ -200,7 +200,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    `node scripts/check-dsh-peers.mjs --app-boot` 用 rc.5 的官方判定器逐包核对通过；
  *    主题令牌快照与 rc.5 逐字一致（403 个令牌，只有 `dshVersion` 元数据位变化）。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
