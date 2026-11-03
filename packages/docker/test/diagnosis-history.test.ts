@@ -480,7 +480,7 @@ describe('historyTrend：七条判据', () => {
     expect(trend.aggravating).toBe(false)
   })
 
-  it('severity-creep：最近 3 条非降且末条 ≥ warning', () => {
+  it('severity-creep：最近 3 条非降且较窗口起点严格走高（末条 ≥ warning）', () => {
     const trend = historyTrend([
       sample({ at: at(0), severity: 'ok' }),
       sample({ at: at(1), severity: 'warning' }),
@@ -496,6 +496,38 @@ describe('historyTrend：七条判据', () => {
       sample({ at: at(2), severity: 'warning' }),
     ])
     expect(trend.verdict.code).toBe('stable')
+  })
+
+  it('D169：三条都是 critical 且没变化 → stable（「一直严重」不是「在变严重」）', () => {
+    // 真机形状：同一容器连续 3 次 critical/unhealthy，findings 与数字全都没变。
+    // 平手此前也满足「非降」，于是趋势说出了一句话里并不存在的变化。
+    const critical = { severity: 'critical' as const, code: 'unhealthy', findings: ['unhealthy'] }
+    const trend = historyTrend([
+      sample({ at: at(0), ...critical }),
+      sample({ at: at(1), ...critical }),
+      sample({ at: at(2), ...critical }),
+    ])
+    expect(trend.verdict.code).toBe('stable')
+    expect(trend.aggravating).toBe(false)
+  })
+
+  it('D169 反例：三条都是 warning 且没变化 → 也不报 creep', () => {
+    const trend = historyTrend([
+      sample({ at: at(0), severity: 'warning' }),
+      sample({ at: at(1), severity: 'warning' }),
+      sample({ at: at(2), severity: 'warning' }),
+    ])
+    expect(trend.verdict.code).toBe('stable')
+  })
+
+  it('severity-creep：走高之后走平（warning → critical ×2）仍算（较起点已变严重）', () => {
+    // 刻意不带 findings：这条只钉判据 6 的「严格走高」，不要被判据 5（新出现严重判据）抢答。
+    const trend = historyTrend([
+      sample({ at: at(0), severity: 'warning' }),
+      sample({ at: at(1), severity: 'critical' }),
+      sample({ at: at(2), severity: 'critical' }),
+    ])
+    expect(trend.verdict.code).toBe('severity-creep')
   })
 
   it('stable：什么都没变', () => {

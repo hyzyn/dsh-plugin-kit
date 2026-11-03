@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D168` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D102` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D168` 之后，
+> **编号是硬契约**：`D01–D169` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D102` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D169` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -36,7 +36,7 @@
 
 ## 现状
 
-**已修 168 / 待修 0**，编号至 `D168`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 169 / 待修 0**，编号至 `D169`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -237,6 +237,7 @@
 
 | D167 | **旧宿主 + 新客户端会被钉死在「正在连接事件流…」**（本插件自己引入的回归；2026-10-11 用户在 test profile 上实测：切换目标并连上后卡片已经列出容器、活动条却永远在转）。成因：客户端半体与宿主半体同包同版本，但**开发档**会出现宿主进程还跑着改动前的模块（Node 内存里那份旧 `lib/`）、浏览器每次刷新却从磁盘读到新的 `client.js` —— 旧宿主**从不发 `ready`**，新客户端死等一帧永远不来的帧。线级实测（用户那台 test 宿主）：`/config` 里**没有 `streamProtocol` 字段**，`local` 与可用 SSH 目标的 `/events/stream` 在 8s 内**一帧都没有** | 版本协商 + 每条流一条兜底。宿主：`src/index.ts` 的 `/config` 新增只读 `streamProtocol: 2`（≥2 = 会发 `ready`）。客户端：`client-src/index.js` 新增纯函数 `hostSendsReadyFrame(config)`（`≥2` 才发；字段存在但更小 / 整个缺失 → 按旧宿主；`config` 未加载 → 先按新宿主），`hostReadyFrameRef` 闸住事件流 `onopen` 的旧判据回退（响应头到了就算连上），「config 晚于建流」时只补一次重开而不是死等（`eventsLinkedRef` + 自增重连令牌），另认**第一条真实事件**为就绪；日志 / 统计 / 拉取各认**第一个真实数据帧**（`markOpen()` / `setStatsStatus('open')` / `setStatus('open')`）——那些流一定会很快出帧。回归：`scripts/client-smoke.mjs` 新增一条（纯函数四态 + 四条接线判据 + 晚到重开），`scripts/route-smoke.mjs` 的 `/config` 断言 `streamProtocol === 2`。**判别性已实测**：拆掉这四条判据与协议字段 → `client-smoke` 92/94、`route-smoke` 71/72。**真机双向复核**（隔离宿主 + 真 Chrome，用户真实配置全程未动）：① 仿真旧宿主包（在打包产物上去掉 `ready` 与 `streamProtocol`，客户端保持新版，形状与用户那台一致）+ 可用目标 → **立即绿**「实时接收中（docker events）」；② 现代宿主 + 黑洞目标（连接卡住）→ **黄「正在连接事件流…」(0ms) → 红「事件流已断开」(4.6s)，全程没有绿**（假绿没回来） | src/index.ts、client-src/index.js、client-src/log-stream.js、scripts/client-smoke.mjs、scripts/route-smoke.mjs、README.md、README.en.md |
 | D168 | **聚合日志给每个容器各开一条 EventSource**：3 个容器 = 3 条同源长连接，叠加活动条的事件流正好 4 条；浏览器 HTTP/1.1 每个源只有 6 条 TCP（D165 实测 5 条常驻流即整页静默排队），而 Compose 项目日志页**没有上限**（N 个 service = N 条）。用户报告的「打开容器面板就有 4 条 docker SSE」在 0.13.3 上不成立（面板只开活动条 1 条），但「多容器聚合 = 多条连接」这个放大器是真的 | src/index.ts、client-src/index.js、client-src/log-stream.js |
+| D169 | **连续 3 次 critical 会被说成「在变严重」**：诊断历史的判据 6 只判「非降」，平手也满足单调，于是严重度、findings 与数字全都没变化的容器，趋势块仍亮黄并给出「连续 3 次诊断的结论在变严重」。README 写的是「严重度连续走高」——判据与文档不一致。真机形状（真宿主 + 真 docker + 真 Chrome）：同一容器连续 3 次 `critical/unhealthy`、`errorLines` 全为 40 | src/history.ts、test/diagnosis-history.test.ts |
 
 ## 2. 编号字典：这段代码为什么长这样
 
@@ -291,6 +292,7 @@
 | | 别名主机名走带 **500ms 超时与 60s 缓存**的 DNS，且来源检查（`Sec-Fetch-Site` / `Origin`）**提到 DNS 分支之前** | D80、D110 |
 | | 四条 SSE 与变更子路由要求**同源证明**；**新闸门必须带「拒绝分支」的负例**——差异化的回归测试 | D32、D96、D117 |
 | 通用反模式 | 「同一件事实现在两处」必然给出两个答案：切分规则 / 渲染路径 / 闸门判定都要**收成一份定义** | D44、D95、D108、D136、D137 |
+| 诊断历史 | 趋势判据的「变严重」必须是**较窗口起点严格走高**：平手是「一直严重」，不是趋势——严重度本身已经由 findings 表达；判据与 README 的「连续走高」必须同义 | D169 |
 
 > **2026-09-25 落点迁移（安全围栏那三行）**：D31 / D32 / D80 / D110 / D139 的**实现**已整体上提到
 > `@hyzyn/dsh-kit`（[`packages/kit/src/http.ts`](../kit/src/http.ts) 的 `isLoopbackAddress` /

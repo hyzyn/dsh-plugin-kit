@@ -239,12 +239,17 @@ export function historyTrend(samples) {
         };
         aggravating = true;
     }
-    // 6) 结论持续变严重：最近 3 条非降且末条 ≥ warning（一次 warning 之后回到 ok 不算）
+    // 6) 结论持续变严重：最近 3 条非降**且较窗口起点严格走高**，末条 ≥ warning
+    //    （一次 warning 之后回到 ok 不算）。D169：此前只判「非降」，平手也满足单调，
+    //    于是连续 3 次都是 critical 的容器会被说成「在变严重」——严重度没变、findings 也没变，
+    //    那是「一直严重」，不是趋势。README 写的就是「连续走高」，判据以它为准。
     if (verdict === null && count >= 3) {
         const tail = samples.slice(-3);
-        const monotone = tail.every((sample, index) => index === 0 || SEVERITY_RANK[sample.severity] >= SEVERITY_RANK[tail[index - 1].severity]);
-        const lastRisky = SEVERITY_RANK[tail[tail.length - 1].severity] >= SEVERITY_RANK.warning;
-        if (monotone && lastRisky) {
+        const rankOf = (sample) => SEVERITY_RANK[sample.severity];
+        const monotone = tail.every((sample, index) => index === 0 || rankOf(sample) >= rankOf(tail[index - 1]));
+        const lastRisky = rankOf(tail[tail.length - 1]) >= SEVERITY_RANK.warning;
+        const rose = rankOf(tail[tail.length - 1]) > rankOf(tail[0]);
+        if (monotone && rose && lastRisky) {
             verdict = {
                 severity: 'warning',
                 code: 'severity-creep',
