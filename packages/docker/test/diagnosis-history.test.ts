@@ -15,7 +15,7 @@
  */
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { Diagnosis } from '../src/diagnose.js'
@@ -316,23 +316,31 @@ describe('diagnosisHistoryPaths', () => {
     else process.env.DSH_DOCKER_HISTORY_DIR = previous
   })
 
+  /*
+   * Windows CI 的实测（v0.1.78 那次）：把期望写成 POSIX 字面量（`/tmp/...`）会让这三条在
+   * Windows 上红——实现走 `node:path`，`join` 出来的是反斜杠。路径断言必须用**同一套**
+   * 平台函数现算，而不是假定分隔符。
+   */
+  const HOME = join(tmpdir(), 'dsh-history-home')
+
   it('默认落在 <DSH home>/dsh-docker/diagnosis-history.jsonl', () => {
     delete process.env.DSH_DOCKER_HISTORY_DIR
-    const paths = diagnosisHistoryPaths('/tmp/example-home')
-    expect(paths.dir).toBe('/tmp/example-home/dsh-docker')
-    expect(paths.file).toBe(join('/tmp/example-home/dsh-docker', HISTORY_FILE_NAME))
+    const paths = diagnosisHistoryPaths(HOME)
+    expect(paths.dir).toBe(join(HOME, 'dsh-docker'))
+    expect(paths.file).toBe(join(HOME, 'dsh-docker', HISTORY_FILE_NAME))
   })
 
-  it('DSH_DOCKER_HISTORY_DIR 覆写的是**目录**', () => {
-    process.env.DSH_DOCKER_HISTORY_DIR = '/tmp/override-dir'
-    const paths = diagnosisHistoryPaths('/tmp/example-home')
-    expect(paths.dir).toBe('/tmp/override-dir')
-    expect(paths.file).toBe(join('/tmp/override-dir', HISTORY_FILE_NAME))
+  it('DSH_DOCKER_HISTORY_DIR 覆写的是**目录**（实现会 resolve，断言按同一口径现算）', () => {
+    const override = join(tmpdir(), 'dsh-history-override')
+    process.env.DSH_DOCKER_HISTORY_DIR = override
+    const paths = diagnosisHistoryPaths(HOME)
+    expect(paths.dir).toBe(resolve(override))
+    expect(paths.file).toBe(join(resolve(override), HISTORY_FILE_NAME))
   })
 
   it('覆写成空串 / 纯空白视为没设（落到默认目录，不报错）', () => {
     process.env.DSH_DOCKER_HISTORY_DIR = '   '
-    expect(diagnosisHistoryPaths('/tmp/example-home').dir).toBe('/tmp/example-home/dsh-docker')
+    expect(diagnosisHistoryPaths(HOME).dir).toBe(join(HOME, 'dsh-docker'))
   })
 })
 
