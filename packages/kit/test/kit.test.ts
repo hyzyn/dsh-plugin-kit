@@ -66,6 +66,40 @@ describe('getService', () => {
     expect(getService({ tools: service } as unknown as Context, 'tools')).toBe(service)
     expect(getService({} as unknown as Context, 'missing')).toBeUndefined()
   })
+
+  /*
+   * 两个「抛错」出口：cordis 4 上它们都是**真机形状**，不是防御性编程。
+   * 2026-11-03 桌面宿主（dsh 0.2.1-rc.5）上 loglens 的 apply 就死在这第二条上——
+   * 属性访问抛 inject 守卫，插件整体激活失败，设置卡片每条请求 404。
+   */
+  it('属性访问抛 inject 守卫时按「没有」处理，不把调用方带下去', () => {
+    // 真机形状：ctx.get('settings') 是 undefined（服务还没就绪），ctx.settings 直接抛。
+    const target: Record<string, unknown> = { get: (): undefined => undefined }
+    const ctx = new Proxy(target, {
+      get(source, prop, receiver) {
+        if (prop === 'settings') throw new Error('cannot get property "settings" without inject')
+        return Reflect.get(source, prop, receiver)
+      },
+    }) as unknown as Context
+    expect(() => getService(ctx, 'settings')).not.toThrow()
+    expect(getService(ctx, 'settings')).toBeUndefined()
+  })
+
+  it('ctx.get 自己抛错时回退属性访问（别的宿主版本可能没有 get）', () => {
+    const service = { viaAttr: true }
+    const ctx = {
+      get: (): never => { throw new Error('boom') },
+      tools: service,
+    } as unknown as Context
+    expect(getService(ctx, 'tools')).toBe(service)
+  })
+
+  it('两条路都读不到时仍是 undefined（缺服务 ≠ 抛错）', () => {
+    const ctx = {
+      get: (): never => { throw new Error('boom') },
+    } as unknown as Context
+    expect(getService(ctx, 'settings')).toBeUndefined()
+  })
 })
 
 describe('dshHome', () => {

@@ -72,7 +72,10 @@ child.on('close', () => (tail += stderr.flush()))
 
 - `getService(ctx, name): unknown` —— 读宿主服务：先 `ctx.get(name)`，取不到再回退
   `ctx[name]`（兼容宿主不同版本 / 插件直接挂属性的写法）；服务真值是 falsy 时不会
-  误回退。
+  误回退。**两条读取路都按「抛错 = 没有」处理**：cordis 4 对没声明 inject 的服务做
+  属性访问会直接抛 `cannot get property "x" without inject`，这里把它当 `undefined`
+  返回，不会把调用方的 `apply()` 带崩（要以「服务可用」为前提取值，请在
+  `ctx.inject(['x'], …)` 回调里读）。
 - `dshHome(): string` —— DSH 主目录：`DSH_HOME`（trim 后）优先，否则 `~/.dsh`。
   全仓曾有 8 份逐字重复的推导，读的是同一份配置目录，新代码一律用这个函数。
 

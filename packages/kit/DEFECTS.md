@@ -2,7 +2,7 @@
 
 > **本文件是「转入台账」，不是本包的权威序列。** 下表 `kit D01`–`kit D05` 是**转入镜像**——
 > 权威记录在**原包**（主要是 `codegraph CGxx`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口。
-> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D16` 之后编号。
+> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D17` 之后编号。
 > 跨包引用一律写 `<包名> <前缀><号>`（如 `codegraph CG05`、`tty D61`、`docker D13`），
 > 裸编号只在本包文件内使用。规范见 [docs/conventions.md § 编号规范](../../docs/conventions.md#编号规范)。
 
@@ -19,11 +19,11 @@
 
 - 每条只写**一句话**（这段代码为什么长这样）+ **指回原编号**；
 - **不复制原文、不重新编号、不删除原编号**（原编号仍是权威记录）；
-- 新的、**在 kit 内部发现**的缺陷，直接接在 `D16` 之后编号，写在本文件里。
+- 新的、**在 kit 内部发现**的缺陷，直接接在 `D17` 之后编号，写在本文件里。
 
 ## 现状
 
-**已修 16 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D16` 是**本包内部**发现的）。
+**已修 17 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D17` 是**本包内部**发现的）。
 逐条见下表；`D01–D05` 原文见 [codegraph 的台账](../codegraph/DEFECTS.md)对应行。
 
 ## 转入清单
@@ -49,10 +49,11 @@
 
 | **kit D15** | —（本包内部） | 各插件注册 systemPrompt 段落时**各写一份内联结构类型**`{ section(options: { name: string; order?: number; text: string }): () => void }`，而宿主 `PromptSection` 还有 `interpolate?: boolean`——这份类型把「不插值」**挡在类型之外**（想传也传不进去：`tsc` 报 `TS2353: 'interpolate' does not exist in type`）。于是本仓 10 处段落全是裸调 `section()`，而宿主缺省 `interpolate: true` 且对未知变量**直接 throw**：prompt 插件把用户编辑的正文原样注入，正文里有 `{{language}}` 就每一步请求都抛 `unknown prompt variable`（`dsh headless` exit 1、模型收到 0 次请求），而插件的 /save /list /active 全部 200、`fileError` 为空，卡片上看不出任何原因（2026-10-19 外部测评 issue #14 第 1 条）。rss 更糟：它拼的是**第三方订阅源标题**，外部源就能触发。修法：kit 收一份 `PromptSectionApi` + `registerLiteralSection()`（固定 `interpolate: false`），10 处全改走它；新增 `scripts/check-prompt-sections.mjs` 把「裸调 section()」变成静态红（附 12 条反例用例） | [src/prompt-section.ts](../../packages/kit/src/prompt-section.ts) · [scripts/check-prompt-sections.mjs](../../scripts/check-prompt-sections.mjs) · [scripts/test/check-prompt-sections.test.ts](../../scripts/test/check-prompt-sections.test.ts) |
 | **kit D16** | —（本包内部） | 出站围栏原先落在 loglens 的 `src/net.ts`，而它文件头写着「**第二个消费者出现时上收到 kit**」。2026-10-19 那个条件满足了：rss 也要抓外部地址，却只有 `new URL()` 一层校验、`redirect: 'follow'` 默认跟随跳转——一个 `302 Location: http://169.254.169.254/…` 就把请求带进云元数据，响应作为条目写进 `latest.json` 并注入 systemPrompt（外部测评 issue #13 第 6 条）。两处各写一套判据必然漂，所以按原计划上收：判据（解析后的 IP / 不跟随重定向 / 体积与超时上限）搬进 kit 的 `net-fence.ts`，loglens 改为 re-export（`LoglensNetError` = `FenceError` 别名，`instanceof` 照样成立），rss 的 feed 与目录抓取都改走它。顺带补两处：`readCapped` 对响应形状宽容（`headers` / `body` 可能缺，本仓用例与部分 fetch 实现都不给），`sanitizeErrorMessage` 把 transport 报错里的凭据洗掉（undici 的 `Request cannot be constructed from a URL that includes credentials` 会带完整 URL） | [src/net-fence.ts](../../packages/kit/src/net-fence.ts) · [test/net-fence.test.ts](../../packages/kit/test/net-fence.test.ts) |
+| **kit D17** | —（本包内部） | `getService()` 只按**返回值**判「服务有没有」，而第二跳（属性访问 `ctx[name]`）在 cordis 4 上对**没声明 inject 的服务**是**直接抛** `cannot get property "x" without inject`——异常原样交给调用方，落在 `apply()` 里就是整条插件激活失败。2026-11-03 真机（dsh 0.2.1-rc.5 桌面宿主）就是这条：loglens 在 settings 服务就绪之前读它，`apply()` 抛出去 → 宿主半体没起来（路由与 `loglens_*` 工具全不注册）→ 设置卡片每条请求 404，而卡片是浏览器半体、照常渲染，看上去像「没更新到最新版本」。修法：两跳都按「抛错 = 没有」兜住（`ctx.get` 自己抛也回退属性访问），只保证不抛、不区分「不存在」与「读失败」；需要「服务已可用」这个前提的调用方要在 `ctx.inject([…], …)` 回调里读 | [src/services.ts](../../packages/kit/src/services.ts) · [test/kit.test.ts](../../packages/kit/test/kit.test.ts) |
 
 ## 维护规则
 
-1. **在 kit 内部发现**的缺陷：接在 `D16` 之后编号，只加一行 + 在代码注释里落编号；
+1. **在 kit 内部发现**的缺陷：接在 `D17` 之后编号，只加一行 + 在代码注释里落编号；
    详细 postmortem 写进 commit message。
 2. **在消费包发现、修在 kit** 的缺陷：原编号留在那个包的台账（权威），本文加一行转入记录。
    **不要**在两个地方都写详细正文。

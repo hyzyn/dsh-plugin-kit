@@ -5,8 +5,8 @@
 > 拿到任意一个 `（loglens Dxx）`：先查 [§1 编号索引表](#1-编号索引表) 知道**当年坏了什么**，
 > 再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D10` 是 `packages/loglens` 内部序列，与 `docker` / `tty` 的 `Dxx`
-> **不共享**；跨包引用请写「loglens D01 / docker D03」。新缺陷接在 `D10` 之后，
+> **编号是硬契约**：`D01–D11` 是 `packages/loglens` 内部序列，与 `docker` / `tty` 的 `Dxx`
+> **不共享**；跨包引用请写「loglens D01 / docker D03」。新缺陷接在 `D11` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 >
 > **本文不含**：逐条 postmortem（现场复现 / 回归 / 反向验证）。那是 commit message / PR
@@ -28,6 +28,7 @@
 | D08 | `loglens_facets` 的聚合请求打的是**裸 `/_search`**（`targetAccess()` 只回 origin、索引表达式被剥掉），而 `query` / `_count` / `_field_caps` 三条路都带着它——同一张卡片里「榜 / 时间分布」与「行」来自**不同的数据集**（`.kibana_*` 与别的应用索引被一起聚合进来），界面上看不出来 | src/backends/elastic.ts |
 | D09 | `loglens_context` 用「一个窗口 + `limit = before+after+1` + `backward`」取上下文，而 `backward` 取的是窗口里**最新**的那几条——高密度窗口里（实测 455 条/分钟，60s 窗 636 条只取 11 条）锚点根本没进这一页，连「`ts` 精确相等」那一档都命不中，工具报「锚点行没在这次重查里返回」 | src/tools.ts |
 | D10 | `loglens_facets` 首屏带 `deferLoading: true`，而这条路由上**基线里的 deferred 工具没有激活路径**（`dsh-llm` 的 offered 集合显式排除它们，`dsh-agent-loop` 只对「上次 header 里没有的名字」发 `tool-addition`）——模型从头到尾看不见 facets，而插件公告还在教模型用它；只有工具集中途变化、它被算成「新增」时才短暂可调 | src/tools.ts |
+| D11 | 插件在 `apply()` 顶部用**自己的 ctx**（`inject: []`）读 settings，而宿主可能「先挂插件、后让 settings 服务就绪」——那一刻 cordis 的属性访问守卫直接抛，`apply()` 抛出去等于整条插件激活失败：宿主半体的路由与 `loglens_*` 工具全不注册，浏览器半体的卡片照常渲染、每条请求 404（真机 2026-11-03，桌面宿主 0.2.1-rc.5；用户看到的是设置卡片右上角一行红字 `HTTP 404`） | src/index.ts |
 
 ## 2. 编号字典（这段代码为什么长这样）
 
@@ -252,9 +253,38 @@ backward`」。`backward` 取的是窗口里**最新**的 11 条，而 `before` 
 **守卫**：`test/tools.test.ts` 的断言从「标记只在 facets 上」翻成「**一个工具都不许带** `deferLoading`」，
 并在注释里写明重新引入的前提（宿主提供 tool search，或我们自己在会话中途重注册出一条激活路径）。
 
+### `D11` settings 要在它可用的时候读，而不是在 `apply()` 顶部读
+
+**症状**：桌面宿主（dsh 0.2.1-rc.5）上「设置 → 插件配置 → 日志查询」卡片照常渲染（版本号都对），
+但右上角一行红字 `HTTP 404`，来源列表永远是「1 个来源」的空壳；agent 侧也一个 `loglens_*` 工具都没有。
+
+**根因**：卡片是**浏览器半体**，它的存在只取决于包里的 `client.js`；而路由与工具由**宿主半体**注册。
+宿主半体在 `apply()` 的第一行就读 settings：
+
+```ts
+const scope = settingsEntryScope(ctx, 'loglens')   // ctx 是插件自己的，inject: []
+```
+
+本插件 `inject: []`，而 cordis 4 对「没声明 inject 的服务」做属性访问是**直接抛**
+`cannot get property "settings" without inject`。宿主若**先挂插件、后让 settings 服务就绪**，
+这一抛就把整条插件带下去（`required plugin did not activate`），四条路由与五个工具全没注册。
+kit 的 `getService` 当时只按**返回值**判空、没有兜住抛错（见 kit D17），所以这一抛原样传到了宿主。
+
+**为什么单测没抓到**：假 ctx 的 `settings` 是**注入式的**——`ctx.get('settings')` 直接返回对象，
+属性访问也从不抛。真机的 cordis 用 Proxy 实现这道守卫，假 ctx 没有那一层，于是「服务先到还是后到」
+这个维度在单测里根本不存在。
+
+**修法**：与 docker / tty 同一个姿势——把设置读写口搬进 `ctx.inject(['settings'], settingsCtx => …)`，
+用**绑定了 settings 的 ctx** 去 `settingsEntryScope()`。服务没到就永远不跑这个回调（而不是让 `apply()`
+抛出去）；`persist()` 在 scope 还没到位时照旧如实回报「只在本次进程内有效」。
+
+**守卫**：`test/loglens.test.ts` 的「settings 服务后到」一组用例——用一个**属性访问会抛**的 Proxy 假 ctx
+（照真机形状）钉住三个出口：`apply()` 不抛且路由 / 工具已注册；服务到达前后同一条写盘路由的行为切换；
+服务撤下（effect 释放）后回到如实回报。变异检查：把 `src` 与 `lib` 一起回退，这组用例全红。
+
 ## 现状
 
-**已修 10 / 待修 0**，编号至 `D10`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 11 / 待修 0**，编号至 `D11`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 ## 维护规则

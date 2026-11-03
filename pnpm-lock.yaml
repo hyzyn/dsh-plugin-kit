@@ -27,7 +27,7 @@ importers:
         specifier: 0.2.9
         version: link:packages/kit-settings
       '@hyzyn/dsh-loglens':
-        specifier: 0.1.6
+        specifier: 0.1.7
         version: link:packages/loglens
       '@hyzyn/dsh-mcp':
         specifier: 0.3.11
@@ -79,7 +79,7 @@ importers:
         specifier: 0.2.9
         version: link:../kit-settings
       '@hyzyn/dsh-loglens':
-        specifier: 0.1.6
+        specifier: 0.1.7
         version: link:../loglens
       '@hyzyn/dsh-mcp':
         specifier: 0.3.11

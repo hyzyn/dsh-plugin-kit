@@ -216,28 +216,57 @@ const plugin = definePlugin({
         // volatile 字段解析后是取值的冻结引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
         const config = plainConfig((rawConfig ?? {}));
         let live = normalizeConfig(config).config;
-        const scope = settingsEntryScope(ctx, 'loglens');
         /*
-         * 卡片写的就是 volatile 字段：loader 原地更新配置引用并发一条配置变更事件，
-         * 这里重读一次即可——插件不重挂，所以「内存里的那一份」必须自己跟上。
+         * 工具面重建器：声明在 settings 订阅之前——订阅回调会调它（配置一变就按新的来源清单重建
+         * 注册面）。真正的实现由下面 tools 的 inject 回调写进来，在那之前是 noop。
          */
-        if (scope !== undefined) {
-            ctx.effect(() => scope.onChanged(() => {
-                live = normalizeConfig(scope.get()).config;
-                // 注册面（零来源只放 sources / 无聚合来源跳过 facets）跟着配置走：清单变了就重建一次。
-                // refreshTools 还是 noop 的窗口（tools 服务尚未注入）里这次重建自然落空，下一次 write 会补上。
-                refreshTools();
-            }), 'dsh-loglens: settings sync');
-        }
+        let refreshTools = () => { };
+        /*
+         * settings 读写口**必须**从 ctx.inject(['settings'], …) 里取，不能在插件自己的 ctx 上读。
+         *
+         * 本插件是 `inject: []`，而 cordis 4 对「没声明 inject 的服务」做属性访问是**直接抛**
+         * `cannot get property "settings" without inject`；settings 服务在本插件 apply 之后才就绪时，
+         * 那一抛就是整个插件激活失败——宿主半体没起来，路由与工具全不注册，设置卡片每条请求 404。
+         * 2026-11-03 桌面宿主（dsh 0.2.1-rc.5）上就是这么挂的（loglens D11）。inject 回调只在服务可用时才跑、
+         * 没有就永远不跑（而不是让 apply 抛出去），docker / tty 用的是同一个姿势。
+         */
+        let scope;
+        ctx.inject(['settings'], (settingsCtx) => {
+            settingsCtx.effect(() => {
+                const opened = settingsEntryScope(settingsCtx, 'loglens');
+                // 服务形态不符（老宿主 / 最小宿主）时不装 scope：卡片仍可看快照，只是不持久化
+                //（persist 会如实回报「只在本次进程内有效」）。
+                if (opened === undefined)
+                    return () => { };
+                scope = opened;
+                /*
+                 * 卡片写的就是 volatile 字段：loader 原地更新配置引用并发一条配置变更事件，
+                 * 这里重读一次即可——插件不重挂，所以「内存里的那一份」必须自己跟上。
+                 */
+                const off = opened.onChanged(() => {
+                    live = normalizeConfig(opened.get()).config;
+                    // 注册面（零来源只放 sources / 无聚合来源跳过 facets）跟着配置走：清单变了就重建一次。
+                    // refreshTools 还是 noop 的窗口（tools 服务尚未注入）里这次重建自然落空，下一次 write 会补上。
+                    refreshTools();
+                });
+                return () => {
+                    off();
+                    // 只在仍是自己那一份时清空：重挂 / 服务替换时不把新的那一份抹掉。
+                    if (scope === opened)
+                        scope = undefined;
+                };
+            }, 'dsh-loglens: settings sync');
+        });
         /** 落盘并把内存那一份换掉；没有 settings 服务时如实回报「只在本次进程内有效」。 */
         async function persist(next) {
             live = next;
             // 启用 / 停用的热生效：工具与档位闸跟着走（禁用时一个工具都不注册）
             refreshTools();
-            if (scope === undefined)
+            const current = scope;
+            if (current === undefined)
                 return '宿主没有 settings 服务，改动只在本次进程内有效';
             try {
-                await scope.update({ enabled: next.enabled, targets: next.targets });
+                await current.update({ enabled: next.enabled, targets: next.targets });
                 return undefined;
             }
             catch (error) {
@@ -249,7 +278,6 @@ const plugin = definePlugin({
          * live，所以改来源清单不必重注册；只有 enabled 翻转才需要 rebuild（persist 会调 refreshTools）。
          * 档位闸与工具**同生命周期**（方案见 docs/permission-tier-plan.md 的 loglens 表）。
          */
-        let refreshTools = () => { };
         ctx.inject(['tools'], (toolsCtx) => {
             toolsCtx.effect(() => {
                 let dispose;

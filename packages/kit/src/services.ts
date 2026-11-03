@@ -15,14 +15,31 @@ import type { Context } from '@deepseek-ai/cordis'
  * ctx 上挂属性）。语义照抄 packages/search/src/index.ts:801-808 的同名实现，
  * 包括「get 返回 undefined 才回退」这一细节：服务真值可能是 undefined 以外
  * 的 falsy 值（false / 0 / ''），不能按 falsy 短路，否则会误判成未注册。
+ *
+ * **两条路都按「抛错 = 没有」处理**，不只是「返回 undefined = 没有」：cordis 4 的属性
+ * 访问对**没声明 inject 的服务**是**直接抛** `cannot get property "x" without inject`，
+ * 而这里问的只是「有没有」。只按返回值判空的话，第二跳会把异常交给调用方——落在
+ * `apply()` 里就是整个插件激活失败：2026-11-03 真机（dsh 0.2.1-rc.5 桌面宿主）上
+ * loglens 就是这么挂的（宿主半体没起来，设置卡片每条请求 404）——见 kit D17 / loglens D11。
+ *
+ * 调用方要区分「服务不存在」与「服务存在但读失败」时**不要**指望这里——这里只保证不抛。
  */
 export function getService(ctx: Context, name: string): unknown {
   const withGet = ctx as unknown as { get?: (service: string) => unknown }
-  if (typeof withGet.get === 'function') {
-    const value = withGet.get(name)
-    if (value !== undefined) return value
+  try {
+    if (typeof withGet.get === 'function') {
+      const value = withGet.get(name)
+      if (value !== undefined) return value
+    }
+  } catch {
+    /* get 自己抛（宿主版本差异）：继续走属性访问这一跳 */
   }
-  return (ctx as unknown as Record<string, unknown>)[name]
+  try {
+    return (ctx as unknown as Record<string, unknown>)[name]
+  } catch {
+    /* 未 inject 的服务在 cordis 4 上属性访问会抛：这里问的是「有没有」，没有就是 undefined */
+    return undefined
+  }
 }
 
 /** 展开 `~` / `~\` 前缀（单独的 `~` = 家目录本身）。 */

@@ -66,7 +66,14 @@ function makeResponse() {
   }
 }
 
-function fakeContext(options: { webServer?: boolean; settings?: Record<string, unknown>; tools?: boolean; systemPrompt?: boolean } = {}) {
+function fakeContext(options: {
+  webServer?: boolean
+  settings?: Record<string, unknown>
+  tools?: boolean
+  systemPrompt?: boolean
+  /** 真机形状：用户层已存了配置、宿主却**先挂插件后让 settings 服务就绪**（见 § settings 服务后到）。 */
+  lateSettings?: Record<string, unknown>
+} = {}) {
   const routes: FakeRoute[] = []
   const webServer = {
     register(route: FakeRoute) {
@@ -100,9 +107,33 @@ function fakeContext(options: { webServer?: boolean; settings?: Record<string, u
     },
   }
   const promptCtx = { effect: (run: () => unknown) => { run(); return () => undefined }, systemPrompt }
+  /*
+   * settings 的 inject 回调拿到的 ctx 与插件 ctx 不是同一个：真机上它是**绑定了 settings**
+   * 的 fork（所以在它上面读得到服务），而插件 ctx 上一个都读不到。假 ctx 照这个形状给：
+   * settingsCtx.get('settings') 有值，插件 ctx.get('settings') 只在「服务已就绪」时才有值。
+   */
+  const pending: Array<() => void> = []
+  const cleanups: Array<() => void> = []
+  const settingsContext = {
+    effect: (run: () => unknown) => {
+      const off = run()
+      if (typeof off === 'function') cleanups.push(off as () => void)
+      return () => undefined
+    },
+    on: () => () => undefined,
+    get: (service: string) => (service === 'settings' ? (options.lateSettings ?? options.settings) : undefined),
+  }
   const ctx = {
-    get: (service: string) => (service === 'settings' ? options.settings : undefined),
+    get: (service: string) => (service === 'settings' && options.lateSettings === undefined ? options.settings : undefined),
     inject: (names: string[], callback: (value: unknown) => void) => {
+      if (names.includes('settings')) {
+        if (options.lateSettings !== undefined) {
+          pending.push(() => callback(settingsContext))
+          return () => undefined
+        }
+        if (options.settings !== undefined) callback(settingsContext)
+        return () => undefined
+      }
       if (options.webServer === true && names.includes('webServer')) callback(webCtx)
       if (options.tools === true && names.includes('tools')) callback(toolsCtx)
       if (options.systemPrompt === true && names.includes('systemPrompt')) callback(promptCtx)
@@ -116,6 +147,14 @@ function fakeContext(options: { webServer?: boolean; settings?: Record<string, u
     routes,
     registeredTools,
     sections,
+    /** 让「后到」的 settings 服务就绪：把攒下的 inject 回调跑一遍。 */
+    arriveSettings(): void {
+      for (const run of pending.splice(0)) run()
+    },
+    /** 卸下 settings（宿主撤服务 / 插件重挂）：跑一遍 effect 注册与 onChanged 的清理函数。 */
+    stopSettings(): void {
+      for (const off of cleanups.splice(0)) off()
+    },
   }
 }
 
@@ -179,6 +218,77 @@ describe('插件形状与挂载日志', () => {
 
   it('动作白名单是写死的四条（别把它扩成「照单全收」）', () => {
     expect([...CONFIG_ACTIONS]).toEqual(['enabled', 'targets.add', 'targets.update', 'targets.remove'])
+  })
+})
+
+/*
+ * 2026-11-03 桌面宿主（dsh 0.2.1-rc.5）上的真机症状：设置卡片每条请求 404。
+ * 根因不在路由：插件 apply 在 settings 服务就绪之前就做了属性访问，撞上 cordis 的 inject 守卫
+ * 抛出去 → 宿主半体根本没激活（路由与工具都是零），卡片只剩浏览器半体。这一组用例把三个出口
+ * 都钉住：apply 不抛、服务来之前的注册面、服务来之后（以及撤下之后）的写盘行为。
+ */
+describe('settings 服务后到：激活不许死在 inject 守卫上', () => {
+  /** 真机形状：cordis 4 对**没声明 inject** 的服务做属性访问是直接抛，不是返回 undefined。 */
+  function guardedContext(base: Context): Context {
+    return new Proxy(base as unknown as Record<string, unknown>, {
+      get(target, prop, receiver) {
+        if (prop === 'settings') throw new Error('cannot get property "settings" without inject')
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as unknown as Context
+  }
+
+  it('apply 不抛；路由与工具在 settings 就绪之前就已经注册（曾经这两样都是零）', () => {
+    const late = fakeContext({ webServer: true, tools: true, lateSettings: {} })
+    expect(() => { apply(guardedContext(late.ctx), { announce: false }) }).not.toThrow()
+    expect(late.routes.map((route) => route.path)).toEqual([ROUTE_PREFIX])
+    expect(late.registeredTools).toContain('loglens_sources')
+  })
+
+  it('服务未到：写盘如实回报只在本次进程内有效；到了之后同一条路由改成持久化；撤下后回到回报', async () => {
+    const calls: Array<{ ns: string; patch: Record<string, unknown> }> = []
+    const settings = {
+      describe: () => [{ ns: 'loglens', value: { enabled: true, targets: [] } }],
+      update: async (ns: string, patch: Record<string, unknown>) => { calls.push({ ns, patch }) },
+    }
+    const late = fakeContext({ webServer: true, lateSettings: settings as unknown as Record<string, unknown> })
+    apply(guardedContext(late.ctx), { announce: false })
+
+    const write = async (enabled: boolean) => {
+      const { res, read } = makeResponse()
+      await late.routes[0].handler(makeRequest({ method: 'POST', body: { action: 'enabled', enabled } }) as never, res as never)
+      return read()
+    }
+
+    // 出口 1：服务还没到 —— 内存里改了，界面拿到的是「只在本次进程内有效」。
+    const before = await write(false)
+    expect(before.status).toBe(200)
+    expect(String(before.body?.warning)).toContain('只在本次进程内有效')
+    expect(calls).toHaveLength(0)
+
+    // 出口 2：服务到了 —— 同一个 persist 转成真落盘（entry id 与 patch 都按契约）。
+    late.arriveSettings()
+    const after = await write(true)
+    expect(after.status).toBe(200)
+    expect(after.body?.warning).toBeUndefined()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].ns).toBe('loglens')
+    expect(calls[0].patch.enabled).toBe(true)
+
+    // 出口 3：服务被撤下（效应释放）—— 读写口清空，回到如实回报，而不是对着旧 scope 写。
+    late.stopSettings()
+    const gone = await write(false)
+    expect(String(gone.body?.warning)).toContain('只在本次进程内有效')
+    expect(calls).toHaveLength(1)
+  })
+
+  it('服务形态不符（缺 describe / update）时不装 scope，也不抛：写盘仍走「只在本次进程内有效」', async () => {
+    const late = fakeContext({ webServer: true, lateSettings: {} })
+    expect(() => { apply(guardedContext(late.ctx), { announce: false }) }).not.toThrow()
+    late.arriveSettings()
+    const { res, read } = makeResponse()
+    await late.routes[0].handler(makeRequest({ method: 'POST', body: { action: 'enabled', enabled: false } }) as never, res as never)
+    expect(String(read().body?.warning)).toContain('只在本次进程内有效')
   })
 })
 
