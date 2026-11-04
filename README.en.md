@@ -115,13 +115,13 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek-Harness installed and `dsh web` starts normally. **Eleven DSH cohorts are currently
+- DeepSeek-Harness installed and `dsh web` starts normally. **Twelve DSH cohorts are currently
   supported: `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.1`, `0.2.1-alpha.2`,
-  `0.2.1-alpha.5`, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3`, `0.2.1-rc.4` and `0.2.1-rc.5`**; `0.1.6-alpha.2` and earlier are no longer
-  supported (the newest five cohorts, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3`, `0.2.1-rc.4` and `0.2.1-rc.5`, are pure explicit
-  declarations with zero difference for a host;
-  the sixth one, `0.2.1-alpha.5`, is the one that arrived with **real host behaviour changes** —
-  the per-item evidence is in the cohort notes at the top of
+  `0.2.1-alpha.5`, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3`, `0.2.1-rc.4`, `0.2.1-rc.5` and `0.2.2-alpha.3`**; `0.1.6-alpha.2` and earlier are no longer
+  supported (the newest six cohorts are explicit declarations, but **not all are zero-difference**:
+  `0.2.2-alpha.3` removed one theme token, and the rss / search sidebar hover was adapted with it;
+  `0.2.1-alpha.5` carried real host behaviour changes in the evaluator, `engines.dsh`, credentials and
+  the macOS picker; the other four are zero-difference. The per-item evidence is in the cohort notes at the top of
   [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs)).
 - Compatibility is guaranteed by the `@deepseek-ai/dsh` range each installable plugin declares in
   `peerDependencies`, which DSH checks once **before install** and once **at startup**. What a
@@ -131,6 +131,9 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
   Node.js >= 22.19 and pnpm 10 (below that, `pnpm install` **fails outright** rather than merely
   warning — see [docs/conventions.md § Environment floor](docs/conventions.md#环境下限声明--engine-strict-才真的会拦)).
   On the npm side it is only an `EBADENGINE` notice and does not block installation.
+  The host declares its own Node floor: `0.2.2-alpha.3` requires **Node >= 24.9** (the CI mount lane
+  already runs Node 24), while this repository’s development floor remains `22.19` — older cohorts
+  keep working on Node 22.
 
 ### Install from npm
 

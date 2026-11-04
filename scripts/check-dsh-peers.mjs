@@ -199,8 +199,38 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    **18/18 PASS**；`dsh plugin add` 不需要任何 `compatibility.json` 豁免；
  *    `node scripts/check-dsh-peers.mjs --app-boot` 用 rc.5 的官方判定器逐包核对通过；
  *    主题令牌快照与 rc.5 逐字一致（403 个令牌，只有 `dshVersion` 元数据位变化）。
+ *  - **0.2.2-alpha.3（2026-11-04 实测）**：**不是零差异**——这一档是 0.2.2 线的首档，
+ *    宿主新增 **25** 个包（`dsh-client-ui-user-questions` / `dsh-tool-executor-*` /
+ *    `dsh-official-bundles` 等）、移除 1 个客户端包（`dsh-client-ui-deepseek-model-label-1017`），
+ *    `@deepseek-ai/dsh` 的依赖集合 **86 → 90**；运行时依赖 `cordis` 4.0.5 → 4.0.6-alpha.2、
+ *    `schemastery` 3.18.5 → 3.18.6-alpha.2（两个包的 `lib/` 仍**逐字节相同**，只有版本串变）。
+ *    本仓引用面 **26** 个宿主包里 **12 个 `lib/` 逐字节相同、14 个有改动**；逐条核对后只有两处
+ *    真实影响：
+ *      · `dsh-client-ui-theme` 移除了 `--dsw-specific-sidebar-nav-item-hover`（rss / search
+ *        侧栏 hover 底色会整条失效、tty 退到自家 fallback）——三处已改用宿主侧栏自己在用的
+ *        `--dsw-alias-interactive-bg-hover`（十二档都存在），主题令牌快照 403 → 414
+ *        （移除 1、新增 12）；`dsh-client-ui-theme` 的新增令牌本仓一个都没用。
+ *      · `dsh-client-ui-user-questions` 的 CSS 自定义属性 `--question-copy` 命中了同意方案的
+ *        裸 `--question` 确认框判据——核对后确认它是**页内提问卡片**（`ctx.userQuestions` +
+ *        `dsh-tool-ask-user`），不是 OS 级确认框；判据收窄为 `--question(?![\w-])`，
+ *        `docs/os-consent-plan.md` 的复核基线同步到 alpha.3。
+ *    其余改动均为内部实现或类型面：`dsh-tools` 的 `lib/` 改 29 个文件，但 `defineTool` /
+ *    `DefineToolOptions` 的形状未变（只新增 `projectToolSchema` 导出）；`dsh-mcp-client` /
+ *    `dsh-subprocess(-local)` / `dsh-credentials(-local)` / `dsh-launch-environment` /
+ *    `dsh-web-app` / `dsh-session-query` / `dsh-base` / `dsh-scope` 的 `lib/` 逐字节相同；
+ *    `dsh-settings.configure()` 的所有者形态由 fiber 改成 `owner.ctx.fiber`，本仓传 fiber 时
+ *    `fiber.ctx.fiber === fiber`，实测注册正常。客户端槽定义**只增不减**（字符串面 95 → 99，
+ *    新增 `conversation.chat.text-interaction` / `conversation.chat.user.before` /
+ *    `settings.section.icon` / `sidebar.session.row.trailing`；本仓注册的 6 个槽全在）。
+ *    真机：官方判定器 **12 档 × 14 条目全放行**；`live-smoke --bootstrap --strict --render
+ *    --chrome-arg --no-sandbox` **23/23 PASS**（18 条 HTTP + 5 条真浏览器）；全量 profile 装上
+ *    11 个可安装包后 **11/11 全部加载（10 行 `mounted` + `dsh-tty` 的
+ *    `agent tools registered`）、0 行 `skipping profile bundle`、
+ *    0 行 `disabling profile plugin row`**；`verify-client-ui --mode boot` **6/6 PASS**（11 个
+ *    `@hyzyn` bundle 真加载、0 未捕获异常、0 失败子请求）。⇒ 这一档**不能**照抄「纯显式声明 /
+ *    零差异」的写法：它改了客户端令牌，必须带着上述适配一起声明。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

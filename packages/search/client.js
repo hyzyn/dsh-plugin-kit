@@ -23,7 +23,9 @@ window.__ModuleLoader__.load({
       // 侧边栏搜索框与行文本取宿主正文的角色（13 / 20）；行高按官方成对值写
       // （规范：font-size 必须配 line-height，单行看不出、换行才不挤）。
       '.gs_sidebarSearch{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:text;white-space:nowrap;background:0 0;border:1px solid transparent;border-radius:8px;align-items:center;gap:8px;padding:0 10px;font-size:13px;line-height:20px;display:flex}',
-      '.gs_sidebarSearch:hover{background:var(--dsw-specific-sidebar-nav-item-hover);color:var(--dsw-alias-label-primary)}',
+      // 宿主 0.2.2-alpha.3 移除了旧版 sidebar-nav-item-hover 令牌；改用宿主侧栏
+      // 自己实际使用的 --dsw-alias-interactive-bg-hover——它在十二档 cohort 里都存在（证据见 README 兼容性段）。
+      '.gs_sidebarSearch:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
       '.gs_sidebarSearch:focus-within{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary)}',
       '.gs_sidebarSearchInput{flex:1;min-width:0;background:0 0;border:none;outline:none;color:inherit;font:inherit;padding:0}',
       '.gs_sidebarSearchInput:focus,.gs_sidebarSearchInput:focus-visible{outline:none}',
