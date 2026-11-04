@@ -102,6 +102,18 @@ const CSP_SITES = [
   { rel: 'dsh-host-frontend-static/lib/index.js', what: 'frontend-static' },
 ] as const
 
+/**
+ * 「宿主已自带 OS 级确认框 / polkit」的原语表（A3 全树扫描用）。
+ *
+ * `--question` 必须带右边界：0.2.2-alpha.3 新增的 `dsh-client-ui-user-questions` 在
+ * CSS 里定义了 `--question-copy` / `--question-clipped` 等自定义属性，裸 `--question`
+ * 会把它们误判成 zenity 的确认框旗标（2026-11-04 升级复核实测）。右边界只排除
+ * 「后面还接变量名字符」的情况，`zenity --question` 仍然命中。
+ *
+ * 导出给本文件末尾的边界用例用：既钉住「CSS 变量不触发」，也钉住「真旗标仍触发」。
+ */
+export const CONFIRM_PRIMITIVES = /display dialog|display alert|--question(?![\w-])|--yesno|--msgbox|pkexec|polkit/i
+
 /** 宿主世界的两种形态：不存在，或存在（带文件内容与缺失清单）。 */
 type HostWorld =
   | { kind: 'absent' }
@@ -145,6 +157,28 @@ function looksLikeHostRuntime(dir: string): boolean {
 }
 
 /**
+ * nvm 的 `versions/node` 目录名按 Node 版本从新到旧排。
+ *
+ * 为什么不是 `readdir` 的字典序：多版本并存时（本机 v16–v24 七个）字典序的第一条
+ * 往往是**旧**版本。体检对象应该是本机**最新**安装的宿主，而不是目录序碰到的第一个；
+ * 否则升级到新 cohort 后绊线仍停在旧宿主上，就失去「逼人复核」的作用。
+ * 非版本目录名（`latest` / `lts` 之类）直接滤掉。
+ */
+export function sortNodeVersionDirs(names: string[]): string[] {
+  const parsed = (name: string): [number, number, number] | undefined => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(name)
+    return match === null ? undefined : [Number(match[1]), Number(match[2]), Number(match[3])]
+  }
+  return [...names]
+    .filter((name) => parsed(name) !== undefined)
+    .sort((a, b) => {
+      const left = parsed(a)!
+      const right = parsed(b)!
+      return right[0] - left[0] || right[1] - left[1] || right[2] - left[2]
+    })
+}
+
+/**
  * 找真实 DSH 宿主运行时的 `@deepseek-ai` 目录。
  *
  * 顺序：① 本仓 `node_modules`（CI 在这里是 peer stub，落到下一档）；
@@ -156,13 +190,14 @@ function looksLikeHostRuntime(dir: string): boolean {
  * **跑测试的 node 未必是装 DSH 的那个版本**（nvm 下多版本共存是常态，本机就有 `v16`–`v22` 七个）。
  * DSH 装在 `v22.23.2`、而 `pnpm test` 跑在 `v20.19.1` 时，按 `process.version` 拼就 miss 了，
  * 得扫目录才找得到。所以扫描不是兜底、是**正确**做法。
+ * **多版本并存时取最新那个**：体检对象是本机最新安装的宿主（见 sortNodeVersionDirs）。
  */
 function resolveHostDir(): string | undefined {
   const direct = join(REPO, 'node_modules', '@deepseek-ai')
   if (looksLikeHostRuntime(direct)) return direct
 
   const nvmBase = join(process.env.HOME ?? '', '.nvm', 'versions', 'node')
-  for (const version of readdirSafe(nvmBase)) {
+  for (const version of sortNodeVersionDirs(readdirSafe(nvmBase))) {
     const dir = join(nvmBase, version, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai')
     if (looksLikeHostRuntime(dir)) return dir
   }
@@ -475,7 +510,6 @@ function checkHostWorld(world: HostWorld): string[] {
    * 同树的 `picker-auto` 里就有 `zenity` / `kdialog` 字样（虽然那是 chooser 可用性探测、
    * 不是确认框，但这正说明「换一个包就可能命中」）。所以这里扫全树。
    */
-  const CONFIRM_PRIMITIVES = /display dialog|display alert|--question|--yesno|--msgbox|pkexec|polkit/i
   const hits = [...world.packages.entries()]
     .filter(([, text]) => CONFIRM_PRIMITIVES.test(text))
     .map(([pkg]) => pkg)
@@ -616,6 +650,27 @@ describe('OS 级同意：本仓文档与结论必须成对（宿主不存在也�
  * 「CI 全绿」不会被误读成「宿主事实已复核」。见文件末尾的说明。
  * 而「宿主在、文件缺失」走的是 `checkHostWorld` 的 `missing` 分支 —— **判红**，不跳过。
  */
+describe('OS 级同意：判据自身的边界（宿主不存在也跑）', () => {
+  it('多版本 nvm 并存时按版本从新到旧挑宿主（升级绊线不能停在旧档）', () => {
+    expect(sortNodeVersionDirs(['v16.14.2', 'v22.23.2', 'latest', 'v24.22.2', 'v16.5.0'])).toEqual([
+      'v24.22.2',
+      'v22.23.2',
+      'v16.14.2',
+      'v16.5.0',
+    ])
+  })
+
+  it('CSS 自定义属性 --question-* 不触发确认框判据（0.2.2-alpha.3 的 --question-copy 误报）', () => {
+    expect(CONFIRM_PRIMITIVES.test('timeline-scope:--question-copy; scroll-timeline:--question-copy block')).toBe(false)
+    expect(CONFIRM_PRIMITIVES.test('--question-clipped')).toBe(false)
+  })
+
+  it('zenity 的 --question 旗标仍然触发（收窄不能把判据削没）', () => {
+    expect(CONFIRM_PRIMITIVES.test('zenity --question --text "confirm?"')).toBe(true)
+    expect(CONFIRM_PRIMITIVES.test('osascript -e \'display dialog "confirm?"\'')).toBe(true)
+  })
+})
+
 describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧三条事实（需真实 DSH）', () => {
   it('真实宿主通过', () => {
     expect(checkHostWorld(HOST_WORLD)).toEqual([])
