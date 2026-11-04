@@ -568,8 +568,13 @@ void main() {
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
 }
+/*
+ * \u60AC\u505C\u6001\u7528 --tt-hover\uFF08= \u5BBF\u4E3B interactive-bg-hover\uFF09\uFF1A\u5BBF\u4E3B 0.2.2-alpha.3 \u79FB\u9664\u4E86\u65E7\u7684
+ * sidebar-nav-item-hover \u4EE4\u724C\uFF0C\u800C interactive-bg-hover \u662F\u5BBF\u4E3B\u4FA7\u680F\u81EA\u5DF1\u5728\u7528\u7684
+ * \u4EE4\u724C\u3001\u5341\u4E8C\u6863 cohort \u90FD\u5B58\u5728\uFF08\u8BC1\u636E\u89C1 README \u517C\u5BB9\u6027\u6BB5\uFF09\u3002
+ */
 .tt_sidebarEntry:hover {
-  background: var(--dsw-specific-sidebar-nav-item-hover, var(--tt-hover));
+  background: var(--tt-hover);
   color: var(--tt-label);
 }
 .tt_sidebarEntry[data-active],
@@ -613,8 +618,10 @@ void main() {
  * **\u7EAF\u589E\u91CF**\u7684\u6837\u5F0F\uFF0C\u4E0D\u6539\u4EFB\u4F55\u5DF2\u6709\u89C2\u611F\u3002\u51E0\u4F55\u53D6\u81EA\u5BBF\u4E3B\u884C\u5B9E\u9645\u503C\u2014\u2014min-height 36 / padding
  * 7px 8px / margin 0 2px / line-height 22 / 14px \u5B57\u53F7 / 16px \u56FE\u6807\uFF1B\u5BBD\u5EA6\u8BA9\u51FA\u5DE6\u53F3\u5404 2px
  * \u5916\u8FB9\u8DDD\uFF08\u5BBF\u4E3B\u4E0D\u505A\u5168\u5C40 box-sizing reset\uFF0C\u8FD9\u91CC\u5FC5\u987B\u663E\u5F0F border-box\uFF0C\u89C1\u4E0A\u9762\u90A3\u6761\u6CE8\u91CA\uFF09\u3002
- * \u60AC\u505C/\u6FC0\u6D3B\u6001\u8DDF\u7740\u6539\u7528\u63D2\u4EF6\u4EE4\u724C --tt-hover\uFF1A\u5BBF\u4E3B sidebar-nav-item-* \u90A3\u4E24\u4E2A\u4EE4\u724C\u7684\u5E95\u8272
- * \u4E0E\u672C\u7AD9\u5176\u5B83\u5165\u53E3\u4E0D\u540C\u65CF\uFF0C\u5BF9\u9F50\u540E\u53CD\u800C\u66F4\u663E\u7A81\u5140\u3002
+ * \u60AC\u505C/\u6FC0\u6D3B\u6001\u7EDF\u4E00\u7528\u63D2\u4EF6\u4EE4\u724C --tt-hover / --tt-hover-solid\uFF08= \u5BBF\u4E3B\u7684
+ * interactive-bg-hover(-solid)\uFF09\uFF1A\u65E7\u7248 sidebar-nav-item-hover \u5DF2\u88AB 0.2.2-alpha.3
+ * \u79FB\u9664\uFF0Cinteractive-bg-hover(-solid) \u662F\u5BBF\u4E3B\u4FA7\u680F\u81EA\u5DF1\u5728\u7528\u7684\u4EE4\u724C\uFF0C
+ * \u5341\u4E8C\u6863 cohort \u90FD\u5B58\u5728\uFF08\u8BC1\u636E\u89C1 README \u517C\u5BB9\u6027\u6BB5\uFF09\u3002
  */
 .tt_sidebarEntry[data-host-align] {
   gap: 8px;

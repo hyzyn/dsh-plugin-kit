@@ -217,7 +217,9 @@ window.__ModuleLoader__.load({
       // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
       // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
       '.rss_sidebarEntry{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;line-height:20px;display:flex}',
-      '.rss_sidebarEntry:hover{background:var(--dsw-specific-sidebar-nav-item-hover);color:var(--dsw-alias-label-primary)}',
+      // 宿主 0.2.2-alpha.3 移除了旧版 sidebar-nav-item-hover 令牌；改用宿主侧栏
+      // 自己实际使用的 --dsw-alias-interactive-bg-hover——它在十二档 cohort 里都存在（证据见 README 兼容性段）。
+      '.rss_sidebarEntry:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
       '.rss_sidebarEntry[data-active]{background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary);font-weight:600}',
       '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex}',
       '.rss_sidebarEntryLabel{text-overflow:ellipsis;overflow:hidden}',

@@ -255,7 +255,6 @@ const FALLBACK_SKIN_CSS = `
   --dsw-specific-menu: #ffffff;
   --dsw-specific-tip: #f6f7f9;
   --dsw-specific-sidebar-fill: #f2f3f5;
-  --dsw-specific-sidebar-nav-item-hover: #0000000f;
   --dsw-specific-sidebar-nav-item-active: #0000001a;
   --dsw-alias-scrollbar-bg-l1: #d0d3d8;
   --dsw-alias-scrollbar-hover-l1: #b0b4ba;
@@ -293,7 +292,6 @@ body[data-ds-dark-theme] {
   --dsw-specific-menu: #24242af0;
   --dsw-specific-tip: #24242a;
   --dsw-specific-sidebar-fill: #17171a;
-  --dsw-specific-sidebar-nav-item-hover: #ffffff12;
   --dsw-specific-sidebar-nav-item-active: #ffffff1f;
   --dsw-alias-scrollbar-bg-l1: #3a3a42;
   --dsw-alias-scrollbar-hover-l1: #4d4d57;

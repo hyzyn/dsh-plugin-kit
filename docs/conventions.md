@@ -47,7 +47,7 @@
 | **上游问题报告**（`dsh-plugin-market` 的兼容性判定没实现规则的后半句「engines.dsh, **else** peerDependencies」：只靠 `peerDependencies` 声明兼容范围的包，在市场上被无条件判「兼容」。**2026-10-17 已发**：<https://github.com/deepseek-ai/deepseek-harness/discussions/9907>） | L0 [`docs/discussion-body-dsh-market-compat.md`](./discussion-body-dsh-market-compat.md)（**提给 DSH 上游 GitHub Discussions 的帖子正文副本**：代码归属 `deepseek-ai/deepseek-harness`，但该仓 **issues 已关闭**、`CONTRIBUTING.md` 指定 bug 走 Discussions；正文英文、示例已脱敏，宿主路径一律行内代码、不做相对链接）。本仓为何仍坚持强制只靠多段 peer、不写顶层 `engines.dsh`，见 [`scripts/check-dsh-peers.mjs`](../scripts/check-dsh-peers.mjs) 头部的两字段说明 |
 | **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
-| **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体六条硬规矩) ④ |
+| **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（414 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体六条硬规矩) ④ |
 | **客户端样式的取值规范**（发丝线 / elevation 配对 / 圆角档位 / 危险按钮与按钮族 / 排版角色 / 选中色 / 输入档 / 颜色来源） | 规范原文在两份上游文档（`deepseek-ai/deepseek-harness` 的 `docs/web-styling.zh.md` / `docs/ui-radius.zh.md`）；本仓判据的**唯一定义处**是 [`scripts/client-style-spec.mjs`](../scripts/client-style-spec.mjs)（`client-lint` 检查七 ~ 十六，用例在 [`scripts/test/client-design-tokens.test.ts`](../scripts/test/client-design-tokens.test.ts)），规则与实测后果 [本文 § 客户端半体](#客户端半体六条硬规矩) ⑥ |
 | **三条车道各管什么**（CI 每次推送 / 挂载车道 / nightly 的 flake + coverage；为什么后两者不进 CI） | L0 本文 [§ 车道分工](#车道分工哪条车道管什么) |
 | **环境前置（Node / pnpm 下限，以及它到底强不强制）** | 声明在 [`package.json`](../package.json) 的 `engines` + [`.npmrc`](../.npmrc) 的 `engine-strict`；判据与实测 [本文 § 环境下限](#环境下限声明--engine-strict-才真的会拦)（`pnpm engines:check` 守四处自洽） |
@@ -416,7 +416,7 @@ function handleClick(event) {
 - `packages/codegraph/client-src/index.js` 的 `.cg_badgeWarn` / `.cg_warn` 引用了
   `--dsw-alias-state-warning-primary`——真名是 `--dsw-alias-state-warn-primary`，**只差一个 `ing`**；
 - `packages/mcp/client.js` 的 `.mX_toolItem` 引用 `--dsw-alias-separator-primary`——`separator`
-  这一族在宿主 403 个 token 里**一个都没有**（真名 `--dsw-alias-border-l2`），而它是
+  这一族在宿主 414 个 token 里**一个都没有**（真名 `--dsw-alias-border-l2`），而它是
   `border-bottom` 简写的一部分：后果不是「分隔线颜色不对」，是**分隔线整条消失**。
 
 `codegraph` 那处的成因还多一层：**预览夹具自己也用错了名字**
@@ -431,7 +431,7 @@ function handleClick(event) {
 - 真机冒烟（CDP）只断言**文案与控件值**——一个没有边框的输入框照样满足断言。
 
 判据：`pnpm -r typecheck` 里的 `scripts/client-lint.mjs` **检查四** 拿宿主主题的名字快照
-（[`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)，403 个名字，
+（[`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)，414 个名字，
 **生成物**）比对全部客户端半体——扫描面是 `client-src/**` 下的 **`.js` 与 `.css`**（docker 与 tty
 的样式住在独立 `.css` 里；只按 `.js` 枚举时 docker 报「0 处」，那道防线是空的）；规则的取用口径与成因见
 [`scripts/client-theme-tokens.mjs`](../scripts/client-theme-tokens.mjs)。快照由
