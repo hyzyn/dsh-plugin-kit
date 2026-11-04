@@ -222,8 +222,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    `fiber.ctx.fiber === fiber`，实测注册正常。客户端槽定义**只增不减**（字符串面 95 → 99，
  *    新增 `conversation.chat.text-interaction` / `conversation.chat.user.before` /
  *    `settings.section.icon` / `sidebar.session.row.trailing`；本仓注册的 6 个槽全在）。
- *    真机：官方判定器 **12 档 × 14 条目全放行**；`live-smoke --bootstrap --strict` **18/18
- *    PASS**；全量 profile 装上 11 个可安装包后 **11/11 全部加载（10 行 `mounted` + `dsh-tty` 的
+ *    真机：官方判定器 **12 档 × 14 条目全放行**；`live-smoke --bootstrap --strict --render
+ *    --chrome-arg --no-sandbox` **23/23 PASS**（18 条 HTTP + 5 条真浏览器）；全量 profile 装上
+ *    11 个可安装包后 **11/11 全部加载（10 行 `mounted` + `dsh-tty` 的
  *    `agent tools registered`）、0 行 `skipping profile bundle`、
  *    0 行 `disabling profile plugin row`**；`verify-client-ui --mode boot` **6/6 PASS**（11 个
  *    `@hyzyn` bundle 真加载、0 未捕获异常、0 失败子请求）。⇒ 这一档**不能**照抄「纯显式声明 /
