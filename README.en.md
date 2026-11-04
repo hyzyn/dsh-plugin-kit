@@ -254,12 +254,17 @@ pure logic into modules; scoping a `document`-level click delegate; theme variab
 | How one package is used | `packages/<pkg>/README.md` |
 | What a defect number means | `packages/<pkg>/DEFECTS.md` |
 
-> The L0 documents under `docs/` are currently Chinese-only. Each package’s `README.md` is bilingual
-> (see `README.en.md` next to it).
+> The L0 documents under `docs/` are currently Chinese-only. Package READMEs are bilingual (a
+> `README.en.md` next to `README.md`) except `kit`, `kit-settings` and `all`, which are Chinese-only.
 
 ## Contributing
 
 - Generate new plugins with the scaffolding: `pnpm create-plugin <name> [id]`.
+- File issues through the templates (**Bug report** / **Feature request**; blank issues are disabled):
+  the required environment / version / reproduction steps / **self-check results** map to the general
+  sequence in [docs/troubleshooting.md](docs/troubleshooting.md#通用顺序) — only a complete report can
+  be triaged in the first round. Format rules:
+  [docs/conventions.md § Issue](docs/conventions.md#issue提-issue-的格式约束).
 - Commits follow Conventional Commits (e.g. `fix(mcp): …`); user-visible changes should come with
   screenshots or verification evidence.
 - Run the gates before committing: `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`.

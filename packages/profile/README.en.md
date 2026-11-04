@@ -66,10 +66,9 @@ The “Profile Management” card (configuration UI):
 
 ![Profile Management configuration UI](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
-Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
-`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
-below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
-sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+Where the settings surface lives changes with the DSH version, but it is **always the same form** — the
+per-generation landing spots and the four registration contracts live in
+[conventions.md § client settings surface](../../docs/conventions.md#客户端设置面内联优先).
 
 After creating a profile from the `headless` template, you can start a headless session with that profile directly from the command line (answer one task, print the result, then exit):
 
@@ -87,6 +86,7 @@ dsh --profile headless "run the tests"
 - Names must match `[A-Za-z0-9][A-Za-z0-9._-]*` and cannot be `node_modules` / `.` / `..`
 - Copying skips `node_modules` and `pnpm-lock.yaml` automatically and does not carry over installed artifacts, but runs `pnpm install` to rebuild dependencies; `profile.runtime.json` is copied along with the directory
 - Port configuration is stored in `profile.runtime.json` and only affects the startup commands this plugin generates; it is never written to DSH's official `package.json` / `cordis.patch.yml`
+- ⚠️ **A copy takes the machine-level resources with it** — offset them before running two profiles side by side: the webserver port (`profile.runtime.json`; pick a free one in the card after copying) and the terminal panel's **port-forward `localPort`** (stored in that profile's `cordis.yml` tty settings; disable or change it after copying). A tunnel port clash is `fatal` (no retry) — fix the config and rebuild. tmux persistent sockets are **per profile** (since 0.25.0: `-L dsh-tty-<profile>`; a host started without a profile keeps the historical `dsh-tty`), so `kill-server` only affects that profile — see [tty README § session persistence](../tty/README.en.md#session-persistence-tmux-0100). `pnpm` is launched through `@hyzyn/dsh-kit`'s `spawnPortable` — on Windows `pnpm` only exists as `pnpm.CMD`, so a bare spawn both fails to resolve `.cmd` and trips Node's hardening with `EINVAL` (observed on a real machine as `spawnSync pnpm ENOENT`); if dependency installation fails the copied directory is rolled back, i.e. it is either fully copied or nothing happened
 - Deletion is recursive and irreversible, with a second confirmation inside the panel; the built-in `web` default profile cannot be deleted, while `headless` can be deleted
 - A new profile needs its dependencies installed on demand before first use: `dsh plugin --profile <name> add <package>` (runs pnpm inside the profile directory)
 - The browser half depends on the core `slots` service; only the official settings panel of `dsh-web-app` provides that slot

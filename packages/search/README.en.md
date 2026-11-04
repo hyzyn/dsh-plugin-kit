@@ -18,7 +18,7 @@
 
 **Content on open** (no request, zero latency):
 
-- **Recent**: the recent sessions in the browser-side `ctx.sessions.list` snapshot (empty sessions and subagent sessions are filtered out), with a relative time on the right; up to 8 rows (`RECENT_SESSION_LIMIT`), the same limit for the empty query and for searching, with `⌥/Alt + digit` shortcuts on the first 9;
+- **Recent**: the recent sessions in the browser-side `ctx.sessions.list` snapshot (empty sessions and subagent sessions are filtered out), with a relative time on the right; up to 8 rows (`RECENT_SESSION_LIMIT`), the same limit for the empty query and for searching, with `⌥/Alt + digit` shortcuts on the first 8;
 - **Quick actions**: new session / open folder / open settings — the row does not appear when the target is missing (for example, when the directory picker plugin is not installed);
 - **Settings**: the top-level settings categories are taken **live** from the `settings.section` slot of the client slots registry — categories registered by third-party plugins such as Skins / Pets / Sidebar cards / Web plugins / Creative workshop / Usage stats / Session archive management also appear, in the same order as the settings window navigation; the in-row keywords and descriptions are filled in by the host's `/api/dsh-search/catalog` directory. When the host does not have that route (the host itself is an older build), or the slots service is unavailable, it falls back to the directory, and then to the client-side fallback list of the four built-in official categories.
 
@@ -47,7 +47,7 @@ When the settings window is already open, `settings.open` is not invoked again �
 | ↑ / ↓ | Move the highlight through all candidates (the first item is selected by default) |
 | ↵ | Open the highlighted item |
 | esc | Close |
-| ⌥/Alt + 1…9 | Open the Nth "Recent" session |
+| ⌥/Alt + 1…8 | Open the Nth "Recent" session (capped at 8, see `RECENT_SESSION_LIMIT`) |
 | ⌥/Alt + N / O / , | New session / open folder / open settings |
 
 Moving the mouse brings the highlight to the row under the pointer; the keyboard and the mouse share a single selection state.
@@ -58,6 +58,12 @@ Loopback + same-origin access only:
 
 - `GET /api/dsh-search/query?q=<keyword>` — returns `{ sessions, prompts, tools, panels }`: search results for past sessions, Prompts, MCP tools, and settings panels
 - `GET /api/dsh-search/catalog` — returns `{ panels }`: the currently available settings panel directory (with `titles` / `keywords` / `description`), used by the browser half for "content on open" and instant filtering
+
+**When adding a plugin card, remember to update `PANEL_DIRECTORY`** (`src/index.ts`): that directory is
+**hard-coded**, and plugin cards are shown or hidden by the `registryName` gate according to whether
+their settings namespace is registered. Miss one line and the result is "the plugin is installed and
+its card is in Settings, but global search cannot find it" — `docker` was missed once (caught on a
+real machine); `packages/search/test/panel-catalog.test.ts` now pins the presence of the plugin cards.
 
 ## Installation
 

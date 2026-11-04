@@ -8,15 +8,14 @@
 
 - **保存即热加载**：改写 `~/.dsh/cordis.patch.yml` 的托管区块，DSH 的 HMR 监听自动重载，工具以 `mcp__<server>__<tool>` 注册给模型。
 - **stdio 与 streamable-http 双传输**：stdio（command / args / env / cwd）与 streamable-http（url / headers，含 SSE 与 session 头）；值可写 `js:` 表达式，密钥不落补丁文件。
-- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。启动子进程走 `@hyzyn/dsh-kit` 的 `spawnPortable`——Windows 上 MCP 服务器常是 `.cmd` shim，裸 `spawn` 会 `EINVAL`（Node 对 `.cmd` 的加固），连接测试会永久报错并误导成「CLI 没装好」；探测进程的 stderr 也用同库的容错解码器（UTF-8 优先、遇非法字节回落控制台代码页）读，卡片上不会出现 `���`。注意这只影响本插件的探测：**真正的工具加载**走 DSH 核心的 `@deepseek-ai/dsh-mcp-client`（官方 SDK + cross-spawn），本来就没这个问题。探测对**错误**也有判据：POST / GET 收到 401/403 当场报 `认证失败(HTTP 401)`（带 `WWW-Authenticate`），其它 4xx/5xx 报状态码——认证失败不会再被兜底成「SSE 流已结束」；`js:` 头或 stdio `env` 的值求值出 `undefined` 时（含被 base64 藏进 `Basic …` 的形态）在发请求 / 起进程前点名缺哪几个环境变量。
+- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。启动子进程与读 stderr 走 `@hyzyn/dsh-kit` 的 `spawnPortable` / 容错解码器（Windows `.cmd` shim 与代码页那两个坑见 [kit README](../kit/README.md)），所以探测不会永久报 `EINVAL` 并被误读成「CLI 没装好」，卡片上也不会出现 `���`。这只影响本插件的探测：**真正的工具加载**走 DSH 核心的 `@deepseek-ai/dsh-mcp-client`（官方 SDK + cross-spawn），本来就没这个问题。探测对**错误**也有判据：POST / GET 收到 401/403 当场报 `认证失败(HTTP 401)`（带 `WWW-Authenticate`），其它 4xx/5xx 报状态码——认证失败不会再被兜底成「SSE 流已结束」；`js:` 头或 stdio `env` 的值求值出 `undefined` 时（含被 base64 藏进 `Basic …` 的形态）在发请求 / 起进程前点名缺哪几个环境变量。
 - **存活状态与命名冲突可见**：从 loader fiber 读存活状态（运行中 / 已停用 / 错误 / 加载中）。命名冲突分两档、**不混为一谈**（issue #5）：`conflicts` 只放**真正重名**的托管行——同名两个实例抢同一套 `mcp__<serverName>__*` 工具名，横幅只在这种情况下出现；本卡之外的实例清单走 `externalServers`，以中性信息条表达「这些名字已被本卡之外的实例占用，在本卡内别重名」。服务器可启用 / 停用（`disabled: true`）/ 编辑 / 删除。**「已挂载」不等于「连上了」**：fiber 存活状态由 loader 给出，而连不上时 `mcp-client` 的 apply 照常 resolve（`failOnStartupError` 默认 `false`，不抛错）——于是不可达的地址会一直显示成绿色「运行中」。现在 DTO 的每个托管行多带一个 `toolCount`（工具注册表里 `mcp__<serverName>__*` 的条数）：`active` 且 `toolCount === 0` 时徽标改显**「未连接」**（顶掉绿色的「运行中」），行下另给一条说明点明代价（每次启动都要为它等一次连接尝试）并配一个手边的「停用」按钮。读不到工具注册表时 `toolCount` **字段缺失**（不是 0），界面据此**不下结论**——绝不能把「读不到」渲染成「未连接」。
 - **能力公告注入 systemPrompt**：注入能力公告（systemPrompt section），提到「MCP 配置 / MCP 服务器」时模型知道指本插件。
 
 ![MCP 服务器配置卡片：添加 / 连接测试 / 热加载](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
-设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**：`0.2.0-rc.1` 起挂
-`plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
-（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
+设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**——各代际的落点与四条注册契约的唯一归宿在
+[conventions.md § 客户端设置面](../../docs/conventions.md#客户端设置面内联优先)。
 
 ## 会话档位与 agent 可见性
 
@@ -42,9 +41,7 @@
   「不在全局层」不是「没工具」；完整语义见脚本文件头。
 - **「按 prefix 裁」只裁继承层**：限制下在 agent 作用域上，覆盖的是从插件层继承下来的那一层。
   codegraph 的 per-agent 挂载挂在 agent 自己的层（不在全局 `schemas()` 视图里），因此**不受**本
-  裁剪影响。
-
-判据与运行期实测见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) 的「`mcp__*`」条。
+  裁剪影响；判据与运行期实测见 [permission-tier-plan](../../docs/permission-tier-plan.md) 的「`mcp__*`」条。
 
 ## 工具面按需加载（`agentToolLoading`）
 
@@ -79,22 +76,20 @@
 
 ### 为什么值得：一次真机测量
 
-2026-10-25 在本机一个真实会话的 `request/header` 事件快照上量了一次（那是请求体里 `tools`
-的原样快照）：**149 个工具 = 130,439 B，其中 MCP 70 个 = 66,362 B（≈50.9%）**，平均 ≈948 B/个，
-按 CJK 感知换算 **≈1.7 万 token/请求**；而 agent loop 每个 step 都全量重发。
+2026-10-25 在本机一个真实会话的 `request/header` 快照（请求体里 `tools` 的原样）上量了一次：
+**149 个工具 = 130,439 B，其中 MCP 70 个 = 66,362 B（≈50.9%）**，平均 ≈948 B/个，按 CJK 感知
+换算 **≈1.7 万 token/请求**，而 agent loop 每个 step 都全量重发。`on-demand` 把这 66 KB 从模型
+视图里摘掉，收益与「不注册」等价；缓存命中只影响**计费**、不减少上下文窗口占用，对窗口同样成立。
 
-`on-demand` 把这一份从模型视图里摘掉，请求体里不再有那 66 KB——token 收益与「不注册」等价。
-缓存命中只影响**计费**，不减少上下文窗口占用，所以这项收益对窗口同样成立。
-
-> 这是本机、单次会话的测量，**不是承诺值**：工具数随你配置的 server 变，token 换算随分词器变。
-> 它的用途是给出量级，不是报价。
+> 本机、单次会话的测量，**不是承诺值**：工具数随你配的 server 变，token 换算随分词器变——
+> 用途是给出量级，不是报价。
 
 ### 为什么不是 per-agent 进程挂载
 
 那是 codegraph 的**隔离**路线：每个会话挂一个自己的 MCP 子进程（≈40 MB），买到的是「每会话
 只看自己的上下文」，代价是要动 patch 行格式与卡片。它解决的是进程与上下文隔离；**本轮解决的
-是 token 账单**，不是进程隔离——工具照旧由宿主注册，少的只是模型视图那一层。两者不互相替代：
-真要隔离仍然走 per-agent 挂载，而按需装载在那条路上也照样有意义。
+是 token 账单**——工具照旧由宿主注册，少的只是模型视图那一层；两者不互相替代：要隔离仍走
+per-agent 挂载，按需装载在那条路上也照样有意义。
 
 ### 配置与回退
 
@@ -106,16 +101,15 @@
     agentToolLoading: on-demand
 ```
 
-回退**零副作用**：删掉这一行（或写回 `eager`）重启宿主，工具面与今天完全一致——`eager` 分支
-不注册自有工具、不发额外的 `restrict()`，没有需要清理的常驻状态。
+回退**零副作用**：删掉这一行（或写回 `eager`）重启宿主即可——`eager` 分支不注册自有工具、
+不发额外的 `restrict()`，没有需要清理的常驻状态。
 
 ### 切默认（`on-demand` 变成默认）之前还差什么
 
-**一次真模型回合的验收**：会话里模型看到 `mcp_servers` / `mcp_load` 后，**会先 `mcp_servers`
-再 `mcp_load({ servers: […] })` 装配自己要用的工具，而不是绕去 `bash` 里查配置 / 敲 CLI**。
-这条只能在真模型上验——脚本能证明工具面与装载动作对，证明不了模型的**选择**。在那之前默认
-保持 `eager`：默认值一改，所有没配这一项的会话都会换一条路径，而回滚成本不对称。
-
+**一次真模型回合的验收**：模型看到 `mcp_servers` / `mcp_load` 后，**会先 `mcp_servers` 再
+`mcp_load({ servers: […] })` 装配自己要用的工具，而不是绕去 `bash` 里查配置 / 敲 CLI**。这条只能
+在真模型上验——脚本能证明工具面与装载动作对，证明不了模型的**选择**；在那之前默认保持 `eager`
+（默认值一改，所有没配这一项的会话都换一条路径，回滚成本不对称）。
 真机回归：[`scripts/verify-mcp-on-demand.mjs`](../../scripts/verify-mcp-on-demand.mjs)
 （进程内真宿主、不 spawn 宿主、隔离临时 `DSH_HOME`，收尾断言真实补丁逐字节未变）。
 
@@ -134,10 +128,10 @@
 - `POST /api/dsh-mcp/test` —— 用表单配置做一次连接测试
 
 **围栏**（2026-09-25 起与 `docker` / `tty` 同一档）：回环围栏走 `@hyzyn/dsh-kit` 的
-`isLoopbackRequestStrict`（127/8 全段 + 别名主机名的 DNS 确认），上面两条写操作**另需同源证明**
-（`Sec-Fetch-Site: same-origin` 或同源 `Origin`；两者都缺省时只放行带宿主会话 Cookie 的请求，
-即桌面壳那条转发链——见 `docker D139`）。只读的 `GET /servers` 不要求证明，裸 curl 也能读。
-成因与实现只有一份，在 `packages/kit/src/http.ts`。
+`isLoopbackRequestStrict`（127/8 全段 + 别名主机名的 DNS 确认），两条写操作**另需同源证明**
+（`Sec-Fetch-Site: same-origin` 或同源 `Origin`；都缺省时只放行带宿主会话 Cookie 的桌面壳转发链
+——见 `docker D139`）。只读的 `GET /servers` 不要求证明，裸 curl 也能读；成因与实现只有一份，
+在 `packages/kit/src/http.ts`。
 
 ## 安装
 
@@ -157,10 +151,9 @@ dsh plugin --profile web add link:$(pwd)/packages/mcp
 > home 补丁层只保留插件自己维护的 `# --- dsh-mcp-config managed ...`
 > 托管区块（服务器行，不是插件行）。
 
-插件自身行无需 HMR：**MCP 服务器配置**（托管区块内的行）保存后由
-DSH 对 home 补丁层的监听在 1~2 秒内热加载为 `mcp__<server>__<tool>`
-工具。刷新页面后，在 Web GUI 的「MCP 服务器配置」卡片里即可管理服务器。注意：浏览器半体依赖核心 `slots` 服务，只有
-`dsh-web-app` 的官方设置面板才提供该插槽。
+插件自身行无需 HMR：托管区块内的服务器行保存后，DSH 对 home 补丁层的监听会在 1~2 秒内把它热加载为
+`mcp__<server>__<tool>` 工具；刷新页面即可在「MCP 服务器配置」卡片里管理。注意：浏览器半体依赖核心
+`slots` 服务，只有 `dsh-web-app` 的官方设置面板才提供该插槽。
 
 ## 卸载
 
@@ -168,39 +161,33 @@ DSH 对 home 补丁层的监听在 1~2 秒内热加载为 `mcp__<server>__<tool>
 dsh plugin --profile web remove @hyzyn/dsh-mcp
 ```
 
-重启 `dsh web` 后插件行随之消失。托管区块可以留着（无插件时只是空行），
-也可以在面板里先删空服务器列表，再手动删掉
-`# --- dsh-mcp-config managed ...` 区块。
+重启 `dsh web` 后插件行随之消失。托管区块可以留着（无插件时只是空行），也可以在面板里先删空
+服务器列表，再手动删掉 `# --- dsh-mcp-config managed ...` 区块。
 
 ## 说明
 
-- 托管区块以 `# --- dsh-mcp-config managed (auto-generated; do not edit) ---`
-  标记，插件只改写该区块，其余内容原样保留；区块内配置与官方 mcp-client
-  的 Config schema 对齐。空列表写为 `- insert: []`（对条目树是 no-op）——
-  注意不要写成裸的 `[]`，那会破坏 home 补丁文件的顶层 YAML 文档，导致
-  HMR 配置刷新解析失败、删除的服务器无法卸载
+- 托管区块以 `# --- dsh-mcp-config managed (auto-generated; do not edit) ---` 标记，插件只改写
+  该区块，其余原样保留；区块内配置与官方 mcp-client 的 Config schema 对齐。空列表写为
+  `- insert: []`（对条目树是 no-op）——**别写成裸的 `[]`**，那会破坏 home 补丁文件的顶层 YAML
+  文档，HMR 配置刷新解析失败、删掉的服务器无法卸载
 - 保存接口校验 serverName（`[A-Za-z0-9_-]{1,32}`）、传输必填项、reconnect 参数边界
-- **空列表必须显式确认才能清空**：`/servers/save` 是整表替换语义，`servers: []`
-  等于清空托管区块。为防止启动竞态 / 陈旧卡片拿到空列表后把已配置的服务器静默抹掉
-  （实测踩过：文件里只留下 `- insert: []`，事后无法判断是谁清的），宿主对
-  「空列表且未带 `clearAll: true`」的保存返回 400，并在文案里说明会清掉几条；
-  卡片只在用户明确删除最后一条时才带上该标记（删除确认文案也会点明这一点）。
-  区块本来就是空的（本来就没有条目）不构成破坏，放行——保存一张空卡片不会报错
+- **空列表必须显式确认才能清空**：`/servers/save` 是整表替换语义，`servers: []` 等于清空托管区块。
+  为防止启动竞态 / 陈旧卡片静默抹掉已配置的服务器（实测踩过：文件里只剩 `- insert: []`，无法判定
+  是谁清的），「空列表且未带 `clearAll: true`」的保存返回 400 并说明会清掉几条；卡片只在用户明确
+  删除最后一条时才带上该标记（删除确认文案也点明）。本来就没有条目的区块不算破坏，保存空卡片不报错
 - 连接测试的 `!!js` 表达式在宿主内评估（与 loader 相同的信任模型）
-- **「已挂载但没连上」的判据是工具数，不是 fiber 状态**：工具是「连接成功 + `tools/list`」
-  之后唯一会留下的产物，所以数它就等于拿到真实连接态，而且零成本（只遍历内存里的工具注册表，
-  不做任何网络探测）。归因按 `mcp__<serverName>__` 前缀，字符规则与核心
-  `@deepseek-ai/dsh-mcp-client` 的 `publicName()` 一致；serverName 上限 32 字符，前缀永远落在
-  核心 51 字符的截断线之内，所以前缀归因可靠——万一出现会被截断的超长前缀，那一行**跳过不猜**。
-  `disabled` 的行本来就不该有工具，不计入「未连接」。注意它**不改变启动耗时**：地址不可达时
-  启动仍要为那行等一次连接尝试（约 10s；能连上但不回应最长 60s），想省掉就把那行停用
+- **「已挂载但没连上」的判据是工具数，不是 fiber 状态**：工具是「连接成功 + `tools/list`」之后
+  唯一留下的产物，数它就等于拿到真实连接态，且零成本（只遍历内存里的工具注册表，不探测网络）。
+  归因按 `mcp__<serverName>__` 前缀，字符规则与核心 `@deepseek-ai/dsh-mcp-client` 的
+  `publicName()` 一致；serverName 上限 32 字符，前缀永远落在核心 51 字符的截断线内，所以归因可靠
+  ——真出现会被截断的超长前缀，那一行**跳过不猜**；`disabled` 行不计入「未连接」。它**不改变启动
+  耗时**：不可达时启动仍要为那行等一次连接尝试（约 10s；能连上不回应最长 60s），想省掉就停用那行
 - 浏览器半体为手写 ESM（React 外壳经 `__ModuleLoader__` 的 `require` 解析，面板本身是纯 DOM），无需 tsdown；宿主半体 tsc 直出 ESM
 
 ## 排障：`server is disconnected` 怎么分诊
 
-**症状几乎一样，成因分四档，修法完全不同。** 别从凭据开始猜——先按下表定位到一档，
-再动手（2026-10-24 一次真机事故里，**三档同时存在**：缺注入 + 没连 VPN + 重连预算耗尽，
-每层单独看都像「认证失败」，这是它难查的原因）。
+**症状几乎一样，成因分四档，修法完全不同。** 别从凭据开始猜——先按下表定位到一档，再动手
+（2026-10-24 一次真机事故里**三档同时存在**：缺注入 + 没连 VPN + 重连预算耗尽，每层单看都像「认证失败」）。
 
 | 判据（一条可粘贴命令 / 一处证据） | 结论 | 修法 |
 |---|---|---|

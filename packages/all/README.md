@@ -3,7 +3,9 @@
 dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件。
 
 - `cordis.patch.yml` 由 `scripts/aggregate.mjs` 自动生成 —— 不要手改；
-- `dependencies` 同样由聚合脚本同步为各插件的 `workspace:*`；
+- `dependencies` 同样由聚合脚本同步为各插件的**精确版本**（不是 `workspace:*`——
+  从 git 子路径安装时协议会原样保留，消费者侧会 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND`，
+  见 `scripts/aggregate.mjs` 的注释）；
 - 新增/删除插件后重跑 `pnpm aggregate`。
 
 **挂载顺序不是纯字母序**：`@hyzyn/dsh-env` 固定排第一（优先级清单在

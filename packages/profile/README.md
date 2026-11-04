@@ -66,9 +66,8 @@ interface Config {
 
 ![Profile 管理配置界面](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
-设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**：`0.2.0-rc.1` 起挂
-`plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
-（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
+设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**——各代际的落点与四条注册契约的唯一归宿在
+[conventions.md § 客户端设置面](../../docs/conventions.md#客户端设置面内联优先)。
 
 用 `headless` 模板建好 profile 后，命令行可直接以该 profile 启动 headless 会话（一次性回答一个任务、打印结果后退出）：
 
@@ -89,8 +88,9 @@ dsh --profile headless "run the tests"
   webserver 端口（`profile.runtime.json`，复制后请到卡片改一个没被占的）、
   终端面板的**端口转发 `localPort`**（存在该 profile `cordis.yml` 的 tty 设置里，
   复制后建议先停用或改端口）。隧道撞端口是 `fatal`（不重试），改配置后重建。
-  另外 tmux 持久会话的 socket 是所有 profile 共用的（`-L dsh-tty`），
-  `kill-server` 会跨 profile 生效。`pnpm` 经 `@hyzyn/dsh-kit` 的 `spawnPortable` 启动——Windows 上 pnpm 只有 `pnpm.CMD`，裸 spawn 既解析不到 `.cmd` 也会因 Node 的加固报 `EINVAL`（真机实测过 `spawnSync pnpm ENOENT`）；装依赖失败会把复制出来的目录回滚，语义是「要么复制成功，要么什么都没发生」
+  另外 tmux 持久会话的 socket **按 profile 区分**（0.25.0 起是 `-L dsh-tty-<profile>`，
+  不带 profile 启动的宿主仍用历史名 `dsh-tty`），`kill-server` 只影响本 profile——
+  见 [tty README § 会话持久化](../tty/README.md#会话持久化tmux0100)。`pnpm` 经 `@hyzyn/dsh-kit` 的 `spawnPortable` 启动——Windows 上 pnpm 只有 `pnpm.CMD`，裸 spawn 既解析不到 `.cmd` 也会因 Node 的加固报 `EINVAL`（真机实测过 `spawnSync pnpm ENOENT`）；装依赖失败会把复制出来的目录回滚，语义是「要么复制成功，要么什么都没发生」
 - 端口配置保存在 `profile.runtime.json`，只影响本插件生成的启动命令，不会写入 DSH 官方 `package.json` / `cordis.patch.yml`
 - 删除为递归删除、不可撤销，面板内会二次确认；内置的 `web` 默认 profile 不允许删除，`headless` 可以删除
 - 新建的 profile 首次使用前需按需安装依赖：`dsh plugin --profile <name> add <包>`（在 profile 目录内跑 pnpm）

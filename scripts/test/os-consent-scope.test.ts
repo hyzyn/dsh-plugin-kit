@@ -691,7 +691,13 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
   })
 
   it('方案不再写明基准 DSH 版本 → 本仓判据红（升级提醒没了）', () => {
-    const world = repoWorldWith(REPO_FILES.plan, '> **状态**：**方案已定，代码未动（2026-10-07）**。', '> **状态**：已定。')
+    /*
+     * 反例只锚「状态」这个前缀，不锚状态行的正文——正文会随实施进度改写
+     * （2026-11-04：从「方案已定，代码未动」改成「PR1–PR3 已落地、PR4 未做」，
+     * 旧夹具就是因此失配的）。本用例要证明的是「基准版本被抹掉必须判红」，
+     * 状态行的措辞与它无关。
+     */
+    const world = repoWorldWith(REPO_FILES.plan, '> **状态**：', '> **状态（反例）**：')
     // 基准版本号的句式是 DSH `<ver>`；把它换成不可匹配的写法
     const plan = world.get(REPO_FILES.plan) ?? ''
     const stripped = plan.replace(/DSH `\d+\.\d+\.\d+[^`]*`/g, 'DSH（版本未记）')

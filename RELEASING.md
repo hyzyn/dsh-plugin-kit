@@ -28,8 +28,10 @@ git config core.hooksPath .githooks    # 克隆后必做一次，否则钩子不
 
 | 钩子 | 作用 |
 | --- | --- |
-| `pre-commit` | ① `pnpm -r build` 重建产物并 `git add`（保证入库的 `lib/`、`client.js` 与源码同步）；② **按 index 扫公网 IP**（`scripts/check-no-public-ip.mjs --staged`） |
-| `commit-msg` | 扫**提交信息**里的公网 IP（`--message-file`） |
+| `pre-commit` | ① 挡下「源码有未暂存改动、产物却要入库」的提交；② `pnpm -r build` 重建产物并 `git add`（保证入库的 `lib/`、`client.js` 与源码同步）；③ 按 index 依次扫五道：i18n（`check-i18n`）→ 公网 IP（`check-no-public-ip --staged`）→ 内部标识（`check-internal-identifiers --staged`）→ README 常量一致性（`check-readme-facts --staged`）→ 中英 README 结构（`check-readme-structure`） |
+| `commit-msg` | 扫**提交信息**里的公网 IP（`--message-file`）与真实内部标识（`--message-file`） |
+
+> 判据与每道的放行口径以 [docs/conventions.md § 提交](./docs/conventions.md#提交) 为准，本表只列动作名。
 
 **为什么提交信息也要扫**：`filter-repo` 的 `--replace-message` 默认不开，只重写工作区内容；
 提交信息是要入库的另一份内容，漏进历史只能**重写全部历史**来补救

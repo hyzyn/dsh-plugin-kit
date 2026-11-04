@@ -129,11 +129,10 @@ if (!hasSameOriginProof(req)) return writeJson(res, 403, { error: '缺少同源�
 ### 能力开关的宿主侧授权（`capability` / `grant-store` / `elevation`）
 
 危险能力开关（docker 的 `allowMutations` / `allowExec`、tty 的 `allowProxyCommand`）的
-**提权通道**。为什么需要它：回环围栏与同源证明都拦不住**跨站页面与页内脚本**（它们能发
-HTTP，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是凭据），于是
-`POST /config {allowMutations:true}` 曾经一次就能把危险能力打开。为什么不是给 `/config`
-加一次性 token：它是插件被禁用后**唯一**的恢复入口，token 化等于把用户锁在外面
-（取舍与威胁模型边界见 [architecture.md § 一条请求经过什么](../../docs/architecture.md#7-一条请求经过什么)）。
+**提权通道**：围栏与同源证明都拦不住**跨站页面与页内脚本**（它们能发 HTTP，也能自己填
+`Sec-Fetch-Site`——那是请求头不是凭据），而 `/config` 不能 token 化（它是插件被禁用后
+**唯一**的恢复入口，token 化等于把用户锁在外面）。威胁模型与取舍的唯一归宿见
+[architecture.md § 一条请求经过什么](../../docs/architecture.md#7-一条请求经过什么)。
 
 两条通道：
 
@@ -142,12 +141,11 @@ HTTP，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是�
    `~/.dsh/env.yml` 就是它）都算**不**授权：它们都有运行期写入路径，拿它们当闸门等于没有闸门。
 2. **就地提权**（免重启档）：页内点开关 → 面板给出一条「在宿主上落地一个随机名文件」的命令
    → 宿主发现该文件即授权，写进 `grant-store`（`<DSH home>/dsh-kit/capability-grants.json`，0600，
-   原子写；确认目录 `<DSH home>/dsh-kit/grant-confirm/`）。**落点收在 `dsh-kit/` 这一级**：DSH
-   主目录是所有所有者共用的平铺目录（官方的 `sessions/` `storages/`，本仓的 `tty/` `rss-digest/`），
-   而 `capability-grants.json` / `grant-confirm/` 描述的是**机制**、不带所有者，铺在那一层容易与
-   官方或别的插件撞名（**kit D08**）。拦得住跨站页面与页内脚本；**拦不住**能在本机执行命令的
-   同用户进程——它读得到自己那次 `begin` 的响应、也写得了那个文件，本来还能直接跑 `docker`
-   （不在威胁模型内）。
+   原子写；确认目录 `<DSH home>/dsh-kit/grant-confirm/`）。落点收在 `dsh-kit/` 这一级：那一层是
+   所有所有者共用的平铺目录，`capability-grants.json` / `grant-confirm/` 描述的是**机制**、不带
+   所有者，铺平容易与官方或别的插件撞名（**kit D08**）。拦得住跨站页面与页内脚本；**拦不住**
+   能在本机执行命令的同用户进程——它读得到自己那次 `begin` 的响应、也写得了那个文件，本来
+   还能直接跑 `docker`（不在威胁模型内）。
 
 - `bindCapabilitySources(ctx, grants?)` —— **各插件在 `apply()` 第一行调用**：绑定「这次宿主
   的启动环境」与带外授权存储（不传 = 本插件只有启动环境通道；docker / tty 都传了存储）；
@@ -163,29 +161,24 @@ HTTP，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是�
   `inPlace: true` 才提「就地确认」，否则用户会去卡片上找一个不存在的入口）；
 - `capabilityPaths(dshHomeDir): { dir, grantsFile, confirmDir }` —— kit 的落盘布局，
   **路径只在这里拼一次**；插件不要自己 `join(dshHome(), …)`（两处各拼一遍就是漂的种子）。
-  `DSH_KIT_HOME` 能把这一级的目录整份换掉（`resolve` 归一后使用；空串 / 全空白视为没设）：
-  **这是测试 / 诊断用的旋钮，不是给用户调的**——能设置宿主环境变量的人本来就能用启动环境变量
-  那条通道直接授权，这里只是把「授权落在哪个目录」也变成可注入的。真宿主验收
-  （[live-host-smoke.mjs](../../scripts/live-host-smoke.mjs)）靠它给「无授权实例」一份空目录：
-  带外授权是持久的，不隔离的话那个实例会继承你机器上的授权，A 段九条断言就全是假红（**kit D12**）；
+  `DSH_KIT_HOME` 能把这一级整份换掉（`resolve` 归一；空串 / 全空白视为没设）：**测试 / 诊断
+  用的旋钮，不是给用户调的**——能设置宿主环境变量的人本来就能走启动环境变量那条通道。真宿主
+  验收（[live-host-smoke.mjs](../../scripts/live-host-smoke.mjs)）靠它给「无授权实例」一份空
+  目录：不隔离的话持久授权会被继承，A 段九条断言全是假红（**kit D12**）；
 - `sharedGrantStore(dir)` —— **插件取授权存储的唯一正确方式**：同一个目录在同一进程里只造一个
-  实例。为什么不是「各插件自己 `new GrantStore(dir)`」：能力判定是模块级单例（`bindCapabilitySources`
-  后绑定覆盖前一次），而 `GrantStore` 是首查读盘 + 进程内缓存——各 `new` 一个等于每个插件拿一份
-  快照副本，后授权的插件在别的插件眼里永远「没授权」（真机实测：tty 授权成功后自己的快照仍是
-  `false`，界面连撤销按钮都不渲染 → **kit D11**）。也不能改成「多来源取并集」：过期副本会否决撤销；
+  实例。各插件自己 `new GrantStore(dir)` 会各拿一份「首查读盘 + 进程内缓存」的快照副本，后授权
+  的插件在别的插件眼里永远「没授权」（**kit D11**）；改成多来源取并集也不行——过期副本会否决撤销；
 - `GrantStore` / `createElevationManager({ confirmDir, store, logger, onGrantChange })` ——
   授权存储与就地提权管理器。`onGrantChange` **必填**：授权到达与撤销都要回调宿主重算
   （少了它，症状是「授权成功但工具没注册」或者「撤销了工具还开着」）；
-- `auditLoadedGrants(store, capabilities, logPrefix?)` —— **启动期审计**：把盘上已有的
-  带外授权逐条打出来（`elevation: load capability=… via=file grantedAt=…`）。不带它，重启后
-  「静默继承」的授权在日志里查不到（**kit D09**）。审计行（含管理器的 begin / grant / expire /
-  revoke）的出口是 **stdout（console.log）**，不是插件的 `ctx.logger`——真机实测后者在 0.2.x
-  宿主上无处可见（**kit D14**，与 tier-gate 的日志出口同一取向）。
+- `auditLoadedGrants(store, capabilities, logPrefix?)` —— **启动期审计**：把盘上已有的带外授权
+  逐条打出来（`elevation: load capability=… via=file grantedAt=…`），否则重启后「静默继承」的
+  授权在日志里查不到（**kit D09**）。审计行（含管理器的 begin / grant / expire / revoke）的出口
+  是 **stdout（console.log）**：`ctx.logger` 在 0.2.x 宿主上无处可见（**kit D14**，同 tier-gate）。
 
-**已知限制**（经复核确认，刻意不修，别当缺陷重报）：运行期改 / 删授权文件**不生效**（要重启才
-读到——删文件当撤销是容易误以为生效的一侧，界面上的「撤销宿主授权」才是正路）；授权记录的 key 是
-**裸环境变量名**、不含插件身份（同名 env 的两个插件会共享一条授权）；没有「仅本次运行有效」档位
-（TTL / boot 计数），持久生效是刻意的。
+**已知限制**（经复核确认，刻意不修，别当缺陷重报）：运行期改 / 删授权文件**不生效**（要重启才读到，
+删文件当撤销是最容易误以为生效的一侧，界面「撤销宿主授权」才是正路）；授权 key 是**裸环境变量名**、
+不含插件身份（同名 env 的两个插件共享一条授权）；没有「仅本次运行有效」档位，持久生效是刻意的。
 
 ```ts
 const CAP = { env: 'DSH_DOCKER_ALLOW_MUTATIONS', label: '变更操作' }
@@ -223,16 +216,16 @@ env.yml / cordis.patch.yml / prompts.yml 共用的「注释标记圈出自动生
   `[]`（见下），否则写出的是一份宿主拒载的文件（codegraph CG67）；
 - `stripEmptyFlowSequenceRoot(text)` / `stripEmptyFlowSequenceRootLines(lines)` ——
   认出「文件里**第一条**非空、非注释行是 `[]`」并摘掉它；没认出时返回 `undefined` /
-  `changed: false`，调用方据此**不动**文件。为什么必须认这个位置：DSH 给每个 profile
-  生成的 `cordis.patch.yml` 模板与 `~/.dsh/cordis.patch.yml` 的惯例内容都是「几行注释 +
-  `[]`」，而 `[]` 是一份**完整**的 YAML 文档（flow 序列根），其后再接块序列整份文件就非法。
-  文本版供 `spliceManagedBlock` 与 mcp / env / prompt 的写入器用，行数组版供本来就在
-  行数组上作业的调用方（codegraph 的 `syncManagedMcpRow`）用。**新插件写托管区块时，
-  追加走 `spliceManagedBlock` 就自带这一步，不要自己往文件尾部拼**；
+  `changed: false`，调用方据此**不动**文件。为什么必须认这个位置：profile 模板与
+  `~/.dsh/cordis.patch.yml` 的惯例内容都是「几行注释 + `[]`」，而 `[]` 是一份**完整**的
+  YAML 文档（flow 序列根），其后接块序列整份文件就非法（codegraph CG67）。文本版供
+  `spliceManagedBlock` 与 mcp / env / prompt 的写入器用，行数组版供在行数组上作业的
+  调用方（codegraph 的 `syncManagedMcpRow`）用。**新插件写托管区块时，追加走
+  `spliceManagedBlock` 就自带这一步，不要自己往文件尾部拼**；
 - `readManagedBlock(text, { beginMarker, endMarker })` —— 返回标记间正文；缺起始
   或结束标记返回 `undefined`（损坏，调用方应报错而不是用半截内容）；
 - `writeFileAtomic(file, data, mode = 0o600)` —— 同目录临时文件 + rename 原子写
-  （配置 watch 不会读到半截文件），mode 只会被 umask 进一步收紧。
+  （配置 watch 不会读到半截文件）；`mode` 由 chmod 显式落定、不随 umask 漂（Windows 跳过，**kit D06**）。
 
 ```ts
 const markers = { beginMarker: '# --- my-plugin managed ---', endMarker: '# --- end my-plugin managed ---' }
@@ -253,13 +246,12 @@ kit 生态的插件统一支持 `enabled` 配置（默认 `true`），语义分�
      渲染，也是重新启用插件的唯一 UI 入口，**不能**一并关掉；
   3. systemPrompt 能力公告按 `enabled && announceToAgent` 重建（撤下 / 恢复）。
 
-设置卡片在禁用后必须仍然可见可保存，否则用户没有 UI 入口重新打开插件；
-不要把「禁用」实现成不注册 settings 命名空间。参考实现：
+设置卡片在禁用后必须仍然可见可保存；不要把「禁用」实现成不注册 settings 命名空间。参考实现：
 `packages/docker/src/index.ts`（`refreshTools` / 路由守卫 / `refreshAnnouncement`）、
-`packages/tty/src/index.ts`（同约定，另有 WS 升级闸门：禁用时断开存量连接并拒绝
-新升级，PTY 进程转孤儿保活，重新启用后客户端自动重连 attach）、
-`packages/rss/src/index.ts`（开关写 store 文件 `~/.dsh/rss.json` 而非 settings
-命名空间：数据路由守卫 + 调度器 tick 短路 + systemPrompt section 撤下/重挂）。
+`packages/tty/src/index.ts`（同约定，另有 WS 升级闸门：禁用时断开存量连接并拒绝新升级，
+PTY 进程转孤儿保活，重新启用后客户端自动重连 attach）、
+`packages/rss/src/index.ts`（开关写 store 文件 `~/.dsh/rss.json` 而非 settings 命名空间：
+数据路由守卫 + 调度器 tick 短路 + systemPrompt section 撤下/重挂）。
 
 ## 设置卡片约定（settings.plugin.item）
 
@@ -280,6 +272,7 @@ kit 插件的设置面板按宿主槽位代际注册三代（`plugins.bundle.con
 | rss-digest | RSS / 新闻聚合 | 94 |
 | mcp-config | MCP 服务器配置 | 96 |
 | env-manager | 环境变量 / 密钥管理 | 98 |
+| loglens | 日志查询 | 99 |
 | tty | 终端面板 | 100 |
 | docker | Docker 容器面板 | 102 |
 | codegraph | Codegraph | 104 |

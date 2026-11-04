@@ -135,6 +135,12 @@ const policy = approval?.overrideOf(exec.agent.session) ?? 'ask'        // 服�
 为什么全是 `read`：本包没有写操作（设计 §1 非目标）、不在目标机上跑命令（Docker 走现成工具，
 见 [design.md §5](../packages/loglens/docs/design.md) 的选项 0），它只是发 HTTP 查询。
 
+**`mcp` 没有这张表，是设计而非遗漏**：`mcp__<server>__<tool>` 的名字由外部 server 决定，本仓无法逐条
+分类，也无权替别人的工具声明档位；`packages/mcp` 按 `mcp__` 前缀把整族接进 kit 的 `attachTierRestrict`，
+`classify` 恒返回 `exec`（未知风险取最坏类，2026-10-25 决议，见 [§10](#10-明确不做本方案范围外) 末条）。
+行为面由 `packages/mcp/test/agent-visibility.test.ts` 钉住（受限档下 `mcp__*` 一个都不剩），
+所以 §2.1 的三张表**不是**「全部 agent 工具」的清单——别把它们当覆盖率读。
+
 ### 2.2 决策矩阵（唯一判定处，纯函数）
 
 | 会话 mode | 会话 policy | `read` | `write` | `exec` |

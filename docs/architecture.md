@@ -122,7 +122,9 @@
 
 - **产物入库**：`packages/*/client.js` 与 `packages/*/lib/**` 随源码提交，CI 有「产物 = 源码」闸门
   （`pnpm -r build` 后 `git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'`）。
-  改源码**必须**重建产物；**`lib/` 那半边在 CI 里目前是失效的**，细节与实测见
+  改源码**必须**重建产物；两条历史的 pathspec 坑（`'packages/*/lib'` 不递归、`'packages/*/lib/*'`
+  多算一个）已在 2026-09-25 修掉，CI 那处 2026-10-03 起搬进 `scripts/check-artifacts.mjs`
+  （`pnpm artifacts:check`），现状与实测见
   [conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线)。
 - **纯逻辑抽模块**：要判对错的客户端逻辑抽成 `client-src/*.js` 纯模块 + vitest 用例，
   由构建脚本内联进单文件 `client.js`。理由与六条硬规矩见
@@ -154,7 +156,7 @@
 
    | 包 | 闸门 | 变更端点的同源证明 |
    |---|---|---|
-   | `docker` · `tty` · `dsh-mcp` · `loglens` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法）——`docker` / `tty` / `dsh-mcp` 三处 `/config` **整体豁免**（它是禁用后唯一的恢复入口）；`loglens` **按动作部分豁免**：`enabled` 免、`targets` 的增删改要同源证明 |
+   | `docker` · `tty` · `dsh-mcp` · `loglens` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法）——`docker` / `tty` 两处 `/config` **整体豁免**（它是禁用后唯一的恢复入口）；`loglens` **按动作部分豁免**：`enabled` 免、`targets` 的增删改要同源证明；`dsh-mcp` 没有 `/config` 路由（配置走 `POST /api/dsh-mcp/servers/save`），**无豁免** |
    | 其余 7 个插件 | `isLoopbackRequest`（同步档） | 无 |
 
    > **口径标注（2026-10-11 加 `loglens` 时补）**：按 [conventions § 文档分档](./conventions.md#文档分档)

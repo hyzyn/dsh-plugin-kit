@@ -2,63 +2,64 @@
 
 [中文](README.md) | English
 
-> The DSH sidebar "Containers" panel: containers on the local machine and on SSH hosts inspected on one screen — read logs, watch resources, enter containers, start / stop / remove, **Read-only by default**.
+> The DSH sidebar "Containers" panel: containers on the local machine and on SSH hosts inspected on one screen — read logs, watch resources, enter containers, start / stop / remove, **read-only by default**.
 
 ## Features
 
-- **A resident session right-sidebar tab**: the panel lives as a session right-sidebar tab (`sidebar.right.pane.tab`) **side by side** with the conversation — after handing an error to the agent the logs stay on the right, without getting in the way of watching it work; collapsing it leaves the viewport. Panel-level state (target / view / filter text / selected container and its tab) is kept **across sessions**, and collapsing drops the live streams to hand the SSH channels back. Hosts without the right-sidebar services fall back to the original dock / modal, behaving exactly as before.
-- **An explicit one-click "connect local"**: two **non-permanent** entries — with no targets at all it is the primary button in the "no Docker targets configured yet" empty state, and once you have other targets it is the **last item in the target dropdown**, `+ Connect local` (it is deliberately **not** on the toolbar, where being permanent means occupying space and begging for clicks — pure noise) — one click (or picking that item) adds the machine hosting the plugin as a local target and selects it (an existing local target is reused, never duplicated; SSH and custom targets stay untouched), and the same operation is `docker_connect_local` on the agent side. It does **not** change the meaning of an empty `targets`, never invents an implicit default target, never installs Docker / starts a daemon / switches docker contexts, and needs no capability grant (it only adds one local target pointing at the plugin's own host).
-- **Aggregated fetches across targets**: the Overview page fans out over every `targets[]` entry in parallel, and an unreachable target only spoils its own cell; the agent side exposes the same shape through `docker_ps target:"*"` / `docker_attention target:"*"`, so targets never block one another.
-- **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
-- **Container "diagnosis": four sources turned into one actionable verdict**: the detail view's **Diagnosis** tab
-  collects `docker inspect` (authoritative state / exit code / OOM / restart count / last health-check output /
-  resource limits), the log tail, this container's events and a `stats` snapshot, then hands them to a set of
-  **pure criteria** (`src/diagnose.ts`, zero IO) that produce "verdict + findings + evidence + timeline +
-  suggestions" — the same contract the agent tool `docker_diagnose` exposes. The common case is "why did it die":
-  an OOM kill names both the **memory limit and the actual usage**, a non-zero exit explains what that code
-  usually means, an unhealthy container carries the last health-check output, and one "hand it to the agent"
-  button drops that whole evidence bundle (log text fenced, labelled "data, not instructions") into the session.
-- **Disk usage and "who uses it"**: the **Disk** view lays out `docker system df`'s **reclaimable** bill — four
-  summary cards plus the total reclaimable, an image breakdown sorted by unique size (`containers = 0` gets an
-  "unused" badge) and a volume breakdown with link counts; per-row removal sits behind `allowMutations`. The
-  `containers` / `links` numbers come straight from `docker system df -v` (`Images[].Containers` /
-  `Volumes[].Links`) — **never reverse-engineered from `docker ps`**, which would have to guess tag/digest and
-  gets multi-tag images wrong.
-- **Reconstruct the launch: an equivalent `docker run`**: a collapsible block at the bottom of the overview
-  rebuilds a reproducible command (ports / mounts / env / restart policy / network / resource limits /
-  capabilities — one argument per line, POSIX-quoted, fetched only when expanded). **Whatever was deliberately
-  not restored is named** (`--privileged`, `--link`, an overridden ENTRYPOINT, custom health checks, anonymous
-  volumes — each with a reason and how to add it back), and secret-looking env vars are reported by **key name
-  only** — the same stance as "state the consequences before deleting".
-- **Process snapshot**: the **Processes** tab (agent tool `docker_top`) shows `docker top`'s PID / PPID / user /
-  STAT / elapsed / CPU / memory / command. "The container is running" and "the process is still there" are two
-  different facts: when the process is gone, the logs usually say nothing at all.
-- **Diagnosis history: from "how is it now" to "is it getting worse"**: every diagnosis stores a sample that
-  carries **only the verdict and numbers** (log text never touches disk), and the diagnosis tab derives the last N
-  severities as a strip, a trend verdict (repeated restarts / repeated OOMs / creeping memory / growing error
-  lines / newly appeared serious findings), a numbers block that lists only what **actually changed**, and a
-  findings diff. The agent-side twin is `docker_diagnose`'s `history` parameter.
-- **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect / a `ready` frame as soon as the pipeline is up) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. "Connected" and "receiving data" are two different things: the client only counts `ready`, never the arrival of the response headers (see "SSE event protocol"). Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
-- **Read-only by default, capability switches in three tiers**: start / stop / remove, exec and image mutations are independent switches; while one is off the agent tools are **not registered** and the HTTP routes return 403 (the capability does not exist, rather than failing when called). Container names and IDs pass a whitelist, every command is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:NAME` (resolved through the official credential layer, falling back to the environment) and never sent back to the browser.
-- **Right-click a log into the agent**: select the failing lines in the log view, then right-click for "send to the current session / fill the input box so I can edit first" — the selection travels with its target, container, time window and 20 lines of context on each side (the menu states plainly that the content enters the model context and may carry credentials). Delivery reports itself twice: a **viewport-level toast** (attached to `body`, above the panel and the terminal modal), and — when the terminal panel is open — an **automatic fold of the terminal** (`minimize()` on the `ttyPanel` v2 contract; sessions keep running and the sidebar "Terminal" entry's badge restores it), so the conversation is simply there. On older tty without that call it degrades to the toast's "the conversation is behind the panel" hint. To edit first, use the draft action — **the session input box is the only editing surface** (multi-line, with the full context in view, and exactly what the agent receives), instead of a second, weaker card editor. Locating the target session is version-tolerant: **≤0.1.5** reads `current` off the `sessions.list` snapshot, while **since 0.1.6** that field moved out of the session domain together with view selection, so it reads `retainedBy.mainView > 0` instead (the same test `dsh-client-ui-session` and this repo's codegraph use) — trusting only the legacy field greys out both menu items as "no session open". The same read drives "carry the containers tab across a session switch".
-- **Data-level reuse of dsh-tty, no code coupling**: no tty code is imported and tty needs no source change, so the two install and upgrade independently; with tty present three optional extension points are consumed — connection-bar actions (`ttyConnbar`), the terminal host (`ttyTerminal`: a new tab under the tab/dock carriers, an in-place drawer under the modal) and the terminal-side dock (`ttyPanel.mountPane`, used only by the fallback path) — and each degrades silently without tty or below the required version.
+- **A resident session right-sidebar tab**: the panel lives as a right-sidebar tab (`sidebar.right.pane.tab`)
+  **side by side** with the conversation — after handing an error to the agent the logs stay on the right;
+  collapsing it leaves the viewport and drops the live streams, handing the SSH channels back. Panel-level state
+  (target / view / filter text / selected container and its tab) is kept **across sessions**; hosts without the
+  right-sidebar services fall back to the dock / modal.
+- **Right-click a log into the agent**: select the failing lines in the log view, then right-click for "send to
+  the current session / fill the input box so I can edit first" — the selection travels with its target,
+  container, time window and 20 lines of context on each side (the menu states plainly that the content enters
+  the model context and may carry credentials). Delivery reports itself twice: a **viewport-level toast**, and —
+  when the terminal panel is open — an **automatic fold of the terminal** (`ttyPanel` v2 contract). To edit first
+  use the draft action: **the session input box is the only editing surface**.
+- **One-click "connect local" / aggregated fetches across targets**: two **non-permanent** entries (the empty
+  state's primary button / the target dropdown's last item) add this machine as a local target in one click (the
+  agent-side twin is `docker_connect_local`); the Overview fans out over every `targets[]` entry in parallel, and
+  an unreachable target only spoils its own cell (`docker_ps target:"*"` shares the same shape).
+- **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero
+  exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary
+  cannot separate an OOM kill from a manual kill (criteria in [Overview](#overview-cross-target-and-the-needs-attention-criteria)).
+- **A closed troubleshooting loop**: the Diagnosis tab turns four reads into "verdict + findings + evidence +
+  timeline + suggestions", and diagnosis history then answers "is it getting worse"; the Processes tab gives a
+  `docker top` snapshot; the Disk view lays out the reclaimable bill and "who uses it"; the overview bottom
+  rebuilds a reproducible `docker run`. See [Container diagnosis](#container-diagnosis-why-is-it-failing) and
+  [Diagnosis history](#diagnosis-history-is-it-slowly-getting-worse).
+- **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull`
+  all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect / a
+  `ready` frame as soon as the pipeline is up) and differ only in how they end; merged logs pack several
+  containers into **one** `/logs/stream?ids=…`. "Connected" and "receiving data" are two different things: the
+  client only counts `ready`. See [SSE event protocol](#sse-event-protocol-logsstream-statsstream-eventsstream-imagespullstream).
+- **Read-only by default, two independent switches**: `allowMutations` (container start / stop / remove plus
+  image remove / prune / pull) and `allowExec` (one-off `docker exec`); while one is off the agent tools are
+  **not registered** and the HTTP routes return 403
+  (the capability does not exist, rather than failing when called). A grant takes one of two out-of-band channels
+  (launch environment variables / confirming in the card). Container names and IDs pass a whitelist, every command
+  is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:NAME` and never
+  sent back to the browser.
+- **Data-level reuse of dsh-tty, no code coupling**: no tty code is imported and the two install and upgrade
+  independently; with tty present three optional extension points are consumed (`ttyConnbar` / `ttyTerminal` /
+  `ttyPanel`), each degrading silently without tty or below the required version.
 
 ## Relationship with dsh-tty
 
-This plugin stands on its own: it imports no tty code, and tty needs no source changes; the two can be installed and upgraded independently. With tty installed they cooperate at the optional extension points below, and without it they degrade quietly.
+This plugin stands on its own: it imports no tty code and tty needs no source changes. With tty installed they
+cooperate at the optional extension points below; without it they degrade quietly.
 
 | Dimension | Description |
 | --- | --- |
-| Plugin form | A standalone package `@hyzyn/dsh-docker` that imports no tty code, and tty needs no source changes; the two can be installed and upgraded independently |
-| Connection book | SSH targets can **reference a tty connection-book entry name** (read-only access to `sshHosts` through `ctx.settings.get('tty')`); when tty is not installed this degrades to "inline host/username" or a local target |
+| Plugin form | A standalone package `@hyzyn/dsh-docker`; both can be installed and upgraded independently |
+| Connection book | SSH targets can **reference a tty connection-book entry name** (read-only access to `sshHosts` through `ctx.settings.get('tty')`); without tty this degrades to "inline host/username" or a local target |
 | Host fingerprints | This plugin keeps its own `hostKeys` (TOFU) and **prefers tty's already-recorded fingerprints as the seed** — the same host does not have to be confirmed in two places |
 | Execution channel | Its own pooled SSH exec (`src/ssh-exec.ts`), fully independent of tty's PTY sessions; neither takes the other's slots |
-| Context entry point | With tty ≥ 0.13.0 it can optionally consume tty's client service `ttyConnbar` and insert a "Containers" button in the SSH connection bar (next to SFTP) (**shown as soon as it is registered**), with the target resolved from the current session at click time; **except in exec tabs this plugin opened itself** — those tabs are where the user just came from, so offering a way back to the very same panel is a loop (recognised via `spawnSpec.command`; a `docker exec -it` the user typed by hand does not count); if tty is missing or too old this is skipped silently |
-| Panel hosting | **The default is a session right-sidebar tab** (`sidebar.right.pane.tab`): the panel and the conversation share the screen, so logs stay visible while the agent works; collapsing it leaves the viewport without leaving the session. The **frame sidebar** entry only opens or focuses it, and **a page type deduplicates inside one column**, so clicking twice never opens a second tab. The **terminal connection bar** entry is the opposite — it sits on the viewport-covering tty modal, where a tab would be hidden, so that path docks to the right of the terminal via `ttyPanel.mountPane` (**the entry decides the carrier**). Without the right-sidebar services (older DSH), or with `localStorage['dsh-docker:carrier'] = 'modal'`, the sidebar entry also falls back to the dock (when tty is open) or to a full-screen modal with its own backdrop. All three carriers are **one component**, differing only in shell and geometry |
-| Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY). **Right-sidebar tab**: when the panel is fullscreen (`sidebar.fullscreen`) the terminal is embedded in place via `ttyTerminal.mount` (enough width, logs and shell on one screen); otherwise a tab is opened in the terminal panel via `ttyTerminal.open` (re-clicking the same container **focuses the existing tab** instead of stacking duplicates — tty contract v3 `reuse`); (too narrow to squeeze both). **Dock** carrier (the panel already lives inside tty) always opens a tab; **modal** embeds in place. Those command tabs (non-empty `spawnSpec.command`) show **no connection-bar extension area** on the tty side — SFTP / tunnels / third-party panes all act on the connection itself, which misleads on a `docker exec` tab (SFTP browses the host, not what the user believes is inside the container); this plugin adds a version-independent fallback that withholds the "Containers" entry in exec tabs it opened itself (matched by the `spawnSpec.command` prefix). Without tty, or below the required version, copying the command is the fallback. This plugin implements no PTY / xterm / reconnect stack |
-| Division of labour | **Interactive troubleshooting** (`docker exec -it`, a shell inside the container, TUIs) is hosted by tty (embedded drawer or tab); **read-only inspection and agent automation** use this plugin's own exec channel |
-
-Reuse at the data level without coupling at the code level: the connection book and the fingerprint seed are "reading the same settings", and the connection-bar button is "consuming a generic extension point" — neither is "depending on tty's modules", so upgrading or uninstalling tty does not break this plugin along with it.
+| Context entry point | With tty ≥ 0.13.0 it can optionally consume `ttyConnbar` and insert a "Containers" button in the SSH connection bar (next to SFTP) (**shown as soon as it is registered**), with the target resolved from the current session at click time; **except in exec tabs this plugin opened itself** (recognised via `spawnSpec.command`); if tty is missing or too old this is skipped silently |
+| Panel hosting | **The default is a session right-sidebar tab** (`sidebar.right.pane.tab`); the frame sidebar entry only opens or focuses it, and **a page type deduplicates inside one column**. The **terminal connection bar** entry is the opposite — it sits on the viewport-covering tty modal, where a tab would be hidden, so that path docks to the right of the terminal via `ttyPanel.mountPane` (**the entry decides the carrier**). Without the right-sidebar services (older hosts), or with `localStorage['dsh-docker:carrier'] = 'modal'`, it falls back to the dock / full-screen modal. All three carriers are **one component**, differing only in shell and geometry |
+| Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY). **Right-sidebar tab**: when the panel is fullscreen (`sidebar.fullscreen`) the terminal is embedded in place via `ttyTerminal.mount`, otherwise a tab is opened via `ttyTerminal.open` (re-clicking the same container **focuses the existing tab** — tty contract v3 `reuse`); **dock** always opens a tab; **modal** embeds in place. Command tabs (non-empty `spawnSpec.command`) show **no connection-bar extension area** on the tty side (SFTP / tunnels act on the connection itself, which misleads on a `docker exec` tab); this plugin also withholds the "Containers" entry in exec tabs it opened itself. Without tty, or below the required version, copying the command is the fallback. This plugin implements no PTY / xterm / reconnect stack |
+| Division of labour | **Interactive troubleshooting** (`docker exec -it`, a shell inside the container, TUIs) is hosted by tty; **read-only inspection and agent automation** use this plugin's own exec channel |
 
 ## Installation
 
@@ -67,68 +68,54 @@ dsh plugin --profile web add @hyzyn/dsh-docker              # npm install (once 
 dsh plugin --profile web add link:$(pwd)/packages/docker    # repo development and debugging
 ```
 
-The aggregate package `@hyzyn/dsh-all` (or the repo-root bundle) already includes this plugin, so there is no need to
-add it separately when installing everything at once. After installing, restart `dsh web` and the "Containers"
-entry appears in the sidebar; the "Docker Container Panel" card maintains targets and switches, and **saving applies hot** (`settings/updated`
+The aggregate package `@hyzyn/dsh-all` (or the repo-root bundle) already includes this plugin, so there is no need
+to add it separately. After installing, restart `dsh web` and the "Containers" entry appears in the sidebar; the
+"Docker Container Panel" card maintains targets and switches, and **saving applies hot** (`settings/updated`
 triggers re-resolution, with no restart needed).
 
-> If you have already installed `@hyzyn/dsh-all` or the root bundle in the web profile, do **not** add this package
+> If `@hyzyn/dsh-all` or the root bundle is already installed in the web profile, do **not** add this package
 > again, or the plugin line is mounted twice and startup reports `duplicate loader entry id`.
 
 ## Usage
 
 Two entry points, one panel. **The default carrier is a session right-sidebar tab** — the entries only open or
-focus it, and the panel sits side by side with the conversation: after handing an error to the agent the logs stay
-on the right, without getting in the way of watching it work.
+focus it, and the panel sits side by side with the conversation.
 
 ![Right-sidebar tab carrier: conversation and container panel on one screen, panel full height; collapsing leaves the viewport](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-tab.png)
 
 - **Sidebar "Containers"** (the main entry point): works for any target, including local docker and switching
   between multiple targets. If it is already open it focuses (a page type deduplicates inside one column), so
   clicking twice never opens a second "Docker containers" tab.
-- **Where to look after delivering**: under the right-sidebar tab the conversation is right beside
-  you; under the docked / modal carriers a successful send **folds the terminal automatically** (it keeps
-  running — click the sidebar "Terminal" entry's badge to restore), so you land in the conversation instead
-  of guessing whether a viewport-covering modal reacted at all.
-- **SSH connection bar "Containers" button** (a contextual shortcut, tty ≥ 0.13.0): in an SSH tab of the tty
-  terminal panel a "Containers" button appears next to the connection bar's SFTP button — **shown as soon as it is
-  registered**, and clicking it opens the panel directly on **the host of the current session**, with no target to
-  pick. The target is resolved at click time: when the session comes from the connection book it matches by entry
-  name, otherwise it matches a resolved target by `host:port`; **no matching target does not hide the
-  button** — the panel carries a hint naming the session host (including the connection-book name) and how to
-  configure it in the settings card. This path goes to the **dock right of the terminal** rather than the tab —
-  the button lives on the tty modal, which covers the viewport, so a tab would be hidden behind it and feel like
-  "clicking did nothing". The target still travels into the panel and remounts it on that host. The rule is
-  therefore **"the entry decides the carrier"**: from the frame's sidebar → the right-sidebar tab (side by side
-  with the conversation); from inside the terminal modal → the dock right of the terminal (side by side with the
-  terminal).
+- **SSH connection bar "Containers" button** (a contextual shortcut, tty ≥ 0.13.0): it appears next to SFTP in an
+  SSH tab of the tty panel, **shown as soon as it is registered**, and opens the panel directly on **the host of
+  the current session** (the target is resolved at click time by entry name or `host:port`; **no matching target
+  does not hide the button** — the panel says how to configure it). This path goes to the **dock right of the
+  terminal** — the rule is **"the entry decides the carrier"**: from the frame's sidebar → the tab; from inside
+  the terminal modal → the dock.
 
 ### Carriers
 
 | Carrier | When | Behaviour |
 | --- | --- | --- |
-| **Session right-sidebar tab** (default) | the host provides `sidebarRight` / `sidebarRightTabs` | side by side with the conversation; collapsing hides it without losing state (panel-level state lives in a module store, see below); the right sidebar's fullscreen mode gives it the whole viewport |
-| **Dock right of the terminal** | arriving from the **terminal connection bar's** "Containers" button (that button sits on the tty modal, which would hide a tab), or no right-sidebar service / `localStorage['dsh-docker:carrier'] = 'modal'` with tty ≥ 0.16 and its panel open | docked to the right of the terminal panel (resize / collapse / ✕ provided by tty, the terminal stays usable); one dock at a time — docking this plugin takes down the previous occupant (for example tty's own SFTP); since tty 0.18.4 the pane is **owned by the tab it was opened from**: switching tabs hides it, switching back restores it and closing that tab tears it down (while hidden the React tree and polling keep running) |
+| **Session right-sidebar tab** (default) | the host provides `sidebarRight` / `sidebarRightTabs` | side by side with the conversation; collapsing hides it without losing state; the right sidebar's fullscreen mode gives it the whole viewport |
+| **Dock right of the terminal** | arriving from the **terminal connection bar's** "Containers" button, or no right-sidebar service / `localStorage['dsh-docker:carrier'] = 'modal'` with tty ≥ 0.16 and its panel open | docked to the right of the terminal panel (resize / collapse / ✕ provided by tty, the terminal stays usable); one dock at a time — docking this plugin takes down the previous occupant (for example tty's own SFTP); since tty 0.18.4 the pane is **owned by the tab it was opened from**: switching tabs hides it, switching back restores it and closing that tab tears it down (while hidden the React tree and polling keep running) |
 | **Full-screen modal** (fallback) | neither of the above | its own backdrop, closes on outside click; the panel sits above tty's modal in z-order |
 
 Rolling back to the old shape is one console line: `localStorage.setItem('dsh-docker:carrier', 'modal')`
 (`removeItem` restores the default). That switch is a temporary grey-release knob, so it deliberately stays out of
-settings — not worth changing the host config schema, the settings card and the docs for it.
+settings.
 
 **State retention**: the panel inspects hosts, not workspaces, so view / filter text / selected container
 (including its overview-logs-stats tab) / target are kept **across sessions**; the log filter and LINES switch
 inside a container detail belong to that container and are not kept. **Collapsing the tab drops every live
-stream** (handing the SSH channels back) and expanding reconnects — single-container and merged log streams
-already open with `tail`, so history refills itself.
+stream** (handing the SSH channels back) and expanding reconnects — the streams open with `tail`, so history
+refills itself.
 
-**Stickiness across sessions**: DSH's right-sidebar tab records are **session-scoped** (`sidebar.right.pane.tab`
-and `rightbar.session` both declare `scope: 'session'`), so a tab opened in session A does not exist in session B.
-The panel inspects hosts, though, and losing it on a session switch is pure loss — so the plugin additionally
-keeps a "the user wants this open" intent: **switching sessions reopens the tab in the new session**, and only
-clicking the tab's ✕ stops that. The panel follows the person, not the session. That ✕ is executed by the
-**host** (`sidebarRight` closes the tab itself), so the plugin learns about it through
-`registerCloseHandler` — relying on the panel's own `onClose` alone would miss the close, and every session
-switch would bring the tab back after the user had just dismissed it.
+**Stickiness across sessions**: right-sidebar tab records are **session-scoped**, so a tab opened in session A
+does not exist in session B — yet the panel inspects hosts, so losing it on a session switch is pure loss. The
+plugin therefore keeps a "the user wants this open" intent: **switching sessions reopens the tab in the new
+session**, and only clicking the ✕ stops that (that ✕ is executed by the **host**, so it must be registered
+through `registerCloseHandler` — a panel-level `onClose` alone would miss it).
 
 **Dock fallback carrier** (right of the terminal):
 
@@ -137,139 +124,62 @@ switch would bring the tab back after the user had just dismissed it.
 A panel opened this way **never covers the terminal**: with tty ≥ 0.16 it docks to the right of the terminal
 panel (draggable width, collapsible into a narrow strip, ✕ to tuck away) while you keep typing in the terminal.
 In dock mode the card's "Terminal" button **opens a new tab in the same terminal panel** running
-`docker exec -it` (the panel is already inside a terminal, so nesting one more layer makes no sense); it also
-**stops rendering the panel's own header** — the title and ✕ are handled by the sidebar title bar, and the
-refresh control and read-only badge move to the
-**end of the toolbar, right-aligned** (while refreshing the icon spins itself, with no extra spinner): the left
-end stays for the target / view / search / filter controls, so refresh is not mistaken for the first filter and
-sits where it does in the non-dock header; a 520px narrow column does not leave a blank line behind.
+`docker exec -it`; it also **stops rendering the panel's own header** — the title and ✕ are handled by the
+sidebar title bar, and the refresh control and read-only badge move to the **end of the toolbar, right-aligned**:
+the left end stays for the target / view / search / filter controls.
 
 Inside the panel:
 
 ![Container list: target picker / search and state filtering / card action bars (the view and mutate groups)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-panel.png)
 
 - **Switching targets has a transition and guards**: as soon as the picker changes, the cards below are still the
-  previous target's (a remote round trip can take up to 20s). Three principles for the transition layer —
-  **no layout shift, a sense of direction, little grey**:
-  - a 2px **indeterminate shimmer progress bar** (absolutely positioned) along the top of the panel body gives a
-    global "fetching" signal;
-  - a **blue capsule floats up centred** at the top of the body (the same placement and colour language as the
-    dsh-rss loading capsule): background `color-mix(accent 12%, surface)`, border `accent 42%`, text and spinner in
-    `--dk-accent`; the visible copy is just two segments, `⟳ Switching to Target2 · Currently showing: Target1`
-    (not written as a sentence, no quotes around target names), while the full "why won't it respond" story lives in
-    `title`, available on hover;
-  - old data stays at **82% + slight desaturation** (not dimmed into illegibility) and **the pointer is locked**: it
-    reads as "a different batch of content" rather than "it broke", and it also prevents acting on the stale list —
-    that would aim at the new target while sending commands with container IDs from the old list and really could
-    stop a same-named container on the other side;
-  - new data lands with an **8px slide-up + fade-in** over 200ms, so that "a different batch" is visible; the motion
-    respects `prefers-reduced-motion`.
-
-  Everything above is **absolutely positioned**: during a switch the first card's position and the scroll height
-  provably do not change at all (a banner approach would push the whole block of content down). **A failed switch
-  clears the old list** and settles into the new target's error state (it does not keep showing another target's
-  data), and the empty-state copy distinguishes "failed to read" from "filtered too narrowly".
+  previous target's (a remote round trip can take up to 20s). During the switch the old cards are desaturated and
+  **the pointer is locked** (it reads as "a different batch of content" rather than "it broke", and it prevents
+  acting on the stale list — that would aim at the new target with container IDs from the old list and really
+  could stop a same-named container on the other side), while new data fades in; the whole block is
+  **absolutely positioned**, so the first card's position and the scroll height do not change. **A failed switch
+  clears the old list** and settles into the new target's error state, and the empty-state copy distinguishes
+  "failed to read" from "filtered too narrowly".
 - **Target selection**: the panel picks a target first (from the `targets` config, local / SSH); with only one
-  target configured it is selected by default, and agent tools may also omit the `target` parameter.
-  **The last selected target is remembered** (stored in the browser's `localStorage` under
-  `dsh-docker:last-target`, not written to config or settings): the next time the panel opens it is selected
-  automatically. The priority is **what the connection bar specifies > last remembered (and still present) >
-  first in the list** — once the remembered target is deleted or renamed it falls back to the first one instead of
-  resting on an "unknown target"; when entering from the terminal connection bar's "Containers" button, the current
-  session host takes priority over the remembered value. Switching targets is **a whole-context switch**:
-  requests still in flight for the previous target are all invalidated (a list write gate), so there is no
-  cross-talk like "the picker is already Target2 while the cards are still Target1's containers", and an old
-  target's timeout banner does not linger on the new target's page.
-- **Multi-target Overview (read-only)**: the `Overview` pill next to the target picker (shown only with ≥2 targets
-  configured) — pick no target and see every host on one screen: a row of **counter cards** on top
-  (target name + a local / SSH marker + running / stopped / unhealthy), and below it a **table of containers needing
-  attention pinned to the top** (container / target / status / image; unhealthy sorts before restarting, ties follow
-  the targets' order in config, and rows do not jump between polls). Fetching is **parallel + progressive**:
-  each target issues its own `POST /containers` (`all:true`, since a bare `docker ps` does not return exited
-  containers and "stopped" would always be 0), and an unreachable target affects only its own cell — the card
-  outlined in red plus an "N targets unreachable" banner at the top, while the other targets' results show as usual
-  (deliberately **not** aggregated with `Promise.all`: an unreachable SSH host waits out the 20s readyTimeout, so
-  aggregating would keep the whole page silent for 20s). Clicking a counter card returns to that target's normal
-  container list, and clicking an attention row opens that container's details (going back lands on **that
-  target's** container list); **the Overview performs no cross-target operations**, and the attention table's rows
-  have no action buttons. Entering the Overview clears the failed banner left over from "the current target": the
-  Overview attributes everything per target (red card + unreachable banner) and no longer stacks a single-target
-  "operation failed" — the same SSH timeout told twice looks like two dead machines. Polling reuses the toolbar's
-  "auto refresh" switch (off by default): each round of this page is one `docker ps` per target across all N
-  targets, more expensive than any single-target page. With no exceptions it shows
-  "all good"; while some targets have not finished answering, the attention area shows "reading…" and
-  **that counter card also enters its loading state** (spinner + dimmed, no 0/0/0 — "0 containers" would be read as
-  "this machine has no containers" when it simply has not answered yet) ("don't know yet" is not "all good").
-- **Container list**: name / status / health / image / port mappings / compose project and service /
-  short ID; it supports **search** by name or image, **filtering** by state (running / stopped / all),
-  and **auto refresh** (polling at `pollIntervalSec`; switching to the images page pauses it and hides that
-  switch — images change slowly, so there is no point running `docker images` every 5s; switching back to the
-  containers page restores the previous setting). In the toolbar "include stopped" and "auto refresh" are two
-  **grouped** switches, and the search box is the only flexible item among them: on a wide panel the whole toolbar
-  collapses into one row, and only in a narrow column (dock, 520px) does it wrap by group — no orphan row holding a
-  single checkbox.
+  target configured it is selected by default, and agent tools may omit `target`. **The last selected target is
+  remembered** (`localStorage` key `dsh-docker:last-target`, not written to config): the priority is **what the
+  connection bar specifies > last remembered (and still present) > first in the list**. Switching targets is **a
+  whole-context switch**: requests still in flight for the previous target are all invalidated (a list write
+  gate), so there is no cross-talk like "the picker is already Target2 while the cards are still Target1's".
+- **Container list**: name / status / health / image / port mappings / compose project and service / short ID;
+  it supports **search** by name or image, **filtering** by state, and **auto refresh** (polling at
+  `pollIntervalSec`; switching to the images page pauses it and hides that switch). "Include stopped" and "auto
+  refresh" are two **grouped** switches, and the search box is the only flexible item among them: one row on a
+  wide panel, wrapping by group only in a narrow column (dock, 520px).
 - **"Activity" strip (the docker events stream)**: a collapsible narrow bar at the head of the container list
   (expanded by default) that follows one SSE stream (`GET /api/dsh-docker/events/stream`, where the server runs
   `docker events --filter type=container`) showing the last 8 events (time + container name + action, with `die`
-  carrying its exit code such as `die(137)`). It is the entry point for **event-driven refresh**: 500ms
-  **after an event arrives** it debounces a list refetch (not one request per frame), layering on top of the
-  existing `AUTO REFRESH` rather than excluding it — polling is the safety net, events cover "just happened". Events
-  stay in memory only (a ring buffer of 50), switching pages closes the stream, and switching targets clears the
-  buffer. The allowlist keeps only the nine lifecycle actions (start / die / stop / kill / oom /
-  health_status / destroy / rename / update): noise such as `exec_*` and `archive-path` (`docker cp`)
-  is dropped server-side — on one batch machine 47 events over 24 hours were all exec with 0 allowlist hits, so on
-  machines that are only ever exec'd the Activity strip is empty, and that is deliberate.
-  A closed stream needs a **manual reconnect**: entering `closed` is terminal (EventSource only self-heals
-  connection blips; the `docker events` process exiting or the server sending an `end` frame both close it), so the
-  Activity strip offers a **Reconnect** button (shown only while `closed`; not in `unsupported` environments, where
-  reconnecting would just fail again), and the toolbar's ⟳ reconnects as well. The **AUTO REFRESH poll deliberately
-  does not reconnect**: folding it into the poll would reopen a terminated stream forever, both hiding that it broke
-  and pointlessly creating SSE connections. A successful reconnect compensates with one full list refetch (the list
-  may have fallen behind while the stream was down), including the case where the daemon never came up and the
-  stream never opened at all — otherwise the strip turns green while the list still shows its error state, looking
-  fixed when it is not.
-  **A refused reconnect must say why** (`D164`): when the server actively refuses this stream it sends an
-  `event: error` frame carrying a `message` (typically the long-stream quota being full — see "Known limitations";
-  that sentence says what to do about it). The client now **shows it on the Activity strip** ("Reconnect refused: …")
-  instead of discarding it. It used to just set `closed`, which made "refused → back to where it
-  was" indistinguishable from "the click did nothing", leaving the user to click over and over. The reason is
-  cleared on a successful reconnect (or when the stream is rebuilt).
-  The hint on the right of that header row is **small text inside a single line**, so it is deliberately short
-  (2026-10-08 user feedback: "verbose and stiff"): the state label on the left already says the stream is closed,
-  so this only says "will not recover on its own — click Reconnect". The cause, the cap and the `MaxSessions`
-  details live in this page, not in the UI.
-  **"Receiving events" is only claimed on the host's `ready` frame** (2026-10-11 user report): SSE's `onopen`
-  only means "the response headers arrived" — the host flushes those headers **before** it starts `docker events`,
-  and connecting can stall for tens of seconds when the target is unreachable or the SSH connection is being
-  re-established (D150's "quota full → rebuild the connection" adds another round). During that window the strip
-  used to be green and say "Receiving live (docker events)" while not a single event had arrived. The green dot now
-  waits for `ready` (= the pipeline really came up); until then the state stays at "Connecting to the event stream…"
-  or "Connection lost, reconnecting…" — both of which are true. The log / stats / pull streams follow the same rule
-  (see "SSE event protocol").
+  carrying its exit code). It is the entry point for **event-driven refresh**: 500ms **after an event arrives** it
+  debounces a list refetch, layering on top of the existing `AUTO REFRESH` rather than excluding it — polling is
+  the safety net, events cover "just happened". Events stay in memory only (a ring buffer of 50), switching pages
+  closes the stream, and switching targets clears the buffer. The allowlist keeps only the nine lifecycle actions
+  (start / die / stop / kill / oom / health_status / destroy / rename / update): noise such as `exec_*` and
+  `archive-path` is dropped server-side. A closed stream needs a **manual reconnect**: entering `closed` is
+  terminal, so the Activity strip offers a **Reconnect** button (not in `unsupported` environments) and the
+  toolbar's ⟳ reconnects too; **the AUTO REFRESH poll deliberately does not reconnect**, and a successful
+  reconnect compensates with one full list refetch. **A refused reconnect must say why** (`D164`): an actively
+  refused stream gets an `event: error` frame carrying a `message`, which the client **shows on the Activity
+  strip** — merely setting `closed` makes "refused" indistinguishable from "the click did nothing". **"Receiving
+  events" is only claimed on the host's `ready` frame** (response headers do not count).
 - **Select for merging (temporary multi-select merged logs)**: the toolbar's `Select for merging` enters selection
-  mode — a checkbox appears on the left of every card, clicking a card body becomes **select / deselect** (it no
-  longer opens details; the action bar collapses temporarily so that multi-selecting does not mis-click
-  start / stop / remove), and an action bar appears between the toolbar and the list: "N containers selected" +
-  `merged logs` + `Cancel`. `merged logs` needs at least 2 containers; selecting the 3rd gives a soft hint, and above
-  **3** the button is greyed out with a hint about the cap (**where that cap comes from is in "Known limitations" —
-  the merge cap**; the selection bar states it too). Clicking `merged logs` opens the merged view: it reuses exactly the merged logs of the Compose
-  project view (**one** `/logs/stream?ids=…` carrying every selected container, frames tagged with `id`, mixed by the
-  `[service]` / container-name prefix, with filtering and auto-scroll), and going back exits selection mode and clears it. The merged view's **content controls are
-  fully aligned with the single-container log view** (text filter + level threshold + `⬇ .log` / `⬇ .md` exporting
-  what is displayed + line count), plus two merged-only controls: **by time / by arrival** ordering and a **pause**
-  that freezes the view while the streams keep receiving (restoring flushes them in one go).
-  Clicking `Select for merging` again or pressing **Esc** likewise exits and clears. Selection is **temporary**:
-  not persisted, not named into groups, not written to settings; it is dropped when switching targets / switching
-  the "Containers · Images · Compose" segment / closing the panel, and containers that disappeared after a list
-  refresh are pruned by id.
-- **One-click selection by condition** (in selection mode): the action bar's second row offers a row of condition
-  chips (`all visible / unhealthy / needs attention / stopped`, plus `same image / same project` once something is
-  selected), with counts **truncated to the remaining slots** — a chip reading 3 really does select 3; anything over
-  the cap is stated honestly in the title and the result hint. Conditions only apply within the
-  **current filtered result** (search / filter the state first, then select in one click).
-- **Container cards**: "label + value" rows matching the reference layout (image / ID / ports / created /
-  compose, with monospaced truncatable values) plus a row of icon action buttons, **split by a vertical rule into
-  the "view / mutate" groups**:
+  mode — clicking a card body becomes **select / deselect** (the action bar collapses temporarily so that
+  multi-selecting does not mis-click start / stop / remove), and an action bar appears: "N containers selected" +
+  `merged logs` + `Cancel`. `merged logs` needs at least 2 containers and at most **3** (beyond that the button
+  is greyed out with its rationale). The merged view reuses the Compose project view's merged logs; its content
+  controls are fully aligned with the single-container log view, plus **by time / by arrival** ordering and a
+  **pause**. Selection is **temporary**: not persisted, not written to settings; it is dropped when switching
+  targets / segments / closing the panel, and vanished containers are pruned by id.
+- **One-click selection by condition** (in selection mode): the action bar's second row offers condition chips
+  (`all visible / unhealthy / needs attention / stopped`, plus `same image / same project` once something is
+  selected), with counts **truncated to the remaining slots** — a chip reading 3 really does select 3. Conditions
+  only apply within the **current filtered result**.
+- **Container cards**: "label + value" rows (image / ID / ports / created / compose) plus a row of icon buttons,
+  **split by a vertical rule into the "view / mutate" groups**:
 
   | Group | Buttons | Description |
   | --- | --- | --- |
@@ -277,141 +187,104 @@ Inside the panel:
   | Mutate | start / stop, restart, remove | Ordered by increasing destructiveness; available only with `allowMutations` on, otherwise the whole group is greyed out |
 
   Remove gets two extra protections: destructive colouring plus a gap between it and "restart", and a second
-  confirmation after the click. **The whole group is locked while a command is in flight**: `stop` / `rm` waits for
-  the container to actually exit (up to a dozen seconds), during which the confirmation dialog stays open showing
-  "running…" (both buttons disabled), the card's other mutate buttons are dimmed and greyed, the icon that is running
-  becomes a spinner, and everything is restored only once the refreshed list lands — preventing rapid clicking from
-  stacking mutually interrupting commands such as stop + restart + remove. Image removal / pruning goes through the
-  same confirmation dialog and also has a running state. Clicking a card body opens the overview.
+  confirmation after the click. **The whole group is locked while a command is in flight**: `stop` / `rm` waits
+  for the container to actually exit (up to a dozen seconds), during which the confirmation dialog stays open
+  showing "running…", the card's other mutate buttons are dimmed, the icon that is running becomes a spinner, and
+  everything is restored only once the refreshed list lands. Image removal / pruning goes through the same
+  confirmation dialog. Clicking a card body opens the overview.
 - **Container details (a full-column view)**: the top is "back + container name + status badge + target host",
-  with five tabs below — overview (`docker inspect` authoritative data + one-shot exec + an equivalent `docker run`),
-  logs, stats, diagnosis and processes. The log / stats icons on a card land directly on the corresponding tab;
-  diagnosis and processes **fetch only while that tab is open** (leaving the tab stops the requests, and there is
-  no polling).
+  with five tabs below — overview (`docker inspect` authoritative data + one-shot exec + an equivalent
+  `docker run`), logs, stats, diagnosis and processes. The log / stats icons on a card land directly on the
+  corresponding tab; diagnosis and processes **fetch only while that tab is open**.
 - **Log view (a compact two-row layout)**: the first row = back + container name + status + target host +
-  `LINES` (tail line count) / `TIMESTAMPS` / **`FOLLOW` (live follow, see below)** /
-  `AUTO REFRESH` (a switch plus 2/3/5/10s intervals, polling on the log page only) + refresh / close;
-  the second row = the tabs + an **always-present** "filter logs" input (an ✕ floats inside to clear when it has
-  content, and Esc clears too) + a **level threshold** (`all / INFO+ / WARN+ / ERROR+` — `INFO+` is the "quiet but keep what matters" step: the noise is almost always DEBUG and below, and `WARN+` would drop INFO along with it) + **export**
+  `LINES` / `TIMESTAMPS` / **`FOLLOW`** / `AUTO REFRESH` (a switch plus 2/3/5/10s intervals, log page only) +
+  refresh / close; the second row = the tabs + an **always-present** "filter logs" input (an ✕ floats inside to
+  clear, Esc clears too) + a **level threshold** (`all / INFO+ / WARN+ / ERROR+`) + **export**
   (`⬇ .log` / `⬇ .md`, exporting **what is currently displayed**) + the line count in a fixed slot on the right.
-  **The split between the rows is deliberate**: the first row is *transport and display* (snapshot / stream /
-  polling), the second is *content* — and the second row is **exactly the same as the merged log view**: one level
-  kernel, one export builder, one count wording (`N lines`, or `N / M lines` while filtered). The level threshold
-  treats a line without a level prefix as a **continuation of the previous entry and follows its level** — otherwise
-  `ERROR+` would cut a stack trace in half. The input's width and position never change, so typing or clearing never nudges
-  this row. The log body is coloured by level (both common prefixes, `[INFO]` and `|INFO`,
-  are recognised), timestamps are dimmed, and filter hits are highlighted; beyond 2000 lines only the tail is
-  coloured, with a hint. In the details view the list toolbar and panel header are no longer layered on top, so
-  each screen has exactly one refresh entry point.
-- **FOLLOW live log stream**: with the log page's `FOLLOW` switch on, the UI switches from "polling a snapshot" to
-  **SSE push** (`GET /api/dsh-docker/logs/stream`, where the server runs
-  `docker logs --follow`) — new log lines are appended as they arrive and polling stops; `FOLLOW` and
-  `AUTO REFRESH` are mutually exclusive (opening the stream stops polling and greys out the switch), and closing it
-  returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring buffer that drops the oldest on either cap; newline-free oversized output is force-split so memory stays bounded). Chunks render at most every **150ms** (no per-chunk re-render on chatty containers) and rows carry stable ids. The body is **windowed (D152)**: only the visible rows plus 24 rows of overscan on each side are mounted (about 230 nodes for 5000 rows, previously ~10000), the rest is represented by top/bottom padding — under a sustained 20k lines/s flood the max event-loop lag drops from 70–97ms to 6ms and >50ms long frames from 25–26 to **0**. Row heights are **measured** (not estimated) and the window anchors to the tail while pinned, so auto-scroll / scroll-up pause / "back to bottom" keep exact geometry; scrolling up through history is compensated by a top-of-viewport anchor recorded **across commits**, so it does not jump even while the ring buffer keeps evicting old rows (or the aggregate view inserts a row by timestamp). **Switching streams / containers / refreshing a snapshot invalidates that whole generation of measured heights and anchors (D155)**: snapshot row ids are positional (`'s'+index`), so the same id is different content after a refresh — keeping them would compute the padding from the wrong generation's heights (measured: `scrollHeight` inflated by 35644px), so the scrollbar, jumps and "which row is at the top" all describe the wrong generation. The view does not truncate: whatever `LINES` selects is scrollable and exported — it is simply not all mounted at once (bounded by the buffer and the host output cap). Auto-scroll to bottom,
-  drops the oldest and hints once); filtering / level colouring share exactly the same rendering as snapshots. It
-  auto-scrolls to the bottom, pauses when the user scrolls up and floats a
-  "back to bottom" button; a status line in the top right shows the connection state, and a stream that ends
-  naturally because the container exited switches back to snapshot refresh automatically.
-  **Reconnection is managed by the plugin itself** (not by EventSource auto-reconnect): the first connection
-  carries `tail` to backfill history, while every reconnect uses `tail=0` — new lines only, **never replaying
-  history** (auto-reconnect reuses the URL with its `tail`, so the server pushes the last `tail` lines again as
-  if they were new, and the log grows a duplicated block). When the host-side backpressure queue (8MB)
-  **Host-side backpressure (D153)**: each stream buffers at most 8MB; the text tail streams (logs, pulls)
-drop the oldest frames and keep the newest when they overflow, sending a `skip{frames,bytes}` notice so the UI
-can say "a stretch is missing, following continues" — the stream is **not** torn down (the old policy sent
-`end{reason:output-limit}` and closed, which left the panel stuck in "connection lost" while the container kept
-flooding). The skip accounting is **exact**: when more frames are dropped while a queued `skip` notice has not
-been written yet, the server updates that notice **in place** (D156 — no gap goes unreported); the client
-**accumulates** consecutive skips and shows "N batches skipped on this connection", resetting on a successful
-reconnect (D157). Structured streams (stats, events) still close and reconnect, because a missing sample/event is
-semantically wrong.
-  Connecting / switching pages / closing the panel all close the `EventSource`.
+  The first row is *transport and display*, the second is *content* — and the second row is **exactly the same as
+  the merged log view** (one level kernel, one export builder, one count wording). The level threshold treats a
+  line without a level prefix as a **continuation of the previous entry and follows its level** — otherwise
+  `ERROR+` would cut a stack trace in half. The log body is coloured by level, timestamps are dimmed, and filter
+  hits are highlighted.
+- **FOLLOW live log stream**: with `FOLLOW` on, the UI switches from "polling a snapshot" to **SSE push**
+  (`GET /api/dsh-docker/logs/stream`, where the server runs `docker logs --follow`); `FOLLOW` and
+  `AUTO REFRESH` are mutually exclusive (opening the stream stops polling and greys out the switch), and closing
+  it returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring
+  buffer dropping the oldest on either cap; newline-free output is force-split so memory stays bounded), and
+  chunks render at most every **150ms**. The body is **windowed** (`D152`): only the visible rows plus 24 rows of
+  overscan each side are mounted, the rest padded; measured row heights plus a tail anchor keep auto-scroll /
+  scroll-up pause / "back to bottom" exact, and **switching streams / containers / refreshing a snapshot
+  invalidates that whole generation** (`D155`: snapshot row ids are positional). The view does not truncate:
+  whatever `LINES` selects is scrollable and exported. **Reconnection is managed by the plugin itself**: the first
+  connection carries `tail`, every reconnect uses `tail=0` — new lines only, **never replaying history**.
+  Backpressure and overflow (`D153` / `D156` / `D157`) are in "SSE event protocol".
 - **Overview**: `docker inspect`'s authoritative data — state and health, exit code, restart count and policy,
   port mappings, mounts (including read-only flags), networks and IPs, entrypoint and command, and the latest
   health-check output; below it you can run a one-shot `docker exec` (requires `allowExec`).
 - **Logs**: a tail snapshot from `docker logs --tail` (`logTailDefault` lines by default), with timestamps and
-  `--since` switchable; output beyond `maxOutputKb` is truncated and marked. To keep watching new logs, turn on
-  `FOLLOW` above (the same argv plus `--follow`, with no overall timeout and no output cap, ending on the
+  `--since` switchable. **Two different caps**: `LINES` is a **line** cap while the settings card's "output cap
+  (KB)" is a **byte** cap — the smaller wins, so the byte cap can truncate with a banner. To keep watching new
+  logs turn on `FOLLOW` (the same argv plus `--follow`, no overall timeout and no byte cap, ending on the
   connection's lifecycle).
 
 ![Log page: level colouring + an always-present filter box + line counts](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-logs.png)
-- **Stats**: a `docker stats --no-stream` snapshot (CPU% / memory usage and share / network IO /
-  block IO / PIDs), refreshed by the panel at `pollIntervalSec`. The stats page also has **`FOLLOW` live
-  following**: turning it on switches to `GET /api/dsh-docker/stats/stream` (the server runs **without**
-  `--no-stream` for `docker stats`, one line per second), and the browser side keeps a **60-point ring
-  buffer** to draw CPU / memory **mini trend charts** (sparklines). Unlike the log stream, this one **does not end
-  naturally**; its close semantics are the frontend actively aborting the `EventSource`, and when `docker stats`
-  exits by itself the server sends `end` (reason=`stats-exit`), whereupon the UI hints and switches back to snapshot
-  polling.
-- **Compose project view**: the toolbar's third segment. It groups the `composeProject` / `composeService`
-  labels into "project → service → container", one row per project showing the running / unhealthy / service counts
-  and each container's state; clicking into a project shows the service table, or opens **project-level merged
-  logs** — **one** `/logs/stream?ids=…` carrying every container in the project (frames tagged with `id`), mixed
-  client-side by the `[service]` prefix, with an auto-scroll switch and a filter box. Merging follows arrival order
-  and does not guarantee strict cross-container ordering. A failed per-container sub-stream is marked "partially
-  failed" while the other containers keep streaming (the connection stays open).
-- **Images**: a `docker images` list (reference / size / created / short ID);
-  `<none>:<none>` dangling images carry a `dangling` marker. The search box and the "N / M images"
-  counter are **fixed in the toolbar** (they do not scroll away with the list), and the header column names stick
-  within the table body. Each row has two actions, "details / remove": **details** opens the full-column view
-  (overview: size / size including parents / created / platform / layers / entrypoint and command / exposed ports /
-  digest / labels; build history: the per-layer commands and sizes from `docker history`). **Remove** (requires
-  `allowMutations`) runs `docker image rm` after a second confirmation (**without** `-f`, so an image that is
-  referenced fails with a hint to "remove the related containers first").
-- **Networks / volumes (the fifth and sixth segments)**: the toolbar segments extend to "Containers / Images /
-  Compose / Networks / Volumes" (when a narrow column cannot fit them, the segment container scrolls horizontally
-  by itself, with no second-level menu). Both pages use the same "table + full-column details" layout:
-  - **Networks**: name / driver / scope / internal badge / ID, with a row click opening details — overview
-    (ID / driver / scope / created / subnet / gateway / internal·attachable·ingress·ipv6 / options / labels) and a
-    "connected containers" tab (container / IPv4 / IPv6 / MAC). **Container counts deliberately stay out of the
-    list rows**: only `docker network inspect` returns the connected list, and inspecting every row would be N
-    docker calls, so it is fetched once on entering details instead.
-  - **Volumes**: name / driver / scope / mountpoint (over-long paths are width-limited and truncated, with the full
-    value in title); details are name / driver / scope / mountpoint / created / options / labels (volumes have no
-    reverse index, so there is only the overview page).
+
+- **Stats**: a `docker stats --no-stream` snapshot (CPU% / memory usage and share / network IO / block IO /
+  PIDs), refreshed by the panel at `pollIntervalSec`. The stats page also has **`FOLLOW` live following**: it
+  switches to `GET /api/dsh-docker/stats/stream` (the server runs `docker stats` **without** `--no-stream`, one
+  line per second), and the browser side keeps a **60-point** ring buffer for CPU / memory mini trend charts. This
+  stream **does not end naturally**; its close semantics are the frontend aborting, and when `docker stats` exits
+  by itself the server sends `end` (reason=`stats-exit`).
+- **Compose project view**: the toolbar's third segment. It groups `composeProject` / `composeService` into
+  "project → service → container", one row per project with running / unhealthy / service counts; clicking into a
+  project shows the service table, or opens **project-level merged logs** — **one** `/logs/stream?ids=…` carrying
+  every container in the project (frames tagged with `id`), mixed client-side by the `[service]` prefix. A failed
+  per-container sub-stream is marked "partially failed" while the other containers keep streaming.
+- **Images**: a `docker images` list (reference / size / created / short ID), with `<none>:<none>` dangling images
+  marked; the search box and counter are **fixed in the toolbar**, and the header sticks within the table body.
+  Each row has "details / remove": **details** opens the full-column view (overview + `docker history` build
+  history); **remove** (requires `allowMutations`) runs `docker image rm` after a second confirmation (without
+  `-f`, so a referenced image fails with a hint to remove the related containers first).
+- **Networks / volumes**: the toolbar segments extend to "Containers / Images / Compose / Networks / Volumes /
+  Disk" (a narrow column scrolls the segment container horizontally, with no second-level menu). Both pages use
+  the same "table + full-column details" layout:
+  - **Networks**: name / driver / scope / internal badge / ID, with a row click opening details — overview and a
+    "connected containers" tab. **Container counts deliberately stay out of the list rows**: only
+    `docker network inspect` returns the connected list, and inspecting every row would be N docker calls.
+  - **Volumes**: name / driver / scope / mountpoint (over-long paths are width-limited, with the full value in
+    title); details are the overview page only (volumes have no reverse index).
   - The details header has a **remove** button, and both toolbars have a **prune icon**, all gated by
-    `allowMutations` (greyed out with an explanatory title when off) and all requiring a second confirmation; a
-    failed removal (a network still has containers attached / a volume is still in use / 403) shows an inline banner
-    on the details page rather than failing silently.
-  - Auto refresh matches the images page: these two pages **do not poll** (inventories change slowly, and a `docker`
-    CLI call every 5s is burnt for nothing); they refresh only when switching pages or targets.
+    `allowMutations` (greyed out with an explanatory title) and all requiring a second confirmation; a failed
+    removal shows an inline banner rather than failing silently. These two pages **do not poll** (inventories
+    change slowly).
 - **Pulling images (an SSE progress stream)**: the pull icon in the images toolbar (requires `allowMutations`)
-  opens the pull view; after entering a reference it goes through `GET /api/dsh-docker/images/pull/stream`
-  (where the server runs `docker pull`) — per-layer progress (Pulling fs layer / Downloading /
-  Extracting / Pull complete) appears live; progress lines are updated in place keyed by "layer key", and TTY `\r`
-  refreshes do not make the buffer grow ever longer. The toolbar's "prune dangling" runs
-  `docker image prune -f`, which **only removes untagged images** (deliberately without `--all`, to avoid
-  deleting ordinary unused images by mistake).
+  opens the pull view; after entering a reference it goes through `GET /api/dsh-docker/images/pull/stream` —
+  per-layer progress appears live, updated in place keyed by layer, and TTY `\r` refreshes do not make the buffer
+  grow. The toolbar's "prune dangling" runs `docker image prune -f`, which **only removes untagged images**
+  (deliberately without `--all`).
 
 ![Images page: the search box is fixed in the toolbar and the header sticks](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-images.png)
+
 - **One-shot exec**: with `allowExec` on you can type a command, equivalent to
   `docker exec <container> sh -c "<command>"`, returning the exit code and stdout/stderr (no TTY).
-- **Interactive terminal (the first icon on a card)**: it runs `docker exec -it '<container>' sh`. It degrades in
+- **Interactive terminal (the first icon on a card)**: it runs `docker exec -it '<container>' sh` and degrades in
   three steps depending on tty's capabilities —
   ![exec terminal drawer coexisting with the log page: collapsing only hides it, the session keeps running](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-exec.png)
 
-  1. **Embedded in place (tty ≥ 0.15, recommended)**: a **terminal drawer** opens at the bottom of the panel, and
-     tty's `ttyTerminal.mount` mounts the terminal into it. The panel does not collapse, so you can watch the
-     container's logs and step into the container to type commands without losing context. The drawer takes height
-     away from the body, so it can give way without ending the session:
-     **collapsing** (the arrow at the right of its title bar, or double-clicking its top edge) squashes the drawer
-     into one title bar while the session keeps running; **dragging the top edge** resizes it (capped at 75% of the
-     panel height). Only two actions really end a session — the ✕ on the drawer and closing the panel; with an
-     active session, closing the panel asks for confirmation first, so that clicking the blank backdrop does not
-     kill a container shell that is mid-troubleshooting (the global terminal panel also treats "clicking the blank
-     area = minimize", the same stance).
+  1. **Embedded in place (tty ≥ 0.15, recommended)**: a **terminal drawer** opens at the bottom of the panel via
+     `ttyTerminal.mount`, and the panel does not collapse; **collapsing** (the arrow, or double-clicking the top
+     edge) squashes the drawer into one title bar while the session keeps running, and **dragging the top edge**
+     resizes it (capped at 75%). Only the drawer's ✕ and closing the panel really end a session — with an active
+     session, closing the panel asks first, so that clicking the blank backdrop does not kill a container shell
+     mid-troubleshooting.
   2. **Open a tab through tty (tty ≥ 0.14)**: tty opens a new tab running the same command, and this panel then
-     collapses (this panel has a higher z-index, so not collapsing would only make the user feel "nothing
-     happened").
-  3. **Copy the command**: when tty is not installed / too old / an inline target uses key·password auth (the
-     browser has no credentials), it degrades to copying the command with a hint to paste it into the terminal
-     panel.
+     collapses (this panel has a higher z-index, so not collapsing would only feel like "nothing happened").
+  3. **Copy the command**: when tty is missing / too old / an inline target uses key·password auth (the browser
+     has no credentials), it degrades to copying the command with a hint to paste it into the terminal panel.
 
-  Local targets open a local session, while SSH targets go over SSH by connection-book entry name (or by the inline
-  fields authenticated by the agent), and the tab / drawer title is `<container> · exec`. Capability detection goes
-  through the service contract version (`mount` exists only with `ttyTerminal.version >= 2`), not by guessing
-  whether a function exists.
-
+  Local targets open a local session, SSH targets go over SSH by connection-book entry name (or inline fields),
+  and the title is `<container> · exec`. Capability detection goes through the service contract version (`mount`
+  exists only with `ttyTerminal.version >= 2`), not by guessing whether a function exists.
 
 ### Targets (local / SSH)
 
@@ -420,88 +293,64 @@ semantically wrong.
 | `local` | the docker CLI on the machine hosting the plugin (`spawn` runs it directly, not through a shell) |
 | `ssh` | connects to a remote host over `ssh2` and runs the docker CLI remotely (argv single-quote escaped) |
 
-There are two ways to fill in `kind=ssh`:
+`kind=ssh` has two shapes: ① **reference a tty connection-book entry** — put the entry name in `book` (maintained
+in the connection book under the Terminal Panel card) and host / port / username / auth follow from it; the
+settings card's dropdown only lists entries tty has saved, and a missing tty or entry makes that target fail to
+resolve with a clear error in both the panel and the agent tools. ② **inline fields** — `host` + `username` are
+required, the rest as needed (`port` / `auth` / `keyPath` / `password` / `passphrase` / `agentForward`).
 
-1. **Reference a tty connection-book entry**: put the entry name in `book` (maintained in the connection book
-   under the Terminal Panel card), and the host / port / username / auth method follow from it. The
-   settings card's dropdown only lists connection-book entries tty has saved; if tty is not installed or the entry
-   does not exist, that target fails to resolve and both the panel and the agent tools report a clear error.
-2. **Inline fields**: `host` + `username` are required, the rest as needed (`port` / `auth` /
-   `keyPath` / `password` / `passphrase` / `agentForward`).
-
-Targets are resolved **fresh for every operation**: if you change a connection-book entry in the tty card (a
-different port, a new password), the next operation uses the new value immediately with no restart. The remote side
-must satisfy: the docker CLI is installed, and the current account can use docker
-**without sudo** (usually because it is in the `docker` group); otherwise `probe` passes through errors such as
-`permission denied while trying to connect to the Docker daemon socket` verbatim.
+Targets are resolved **fresh for every operation**: change a connection-book entry in the tty card and the next
+operation uses it immediately, with no restart. The remote side needs the docker CLI installed and the current
+account able to use docker **without sudo** (usually via the `docker` group); otherwise `probe` passes errors such
+as `permission denied while trying to connect to the Docker daemon socket` through verbatim.
 
 #### Connect local (one click)
 
-If you would rather not fill in a target by hand, the UI offers two entries, neither of them
-permanent:
+If you would rather not fill in a target by hand, the UI offers two entries, neither of them permanent:
 
 | When | Where |
 | --- | --- |
 | You have no targets at all | A **Connect local** primary button in the panel's empty state (the whole panel is blank then, so one click is the shortest path) |
 | You already have other targets | The **last item in the target dropdown**, `+ Connect local` — right where you look for a machine, and only visible once you open it |
 
-The two are mutually exclusive (the same entry never appears twice): with no targets you use the big
-button in the empty state; with targets, the dropdown carries the item. **Once a local target exists
-neither appears** (it is already in the selector, so listing it again would just be a duplicate).
-
-On the agent side the same operation is `docker_connect_local`, and over HTTP it is
-`POST /connect-local` — every entry point shares one implementation on the host.
-
-Why not a permanent toolbar button: a permanent "Connect local" both occupies the spot right of the
-target selector and has to attract clicks with an accent colour, while being pure noise **once you
-have a usable target** (the first version was permanent, and the user called it out as redundant on
-sight). But keeping only the empty-state entry would miss the common case of "I have a few SSH hosts
-and want to add this machine too" — so the second entry lives in the dropdown, appearing only when
-you are genuinely looking for a machine.
+The two are mutually exclusive, and **once a local target exists neither appears**. A permanent toolbar button is
+not worth it: **with a usable target already present** it both occupies space and begs for clicks; but keeping
+only the empty-state entry would miss the common "I have a few SSH hosts and want to add this machine too" case.
+On the agent side the same operation is `docker_connect_local`, over HTTP it is `POST /connect-local` — every
+entry point shares one implementation on the host.
 
 | Situation | Behavior |
 | --- | --- |
 | A `kind=local` target already exists (whatever its name) | **Reuse it** (`created:false`) and just switch to it; nothing is created, rewritten or renamed |
-| No local target | Append one under the stable name `local`; if `local` is taken by another target, try `local-2`, `local-3`, … (deterministic, conflict-free, never overwriting) |
+| No local target | Append one under the stable name `local`; if `local` is taken, try `local-2`, `local-3`, … |
 | SSH / custom targets configured | **Left exactly as they are** (order and credentials included); only the local entry is appended at the end |
 | Clicked twice / concurrently | Idempotent: exactly one local target in the end |
 | Settings store unavailable / save fails | A clear error (503 / 500 with the reason) and **no in-memory config change** — never "it showed up in the UI but is gone after a refresh" |
 
-After the write succeeds it also runs one **read-only probe** (`docker version`) and puts the result
-into `message`: the server version when the daemon is reachable, or the actual cause when it is not —
-**docker CLI missing** (install Docker, or point "docker CLI" at the right path) / **probe timed
-out** (the daemon is wedged, or `docker context` points at an unreachable remote; check with
-`docker context ls`) / **daemon not running** (Linux: `systemctl start docker`; macOS / Windows:
-start Docker Desktop) / **no permission on the socket** (add the account to the `docker` group) —
-instead of just "no containers". A failed probe is **not** a failed operation (the target really was
-added; `reachable:false` says so separately), and it works as soon as the daemon comes up.
+After the write succeeds it also runs one **read-only probe** (`docker version`) and puts the result into
+`message`: the server version when the daemon is reachable, or the actual cause when it is not — **docker CLI
+missing** (install Docker, or point "docker CLI" at the right path) / **probe timed out** (the daemon is wedged,
+or `docker context` points at an unreachable remote) / **daemon not running** (Linux `systemctl start docker`,
+macOS / Windows start Docker Desktop) / **no permission on the socket** (add the account to the `docker` group).
+A failed probe is **not** a failed operation (the target really was added; `reachable:false` says so separately).
 
-The binary this probe uses is **exactly the "docker CLI" value from the settings card** (`dockerBin`,
-`docker` by default). When that CLI is missing it does one **read-only** lookup for another container
-CLI on `PATH` (`docker` → `podman` → `nerdctl`) and names it in the message ("this machine has
-podman: put podman in 'docker CLI' and it works") — it **only tells you, and never rewrites your
-config**: silently changing `dockerBin` would contradict this plugin's refusal to decide on your
-behalf, and podman's output-format compatibility with this plugin has not been verified item by item
-(see "known limitations"). Candidate matching is by **tool name** (basename), not by the raw string
-in the config, so a `dockerBin` of `/usr/local/bin/docker` does not produce the nonsense "change
-docker to docker".
+The binary this probe uses is **exactly the "docker CLI" value from the settings card** (`dockerBin`, `docker` by
+default). When that CLI is missing it does one **read-only** lookup for another container CLI on `PATH`
+(`docker` → `podman` → `nerdctl`) and names it in the message — it **only tells you, and never rewrites your
+config** (podman's output-format compatibility has not been verified item by item, see "Known limitations").
+Candidate matching is by **tool name** (basename), not by the raw config string. Timeouts are a **separate case**:
+`probe()` returns `timedOut:true` plus an actionable sentence, and it **actually returns on time** — it kills,
+allows a 500 ms settle window, and then releases the pipes itself if `close` still has not arrived (SIGKILL only
+reaches the direct child, so a wrapper script's grandchild would otherwise stretch the cap into minutes).
 
-Timeouts are a **separate case**: `probe()` does not just report an exit code (`code === null` makes
-"exit code null" carry zero information), it returns `timedOut:true` plus an actionable sentence. It
-also **actually returns on time** — SIGKILL only reaches the direct child, so when `dockerBin` points
-at a wrapper script the grandchild keeps holding the pipes and stretches the 15-second cap into
-minutes (measured: a 3-second cap took 60 seconds), so on expiry it kills, allows a 500 ms settle
-window, and then releases the pipes itself if `close` still has not arrived.
-
-Deliberately **not** done (the conservative boundary): installing Docker, starting a daemon,
-switching docker contexts, or touching any environment variable; an empty `targets` (= the user has
-none) keeps its meaning, with no implicit default target; and the `clearTargets` protection against
-accidental clearing is untouched. The path is also **independent of the capability switches** — it
-only writes the plugin's own configuration and involves no target-side write that would need a grant.
+Deliberately **not** done: installing Docker, starting a daemon, switching docker contexts, or touching any
+environment variable; an empty `targets` keeps its meaning, with no implicit default target; and the
+`clearTargets` protection is untouched. The path is also **independent of the capability switches** — it only
+writes the plugin's own configuration.
 
 ### Merged logs (multi-select / Compose project)
 
-Selecting several containers or opening a Compose project can both merge the logs of several containers into one
+Selecting several containers or opening a Compose project both merge the logs of several containers into one
 stream: **one** `/logs/stream?ids=…` carries them all (frames tagged with `id`; the host still starts one
 `docker logs -f` per container), mixed client-side in arrival order. The toolbar offers:
 
@@ -510,66 +359,65 @@ stream: **one** `/logs/stream?ids=…` carries them all (frames tagged with `id`
 | **Live / Paused** | a real pause (see below) |
 | **Timestamps** | shows a timestamp on every line. Timestamps are **always received with the stream** (`timestamps=1`); this only affects display |
 | **By arrival / By time** | `by arrival`: follows with zero delay; `by time`: merges into one true timeline using each line's container timestamp |
-| **Level filter** | `all levels / WARN+ / ERROR+`. **Lines with no level prefix (continuation lines such as stack traces) inherit the level of the previous log entry**, so ERROR+ keeps its stack trace with it and INFO continuations are filtered out together with their first line; orphan continuation lines at the start of the window (whose record header is outside the window) cannot be judged and are kept |
-| **⬇ .log / ⬇ .md** | exports what is currently displayed: `.log` is plain line text (`[service] ISO time body`), while `.md` carries a header with the source containers / line count / export time and can be attached to a ticket directly |
+| **Level filter** | `all levels / WARN+ / ERROR+`. **Lines with no level prefix (continuation lines such as stack traces) inherit the level of the previous log entry**, so ERROR+ keeps its stack trace with it; orphan continuations whose record header is outside the window cannot be judged and are kept |
+| **⬇ .log / ⬇ .md** | exports what is currently displayed: `.log` is plain line text (`[service] ISO time body`), `.md` carries a header with the source containers / line count / export time |
 
-**How merging by time works**: the SSE connections for the various containers are established at different moments,
-so A's initial backlog may arrive in one batch while B's arrives later, and sorting each batch on its own cannot fix
-cross-batch inversions. The implementation **backfills the last 400 lines** — whenever a new batch of lines arrives
-it re-sorts "the last 400 lines + the new lines" by timestamp (using the RFC3339 prefix from
-`docker logs --timestamps` as the sort key, which is parsed and then stripped from the body). That way it neither
-stalls for a while to get the first screen right (no one-second blank page on open) nor fails to correct historical
-misordering after the fact; the price is that in "by time" mode the last few lines already on screen may shift
-slightly (use "by arrival" while following live output).
+**How merging by time works**: the SSE connections are established at different moments, so A's initial backlog
+may arrive in one batch while B's arrives later, and sorting each batch on its own cannot fix cross-batch
+inversions. The implementation **backfills the last 400 lines** — whenever a new batch arrives it re-sorts "the
+last 400 lines + the new lines" by timestamp (the RFC3339 prefix, parsed and then stripped from the body). The
+price is that in "by time" mode the last few lines already on screen may shift slightly (use "by arrival" while
+following live output).
 
 ### "Pause" in merged logs (a real pause)
 
 The merged logs of a multi-select / Compose project have a `Live / Paused` switch. **Pausing freezes the content**,
-not just auto-scroll:
-
-- while paused, newly arriving logs go into a client-side buffer and **the DOM is no longer appended to** — the
-  screen reader is not pushed away, and the view does not jump when the display cap (2000 lines) trims the front;
-- the button itself shows how many lines have accumulated (`Paused +348`);
-- on resume the buffer is merged in one go (still under the 5000-line ring cap) and the view returns to the bottom.
-
-Only stopping auto-scroll is not enough: with the label saying "paused" while the content keeps growing, users think
-the switch is broken; and with a high log volume the view also jumps by itself as the front is trimmed.
+not just auto-scroll: while paused, newly arriving logs go into a client-side buffer and **the DOM is no longer
+appended to** (the screen reader is not pushed away, and the view does not jump when the display cap trims the
+front); the button itself shows how many lines have accumulated (`Paused +348`); on resume the buffer is merged
+in one go (still under the 5000-line ring cap) and the view returns to the bottom. Only stopping auto-scroll is
+not enough: with the label saying "paused" while the content keeps growing, users think the switch is broken.
 
 ### Overview (cross-target) and the "needs attention" criteria
 
-The "Overview" page lays out all targets on one screen: one counter card per target (running / stopped / unhealthy /
-**needs attention**), and below it a cross-target "containers needing attention" table (container / target / status /
-**reason** / image; click a row for details, click a card to switch to that target's list). Three design constraints:
+The `Overview` pill next to the target picker (shown only with ≥2 targets) lays out all targets on one screen: one
+counter card per target (running / stopped / unhealthy / **needs attention**), and below it a cross-target
+"containers needing attention" table (container / target / status / **reason** / image; click a row for details,
+click a card to switch to that target's list). Three design constraints:
 
-- **Progressive landing + failure isolation**: each target requests and lands independently; one unreachable SSH host
-  does not silence the whole page — the unreachable target gets its own banner and the other targets' results remain
-  available.
-- **The "needs attention" criteria are the host's**: the container list and `/attention` are requested in parallel;
-  the latter does an extra `docker inspect`, so it can identify **OOM (OOMKilled)** and the **real exit code** — a
-  `ps` summary's `Exited (137)` cannot tell an OOM kill from a manual kill. When `/attention` is unavailable (an
-  older host / that target failed) it falls back to the summary criteria and labels the count
-  "needs attention (rough)".
+- **Progressive landing + failure isolation**: each target requests and lands independently; one unreachable SSH
+  host does not silence the whole page (deliberately **not** aggregated with `Promise.all`: an unreachable SSH
+  host waits out the 20s readyTimeout, so aggregating would keep the whole page silent for 20s).
+- **The "needs attention" criteria are the host's**: the container list and `/attention` are requested in
+  parallel; the latter does an extra `docker inspect`, so it can identify **OOM (OOMKilled)** and the **real exit
+  code** — a `ps` summary's `Exited (137)` cannot tell an OOM kill from a manual kill. When `/attention` is
+  unavailable it falls back to the summary criteria and labels the count "needs attention (rough)".
 - **Ordering**: OOM > zombie > unhealthy > repeatedly restarting > non-zero exit; equal weights are ordered by
-  "most recent end time" descending, so the freshest crash is at the top (hovering a row shows the end / start times,
-  restart count and exit code).
+  "most recent end time" descending (hovering a row shows the end / start times, restart count and exit code).
+
+Polling reuses the toolbar's "auto refresh" switch (off by default): each round of this page is one `docker ps`
+per target across all N targets, more expensive than any single-target page. With no exceptions it shows "all
+good"; while some targets have not finished answering, the attention area shows "reading…" and **that counter card
+also enters its loading state** (no 0/0/0 — "0 containers" would be read as "this machine has no containers").
+Entering the Overview clears the single-target failed banner: the Overview attributes everything per target and no
+longer stacks a single-target "operation failed" — the same SSH timeout told twice looks like two dead machines.
 
 ### Container diagnosis ("why is it failing")
 
-The container detail view adds a **Diagnosis** tab; the agent-side twin is `docker_diagnose`. It makes four
-reads in one pass — `docker inspect` (authoritative state / exit code / OOM / restart count / last health-check
-output / resource limits), `docker logs --tail N`, `docker events --since` (**filtered server-side** with
+The container detail view adds a **Diagnosis** tab; the agent-side twin is `docker_diagnose`. It makes four reads
+in one pass — `docker inspect` (authoritative state / exit code / OOM / restart count / last health-check output /
+resource limits), `docker logs --tail N`, `docker events --since` (**filtered server-side** with
 `--filter container=<id>`) and `docker stats --no-stream` — and hands them to a set of **pure criteria**
 (`src/diagnose.ts`: zero IO, no clock) that produce:
 
 - a **one-line verdict** taking the highest severity found (`critical` / `warning` / `info` / `ok`);
-- **findings**: code + one line + evidence. Fifteen today — OOM-killed, non-zero exit (with what 126 / 127 /
-  137 / 143 usually mean), crash loop, unhealthy (with the last health-check output), health check still
-  starting, clean exit, not running (created / paused / dead), memory pressure (≥90% with a limit set), CPU
-  pressure (≥90%), error lines in the log, no health check, plus three **collection-failure** signals;
-- **evidence**: state, a ps-style status line (`Up 4 hours (healthy)`), exit code, OOM, restart count,
-  start/finish times, memory limit, CPU quota, log and error line counts, event count and current usage;
-- a **timeline** of this container's `start` / `die` / `oom` / `health_status` events, ascending;
-- **suggestions**: 0–5 concrete actions.
+- **findings**: code + one line + evidence. The criteria are — OOM-killed, non-zero exit (with what 126 / 127 / 137 /
+  143 usually mean), crash loop, unhealthy (with the last health-check output), health check still starting,
+  clean exit, not running (created / paused / dead), memory pressure (≥90% with a limit set), CPU pressure (≥90%),
+  error lines in the log, no health check, plus three **collection-failure** signals;
+- **evidence**: state, a ps-style status line, exit code, OOM, restart count, start/finish times, memory and CPU
+  limits, log and error line counts, event count and current usage; a **timeline** of this container's `start` /
+  `die` / `oom` / `health_status` events (ascending); **suggestions**: 0–5 concrete actions.
 
 **"Not collected" and "genuinely empty" are different things** (the repo's long-standing signal-bit rule): when
 any of the three side reads fails, the corresponding evidence field is `null` (not 0, not an empty array) and a
@@ -577,51 +425,44 @@ any of the three side reads fails, the corresponding evidence field is `null` (n
 restarted", which sends troubleshooting in exactly the wrong direction.
 
 Three actions sit at the bottom: **re-diagnose**, **copy diagnosis** and **hand it to the agent**. The last one
-reuses the log context-menu bridge (send now / fill the draft, greyed out with a reason when no session is open):
+reuses the log context-menu bridge (send now / fill the draft; greyed out with a reason when no session is open):
 the text carries the container, target, collection time, verdict and evidence, with the raw log fenced and
 labelled "data, not instructions". **The collection time is local time in the UI and ISO 8601 in the delivered
-text** — the first is for humans, the second sorts and carries no timezone assumption.
+text.**
 
 Diagnosis is **read-only**: it changes nothing, restarts nothing, sends no command — it just runs four read-only
 docker commands.
 
 ### Diagnosis history (is it slowly getting worse?)
 
-A single diagnosis only answers "how is it now"; **slow degradation** (memory creeping up, restarts getting
-more frequent, error lines growing) is invisible in one result. So every diagnosis stores a **sample**, and the
+A single diagnosis only answers "how is it now"; **slow degradation** (memory creeping up, restarts getting more
+frequent, error lines growing) is invisible in one result. So every diagnosis stores a **sample**, and the
 diagnosis tab derives a **history** block:
 
 - **a severity strip**: the last N severities (hovering shows the time and verdict code);
 - **a trend verdict** (`trend.verdict`): the highest of seven criteria — repeated restarts (count up by ≥2),
   repeated OOMs (≥2), creeping memory (≥20 points and ending ≥80%), growing error lines (≥5 or from 0), newly
   appeared serious findings (`oom-killed` / `crash-loop` / `unhealthy` / `exit-nonzero`), steadily rising
-  severity, or no meaningful change; with fewer than 2 samples it says so plainly ("not enough history for a
-  trend");
+  severity, or no meaningful change; with fewer than 2 samples it says so plainly;
 - **numbers** (`trend.numbers`): only what **actually changed**, each with a "smallest meaningful delta" —
   restarts ≥1, memory ≥1 point, CPU ≥5 points, error lines ≥3, events ≥5, log lines ≥50. These thresholds came
   out of real data: a diagnosis takes one instantaneous `stats` snapshot, and without a gate a 1.11% → 1.09%
-  wobble fills the block; error lines are a **sliding window** (an old error scrolling out drops the count by
-  one), hence 3;
-- **a findings diff**: "newly appeared" / "resolved" (`oom-killed` newly appearing is a degradation signal).
+  wobble fills the block; error lines are a **sliding window**, hence 3;
+- **a findings diff**: "newly appeared" / "resolved".
 
-**What is stored, and what is not** (a deliberate trade-off): a sample holds **only the verdict and numbers** —
-severity, verdict code, the finding codes, state / exit code / OOM / restart count / memory and CPU usage /
-error lines / event count / log lines / time. **Never persisted**: the raw log (`logTail`) and each finding's
-detail (it embeds log lines that may carry credentials). The file is therefore safe to `cat`, but it also
-**cannot** replay a past incident — re-run the diagnosis when you need the raw text.
+**What is stored, and what is not**: a sample holds **only the verdict and numbers** (severity, verdict code, the
+finding codes, state / exit code / OOM / restart count / memory and CPU usage / error lines / event count / log
+lines / time). **Never persisted**: the raw log (`logTail`) and each finding's detail (it embeds log lines that may
+carry credentials) — so the file is safe to `cat`, but it also **cannot** replay a past incident.
 
 Location: `<DSH home>/dsh-docker/diagnosis-history.jsonl` (directory `0700`, file `0600`), one record per line.
 Caps: **50 per container**, **2000 per file**; past that the oldest are dropped and the file is rewritten
-**atomically** (temp file + rename). **30-second dedupe**: the same container within 30s, with an identical
-severity + verdict + finding set + restart count, is **not appended** (clicking "re-diagnose" repeatedly must not
-fake a wobbly trend), and the UI says so ("identical to the previous run; not recorded again within 30 seconds").
-`DSH_DOCKER_HISTORY_DIR` overrides the directory (**tests / troubleshooting only**); an empty string means unset.
-
-Three known edges: ① **renaming a container starts a new history** (the index key is "target + container name") —
-better than merging two segments and having the trend report changes that never happened; ② **appends are not
-locked** (two concurrent diagnoses may lose one update) — history is supporting information and a file lock is
-not worth it; ③ **a write failure only degrades**: the diagnosis still returns, `recorded = false`, and one line
-lands on the host's stdout.
+**atomically**. **30-second dedupe**: the same container within 30s with an identical severity + verdict + finding
+set + restart count is **not appended**. `DSH_DOCKER_HISTORY_DIR` overrides the directory (**tests / troubleshooting
+only**); an empty string means unset. Three edges: ① **renaming a container starts a new history** (the index key
+is "target + container name"); ② **appends are not locked** (two concurrent diagnoses may lose one update);
+③ **a write failure only degrades**: the diagnosis still returns, `recorded = false`, and one line lands on the
+host's stdout.
 
 ### Disk usage and reclaimable space
 
@@ -634,20 +475,15 @@ agent-side twin is `docker_disk_usage`. Two commands feed it: `docker system df`
 - **total reclaimable**: the byte sum of the four (if any row cannot be parsed the whole line shows `—` — better
   to say nothing than to print a wrong number);
 - **image breakdown** (by unique size, descending): repository:tag / size / unique / **container count** —
-  `containers === 0` gets an "unused" badge, with a removal icon behind `allowMutations` and the existing
-  confirmation dialog;
-- **volume breakdown** (by size, descending): name / driver / size / **link count** — `links === 0` likewise
-  gets an "unused" badge.
+  `containers === 0` gets an "unused" badge, with a removal icon behind `allowMutations`;
+- **volume breakdown** (by size, descending): name / driver / size / **link count** — `links === 0` likewise gets
+  an "unused" badge.
 
-Three deliberate trade-offs:
-
-- **sort first, truncate second**: on a real host 258 of 259 volumes were 0B; truncating first would spend all
-  100 slots on empty volumes and leave the ones that actually cost space out of the table;
-- **the detail cap is 100 rows per class**, announced in the header ("detail truncated, showing the first 100")
-  — the tool side caps at 20 and the two `truncated` bits are OR-ed (truncation must leave a trace);
-- **an older docker only degrades, never errors**: no `-v --format '{{json .}}'`, a truncated output or an
-  unexpected shape all give `degraded: true` plus a plain-language reason, the summary cards stay usable and the
-  detail tables are **not rendered** (an empty table would read as "there is nothing").
+Three deliberate trade-offs: **sort first, truncate second** (on a real host 258 of 259 volumes were 0B, so
+truncating first would spend all 100 slots on empty volumes); **the detail cap is 100 rows per class**, announced
+in the header (the tool side caps at 20 and the two `truncated` bits are OR-ed); **an older docker only degrades,
+never errors** (`degraded: true` plus a plain-language reason, the summary cards stay usable and the detail tables
+are **not rendered** — an empty table would read as "there is nothing").
 
 The disk view **does not poll** (`system df -v` costs more than `docker images`) and has **no prune button**:
 per-row removal behind a confirmation dialog is safer than "wipe a whole class", and that entry already exists
@@ -660,56 +496,55 @@ A collapsible **equivalent docker run** block at the bottom of the overview; the
 deliberately does **not** widen `ContainerDetail`, because that would drag env vars into `docker_inspect`'s model
 context. Covered: name, restart policy, port mappings (unbound ones become `--expose`), binds / named volumes /
 tmpfs, a non-default network, env vars, user / workdir / hostname (omitted when they equal the default), memory
-and CPU limits, cap-add / cap-drop / device, plus the image and command.
+and CPU limits, cap-add / cap-drop / device, plus the image and command. It **fetches only when expanded**, one
+argument per line, POSIX single-quote escaping, ready to copy.
 
-It **fetches only when expanded**, one argument per line, POSIX single-quote escaping, ready to copy.
-
-Three deliberate trade-offs:
-
-- **env values are kept as-is** (rewriting them would break equivalence); keys matching
-  `/(PASS|PWD|SECRET|TOKEN|KEY|CRED|AUTH|PRIVATE)/i` are reported in `secretKeys`, the UI shows a "may contain
-  credentials" warning **naming keys only**, and the command itself is not redacted — a redacted command cannot
-  run, and running it is the whole point;
-- **whatever was deliberately not restored is named** (`omitted`): `--privileged`, `--link`, a non-default log
-  driver, `--pid/--ipc/--uts`, `--sysctl`, `--add-host`, `--security-opt`, exotic mount types, anonymous
-  volumes, an overridden ENTRYPOINT, custom health checks — each with "why it is missing" and "how to add it
-  back". **Nothing is dropped silently**;
-- **a Compose-managed container is only an approximation**: network aliases / labels / depends_on are not in the
-  command, and the UI says so.
+Three deliberate trade-offs: **env values are kept as-is** (rewriting them would break equivalence), with keys
+matching `/(PASS|PWD|SECRET|TOKEN|KEY|CRED|AUTH|PRIVATE)/i` reported in `secretKeys` — the UI shows a "may contain
+credentials" warning **naming keys only**, and the command itself is not redacted (a redacted command cannot run);
+**whatever was deliberately not restored is named** (`omitted`: `--privileged`, `--link`, a non-default log driver,
+`--pid/--ipc/--uts`, `--sysctl`, `--add-host`, `--security-opt`, exotic mount types, anonymous volumes, an
+overridden ENTRYPOINT, custom health checks — each with why and how to add it back, **nothing dropped silently**);
+**a Compose-managed container is only an approximation** (network aliases / labels / depends_on are not in the
+command, and the UI says so).
 
 ## Configuration (saved and applied hot)
 
+While a capability is not granted, **clicking that switch in the settings card starts a grant in place**: the panel
+shows a command to run "in a host terminal", and within ten seconds of running it the switch unlocks (no restart);
+once granted it is an ordinary switch, and **turning it off** always works (the host never blocks downgrades).
+"Configured but not granted" shows a "not in effect: no host grant" badge — that state is the one most easily
+mistaken for a broken plugin, so it needs a name. **One row per capability**: each switch is followed by its own
+grant state and **grant time** (`Granted · 2026-09-26 22:31:08`), with the revoke button right-aligned.
+
+**Both capabilities can be confirmed with a single paste**: clicking the second switch does not replace the first
+panel; the panels stack vertically and a **Copy all (N)** button appears at the top.
+
+Why the time is shown: an out-of-band grant is **persistent** — after a host restart it takes effect with no
+confirmation at all, so the host prints one
+`[dsh-docker] elevation: load capability=… via=file grantedAt=…` line (no nonce, no path) at startup and the card
+shows the same time. A launch-environment grant has **no** time; that row says "granted by the launch
+environment; to revoke, remove it there and restart the host".
+
 ![Settings card: target CRUD, capability switches and parameters, saved and applied hot](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-setting.png)
 
-Where the settings surface **lives** depends on the DSH version, but it is always the **same form**
-(same settings namespace, same write path) — the data and behaviour are identical:
-
-| Host | Where the settings are |
-|---|---|
-| `0.2.0-rc.1` and later | **Directly below the description on the plugin detail page** (`plugins.bundle.config`, key = **this package's own** bundle name) — no extra ">" step into a sub-page |
-| `0.1.6` line | Plugins sidebar → the bundle's **row** → the ">" row detail (`plugins.row.config`) |
-| All of the above | Settings → **plugin configuration**, the same entry (`settings.kit.item`, provided by `@hyzyn/dsh-kit-settings`) |
-
-On hosts that have the bundle slot, **this package's** row entry is **no longer registered** — two entries
-for one form only makes people think there are two sets of settings; hosts without it (the bundle slot
-missing) fall back to the row detail automatically, with no loss of function. The **aggregate bundle
-`@hyzyn/dsh-all` is the exception**: its `plugins.bundle.config` key is shared by every plugin (a second
-registrant throws), so it has no inline slot and keeps using its row entry.
+Where the settings surface **lives** changes with the DSH version, but it is **always the same form** (same settings
+namespace, same write path — identical data and behaviour) — the per-generation landing spots and the four
+registration contracts live in [conventions.md § client settings surface](../../docs/conventions.md#客户端设置面内联优先).
 
 Configuration lives in the settings namespace `docker`, i.e. the `docker:` section of `~/.dsh/settings.yaml`
-(`$DSH_HOME/settings.yaml`; DSH's settings file is provided by the host's `dsh-settings-file`). The composition
-config in the plugin line acts as the schema's `base`, which the settings layer overrides; the HTTP
-`POST /api/dsh-docker/config` is the card's write channel and accepts only the keys in the table below (unknown keys
-return 400).
+(`$DSH_HOME/settings.yaml`). The composition config in the plugin line acts as the schema's `base`, which the
+settings layer overrides; the HTTP `POST /api/dsh-docker/config` is the card's write channel and accepts only the
+keys below (unknown keys return 400).
 
 | Item | Default | Description |
 | --- | --- | --- |
 | `enabled` | true | disables the whole plugin (**takes effect on save**: tools are unregistered immediately, the announcement is withdrawn, and all data routes except `/config` return 403; `/config` stays readable and writable — the settings card is the way back in. Unlike tty, which needs a restart) |
 | `announceToAgent` | true | whether to inject a capability announcement into the agent (systemPrompt section `plugin:dsh-docker`) |
-| `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**, otherwise no absolute path can be entered at all). **"Connect local" probes with exactly this value**; when it is wrong (that CLI does not exist) the message names another container CLI found on `PATH`, but it does **not** rewrite this value for you |
+| `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**). **"Connect local" probes with exactly this value**; when it is wrong the message names another container CLI found on `PATH`, but it does **not** rewrite this value for you |
 | `allowMutations` | false | allows **mutating operations**: container start / stop / restart / remove, image removal / dangling pruning / pulling (the panel buttons and the `docker_action`, `docker_image_remove`, `docker_image_prune`, `docker_image_pull` tools; while off, `/action`, `/images/remove`, `/images/prune`, `/images/pull/stream` return 403 and the corresponding tools are not registered) |
+| — (capability grant) | not granted | `allowMutations` / `allowExec` have **two out-of-band channels**: ① **launch environment variables** (`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`, values `1` / `true` / `yes` / `on`) — resolved from the host's **launch snapshot**, inherited `process` layer only, so writing project `.env` or `~/.dsh/env.yml` does **not** count as a grant; ② **grant in place** (no restart): click the switch in the settings card and run the command it shows in a terminal on the host — effective within seconds. HTTP can always **turn them off** (an emergency brake cannot depend on a restart), but writing `true` without a grant is rejected with 400 and both paths explained. A `true` in the config file is **not** a grant (it lives in the same store as the value HTTP wrote, so the source cannot be told apart). **Upgrade impact**: switches opened through the UI before the upgrade become off — set the environment variables and restart, or confirm in the card. **Why**: the loopback fence and the same-origin proof cannot stop a cross-site page or an in-page script, and the docker socket equals root on the target host; details in [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `allowExec` | false | allows a **one-shot** `docker exec` (the one-off command box on the container detail drawer's **Overview** tab, and the `docker_exec` tool; while off, `/exec` returns 403). **Does not** cover the card's Terminal button (`docker exec -it`), which tty hosts (see "Known limitations") |
-| — (capability grant) | not granted | `allowMutations` / `allowExec` have **two out-of-band channels**: ① **launch environment variables** (`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`, values `1` / `true` / `yes` / `on`) — resolved from the host's **launch snapshot**, inherited `process` layer only, so writing project `.env` or `~/.dsh/env.yml` does **not** count as a grant; ② **grant in place** (no restart): click the switch in the settings card and run the command it shows in a terminal on the host — effective within seconds, on its own row (one row per capability — the grants are per capability, so side-by-side revoke buttons would not say which one belongs to which), next to a `Granted · YYYY-MM-DD HH:mm:ss` line and a `Revoke host grant` button (a launch-environment grant has no timestamp and cannot be revoked from the UI). **Both capabilities can be confirmed with a single paste**: clicking the second switch while the first panel is open no longer replaces it (the two grants are independent anyway) — the panels stack vertically and a **Copy all (N)** button appears at the top of the group, copying the still-pending commands in the order they were started, joined by a **newline**, so one paste in a host terminal runs them all (`bash` / `zsh` / PowerShell / cmd all run a multi-line paste line by line, which is exactly why `&&` — not understood by PowerShell 5.1 — and `;` — not understood by `cmd` — are deliberately **not** used as separators). Once a command expires, Copy all copies only the still-pending ones; when everything is granted (or every panel is collapsed) the button disappears by itself. The two challenges have independent TTLs and probe cycles, so the wording only promises "every switch unlocks by itself once they run" and **never the same instant** — the countdown stays per panel, and each panel's copy / regenerate / collapse keeps acting on its own capability only. In-place grants are **persistent**: they live in `<DSH home>/dsh-kit/capability-grants.json` (0600; the confirmation dir is `<DSH home>/dsh-kit/grant-confirm/`, 0700 — kept inside the kit's own subdirectory, because mechanism names dropped into the shared home root can collide with the harness or another plugin), are read at the next boot, and then **take effect with no further confirmation** — so every boot logs one `elevation: load capability=… via=file grantedAt=…` line per loaded grant. Over HTTP they can always be **turned off** (the emergency brake must not depend on a restart), but setting `true` without a grant is rejected with 400 and both routes spelled out. A `true` in the config is **not** a grant (it lives in the same store HTTP writes to, so the source is indistinguishable). **Upgrade note**: switches opened through the UI before this change become off — set the variable and restart, or grant in place. **Why**: neither the loopback fence nor the same-origin proof stops cross-site pages or in-page scripts (they can just set `Sec-Fetch-Site: same-origin`), and the docker socket is root on the target host; details (including whom this does *not* stop) in [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `execTimeoutSec` | 30 | default exec timeout in seconds (1–120) |
 | `pollIntervalSec` | 5 | stats refresh interval for the panel, in seconds (1–60) |
 | `logTailDefault` | 200 | default log tail line count (1–5000) |
@@ -735,17 +570,14 @@ Out-of-range numbers are clamped to the boundary, and a value of the wrong type 
 | `passphrase` | `''` | private key passphrase; **prefer `env:NAME`**, a credential reference |
 | `agentForward` | false | whether to forward the local ssh-agent (takes effect when `SSH_AUTH_SOCK` exists) |
 
-An `env:NAME` inside `password` / `passphrase` is a **credential reference** — exactly the official shape, where
-configuration holds only the reference and a provider owns the value. It is resolved **only when connecting**, in this order:
-
-1. the **official credential layer** (`ctx.credentials`, from `@deepseek-ai/dsh-credentials`), which layers
-   `file` (`$DSH_HOME/.credentials.yaml`) / `env` / `project-env` / `user-env` and re-resolves per operation — so a
-   changed credential reaches the next operation **without a host restart**;
-2. when that service is unavailable (older host, bundle not installed) or holds no such reference, `process.env[NAME]`.
-
-With neither, the error names **both** sources and carries the credential service's own error too — otherwise a broken
-credential service would masquerade as "you did not configure it", which is the hardest kind to diagnose. These two values are **never sent back to the browser**:
-the config snapshot only provides the two booleans `passwordSet` / `passphraseSet`.
+An `env:NAME` inside `password` / `passphrase` is a **credential reference** (configuration holds only the
+reference, a provider owns the value), resolved **only when connecting**: ① the **official credential layer**
+(`ctx.credentials`) layers `file` (`$DSH_HOME/.credentials.yaml`) / `env` / `project-env` / `user-env` and
+re-resolves per operation, so a changed credential reaches the next operation **without a host restart**; ② when
+that service is unavailable or holds no such reference, `process.env[NAME]`. With neither, the error names
+**both** sources and carries the credential service's own error too — otherwise a broken credential service would
+masquerade as "you did not configure it". These two values are **never sent back to the browser**: the config
+snapshot only provides `passwordSet` / `passphraseSet`.
 
 ### `hostKeys[]` (SSH host fingerprints, TOFU)
 
@@ -756,9 +588,9 @@ the config snapshot only provides the two booleans `passwordSet` / `passphraseSe
 | `fingerprints` | **fingerprint set** (required, at least one): the verbatim hex fingerprints received by the `hostHash: 'sha256'` callback. One host:port may hold several host keys (rsa / ed25519 …); matching any of them counts as a match |
 | `fingerprint` | legacy single-fingerprint field (string): migration input only, merged into `fingerprints` on load; do not use it in new configs |
 
-The first connection is recorded automatically and written to disk; every later connection must match, and
-**a changed fingerprint rejects the connection outright**, with guidance in the error to "delete this host's record
-and reconnect". The record list can be deleted / reset in the settings card (deletion is submitted as the explicit
+The first connection is recorded automatically and written to disk; every later connection must match, and **a
+changed fingerprint rejects the connection outright**, with guidance to "delete this host's record and
+reconnect". The record list can be deleted / reset in the settings card (deletion is submitted as the explicit
 `hostKeysRemove: [{host, port}]`, so a union merge cannot silently undo it).
 
 ## Agent tools
@@ -766,64 +598,57 @@ and reconnect". The record list can be deleted / reset in the settings card (del
 | Tool | Registration | Parameters | Purpose / typical use |
 | --- | --- | --- | --- |
 | `docker_targets` | always registered | `probe?: boolean` | lists targets (name / kind / label); `probe:true` probes the docker version and daemon reachability for each one (SSH targets open connections, so it is slower). Other tools take their `target` from here |
-| `docker_connect_local` | always registered | — (no parameters) | **Connect local**: makes sure a `kind=local` target exists and selects it (an existing one is reused, never duplicated; SSH / custom targets stay untouched), then probes the daemon read-only: returns `{name, kind, created, saved, reachable, serverVersion?}`. With no targets configured the other tools are not registered at all (see the zero-target note below) — this is the one step that fixes that. **Requires no capability grant** (it only writes the plugin's own config plus a read-only probe) and never installs Docker / starts a daemon / switches context / touches environment variables. When the daemon is unreachable the result text names the cause (CLI missing / probe timed out / daemon not running / no socket permission; when the CLI is missing it also names another container CLI found on PATH, but never rewrites dockerBin for you) instead of an empty list |
-| `docker_ps` | registered with ≥1 target | `target?` (**pass `*` = all targets**), `all?: boolean`, `limit?` (1–500, default 100), `offset?` (default 0) | lists containers (name / state / health / image / ports / compose project and service / short ID); by default only running ones, `all:true` includes stopped. With `target:'*'` it returns results grouped by target, and **one unreachable target does not affect the others** (that group carries `error`). Ports are merged across the IPv4/IPv6 dual-stack expansion (one `-p` no longer shows twice, D130); an empty `ports` does **not** mean "nothing exposed" — host-network containers publish on the host itself, and that case now carries a `net` field (D131). The first step of troubleshooting |
-| `docker_attention` | registered with ≥1 target | `target?` (supports `*`), `limit?: number` | a **needs-attention summary**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / zombie; every item carries `reasons`, `exitCode`, `oomKilled`, `restartCount`. OOM and the real exit code come from one `docker inspect` (a ps summary cannot distinguish a manual kill from 137). The troubleshooting entry point: call it first when you are unsure which machine or container to look at |
-| `docker_diagnose` | registered with ≥1 target | `target?`, `id` (required), `logTail?` (1–500, default 80), `since?` (docker syntax, default `1h`), `history?` (0–50, default 10; 0 = no history) | **"why is this container failing"**: one pass over inspect + log tail + this container's events (server-side `--filter container`) + a `stats` snapshot, yielding `verdict` (one line) / `findings` (the criteria table, each with code, severity, title, detail) / `evidence` (exit code, OOM, restart count, memory and CPU limits, log and event counts, current usage) / `timeline` / `suggestions`. **Read-only**; "not collected" becomes `null` plus a `*-unavailable` finding — never 0. For more logs or keyword searches use `docker_logs_grep`. The result also carries `history` (the last N samples holding **only the verdict and numbers**, plus the `trend` verdict) — `trend.verdict.summary` is the sentence answering "is it slowly getting worse" |
+| `docker_connect_local` | always registered | — (no parameters) | **Connect local**: makes sure a `kind=local` target exists and selects it (an existing one is reused; SSH / custom targets stay untouched), then probes the daemon read-only: returns `{name, kind, created, saved, reachable, serverVersion?}`. With no targets the other tools are not registered at all (see the zero-target note below) — this is the one step that fixes that. **Requires no capability grant** and never installs Docker / starts a daemon / switches context / touches environment variables. When the daemon is unreachable the text names the cause (CLI missing / probe timed out / daemon not running / no socket permission) instead of an empty list |
+| `docker_ps` | registered with ≥1 target | `target?` (**pass `*` = all targets**), `all?: boolean`, `limit?` (1–500, default 100), `offset?` (default 0) | lists containers (name / state / health / image / ports / compose project and service / short ID); by default only running ones, `all:true` includes stopped. With `target:'*'` it returns results grouped by target, and **one unreachable target does not affect the others** (that group carries `error`). Ports are merged across the IPv4/IPv6 dual-stack expansion (D130); an empty `ports` does **not** mean "nothing exposed" — host-network containers publish on the host itself, and that case carries a `net` field (D131). The first step of troubleshooting |
+| `docker_attention` | registered with ≥1 target | `target?` (supports `*`), `limit?: number` | a **needs-attention summary**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / zombie; every item carries `reasons`, `exitCode`, `oomKilled`, `restartCount`. OOM and the real exit code come from one `docker inspect`. Call it first when you are unsure which machine or container to look at |
+| `docker_diagnose` | registered with ≥1 target | `target?`, `id` (required), `logTail?` (1–500, default 80), `since?` (docker syntax, default `1h`), `history?` (0–50, default 10; 0 = no history) | **"why is this container failing"**: one pass over inspect + log tail + this container's events (server-side `--filter container`) + a `stats` snapshot, yielding `verdict` / `findings` (each with code, severity, title, detail) / `evidence` / `timeline` / `suggestions`. **Read-only**; "not collected" becomes `null` plus a `*-unavailable` finding — never 0. For more logs or keyword searches use `docker_logs_grep`. The result also carries `history` (the last N samples holding **only the verdict and numbers**, plus the `trend` verdict) — `trend.verdict.summary` answers "is it slowly getting worse" |
 | `docker_inspect` | registered with ≥1 target | `target?`, `id` (required) | `docker inspect`'s authoritative details: state / health check / exit code / restart count / ports / mounts / networks / startup command |
-| `docker_logs` | registered with ≥1 target | `target?`, `id`, `tail?` (1–5000, default `logTailDefault`), `timestamps?`, `since?`, `until?` | the tail from `docker logs --tail`; `since` / `until` use docker syntax (e.g. `10m`, `2026-09-09T10:00:00`) to bound a time window; over the cap it is marked `truncated`; when truncated (`truncated`) the result explains how to narrow it — a smaller `tail`, a `since`/`until` window, or `docker_logs_grep` |
-| `docker_logs_grep` | registered with ≥1 target | `target?`, `id`, `pattern` (required, ≤512 chars), `regexp?`, `ignoreCase?`, `since?`, `until?`, `context?` (0–20, default 2), `limit?` (1–500, default 200), `tail?` (omitted = scan all history), `timestamps?` (on by default) | **server-side log search**: line-by-line filtering in the host (never touches the remote shell, never pipes ` | grep`), returns hit lines plus ±context lines, and honestly reports `matched` (all hits even when not returned) / `scanned` / `limited` / `truncated` — "only scanned this far" is distinguishable from "scanned everything"; the scan window is **aligned to line boundaries** (the partial line left by a byte-level cut is never returned as a line, so every entry in `lines` is a complete line); returned lines have their own cap: at most 4000 lines (`MAX_RESULT_LINES`); over it the result is cut to the cap and carries `truncatedForSize` plus `notes` (lower `limit` / reduce `context` / bound the window with `since`·`until`), while `matched` still reports the full count. Division of labour with `docker_logs`: error in the recent tail → `docker_logs` (cheaper); buried deep / a specific time window / keywords, error codes, request IDs → this tool. Literal substring by default (grep -F semantics, zero ReDoS); JS regex only with `regexp: true` |
+| `docker_logs` | registered with ≥1 target | `target?`, `id`, `tail?` (1–5000, default `logTailDefault`), `timestamps?`, `since?`, `until?` | the tail from `docker logs --tail`; `since` / `until` use docker syntax to bound a time window; over the cap it is marked `truncated`, and the result explains how to narrow it (smaller `tail`, a `since`/`until` window, or `docker_logs_grep`) |
+| `docker_logs_grep` | registered with ≥1 target | `target?`, `id`, `pattern` (required, ≤512 chars), `regexp?`, `ignoreCase?`, `since?`, `until?`, `context?` (0–20, default 2), `limit?` (1–500, default 200), `tail?` (omitted = scan all history), `timestamps?` (on by default) | **server-side log search**: line-by-line filtering in the host (never touches the remote shell), returning hit lines plus context and honestly reporting `matched` / `scanned` / `limited` / `truncated` — "only scanned this far" is distinguishable from "scanned everything"; the scan window is **aligned to line boundaries**; returned lines have their own cap (at most 4000, `MAX_RESULT_LINES`), over which the result carries `truncatedForSize` and `notes` while `matched` still reports the full count. Division of labour with `docker_logs`: error in the recent tail → `docker_logs` (cheaper); buried deep / a specific time window / keywords, error codes, request IDs → this tool. Literal substring by default (grep -F semantics, zero ReDoS); JS regex only with `regexp: true` |
 | `docker_stats` | registered with ≥1 target | `target?`, `ids?` (comma-separated container names/IDs) | a `docker stats --no-stream` snapshot: CPU% / memory usage and share / network IO / block IO / PIDs; omitting `ids` means all running containers. Live following is a panel capability (SSE), and the tool keeps single-value snapshot semantics |
-| `docker_images` | registered with ≥1 target | `target?`、`limit?` (1–500, default 100), `offset?` (default 0) | image list (repository:tag / size / created / short ID) |
+| `docker_images` | registered with ≥1 target | `target?`, `limit?` (1–500, default 100), `offset?` (default 0) | image list (repository:tag / size / created / short ID) |
 | `docker_top` | registered with ≥1 target | `target?`, `id` (required) | a process snapshot inside the container (`docker top <id> -eo pid,ppid,user,stat,etime,pcpu,pmem,cmd`): PID / PPID / user / STAT / elapsed / CPU / memory / command, every field as docker prints it. "The container is running" and "the process is still there" are two different facts |
-| `docker_events` | registered with ≥1 target | `target?`, `since?` (docker `--since` syntax, default `10m`) | a container-event snapshot (`docker events --since <d> --until <now>`, likewise through the server-side allowlist): the nine kinds start / die / stop / kill / oom / health_status / destroy / rename / update, with noise such as `exec_*` already dropped server-side. For continuous observation have the user watch the "Activity" strip in the panel's container list |
-| `docker_networks` | registered with ≥1 target | `target?`、`limit?` (1–500, default 100), `offset?` (default 0) | network list (name / driver / scope / internal flag / short ID). The connected-container list stays out of the list rows — the details page does the inspect, whereas inspecting row by row would be N docker calls |
-| `docker_volumes` | registered with ≥1 target | `target?`、`limit?` (1–500, default 100), `offset?` (default 0) | volume list (name / driver / scope / mountpoint) |
-| `docker_disk_usage` | registered with ≥1 target | `target?` | disk usage and **"who uses it"**: the four `docker system df` summary classes (items / active / size / reclaimable) plus `-v` detail (an image's `containers`, a volume's `links`, 20 rows each). Check whether `containers` is 0 before deleting; summary and detail are two commands, and a detail failure only degrades (`degraded`) |
-| `docker_run_command` | registered with ≥1 target | `target?`, `id` (required) | **derives, never executes**: rebuilds an equivalent `docker run` command text from `docker inspect` (ports / mounts / env / restart policy / network / resource limits / capabilities) plus `warnings` / `secretKeys` (key names only, values unredacted) / `omitted` (what was deliberately not restored, each with a reason). A Compose container is only an approximation |
-| `docker_image_inspect` | registered with ≥1 target | `target?`, `ref` (required) | `docker image inspect` + `docker history`: size / size including parents / created / platform / layer count and layer list / entrypoint and command / exposed ports / digest / build history (each step's command and size) |
+| `docker_events` | registered with ≥1 target | `target?`, `since?` (docker `--since` syntax, default `10m`) | a container-event snapshot (likewise through the server-side allowlist): the nine kinds start / die / stop / kill / oom / health_status / destroy / rename / update. For continuous observation have the user watch the "Activity" strip |
+| `docker_networks` | registered with ≥1 target | `target?`, `limit?` (1–500, default 100), `offset?` (default 0) | network list (name / driver / scope / internal flag / short ID). The connected-container list stays out of the list rows — inspecting row by row would be N docker calls |
+| `docker_volumes` | registered with ≥1 target | `target?`, `limit?` (1–500, default 100), `offset?` (default 0) | volume list (name / driver / scope / mountpoint) |
+| `docker_disk_usage` | registered with ≥1 target | `target?` | disk usage and **"who uses it"**: the four `docker system df` summary classes plus `-v` detail (an image's `containers`, a volume's `links`, 20 rows each). Check whether `containers` is 0 before deleting; a detail failure only degrades (`degraded`) |
+| `docker_run_command` | registered with ≥1 target | `target?`, `id` (required) | **derives, never executes**: rebuilds an equivalent `docker run` command from `docker inspect` plus `warnings` / `secretKeys` (key names only, values unredacted) / `omitted` (what was deliberately not restored, each with a reason) |
+| `docker_image_inspect` | registered with ≥1 target | `target?`, `ref` (required) | `docker image inspect` + `docker history`: size / size including parents / created / platform / layer count and list / entrypoint and command / exposed ports / digest / build history |
 | `docker_action` | `allowMutations` + ≥1 target | `target?`, `action` (`start` \| `stop` \| `restart` \| `remove`), `id` | container lifecycle operations. `remove` is destructive: it deletes the container config and writable layer (data volumes are not included), and the target container must be confirmed with the user before running |
-| `docker_image_remove` | `allowMutations` + ≥1 target | `target?`, `ref` (required) | removes an image (`docker image rm`, without `-f`). **Destructive**: it fails when the image is referenced by a container or a child image; confirm the target image and restate the consequences before running |
-| `docker_image_prune` | `allowMutations` + ≥1 target | `target?` | prunes dangling (untagged) images (`docker image prune -f`). Deliberately without `--all`, so only untagged images go |
-| `docker_image_pull` | `allowMutations` + ≥1 target | `target?`, `ref` (required), `timeoutSec?` (10–1800, default 600) | `docker pull` in snapshot form (**may take several minutes**); for interactive per-layer progress have the user watch the SSE progress stream from the pull icon on the panel's images page |
+| `docker_image_remove` | `allowMutations` + ≥1 target | `target?`, `ref` (required) | removes an image (`docker image rm`, without `-f`). **Destructive**: it fails when the image is referenced; confirm the target image and restate the consequences before running |
+| `docker_image_prune` | `allowMutations` + ≥1 target | `target?` | prunes dangling (untagged) images (`docker image prune -f`). Deliberately without `--all` |
+| `docker_image_pull` | `allowMutations` + ≥1 target | `target?`, `ref` (required), `timeoutSec?` (10–1800, default 600) | `docker pull` in snapshot form (**may take several minutes**); for per-layer progress have the user watch the SSE progress stream in the images page |
 | `docker_exec` | `allowExec` + ≥1 target | `target?`, `id`, `command` (required, run through `sh -c` inside the container), `timeoutSec?` (1–120, default `execTimeoutSec`) | a one-shot `docker exec` returning the exit code / stdout / stderr; there is no TTY, so for interactive troubleshooting have the user run `docker exec -it <container> sh` in the tty panel |
 
-- When `target` is omitted it falls back to **the only** configured target; with several targets configured it is
-  required, and the error message lists the available target names.
-- **With no targets configured only `docker_targets` / `docker_connect_local` are registered**: the other tools
-  have nothing to address, so registering them would only make the model guess once. As soon as a target is
-  configured they are registered **immediately**, with no restart. Those are exactly the two rows marked
-  “always registered” in the table.
+- When `target` is omitted it falls back to **the only** configured target; with several targets it is required,
+  and the error lists the available names.
+- **With no targets only `docker_targets` / `docker_connect_local` are registered**: the other tools have nothing
+  to address, so registering them would only make the model guess once. As soon as a target is configured they
+  are registered **immediately**, with no restart.
 - **The four list tools support pagination**: `docker_ps` / `docker_images` / `docker_networks` / `docker_volumes`
-  all accept `limit` (1–500, default 100) and `offset` (default 0), and their results carry `total` / `truncated`;
-  when truncated the rendered text gives the `offset` for the next page. Pagination only fixes “the result is too
-  long to read through” — it does not change the 512KB ceiling of a single docker command (that still errors).
+  accept `limit` (1–500, default 100) and `offset` (default 0), and their results carry `total` / `truncated`.
+  Pagination only fixes "the result is too long to read through" — it does not change the 512KB ceiling of a
+  single docker command.
 - Changing either switch **re-registers the tools immediately**: after turning off `allowMutations` / `allowExec`
-  the corresponding tools (including the three image mutation tools) disappear from the agent side, with no restart.
-- **Registered calls are also subject to the session permission tier gate (tier gate)**: by class — every
-  tool marked “registered with ≥1 target” in the table above is `read` (allowed on every tier); `docker_action` /
-  `docker_image_remove` / `docker_image_prune` / `docker_image_pull` are `write`, `docker_exec` is `exec`,
-  and these two classes trigger an **approval prompt on every call** under a confined tier (Read Only /
-  Workspace Write — the call runs only if the user allows this one; deterministically denied when unattended,
-  i.e. approval policy `never`). Full access never prompts, and under Auto review the plugin does not add its
-  own prompt (the host’s model pre-review already covers every call). When the host has not composed the
-  `sandboxPolicy` / `approval` services the gate is off (behaviour identical to before), and the startup log
-  says so: `tier-gate: services absent (…), per-call gate disabled`. This is a **separate layer** from the two
-  static switches above: the switches govern registration (host-level, persistent grant), the tier gate governs
-  each registered call (per call, follows the tier immediately). Mechanism:
-  [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
-- Recommended troubleshooting order: `docker_targets` → `docker_ps` → **`docker_diagnose`** (one call gives
-  the verdict, the criteria and the evidence — most "why did it die / why is it stuck" questions have a
-  direction right here) → `docker_logs` (when the tail does not explain the failure, `docker_logs_grep` with
-  `pattern` / `since` / `until` to search deeper) → `docker_inspect` (raw fields) → `docker_stats` /
-  `docker_top` (alive but wrong: check resources first, then whether the process is still there); for image
-  problems `docker_images` → `docker_image_inspect`; before reclaiming disk, `docker_disk_usage` (see
-  `containers` / `links`, i.e. who uses what) and only then decide what to delete.
-- With `announceToAgent` on, the plugin injects a compact announcement into the systemPrompt: the plugin/panel
-  location, the "read-only by default" and "docker socket ≈ root on the target host" boundaries, the
-  "`allowExec` only governs the one-shot exec channel" split (the Terminal button is not gated by it), the `*`
-  scope of `target`, and the cross-tool troubleshooting order. It does **not** restate each tool's usage — that
-  is what the tool descriptions are for.
+  the corresponding tools (including the three image mutation tools) disappear, with no restart.
+- **Registered calls are also subject to the session permission tier gate**: `read` tools (every row marked
+  "registered with ≥1 target") are allowed on every tier; `docker_action` / `docker_image_remove` /
+  `docker_image_prune` / `docker_image_pull` are `write` and `docker_exec` is `exec`, and these two classes trigger
+  an **approval prompt on every call** under a confined tier (deterministically denied when unattended), never
+  under full access, and no extra prompt under Auto review. When the host has not composed the
+  `sandboxPolicy` / `approval` services the gate is off, and the startup log says
+  `tier-gate: services absent (…), per-call gate disabled`. This is a **separate layer** from the two static
+  switches: they govern registration (host-level, persistent grant), the tier gate governs each registered call.
+  Mechanism: [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
+- Recommended troubleshooting order: `docker_targets` → `docker_ps` → **`docker_diagnose`** (verdict, criteria and
+  evidence in one call — most "why did it die" questions have a direction right here) → `docker_logs` (then
+  `docker_logs_grep` with `pattern` / `since` / `until` when the tail does not explain it) → `docker_inspect`
+  (raw fields) → `docker_stats` / `docker_top` (alive but wrong: check resources first, then the process); for
+  image problems `docker_images` → `docker_image_inspect`; before reclaiming disk, `docker_disk_usage`.
+- With `announceToAgent` on, the plugin injects a compact announcement: the plugin/panel location, the
+  "read-only by default" and "docker socket ≈ root" boundaries, the "`allowExec` only governs the one-shot exec
+  channel" split (the Terminal button is not gated by it), the `*` scope of `target`, and the cross-tool
+  troubleshooting order. It does **not** restate each tool's usage.
 
 ## HTTP routes (under the `/api/dsh-docker` prefix, all behind the loopback fence)
 
@@ -834,43 +659,42 @@ loopback, `localhost`, or a hostname / `/etc/hosts` alias that **resolves to thi
 `referrer-policy: no-referrer`.
 
 **On top of loopback there is a second gate, the "same-origin proof"**: the four SSE streams (`/logs/stream`,
-`/stats/stream`, `/events/stream`, `/images/pull/stream`) and nine write sub-routes (`/action`,
-`/images/remove|prune`, `/networks/remove|prune`, `/volumes/remove|prune`, `/exec`, `/connect-local`) require either
-`Origin: <same origin>` or `Sec-Fetch-Site: same-origin`, otherwise 403 `缺少同源证明` (missing same-origin
-proof). This blocks cross-site side effects such as a malicious page using
-`<img src=.../images/pull/stream>` to trigger a real pull; curl, old Safari and some WebViews do not send those
-headers and will hit it (normal browser use is unaffected). Read-only routes do not require the proof.
+`/stats/stream`, `/events/stream`, `/images/pull/stream`) and every write sub-route (`/action`,
+`/images/remove|prune`, `/networks/remove|prune`, `/volumes/remove|prune`, `/exec`, `/elevate` (including
+`/elevate/status` and `/elevate/revoke`), `/connect-local`) require
+either `Origin: <same origin>` or `Sec-Fetch-Site: same-origin`, otherwise 403 `缺少同源证明`. This blocks
+cross-site side effects such as a malicious page using `<img src=.../images/pull/stream>` to trigger a real pull;
+curl, old Safari and some WebViews do not send those headers and will hit it (normal browser use is unaffected).
+Read-only routes do not require the proof.
 
 **Exception: the Desktop app passes the gate with the Host cookie (D139).** DeepSeek Harness Desktop forwards
-page requests to `dsh-app://app/api/…` to the real Host after **deleting `Origin` and `Sec-Fetch-Site`** and
-rewriting only `Cookie` (`forwardWebRequest` in `app.asar/lib/main.js`), so "both proofs absent" is the *normal*
-shape there. Such a forward is recognised by its **Host session cookie** (the `set-cookie` the shell exchanges
-for the launch URL; without it the whole forward returns 503): **no `Origin`, no `Sec-Fetch-Site`, but a
-`Cookie` → allowed**; both absent *and* no cookie (bare curl / old Safari) → still 403. A browser page cannot
+page requests to `dsh-app://app/api/…` after **deleting `Origin` and `Sec-Fetch-Site`** and rewriting only
+`Cookie` (`forwardWebRequest`), so "both proofs absent" is the *normal* shape there. Such a forward is recognised
+by its **Host session cookie** (without it the whole forward returns 503): **no `Origin`, no `Sec-Fetch-Site`, but
+a `Cookie` → allowed**; both absent *and* no cookie (bare curl / old Safari) → still 403. A browser page cannot
 forge the `Cookie` header, and a cross-site request always carries `sec-fetch-site: cross-site` (rejected by the
-loopback fence first), so the rejection branch was not relaxed. Before the fix all twelve of these routes
-returned 403 on Desktop — the symptom was the logs / stats / events / pull streams retrying forever with
-"connection lost, reconnecting…", while read-only routes kept working.
+loopback fence first), so the rejection branch was not relaxed; symptoms and diagnosis are in
+[docs/troubleshooting.md](../../docs/troubleshooting.md).
 
 | Route | Method | Request body | Response |
 | --- | --- | --- | --- |
-| `/config` | GET | — | `{ok:true, config}`: the config snapshot (targets expose only `passwordSet` / `passphraseSet`, plus the read-only `ttyBooks` / `ttyAvailable` / `toolsRegistered` / `streamProtocol` — the last one is the SSE frame protocol version the client uses to decide what counts as "ready"; see "SSE event protocol") |
+| `/config` | GET | — | `{ok:true, config}`: the config snapshot (targets expose only `passwordSet` / `passphraseSet`, plus the read-only `ttyBooks` / `ttyAvailable` / `toolsRegistered` / `streamProtocol` — the last one is the SSE frame protocol version the client uses to decide what counts as "ready") |
 | `/config` | POST | any subset of the config keys above | `{ok:true, config}`; an unknown key is 400 and invalid JSON is 400 |
 | `/targets` | GET / POST | — | `{ok:true, targets:[{name, kind, label?\|error?}]}` |
 | `/connect-local` | POST | `{}` (the body is ignored) | **Connect local**: reuses or creates a `kind=local` target and returns `{ok:true, result:{name, kind, created, saved, reachable, serverVersion?, message}, config}`; 503 when the host has no settings service and 500 when the save fails (both carry a reason and change no in-memory config). Requires the same-origin proof (it is a write path) but **not** `allowMutations` / `allowExec` |
 | `/probe` | POST | `{target?}` | `{ok:true, probe:{ok, bin, serverVersion, error, target}}` |
-| `/containers` | POST | `{target?, all?}` | `{ok:true, containers: ContainerSummary[]}`; with `target:'*'` it returns `{ok:true, groups:[{target,label,ok,error?,data?}]}` (concurrent cross-target aggregation) |
-| `/attention` | POST | `{target?, limit?}` | for a single target `{ok:true, items: AttentionItem[], total, truncated, degraded}` (`limit` applies **after** filtering + severity sorting; default 100, max 500); with `target:'*'` `{ok:true, groups:[{target,label,ok,error?,data:{items,total,truncated,degraded}}]}` |
+| `/containers` | POST | `{target?, all?}` | `{ok:true, containers: ContainerSummary[]}`; with `target:'*'` it returns `{ok:true, groups:[{target,label,ok,error?,data?}]}` |
+| `/attention` | POST | `{target?, limit?}` | for a single target `{ok:true, items, total, truncated, degraded}` (`limit` applies **after** filtering + severity sorting; default 100, max 500); with `target:'*'` grouped by target |
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
-| `/top` | POST | `{target?, id}` (required) | `{ok:true, top:{id, name, rows:[{pid, ppid, user, stat, elapsed, cpu, mem, command}], truncated}}` — every field exactly as `docker top` prints it; a stopped or missing container goes through the existing error channel (never a 200 with an empty list) |
-| `/diagnose` | POST | `{target?, id}` (required), `logTail?` (1–500, default 80), `since?` (default `1h`), `history?` (0–50, default 10) | `{ok:true, diagnosis:{verdict, findings, evidence, timeline, logTail, suggestions, history:{samples, trend, recorded}}}`. `history` is the last N samples **after** this run's recording plus the trend (`recorded` says whether this call actually appended — `false` when the 30-second dedupe hit). Four reads; a failed side read only degrades (the evidence field is `null` plus a `*-unavailable` finding); an invalid `since` is rejected with 400 in the allowlist block |
-| `/logs/stream` | GET | query: `target?`, `id` (single container, or use `ids` instead) or `ids` (comma-separated multiple containers, **one connection carries all of them**, at most 32), `tail?` (**0**–5000; `0` = follow only, no history backfill, used on client reconnect), `timestamps?` (`1`/`true`), `since?` | `200 text/event-stream` long connection, event protocol below; bad parameters / unknown target / non-loopback return ordinary JSON errors |
-| `/stats/stream` | GET | query: `target?`, `ids?` (comma-separated; omitted = all running) | `200 text/event-stream`: one `stats` frame per second (ContainerStats, same shape as the /stats snapshot); it does not end naturally and is finished off by the client disconnecting |
-| `/events/stream` | GET | query: `target?` | `200 text/event-stream`: one container event per `event` frame (already through the server-side allowlist, with missing-value fields omitted); it does not end naturally and is finished off by the client disconnecting |
+| `/top` | POST | `{target?, id}` (required) | `{ok:true, top:{id, name, rows:[{pid, ppid, user, stat, elapsed, cpu, mem, command}], truncated}}` — every field exactly as `docker top` prints it; a stopped or missing container goes through the existing error channel |
+| `/diagnose` | POST | `{target?, id}` (required), `logTail?` (1–500, default 80), `since?` (default `1h`), `history?` (0–50, default 10) | `{ok:true, diagnosis:{verdict, findings, evidence, timeline, logTail, suggestions, history:{samples, trend, recorded}}}`. `history` is the last N samples **after** this run's recording plus the trend (`recorded` says whether this call actually appended). Four reads; a failed side read only degrades (the field is `null` plus a `*-unavailable` finding); an invalid `since` is rejected with 400 |
+| `/logs/stream` | GET | query: `target?`, `id` (single container, or use `ids` instead) or `ids` (comma-separated multiple containers, **one connection carries all**, at most 32), `tail?` (**0**–5000; `0` = follow only, used on reconnect), `timestamps?` (`1`/`true`), `since?` | `200 text/event-stream`, event protocol below; bad parameters / unknown target / non-loopback return ordinary JSON errors |
+| `/stats/stream` | GET | query: `target?`, `ids?` (comma-separated; omitted = all running) | `200 text/event-stream`: one `stats` frame per second (same shape as the /stats snapshot); it does not end naturally |
+| `/events/stream` | GET | query: `target?` | `200 text/event-stream`: one container event per `event` frame (already through the server-side allowlist); it does not end naturally |
 | `/images` | POST | `{target?}` | `{ok:true, images: ImageSummary[]}` |
-| `/images/inspect` | POST | `{target?, ref}` (required) | `{ok:true, image:{ref, detail: ImageDetail, history: ImageHistoryEntry[], historyError}}`; history prefers `--format '{{json .}}'` and falls back to a plain-text table on older versions |
+| `/images/inspect` | POST | `{target?, ref}` (required) | `{ok:true, image:{ref, detail: ImageDetail, history: ImageHistoryEntry[], historyError}}`; history prefers `--format '{{json .}}'` and falls back to a plain-text table |
 | `/images/remove` | POST | `{target?, ref}` (required) | requires `allowMutations` (otherwise 403); `docker image rm` (without `-f`); `{ok:true, result:{ref, message}}` |
 | `/images/prune` | POST | `{target?}` | requires `allowMutations` (otherwise 403); `docker image prune -f` (dangling only); `{ok:true, result:{message}}` |
 | `/images/pull/stream` | GET | query: `target?`, `ref` (required) | requires `allowMutations` (otherwise 403 and no stream is opened); `200 text/event-stream`: `line` per-layer progress + `end{reason:'pull-exit',code,ref}` |
@@ -883,46 +707,39 @@ returned 403 on Desktop — the symptom was the logs / stats / events / pull str
 | `/volumes/remove` | POST | `{target?, name}` (required) | requires `allowMutations` (otherwise 403); `docker volume rm` (**the data goes with the volume**); `{ok:true, result:{name, message}}` |
 | `/volumes/prune` | POST | `{target?}` | requires `allowMutations` (otherwise 403); `docker volume prune -f` (**deletes data**, see known limitations); `{ok:true, result:{message}}` |
 | `/system-df` | POST | `{target?}` | `{ok:true, disk:{summary, images, volumes, buildCache, truncated, degraded, degradedReason}}`: `summary` is the four classes and each detail list caps at 100 rows (**sorted before truncation**); an older docker degrades instead of erroring |
-| `/run-command` | POST | `{target?, id}` (required) | `{ok:true, recreate:{id, name, command, warnings, secretKeys, omitted}}` — **derives only, never executes**; `omitted` is the single outlet for "deliberately not restored" |
+| `/run-command` | POST | `{target?, id}` (required) | `{ok:true, recreate:{id, name, command, warnings, secretKeys, omitted}}` — **derives only, never executes** |
 | `/action` | POST | `{target?, action, id}` | requires `allowMutations` (otherwise 403); `{ok:true, result:{id, action, message}}` |
 | `/exec` | POST | `{target?, id, command, timeoutSec?}` | requires `allowExec` (otherwise 403); `{ok:true, result:{id, command, code, stdout, stderr, truncated, durationMs}}` |
 
-Any other sub-path is 404 (`unknown route: ...`); a GET on anything other than `/config`, `/targets` and the three
-`*/stream` routes above returns 405; an execution failure (a docker error, a target that fails to resolve, and so on)
-returns 500 or 400 plus an `{error}` text.
+Any other sub-path is 404 (`unknown route: ...`); a GET on anything other than `/config`, `/targets` and the
+four `*/stream` routes above returns 405; an execution failure returns 500 or 400 plus an `{error}` text.
 
 ### SSE event protocol (`/logs/stream`, `/stats/stream`, `/events/stream`, `/images/pull/stream`)
 
 The four long streams share one piece of infrastructure (`openSseStream`): uniform header writing +
-`flushHeaders()`, a 15s `: ping` heartbeat frame, active-stream registration (a uniform `end` + abort when the plugin
-is disabled / the config is hot-updated / it is uninstalled), a silent abort when the client disconnects, and a
-**`ready` frame sent as soon as the pipeline is actually up** (see the table below and
-`StreamHandlers.onStart`). They differ only in the executor and the end reason:
-
-Each frame is one `event:` line + one JSON `data:` line (single-line JSON encapsulation: newlines / quotes are
-escaped and multi-byte characters are never split by an SSE line boundary), followed by an empty line:
+`flushHeaders()`, a 15s `: ping` heartbeat, active-stream registration (a uniform `end` + abort when the plugin
+is disabled / hot-updated / uninstalled), a silent abort on client disconnect, and a **`ready` frame sent as soon
+as the pipeline is actually up**. Each frame is one `event:` line + one JSON `data:` line (single-line JSON:
+newlines / quotes escaped, multi-byte characters never split by an SSE line boundary), followed by an empty line:
 
 | Event | data | Description |
 | --- | --- | --- |
-| `ready` | `{}` | sent once **the executor is really running** (local child `spawn` / remote channel opened = `StreamHandlers.onStart`): only then does the client consider the stream "receiving data". **Arrival of the response headers (`onopen`) does not count** — those are written by `flushHeaders()` immediately, while connecting (SSH `acquire` / opening the remote channel) can take tens of seconds, and an unreachable target produces nothing but an `error`. If it never starts there is **no** `ready` at all |
+| `ready` | `{}` | sent once **the executor is really running** (local child `spawn` / remote channel opened = `StreamHandlers.onStart`): only then does the client consider the stream "receiving data". **Arrival of the response headers (`onopen`) does not count** — those are written immediately by `flushHeaders()`, while connecting can take tens of seconds. If it never starts there is **no** `ready` at all |
 | `line` | `{"d":"..."}` / `{"e":"..."}`; with multiple sources `{"id":"<container id>","d"\|"e":"..."}` | stdout / stderr chunks (not guaranteed to split on line boundaries, so the client reassembles lines). Used by the log stream and the pull stream. **In `ids=` mode every frame carries `id`**, and the client routes the chunk back to that container |
-| `source-end` | `{"id":"<container id>","code":N\|null}` | **multiple sources only**: that container's `docker logs -f` exited naturally (the container stopped). The connection **stays open** — the other containers keep streaming; `end` only comes once every source has finished |
-| `source-error` | `{"id":"<container id>","message":"..."}` | **multiple sources only**: that one sub-stream failed (spawn error / remote channel refused). The connection also stays open and the other containers continue; the client marks it "partially failed" |
-| `stats` | `ContainerStats` | stats stream only: one frame per container per second, with fields exactly matching the `/stats` snapshot. The server extracts **flat `{...}` objects** (`docker stats` goes through the TTY renderer even when stdout is a pipe, so frames are mixed with `ESC[H/ESC[K/ESC[J`, and parsing by line would drop whole lines) and collapses repeated renders of the same sample, so the client no longer has to parse docker's PascalCase strings |
-| `event` | `{action, name, image, composeProject?, time?, exitCode?}` | event stream only: one container event per frame (event lines outside the allowlist are dropped server-side; fields whose value is null are omitted) |
-| `end` | `{"reason":"container-exit"\|"stats-exit"\|"events-exit"\|"pull-exit","code":N, ...}` | the executor exited naturally. The log stream attaches a container exit code (with multiple sources it is the **last non-null code in `ids` order**; each container's real code is in its own `source-end`), the stats stream has reason=`stats-exit`, the event stream reason=`events-exit`, and the pull stream attaches `ref` |
+| `source-end` | `{"id":"<container id>","code":N\|null}` | **multiple sources only**: that container's `docker logs -f` exited naturally. The connection **stays open** — `end` only comes once every source has finished |
+| `source-error` | `{"id":"<container id>","message":"..."}` | **multiple sources only**: that one sub-stream failed. The connection also stays open; the client marks it "partially failed" |
+| `stats` | `ContainerStats` | stats stream only: one frame per container per second, matching the `/stats` snapshot. The server extracts **flat `{...}` objects** (`docker stats` goes through the TTY renderer even when stdout is a pipe, so frames are mixed with `ESC[H/ESC[K/ESC[J`, and parsing by line would drop whole lines) and collapses repeated renders |
+| `event` | `{action, name, image, composeProject?, time?, exitCode?}` | event stream only: one container event per frame (event lines outside the allowlist are dropped server-side) |
+| `end` | `{"reason":"container-exit"\|"stats-exit"\|"events-exit"\|"pull-exit","code":N, ...}` | the executor exited naturally. The log stream attaches a container exit code (with multiple sources, the **last non-null code in `ids` order**; each container's real code is in its own `source-end`), the stats stream has reason=`stats-exit`, the event stream `events-exit`, and the pull stream attaches `ref` |
 | `error` | `{"message":"..."}` | a parameter / execution failure, after which the stream closes; a break at the connection layer does not send this event |
 
-**Multiple containers over one connection (`ids=`, D168)**: merged logs (multi-select / Compose project logs) pack N
-containers into **one** SSE — the host starts one `docker logs -f` per container and tags frames with `id`. That way the
-merged view holds exactly **one** browser per-origin connection no matter how many containers are selected (the old
-implementation opened one `EventSource` per container, which together with the Activity strip's event stream could
-fill the 4-live-stream budget measured in D165). The single-source `id=` shape is **byte-for-byte unchanged**: no `id`
-in frames, no `source-end`/`source-error` — old clients keep parsing it exactly as before. `/config`'s
+**Multiple containers over one connection (`ids=`, D168)**: merged logs pack N containers into **one** SSE — the
+host starts one `docker logs -f` per container and tags frames with `id`. That way the merged view holds exactly
+**one** browser per-origin connection no matter how many containers are selected (the old implementation opened
+one `EventSource` per container, which together with the Activity strip's event stream could fill the 4-live-stream
+budget measured in D165). The single-source `id=` shape is **byte-for-byte unchanged**. `/config`'s
 `streamProtocol` is therefore bumped to **3**, and the client uses it to decide between the single connection and
-falling back to "one stream per container".
-
-The four streams differ only in "executor + end reason":
+falling back to "one stream per container". The four streams differ only in "executor + end reason":
 
 | Stream | Executor | Natural end condition | Close semantics |
 | --- | --- | --- | --- |
@@ -931,39 +748,29 @@ The four streams differ only in "executor + end reason":
 | `/events/stream` | `docker events` (`--filter type=container`) | the daemon-side stream ends (`events-exit`) | switching pages / switching targets / closing the panel |
 | `/images/pull/stream` | `docker pull` | the pull completes / fails (`pull-exit`) | the frontend leaves the pull view |
 
-- Response headers: `content-type: text/event-stream; charset=utf-8`, `cache-control:
-  no-cache`, `connection: keep-alive`, with `flushHeaders()` immediately after writing them (the host's gzip
-  explicitly skips `text/event-stream`, so nothing is buffered).
-- Heartbeat: one `: ping` comment frame every 15s (ignored by clients per the SSE spec).
-- **Chunk coalescing (D151)**: the log and pull streams merge upstream chunks over a 50ms window before pushing
-  them (strict ordering within a channel, stdout before stderr, an immediate flush once 256KB has accumulated), so a
-  `line` frame's `d` / `e` may carry **several lines**. The client already splits on arbitrary chunks, so the
-  semantics are unchanged — what disappears is "one SSE frame per stdout chunk" (with a chatty container that is
-  thousands of frames per second, and every frame's fixed cost lands on the browser's main thread). The `end` frame
-  always comes after the last batch of `line` frames in the window.
+- Response headers: `content-type: text/event-stream; charset=utf-8`, `cache-control: no-cache`,
+  `connection: keep-alive`, with `flushHeaders()` immediately after writing them (the host's gzip explicitly
+  skips `text/event-stream`).
+- Heartbeat: one `: ping` comment frame every 15s.
 - **Backpressure and overflow (D153)**: when the client cannot keep up, frames go into an in-memory queue
-  (≤ 8MB per stream). The log and pull streams (text tails) drop the oldest whole frames and keep the newest on
-  overflow, pushing a `skip{frames,bytes}` notice (`skip` itself is never dropped) — the stream stays alive. When
-  more frames are dropped while a queued `skip` has not been written yet, its counters are updated **in place**
-  (D156 — reporting only the first gap would undercount). The
-  stats and events streams send `end{reason:output-limit}` and reconnect instead. Also, `write()` returning false
-  only means "past the high-water mark": a frame is **never written twice** (that duplication was a real bug).
-- Teardown: the client disconnects → the executor is aborted immediately (locally `SIGTERM`, then `SIGKILL` if it has
-  not exited in 2s; over SSH that exec channel is closed and the pooled connection is kept for reuse), writing no
-  frame at all; the plugin is disabled / the config is hot-updated / it is uninstalled → the server wraps up on its
-  own initiative (abort + `end`).
-- A long SSH stream occupies a connection in the pool (a busy count) and idle reclamation (120s) does not kill it by
-  mistake; reclamation resumes once the stream ends.
-- **What counts as "ready" (client side)**: the green dot / "following live" only trusts the host's `ready` frame —
-  arriving response headers do not count. Each stream also has a harder piece of evidence as a fallback (receiving it
-  means the pipeline is producing): the first real event for the events stream, the first line for the log stream,
-  the first sample for the stats stream, the first progress frame for the pull stream.
-  **Development skew** (the host process still runs the old code while the browser reads a new `client.js` from disk)
-  is handled by version negotiation: `streamProtocol < 2` in `/config` (or a host old enough to lack the field)
-  means that host never sends `ready`, so the client falls back to the old criterion (headers arrived = connected)
-  and reopens that stream exactly once so the fallback takes effect — measured on 2026-10-11: an old host plus a new
-  client used to be pinned on "Connecting to the event stream…" forever (cards could read containers while the strip
-  kept spinning).
+  (≤ 8MB per stream). The log and pull streams drop the oldest whole frames and keep the newest on overflow,
+  pushing a `skip{frames,bytes}` notice (`skip` itself is never dropped) — the stream stays alive; when more
+  frames are dropped while a queued `skip` has not been written yet, its counters are updated **in place**
+  (D156). The stats and events streams send `end{reason:output-limit}` and reconnect instead. A `write()`
+  returning false only means "past the high-water mark": a frame is **never written twice**.
+- **Chunk coalescing (D151)**: the log and pull streams merge upstream chunks over a 50ms window before pushing
+  them (strict ordering within a channel, stdout before stderr, an immediate flush once 256KB has accumulated), so
+  a `line` frame's `d` / `e` may carry **several lines**. The `end` frame always comes after the last batch.
+- Teardown: the client disconnects → the executor is aborted immediately (locally `SIGTERM`, then `SIGKILL` if it
+  has not exited in 2s; over SSH that exec channel is closed and the pooled connection is kept for reuse), writing
+  no frame at all; the plugin is disabled / hot-updated / uninstalled → the server wraps up (abort + `end`).
+- A long SSH stream occupies a connection in the pool (a busy count) and idle reclamation (120s) does not kill it
+  by mistake.
+- **What counts as "ready" (client side)**: the green dot / "following live" only trusts the host's `ready`
+  frame. Each stream also has a harder piece of evidence as a fallback: the first real event for the events
+  stream, the first line for the log stream, the first sample for the stats stream, the first progress frame for
+  the pull stream. **Development skew** is handled by version negotiation: `streamProtocol < 2` means that host
+  never sends `ready`, so the client falls back to the old criterion and reopens that stream exactly once.
 
 ## Security model
 
@@ -971,57 +778,47 @@ The four streams differ only in "executor + end reason":
 containers in privileged mode and read the secrets inside containers — which is why this plugin is designed
 read-only first:
 
-1. **Read-only by default**. With `allowMutations` off, `/action`, `/images/remove`,
-   `/images/prune`, `/images/pull/stream` all return 403, the panel's start / stop / remove / image
-   removal / pruning / pulling are unavailable, and the `docker_action`, `docker_image_remove`,
-   `docker_image_prune`, `docker_image_pull` tools are **not registered at all**; with `allowExec`
-   off, `/exec` returns 403 and the `docker_exec` tool is likewise not registered. The two switches are
-   independent and must be turned on explicitly by the user in the settings card. Read-type routes (`/logs/stream`,
-   `/stats/stream`, `/events/stream`, `/images/inspect`) are unaffected by either switch.
-   **`allowExec` only governs this plugin's *one-shot* exec channel** (the `/exec` route, the `docker_exec`
-   tool, the one-off command box on the container detail drawer's Overview tab) — the card's **Terminal button runs an interactive
-   `docker exec -it` shell hosted by tty, which passes through neither switch** and is available even in
-   read-only mode (see the boundary note under "Known limitations": it is not a missing gate, it is a
-   deliberately kept entry path).
+1. **Read-only by default**. With `allowMutations` off, `/action`, `/images/remove`, `/images/prune`,
+   `/images/pull/stream` all return 403, the panel's start / stop / remove / image removal / pruning / pulling are
+   unavailable, and the `docker_action`, `docker_image_remove`, `docker_image_prune`, `docker_image_pull` tools
+   are **not registered at all**; with `allowExec` off, `/exec` returns 403 and the `docker_exec` tool is likewise
+   not registered. The two switches are independent and must be turned on explicitly in the settings card.
+   Read-type routes (`/logs/stream`, `/stats/stream`, `/events/stream`, `/images/inspect`) are unaffected by
+   either switch. **`allowExec` only governs this plugin's *one-shot* exec channel** (the `/exec` route, the
+   `docker_exec` tool, the one-off command box on the container detail drawer's Overview tab) — the card's
+   **Terminal button runs an interactive `docker exec -it` shell hosted by tty; it passes through neither switch**
+   and is available even in read-only mode (it is not a missing gate but a deliberately kept entry path; see
+   "Known limitations").
 2. **Destructive operations restate their consequences**. `remove` maps to `docker rm` (**without `-f`**), and the
    agent announcement requires confirming the target container with the user before running; a running container
-   errors with a hint that "the container is still running: stop it before removing", never a silent force-delete.
+   errors with a hint that it must be stopped first, never a silent force-delete.
 3. **Credentials do not land in plaintext (recommended)**. `password` / `passphrase` support `env:NAME` credential
-   references; the value lives in the **official credential store** (`$DSH_HOME/.credentials.yaml`, owned by the
-   credential layer's provider), so no plaintext reaches `settings.yaml` — and no env-plugin middleman is required.
-   `agent` auth (`SSH_AUTH_SOCK`) is not written to disk at all. The config snapshot only answers "is it set".
+   references; the value lives in the **official credential store** (`$DSH_HOME/.credentials.yaml`), so no
+   plaintext reaches `settings.yaml`. `agent` auth (`SSH_AUTH_SOCK`) is not written to disk at all.
 4. **Host fingerprint TOFU pinning**. The first connection records the sha256 fingerprint; every later one must
-   match, and a change rejects the connection (MITM protection); a host tty has already confirmed is trusted directly
-   as a seed and copied into this plugin's records. TOFU's inherent limits are that "if the first connection already
-   met an MITM, what got recorded is a fake fingerprint", and that only one record is kept per host:port (multiple
-   key types on the same host may report a change incorrectly; deleting the record and reconnecting re-calibrates
-   it).
+   match, and a change rejects the connection. TOFU's inherent limits are that "if the first connection already
+   met an MITM, what got recorded is a fake fingerprint", and that only one record is kept per host:port.
 5. **Commands are always built as argv, never by string concatenation**. Container names / IDs first pass the
-   `assertRef` allowlist (`[A-Za-z0-9][A-Za-z0-9_.-]*`, ≤128 characters, rejecting spaces, `;`,
-   `$()`, backticks and so on), and image and container references likewise; remotely each argument is single-quote
-   escaped by `shJoin` before being handed to the remote shell, while locally `spawn(bin, args)` goes through no
-   shell.
+   `assertRef` allowlist (`[A-Za-z0-9][A-Za-z0-9_.-]*`, ≤128 characters, rejecting spaces, `;`, `$()`, backticks
+   and so on); remotely each argument is single-quote escaped by `shJoin`, while locally `spawn(bin, args)` goes
+   through no shell.
 6. **Output is capped**. `maxOutputKb` limits the stdout/stderr bytes of a single command; anything beyond is
    truncated and marked, so large logs cannot blow up memory or the agent's context.
-7. **HTTP is exposed to this machine only**. All routes go through the loopback fence, so a remote browser cannot
-   call them.
+7. **HTTP is exposed to this machine only**. All routes go through the loopback fence.
 8. **The live log stream is a read-only capability**. `GET /logs/stream` matches `/logs`: it is not gated by
-   `allowMutations` / `allowExec` (it does not change container state), but it likewise admits loopback only, passes
-   `id` through the `assertRef` allowlist and clamps parameters the same way. Unlike a snapshot, a long stream has no
-   `maxOutputKb` cap (following would lose its point if truncated), and memory protection is shouldered by the
-   client's 5000-line ring buffer and 2000-line colouring cap.
-9. **Mutating operations get a per-use audit trail**. The five audit lines from kit elevation answer "what was
-   authorized"; this answers "what it was used for": every mutation / exec that **passes the capability gate** lands
-   one structured `[dsh-docker] capability-use: …` audit line (outlet: the host's stdout), covering both the panel
-   routes and the agent tools. The line format, what is *not* logged (403 / tier-gate asks), and the cost that exec
-   commands appear alongside the lines are described in the usage-audit entry under "Known limitations".
+   `allowMutations` / `allowExec` (it does not change container state), but it admits loopback only, passes `id`
+   through the `assertRef` allowlist and clamps parameters the same way. A long stream has no `maxOutputKb` cap;
+   memory protection is shouldered by the client's 5000-line ring buffer.
+9. **Mutating operations get a per-use audit trail**. Kit elevation's lines answer "what was authorized"; this
+   answers "what it was used for": every mutation / exec that **passes the capability gate** lands one structured
+   `[dsh-docker] capability-use: …` line (outlet: the host's stdout), covering both the panel routes and the agent
+   tools. The line format, what is *not* logged (403 / tier-gate asks) and the cost are under "Known limitations".
 
 ## Known limitations
 
-- **No interactive TTY**: `exec` is a one-shot command (`docker exec <id> sh -c <cmd>`,
-  without `-i` / `-t`), so it cannot run vim / top / an interactive shell, nor feed stdin for a
-  dialogue. For interactive troubleshooting run `docker exec -it <container> sh` in the tty panel (this works for
-  both local and SSH targets).
+- **No interactive TTY**: `exec` is a one-shot command (`docker exec <id> sh -c <cmd>`, without `-i` / `-t`), so it
+  cannot run vim / top / an interactive shell, nor feed stdin. For interactive troubleshooting run
+  `docker exec -it <container> sh` in the tty panel.
 - **`allowExec` is not the gate that keeps you out of the container**: the card's Terminal button
   (`docker exec -it '<container>' sh`) is hosted through tty's `ttyTerminal` and **does not check
   `allowExec`** — it stays available in read-only mode, exactly as the panel's own hint says when exec is
@@ -1034,239 +831,135 @@ read-only first:
   / XSS) anyway — via `ttyTerminal.open` or a WS `spawn` frame they can run arbitrary commands, which is
   strictly stronger than this plugin's one-shot exec. See
   [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) for that layer's threat-model boundary.
-- **The event stream has a window while disconnected**: `docker events` is a stream of "from now on", so events that
-  happen while the browser is disconnected and reconnecting have already been pushed by the server and are not
-  resent. The client compensates with "do a full list refresh right after a successful reconnect"
-  (aligning state, not replaying the events); the few entries missing from the Activity strip can only be inferred
-  from the final state after that refresh. For an exact, complete event history use the `docker_events` tool (a
-  snapshot with `--since`).
-- **The four boundaries of streaming**: the log page's `FOLLOW` (SSE + `docker logs -f`), the stats page's
-  `FOLLOW` (SSE + `docker stats` + a 60-point sparkline), the container list's event stream
-  (SSE + `docker events`, driving the Activity strip and the debounced list refresh), and the images page's pull
-  progress stream (SSE + `docker pull`); but the agent tools `docker_logs` / `docker_stats` /
-  `docker_image_pull` all keep **snapshot semantics** (a single-value return model does not suit an unbounded
-  stream). Streaming logs keep only the last 5000 lines on the browser side (dropping the oldest, with a hint), and
-  stats keep only 60 samples.
-  A long SSH stream holds that connection in the pool (busy) while other commands on the same host still reuse the
-  same connection without affecting each other. **The stats stream does not end naturally**, so closing it must be
-  the frontend actively aborting the `EventSource`.
-- **The browser's per-origin budget is 4 live streams, and the Docker panel now holds at most 1 (D165 measurement + D168)**:
-  the host speaks **HTTP/1.1** (no h2 multiplexing), a browser allows only so many TCP connections **per origin**, and
-  **every `EventSource` owns one connection and never releases it voluntarily**. Once that budget is
-  exhausted, **every** ordinary request from the same page (list refreshes, `/api/*`, session loading…) queues behind it —
-  users see the **whole DSH page freeze**, not just the Docker panel (measured: 0/4 live streams → in-page requests fine;
-  **5 streams → 10/10 timed out**; full data and the incident are in [DEFECTS.md](./DEFECTS.md) under D165).
-  The Docker panel's resident streams are now **1 in every view**: container list = the Activity strip's event stream;
-  details = log FOLLOW or stats FOLLOW (only one tab is live at a time); merged / Compose project logs = **one** `ids=`
-  multi-container stream; pull = one progress stream. **Entering a detail / merged view closes the event stream**
-  (the list is replaced, the Activity strip is not visible), and returning reconnects it and does a full refresh (D168).
-  **This is a hard constraint, not a performance tip**: going over does not mean "a bit slower", it means
-  every request on that page fails together. To reproduce: open
-  `new EventSource('/api/dsh-docker/events/stream?target=<target>')` in devtools until the 5th one, then fire an ordinary request
-  and watch it hang; closing them restores it. (WebSockets do **not** draw on this budget — the tty terminal's WS coexisted fine with 4 SSE streams.)
-- **Multiple tabs have to be counted across *all* plugins, not just Docker**: those TCP slots are shared by the whole
-  page — the official `dsh-client-hmr`, other plugins' SSE streams, everything. If the host itself keeps 2 resident SSE
-  streams per tab, **3 tabs = 6 connections**, which is already the cliff; this layer is not something this plugin can
-  fix (the real fix is WebSocket / h2 on the host side, or one multiplexed connection shared by all plugins). Docker
-  has already reduced its own share to 1 (see above); count the rest from what is actually installed.
-- **The merge cap is a readability + host-channel bound, no longer a browser-connection bound (D168)**: merged logs use
-  one connection for every selected container, so `PICK_MAX = 3` is no longer derived from "4-slot budget − 1 event
-  stream"; it stays 3 because more than three merged logs are hard to read and because each selected container still
-  runs its own `docker logs -f` on the host (one channel on SSH targets, see the 8-channel budget below). The selection
-  bar says the same thing.
+- **The event stream has a window while disconnected**: `docker events` is a stream of "from now on", so events
+  that happen while the browser is reconnecting have already been pushed and are not resent. The client
+  compensates with "a full list refresh right after a successful reconnect" (aligning state, not replaying the
+  events); for an exact, complete event history use the `docker_events` tool (a snapshot with `--since`).
+- **The browser's per-origin budget is a hard constraint, and the Docker panel holds at most 1 resident stream
+  (D165 measurement + D168)**: the host speaks **HTTP/1.1** (no h2 multiplexing), and **every `EventSource` owns
+  one connection and never releases it voluntarily**. Once that budget is exhausted, **every** ordinary request
+  from the same page (list refreshes, `/api/*`, session loading…) queues behind it — users see the **whole DSH
+  page freeze**, not just the Docker panel. The panel's resident streams are **1 in every view**: list = the
+  event stream; details = log / stats FOLLOW (one tab live at a time); merged / Compose logs = **one** `ids=`
+  stream; pull = one progress stream (entering details / merged views closes the event stream, returning
+  reconnects it plus one full refresh). Going over does not mean "a bit slower", it means every request on that
+  page fails together; full data is in [DEFECTS.md](./DEFECTS.md) under D165. (WebSockets do **not** draw on
+  this budget; the retention the streaming log / stats keep is in "Usage".)
+- **Multiple tabs and the merge cap**: those connections are shared by the whole page (the official
+  `dsh-client-hmr` and other plugins' SSE included); the real fix is WebSocket / h2 on the host side, or one
+  multiplexed connection shared by all plugins. The merge cap of 3 is now a "readability + SSH 8-channel" bound
+  rather than a browser-budget one (D168): more than three merged logs are hard to read, and each selected
+  container still runs its own `docker logs -f` on the host, i.e. one channel on SSH targets. `PICK_MAX = 3` is
+  that value.
 - **The SSH channel budget is shared per target (`MaxSessions`)**: a target keeps only **one** TCP connection, and
-  every long stream and short command shares that connection's channels — while OpenSSH's `MaxSessions` defaults to
-  just 10. Long streams (logs / stats / events) hold a channel until the user closes the panel; merged logs still run
-  **one channel per selected container** (up to 3), and the next
-  "refresh list" (a short command) can then be rejected by the
-  far end with `(SSH) Channel open failure: open failed`. The plugin therefore caps each SSH target at **8 concurrent
-  long streams** (= 10 − 2, leaving two for short commands such as refresh / inspect), and the merge selection at 3.
-  Going over the cap, and the far end refusing a channel, both produce pointed messages rather than ssh2's raw text. If your sshd
-  tunes `MaxSessions` (`sshd -T | grep maxsessions`), the current cap is a compile-time constant — file an issue if it
-  needs to follow.
-  Two more remedies attach to this (`D150`): short commands **queue per target** (at most 2 concurrent per connection,
-  `DSH_DOCKER_SHORT_CHANNELS` overrides, for testing / troubleshooting only), and a full budget **self-heals** by
-  dropping and `end()`ing the connection and retrying once on a fresh one. And (`D164`): aborting a long stream now
-  **settles it on the spot** instead of waiting for the far end — previously, if the far end never confirmed (the
-  `KILL` above being refused, or a silent channel), that stream's `busy` count never came down; after 8 such leaks
-  **every** long stream on that target was refused with no self-healing path at all (observed: 248 pinned at 8/8 with
-  the Activity strip's Reconnect appearing to do nothing). `run()` had already hit this same trap twice (`D112` /
-  `D161`); all three teardown paths now settle themselves.
-- **Docker CLI version differences**: parsing goes through `--format '{{json .}}'`, and fields come and go between
-  versions; the parser always degrades instead of throwing (for example, a missing `State` has the state derived from
-  `Status`, and health is extracted from `(healthy)` / `(unhealthy)`); with fields missing the corresponding columns
-  may be empty, so use the details (`docker inspect`) when you need authoritative data.
-- **`rm` without `-f`**: container `remove` maps to `docker rm` and image `remove` to
-  `docker image rm`, neither with `-f` — a running container, or an image referenced by a container or a child
-  image, fails with a hint; to force deletion, run it by hand in the tty panel.
-- **SSH targets need sudo-free docker**: if the account is not in the docker group, docker reports a permission
-  error which the panel and the tools pass through verbatim, without attempting automatic sudo escalation.
-- **Docker not installed on the remote**: `probe` fails (`command not found` / exit code 127) and the panel shows
-  the error; when PATH differs, fill `dockerBin` with an absolute path.
+  every long stream and short command shares that connection's channels — while OpenSSH's `MaxSessions` defaults
+  to just 10. Long streams hold a channel until the user closes the panel, and merged logs still run **one channel
+  per selected container**; the next "refresh list" can then be rejected with
+  `(SSH) Channel open failure: open failed`. The plugin caps each SSH target at **8 concurrent long streams**
+  (= 10 − 2, leaving two for short commands) and the merge selection at 3; folding the right-sidebar tab drops
+  the streams and hands the channels back. Two remedies attach to this (`D150`): ① short commands **queue per
+  target** (at most 2 concurrent per connection, `DSH_DOCKER_SHORT_CHANNELS` overrides, testing only); ② a full
+  budget **self-heals** — on a `no more sessions` style refusal the plugin drops and `end()`s the connection and
+  retries once on a fresh one, leaving the `通道额度已满：已重建连接重试` line in the host log (that connection
+  **does not recover by itself**). (`D164`) ③ **aborting a long stream settles it on the spot** — on an
+  `AbortSignal` the plugin sends `KILL` and closes the channel, then **ends the stream itself** instead of waiting
+  for the far end (previously a far end that never confirmed left that stream's `busy` count **permanently raised**,
+  and after 8 such leaks every long stream on that target was refused with no self-healing path). **The real fix
+  is on the sshd side**: raise that host's `MaxSessions` — for example
+  `/etc/ssh/sshd_config.d/10-dsh-maxsessions.conf` with a `MaxSessions 50` line, then `sshd -t && systemctl
+  reload ssh` (reload only affects new connections). The current cap is a compile-time constant — file an issue if
+  it needs to follow.
+- **Docker CLI version differences**: parsing goes through `--format '{{json .}}'`, and the parser always degrades
+  instead of throwing (for example, a missing `State` has the state derived from `Status`); with fields missing
+  the corresponding columns may be empty, so use `docker inspect` when you need authoritative data.
+- **`rm` without `-f`**: container `remove` maps to `docker rm` and image `remove` to `docker image rm`, neither
+  with `-f` — a running container or a referenced image fails with a hint; to force deletion, do it by hand in
+  the tty panel.
+- **SSH targets need sudo-free docker**: if the account is not in the docker group the permission error is passed
+  through verbatim, with no automatic sudo escalation. **Docker not installed on the remote** makes `probe` fail
+  (exit code 127); when PATH differs, fill `dockerBin` with an absolute path.
 - **`dockerBin` is validated before it is persisted**: an illegal value returns 400 with a reason and is never
-  written to `settings.yaml` (the earlier implementation validated after `scope.update`, so the illegal value was
-  stored anyway and the user only received a bodyless 400; the next start silently reverted the entire docker
-  section to defaults).
-- **A `dockerBin` pointing at a `.cmd` / `.bat` cannot start the local channel**: local execution goes through the
-  bare `spawn` in `runLocal` / `runLocalStream`, and Node refuses to execute `.cmd` directly on Windows
-  (`EINVAL`). Docker ships `docker.exe`, so this is not hit in practice; with a hand-written `.cmd` wrapper, use
-  an `.exe` instead, or wait for the local channel to move to kit's `spawnPortable` as well.
+  written to `settings.yaml`. **A `dockerBin` pointing at `.cmd` / `.bat` cannot start the local channel**: local
+  execution goes through a bare `spawn`, and Node refuses to execute `.cmd` directly on Windows (`EINVAL`) — with
+  a hand-written wrapper, use an `.exe` instead, or wait for the local channel to move to kit's `spawnPortable`.
 - **The Compose project view only knows `com.docker.compose.project`**: a service deployed with
   `docker stack deploy` carries `com.docker.stack.namespace` / `com.docker.swarm.service.name` instead, so its
-  containers show up as ungrouped (measured on a real three-node swarm, Ubuntu 24.04 + Docker 29.3.1, where every
-  stack container reported `composeProject: null`). Supporting it needs a separate stack-grouping notion rather
-  than being folded into the compose one.
-- **`volume prune` only reclaims anonymous unused volumes on Docker 29**: a named volume stays even while it
-  appears in `docker volume ls -f dangling=true`, and `docker volume prune -f` reports `Total reclaimed space: 0B`
-  (measured; an anonymous volume, by contrast, is deleted and named in the output). That matches this plugin's
-  deliberate refusal to pass `--all`; use `/volumes/remove` (the panel's volume delete) for named volumes.
+  containers show up as ungrouped. Supporting it needs a separate stack-grouping notion.
+- **`volume prune` reclaims different things per version, and can delete data**: on Docker 29 `docker volume
+  prune -f` **only reclaims anonymous unused volumes** (named ones stay); docker ≥ 23 has `-a/--all`, while
+  docker < 23 has no such switch and a plain prune deletes unused **named** volumes too. This plugin never passes
+  `--all`, the confirmation copy spells out the version difference, and named volumes go through
+  `/volumes/remove`.
 - **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
   `stats` and `--format '{{json .}}'` differ from docker's, so only the parser's degradation paths are relied on;
   this has not been verified item by item.
-- **Diagnosis is a set of criteria, not an expert**: the fifteen criteria cover the objective evidence a container
-  reports about itself (exit code / OOM / restart count / health check / resource pressure / error lines in the
-  log) and **know nothing about the business**. The verdict says what the evidence points at; whether that error
-  can be ignored is a human (or model) decision on the other side of "hand it to the agent". The cost is stated
-  too: one diagnosis runs **four** read-only docker commands (inspect + logs + events + stats), which on an SSH
-  target means up to four channels (the short-command gate caps concurrency at 2, so two batches) — noticeable
-  on a slow host.
-- **Event collection gets its own budget (8MB, keeping the tail)**: in one hour of a single container's events the
-  `exec_create` / `exec_start` / `exec_die` triple dominates (dropped by the parser's allowlist; a real host
-  measured 256 events / 588KB in 1h, almost all of them that triple), so the generic 512KB budget would leave the
+- **No image builds / Compose orchestration changes**: images support pulling / removal / dangling pruning, but
+  there is no `docker build`, `docker save` / `load` or `docker push`; Compose is a **read-only** project view.
+  **Network / volume mutations exist only as panel buttons, with no agent tools** — deliberately without widening
+  the mutation surface on the agent side.
+- **Diagnosis is a set of criteria, not an expert**: these criteria cover the objective evidence a container
+  reports about itself and **know nothing about the business**. Whether an error can be ignored is a human (or
+  model) decision on the other side of "hand it to the agent". The cost: one diagnosis runs **four** read-only
+  commands, which on an SSH target means up to four channels (the short-command gate caps concurrency at 2, so
+  two batches).
+- **Event collection gets its own budget (8MB, keeping the tail)**: the `exec_create` / `exec_start` /
+  `exec_die` triple dominates one hour of a single container's events, so the generic 512KB budget would leave the
   timeline **permanently empty**. Diagnosis therefore widens event collection to 8MB and keeps the tail — on a
   container with very many events the timeline covers only the **most recent** span.
 - **The equivalent `docker run` is an approximation, not a backup**: a Compose-managed container loses network
   aliases / labels / depends_on; `--privileged` / `--link` / an overridden ENTRYPOINT / custom health checks /
-  anonymous volumes are **deliberately not restored** and listed one by one in `omitted`. **It cannot replace
-  `docker commit` / volume backups** — it is "a command you can read, edit and reproduce".
+  anonymous volumes are **deliberately not restored** and listed in `omitted`. **It cannot replace
+  `docker commit` / volume backups**.
 - **The disk view has two independent truncations**: 100 rows per class on the host side (`truncated`) and 20 rows
   on the tool side; on a host with thousands of volumes the `system df -v` output itself can hit the 8MB budget
-  (then `degraded: true` and the summary stays usable). `system df`'s human-readable sizes are docker's own (SI
-  units) and the "total reclaimable" parses them into bytes and sums — **if a row cannot be parsed the whole line
-  shows `—`** rather than an approximation.
-- **No image builds / Compose orchestration changes**: images support pulling / removal / dangling pruning, but there
-  is no `docker build`, `docker save` / `load` or `docker push`; Compose is a **read-only**
-  project view (grouping by project + project-level merged logs) and provides no `compose up` / `down` / `restart`.
-- **`volume prune` deletes data and its behaviour varies by version**: `docker volume prune` on docker ≥ 23
-  has `-a/--all`, and **without it only anonymous volumes go** (which is how this plugin calls it); but docker < 23
-  has no such switch, and a plain prune deletes **named** volumes that are not in use as well. The confirmation copy
-  for volume pruning therefore spells out the version difference; before running it, please confirm that there is no
-  data volume you want to keep.
-- **Network / volume mutations exist only as panel buttons, with no agent tools**: image remove / prune have
-  corresponding tools, but for this round networks / volumes only gained HTTP endpoints (`/networks/remove` and the
-  like) and panel buttons — deliberately without widening the mutation surface on the agent side. Letting the agent
-  delete them too would require adding separate tools (with their own confirmation conventions).
-- **The Overview only summarises "the container picture" and is entirely read-only**: the `Overview` next to the
-  target picker only does counter cards and the attention table pinned to the top, with **no cross-target operations
-  whatsoever** (start / stop / remove are still done one by one in a single target's list), and it does not merge
-  logs / stats / event streams either (those remain the business of single-target, single-container pages). In
-  addition, "attention" covers only `unhealthy` and
-  `restarting`: `ContainerSummary` has no `exitCode`, so a "crashed exit" cannot be told from a "manually
-  stopped" one, and counting every `exited` as an exception would let a container that was stopped once flood the
-  screen forever — look at dead containers under "stopped" in the counter card instead.
-- **The connection-bar button needs a matching target to have data**: the button always shows on an SSH tab, but if
-  the session host has no corresponding `kind=ssh` target (neither the connection-book name nor `host:port` matches),
-  clicking it only shows a hint that it is "not configured as a Docker target" instead of a container list; the
-  connection bar on local tabs is hidden entirely.
-  Target additions and removals are picked up within at most 30 seconds (saving the settings card refreshes
-  immediately).
-- **`enabled: false` takes effect on save**: after saving, tools are unregistered immediately, the announcement is
-  withdrawn, and data routes other than `/config` return 403 (long streams in progress — logs / stats / pulling —
-  are wrapped up immediately too). The route objects themselves are not unloaded; they are blocked by the 403, and
-  `/config` stays readable and writable — the settings card is the way back in, with no restart of `dsh web` needed.
+  (then `degraded: true` and the summary stays usable). The "total reclaimable" parses human-readable sizes into
+  bytes and sums — **if a row cannot be parsed the whole line shows `—`**.
+- **The Overview only summarises "the container picture" and is entirely read-only**: counter cards and the
+  attention table only, with **no cross-target operations** and no log / stats / event merging. In addition,
+  "attention" covers only `unhealthy` and `restarting`: `ContainerSummary` has no `exitCode`, so a "crashed exit"
+  cannot be told from a "manually stopped" one — look at dead containers under "stopped" in the counter card.
+- **The connection-bar button needs a matching target to have data**: the button always shows on an SSH tab, but
+  with no corresponding `kind=ssh` target (neither the book name nor `host:port` matches) clicking it only shows a
+  "not configured as a Docker target" hint; the connection bar on local tabs is hidden. Target additions and
+  removals are picked up within 30 seconds (saving the settings card refreshes immediately).
+- **`enabled: false` takes effect on save**: tools are unregistered immediately, the announcement is withdrawn, and
+  data routes other than `/config` return 403 (long streams in progress are wrapped up too). The route objects are
+  not unloaded; `/config` stays readable and writable, and the settings card is the way back in with no restart.
 - **The usage audit goes to the host's stdout, and exec commands appear in it**: every mutation / exec that
-  **passes the capability gate** (the panel's mutation / exec routes and the agent tools `docker_action` /
-  `docker_image_remove` / `docker_image_prune` / `docker_image_pull` / `docker_exec`; 403 rejections and parameter
-  validation 400s are not logged — "a use = something that passed the gate") lands one
-  `[dsh-docker] capability-use: capability=allowMutations|allowExec source=http|tool action=container.remove|…
-  target=… ref=… ok=true|false durationMs=…` line in the same key=value style as kit elevation's authorization
-  lines, with `capability` matching those lines directly; the pull progress stream logs a start / end pair (if the
-  host dies mid-stream, at least the start line remains). **The outlet is `console.log`** (docker D162: on a real
-  host, `ctx.logger` lines were measured to reach neither the host's stdout nor any file, and an audit line whose
-  whole point is "findable when something goes wrong" is worthless in an invisible channel; tier-gate's log outlet
-  makes the same call) — the terminal running `dsh web` shows them, grep works. Kit elevation's authorization lines share the same stdout outlet
-  (kit D14 — both line families on one channel, searchable side by side). **The cost**: the exec command is recorded in the
-  trailing `detail` field (together with the exit code, e.g. `detail=code=0 cmd=ls -la /app`), truncated to 200
-  characters overall with control characters escaped as `\n` literals — a line meant for humans to read has to
-  accept appearing in the terminal-visible log stream, the same trade-off in the positive direction as elevation's
-  "nonce never enters the log". A docker error also counts as a use (`ok=false` plus `detail=` with the truncated
-  error text); tier-gate asks / denies are not logged (nothing was executed, and the host's approval log already
-  covers them). There is no query UI and no separate audit file — the way to search it is the host's stdout.
-
+  **passes the capability gate** (the panel routes and the agent tools `docker_action` / `docker_image_remove` /
+  `docker_image_prune` / `docker_image_pull` / `docker_exec`; 403s and validation 400s are not logged — "a use =
+  something that passed the gate") lands one `[dsh-docker] capability-use: capability=allowMutations|allowExec
+  source=http|tool action=… target=… ref=… ok=true|false durationMs=…` line in the same key=value style as kit
+  elevation's authorization lines; the pull stream logs a start / end pair. **The outlet is `console.log`**
+  (`D162`: `ctx.logger` lines were measured to reach neither stdout nor any file on 0.2.x hosts) — the terminal
+  running `dsh web` shows them and grep works. **The cost**: the exec command goes into the trailing `detail`
+  field (with the exit code), truncated to 200 characters with control characters escaped — a line meant for
+  humans has to accept appearing in the terminal-visible log stream. A docker error also counts as a use
+  (`ok=false`); tier-gate asks / denies are not logged. There is no query UI and no separate audit file.
 - **The boundaries of cross-target aggregation**: concurrency cap 4; a **90s per-target budget (fallback)**, while
-  each command's own timeout (30s) is the one actually honoured — when a budget fires, the underlying child process /
-  SSH channel is **really cancelled** (not merely reported as a failed cell), otherwise the timed-out command keeps
-  holding a remote session slot (D161). A single target failing or timing out affects only its own cell (the group
-  carries `error`). With many targets the Overview's request volume grows linearly with the target count (2 requests
-  per target), and auto refresh multiplies that volume — with many targets it is best to turn auto refresh off.
+  each command's own timeout (30s) is the one actually honoured — when a budget fires, the underlying child
+  process / SSH channel is **really cancelled**, otherwise the timed-out command keeps holding a remote session
+  slot (D161). A single target failing or timing out affects only its own cell. With many targets the Overview's
+  request volume grows linearly and auto refresh multiplies it.
 
 ## How it works
 
 ```
 Browser half (client.js)
-  ├─ sidebar "Containers" entry → panel: target picker / container list (search + state filter) /
-  │   container cards (action bar in two groups: view = terminal/logs/stats | mutate = start-stop/restart/remove) /
-  │   container list "Activity" strip (event-driven refresh) + "Select for merging" multi-select → temporary merged logs /
-  │   multi-target Overview (all targets fetched in parallel + progressive landing; counter cards / attention table pinned to the top; read-only) /
-  │   Compose project view (project grouping / service table / project-level merged logs) /
-  │   image list (inline details · remove) + image details (layers / build history) + pull progress /
-  │   network list + network details (subnet / connected containers) + volume list + volume details / one-shot exec
-  │     └─ terminal drawer: with tty ≥ 0.15, embeds tty's terminal in place via ttyTerminal.mount
-  │        (the panel does not collapse; collapsing/dragging only changes size and does not interrupt the session; only ✕ or closing the panel disposes,
-  │        and with an active session closing the panel confirms first → tty ends the session and tears down the DOM)
-  │     ├─ fetch → /api/dsh-docker/* (loopback fence)
-  │     ├─ FOLLOW → EventSource /logs/stream (SSE: 5000-line ring buffer / auto stick to bottom /
-  │     │   back to bottom / auto reconnect on disconnect / back to snapshot when the container exits)
-  │     ├─ stats FOLLOW → EventSource /stats/stream (SSE: a 60-point ring buffer draws
-  │     │   CPU / memory sparklines; **the frontend aborts it**, and the stream only ends when docker stats exits by itself)
-  │     ├─ events → EventSource /events/stream (SSE: the Activity strip's 50-entry ring buffer +
-  │     │   a 500ms debounce triggering a list refetch; one full refresh after a successful reconnect)
-  │     ├─ pull → EventSource /images/pull/stream (SSE: per-layer progress upserted by layer key)
-  │     └─ merged logs → **one** EventSource /logs/stream?ids=… (all containers share it; frames carry id,
-  │         mixed client-side by [service]; old hosts fall back to one per container)
-  ├─ optionally consumes tty's ttyConnbar service → SSH connection bar "Containers" button
-  │   (matches configured targets by book name / host:port; only appears on a hit)
-  ├─ optionally consumes tty's ttyPanel service (0.16.0) → docks to the right while the terminal panel is open
-  └─ optionally consumes tty's ttyTerminal service → the card's "Terminal" button opens a docker exec tab directly
-      (falls back to copying the command when tty is unavailable / credentials are not in the browser)
+  ├─ sidebar "Containers" entry → panel (target picker / container list / card actions / five-tab details /
+  │   cross-target Overview / Compose · images · networks · volumes · disk pages) + terminal drawer
+  │   (ttyTerminal.mount)
+  ├─ four SSE streams (/logs/stream incl. ids=, /stats/stream, /events/stream, /images/pull/stream)
+  │   + ordinary fetch → /api/dsh-docker/* (loopback fence; write routes also need the same-origin proof)
+  └─ optionally consumes tty's ttyConnbar / ttyPanel / ttyTerminal (each degrades without tty)
 
 Host half (src/index.ts)
-  ├─ settings namespace docker (~/.dsh/settings.yaml)
-  │   DOCKER_SETTINGS_SCHEMA → normalizeConfig (clamping / allowlisted keys)
+  ├─ settings namespace docker → normalizeConfig (clamping / allowlisted keys)
   ├─ read-only reuse of tty settings' sshHosts (connection book) and hostKeys (fingerprint seed)
-  ├─ resolveTarget: local → runLocal; ssh → look up the connection book via book or use inline fields
-  ├─ one DockerApi per target (src/docker.ts)
-  │   ├─ argv construction + assertRef allowlist + output cap (maxOutputKb)
-  │   └─ tolerant parsing: {{json .}} line by line / as an array, case-insensitive field names, degradation on missing fields
-  ├─ RemoteExec (src/ssh-exec.ts)
-  │   ├─ lazy connection pool: one connection reused per user@host:port, reclaimed after 120s idle
-  │   │   (swept every 30s, connect timeout 20s, keepalive 10s; long streams with busy>0 skip reclamation)
-  │   ├─ non-PTY exec channel: one channel per command, closed as soon as stdout/stderr are drained;
-  │   │   long streams (run()/stream()) have no overall timeout or output cap and are stopped via AbortSignal
-  │   ├─ shJoin single-quote escaping (parsed by the remote shell); env:VAR secret lookup
-  │   └─ hostVerifier TOFU pinning (record on first use, reject on change)
-  ├─ runLocal / runLocalStream: spawn(dockerBin, args) (no shell, local targets)
-  │   stop ladder: SIGTERM → SIGKILL if it has not exited in 2s
-  ├─ generic SSE long connection openSseStream (src/index.ts, one piece of infrastructure for all four streams)
-  │   ├─ loopback fence + assertRef / assertImageRef + tail clamping (same as the snapshot routes)
-  │   ├─ header write + flushHeaders / 15s ping heartbeat / active-stream registry / silent abort when the frontend disconnects
-  │   │   once the pipeline is up, a ready{} frame first (StreamHandlers.onStart: the only thing the client counts as "receiving data")
-  │   ├─ /logs/stream: docker logs -f → line{"d"|"e"} + end{container-exit,code};
-  │   │   ids= mode: one connection, N executors → line{id,d|e} + source-end/source-error per container
-  │   ├─ /stats/stream (read-only): docker stats normalised line by line → stats{ContainerStats};
-  │   │   it does not end naturally, so a frontend disconnect aborts it and docker stats exiting on its own sends end{stats-exit}
-  │   ├─ /events/stream (read-only): docker events --filter type=container →
-  │   │   event{action,name,image,...} (allowlist filtered); the daemon side ending sends end{events-exit}
-  │   ├─ /images/pull/stream (allowMutations): docker pull → line{d|e} +
-  │   │   end{pull-exit,code,ref}; 403 and no stream when mutations are off
-  │   └─ plugin disabled / config hot-updated / uninstalled → all four streams get a uniform end + abort
-  ├─ image routes: /images/inspect (read-only) · /images/remove · /images/prune (allowMutations)
-  ├─ network / volume routes: /networks · /volumes and their inspect (read-only), remove / prune (allowMutations)
-  └─ agent tools: docker_targets / docker_ps / docker_inspect /
-     docker_logs (snapshot semantics unchanged) / docker_logs_grep (server-side search) / docker_stats / docker_events / docker_images /
-     docker_image_inspect / docker_networks / docker_volumes (registered with ≥1 target)
-     + docker_action / docker_image_remove / docker_image_prune / docker_image_pull
-       (allowMutations + ≥1 target) / docker_exec (allowExec + ≥1 target)
+  ├─ resolveTarget → one DockerApi per target (src/docker.ts) + RemoteExec (src/ssh-exec.ts):
+  │   argv construction + assertRef + output cap; lazy pool / non-PTY exec channel / shJoin / TOFU
+  ├─ openSseStream: one substrate for all four streams (ready / heartbeat / registry / backpressure / teardown)
+  └─ routes + agent tools (read tools always registered, write / exec tools by switch) — see the two tables above
 ```
 
 ## Development and acceptance
@@ -1275,16 +968,20 @@ Host half (src/index.ts)
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/ (host half) + esbuild → client.js (browser half)
 pnpm --filter @hyzyn/dsh-docker typecheck
 pnpm --filter @hyzyn/dsh-docker smoke       # three offline regression suites, none needing a docker daemon
-pnpm test                                    # repo-level vitest (this package's suites under test/ are included; counts are whatever the run reports)
+pnpm test                                    # repo-level vitest (this package's suites under test/ are included)
 ```
 
-The verification surface has three layers: **three offline smoke suites** (no docker daemon needed),
-**this package's vitest suites**, and the **manual acceptance checklist against a real daemon**.
-Per-item coverage, the browser-side performance budget and the manual steps live in
-[docs/verification.md](./docs/verification.md) (Chinese) — README only keeps "how to run"; the lists
-are not duplicated here (the same fact in two places is debt, see
-[conventions § documentation layers](../../docs/conventions.md#文档分层)).
+> **Which half changed, and how it takes effect**: `client-src/*` (browser half) → esbuild emits `client.js`, the
+> host polls for client HMR, so it goes live **hot** on a page refresh; `src/*.ts` (host half) → tsc emits `lib/`,
+> which **needs a new process** (a running `dsh web` loaded `lib/` into memory at startup), so rebuild and restart.
+> Forgetting the restart shows up as **a new client and an old host**: a newly added host-side message simply never
+> appears.
+
+The verification surface has three layers: **three offline smoke suites** (no docker daemon needed), **this
+package's vitest suites**, and the **manual acceptance checklist against a real daemon**. Per-item coverage, the
+browser-side performance budget and the manual steps live in
+[docs/verification.md](./docs/verification.md) — README only keeps "how to run".
 
 ## Version / license
 
-`@hyzyn/dsh-docker` 0.3.1 · [Apache License 2.0](../../LICENSE)
+`@hyzyn/dsh-docker` (see `package.json` for the version) · [Apache License 2.0](../../LICENSE)

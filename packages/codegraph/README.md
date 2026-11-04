@@ -12,55 +12,39 @@
 - **索引判定取 `.codegraph/*.db` 且与 CLI 同口径向上解析**：从目标目录向上（到 git 根为止）找第一个带索引库的 `.codegraph/`，命中根即项目根——monorepo 子目录里的会话不再被误判「未索引」。只看目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
 - **写入纪律**：对 `~/.dsh/cordis.patch.yml` 的每次写都带 mtime+size 盖章复核（dsh-mcp 同款 CAS，≤3 次重读）；复用 dsh-mcp 区块时只定点改 codegraph 行自己的 `cwd:` 一行，区块里的注释、其它服务器行、loader 合法的 override 条目逐字节保留；区块损坏时拒绝追加第二个区块（serverName 撞名会让 codegraph MCP 整体加载失败），把原因报给卡片。
 - **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。会话上报失败会退避重试，不再一次抖动就永久失效。
-- **默认 per-agent MCP 隔离**（`mcpScope` 默认 `'per-agent'`；显式写 `'managed'` 即回滚到旧行为）：per-agent 下每个 agent 在**自己的 Cordis scope** 里挂一份独立的 `dsh-mcp-client`，`cwd` 固定为它自己会话目录解析出的索引根——多项目并行时不再共享一个全局 cwd，也不再需要「写盘 → 热加载 → 重建连接」那条链；全局托管行会被**挂起**（`disabled: true`，切回 managed 自动恢复）。代价是每个已索引会话一个子进程（实测空 Node 基线约 40MB）。**会话目录没有可用索引时该 agent 不挂**（而不是回落到默认项目）——这是**默认行为**：家目录 / 无索引仓库里开的会话拿不到 `mcp__codegraph__*`，而不是拿到「某个别的项目」的上下文（managed 的全局行建在根 scope 上，正是那个语义漂移的来源）。前提不成立时（宿主没有 agent 事件面 / 区块外有手工 codegraph 行 / MCP 总开关关闭）仍**退回 managed 并在卡片上说明原因**，退回后行为与旧版一致（全局那行照常服务所有会话），不会静默降级。**per-agent 挂载会等 env 的就绪服务**（`dshEnvReady`）：per-agent 会 spawn 一个 MCP 子进程，而子进程继承宿主的 `scrubbedParentEnv()`，所以 env 的同步预注入完成后才挂载，子进程才拿得到它注入的环境变量；宿主没装 env 时不等（见 `src/env-gate.ts`，那里也写着这道门的实测边界——**它不管认证头**：per-agent 走 stdio、config 里没有 `headers`，而凭据形状的变量本来就由宿主 scrub 挡住）。机制实测与取舍见 [docs/p0-plan.md](./docs/p0-plan.md)。
-  挂载模式以**持续生效**为准，不是启动时的一次判断：宿主 loader 会并发创建插件入口，`agents` 服务可能比本插件晚就绪，所以插件在服务到货时会重新裁决并补挂（codegraph CG69）——不会因为一次启动时序就永久停在 managed。
-- **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过，此前这是唯一还要把用户赶回终端的一步。
+- **默认 per-agent MCP 隔离**（`mcpScope` 默认 `'per-agent'`；显式写 `'managed'` 即回滚到旧行为）：每个 agent 在自己的 Cordis scope 里挂一份独立的 `dsh-mcp-client`，`cwd` 固定为它会话目录解析出的索引根——多项目并行不再共享一个全局 cwd，也不再需要「写盘 → 热加载 → 重建连接」那条链；全局托管行会被**挂起**（`disabled: true`，切回 managed 自动恢复）。代价是每个已索引会话一个子进程（实测空 Node 基线约 40MB）。**会话目录没有可用索引时该 agent 不挂**（不回落默认项目）：家目录 / 无索引仓库里开的会话拿不到 `mcp__codegraph__*`，而不是拿到「某个别的项目」的上下文。
+  前提不成立时（宿主没有 agent 事件面 / 区块外有手工 codegraph 行 / MCP 总开关关闭）仍**退回 managed 并在卡片上说明原因**，退回后行为与旧版一致。**per-agent 挂载会等 env 的就绪服务**（`dshEnvReady`）：子进程继承宿主的 `scrubbedParentEnv()`，所以要等 env 的同步预注入完成；宿主没装 env 时不等（见 `src/env-gate.ts`）。挂载模式以**持续生效**为准：`agents` 服务迟到时插件会在服务到货时重新裁决并补挂（codegraph CG69）。机制实测与取舍见 [docs/p0-plan.md](./docs/p0-plan.md)。
+- **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过。
 - **systemPrompt 分两段，门禁刻意不对等**：`plugin:dsh-codegraph`（order 150，≤70 字符：只说「本机有这个插件、提到就引导用户去开卡片」）与 `plugin:dsh-codegraph:usage`（order 151，≤600 字符：何时用 / 两个入口 / 失败怎么办）。公告段**只看** `announceToAgent` 开关——它讲的是卡片，而卡片路由无条件注册，所以 CLI 探测没落地或失败时它照常注入；usage 段要 `CLI 探测可用 && usageGuidance && 生效路径已索引` 三道全过。两个开关写 settings 命名空间后即时增删 section。
 
 ![Codegraph 控制台：目标项目、8 格索引状态（组头刷新）、索引维护按动作性质分层、搜索与查询（含结果区页签）、Agent 集成](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
 ## 为什么要托管 MCP 的工作目录
 
-DSH 的 MCP 客户端不声明 MCP roots 能力，`codegraph serve --mcp` 启动后只能从**进程工作目录**向上查找 `.codegraph/`。而 `dsh web` 经常从家目录启动——这时模型调用 `mcp__codegraph__*` 一律拿到：
+DSH 的 MCP 客户端不声明 MCP roots，`codegraph serve --mcp` 只能从**进程工作目录**向上找 `.codegraph/`；
+`dsh web` 常从家目录启动，这时 `mcp__codegraph__*` 一律回 `No CodeGraph project is loaded for this session.`。
+本插件因此托管一行 codegraph MCP 服务器（`~/.dsh/cordis.patch.yml`，`codegraph serve --mcp`，cwd = 默认项目
+路径）：默认项目变化即重写该行，watchUserPatches 热加载后挂到新项目。细则：
 
-```
-No CodeGraph project is loaded for this session.
-Searched for a .codegraph/ directory starting from: /Users/you
-```
-
-本插件解决这个问题：在 `~/.dsh/cordis.patch.yml` 托管一行 codegraph MCP 服务器（`codegraph serve --mcp`，cwd = 默认项目路径）。默认项目路径变化（卡片「设为默认项目」或配置修改）即重写该行，DSH 的 watchUserPatches 热加载后自动把 MCP 服务器挂载到新项目。
-
-行为细则：
-
-- 优先复用 `@hyzyn/dsh-mcp` 托管区块里已有的 codegraph 行（只补 cwd，其余字段含禁用状态不动），没有才写本插件自己的区块，避免 serverName 撞名。
-- 区块外的手工行只检测不碰（避免冲突）。
-- 目标路径必须有**真索引**才托管：`.codegraph/` 里得存在索引库（`.db`）。只看目录存在是不够的——codegraph CLI 把自己的安装数据放在 `~/.codegraph`（`current -> versions/<v>`、`bundles/`、`codegraph.lock`，没有任何索引库），于是**家目录**会被误判成「已索引项目」，插件把 MCP 的 cwd 钉在家目录上并报告一切正常，而 `codegraph status --json -- ~` 实际返回 `initialized:false`，工具照旧拿 "No CodeGraph project is loaded"。命中这种情况时插件不改写现有 cwd、不凭空建行，并在卡片上提示「默认项目 X 不是有效索引」+ 一键修复路径。
-- 多项目使用：一台 codegraph MCP 服务器同一时刻挂载一个默认项目；其它已索引项目可在工具调用里传 `projectPath` 查询，或回卡片一键切换。
-- 跟随语义：托管行 cwd = 「跟随开启 + 会话目录是有效索引」时取会话目录，否则取绑定路径。有效索引按 `.codegraph/` 里**存在索引库**判定（不是目录存在），所以家目录那种 `~/.codegraph` 安装目录不会把 cwd 带偏；项目被 `uninit` 后也会自动回落，不留陈旧状态。
-- 跟随由**浏览器半体**上报（页面加载即订阅活动会话，与设置面板是否展开无关）：宿主侧没有「当前会话」这个信号，因此跟随只在有 GUI 页面打开时生效，其余情况用绑定路径。
-- 关闭方式：插件配置 `mcpIntegration: false`（会撤销本插件写入的托管行）。
+- 优先复用 `@hyzyn/dsh-mcp` 区块里已有的 codegraph 行（只补 cwd，其余字段含禁用状态不动），没有才写本插件自己的区块以避免 serverName 撞名；区块外的手工行只检测不碰。目标路径必须有**真索引**（`.codegraph/` 里有 `.db`）才托管：只看目录存在会把 CLI 安装数据 `~/.codegraph` 当项目索引，命中时**不改写现有 cwd、不凭空建行**，卡片提示「默认项目 X 不是有效索引」+ 一键修复。
+- 多项目：一台服务器同时挂一个默认项目，其余用 `projectPath` 查询或回卡片切换。跟随语义：cwd = 跟随开启且会话目录是有效索引时取会话目录，否则取绑定路径；跟随由**浏览器半体**上报，故只在有 GUI 页面时生效。关闭用 `mcpIntegration: false`（撤销托管行）。完整机制见 [docs/p0-plan.md](./docs/p0-plan.md)。
 
 ## CLI 面
 
-卡片此前只覆盖 `status`/`query`/`callers`/`callees`/`impact`/`node`/`sync`/`index`/`init`，其余子命令只能去终端。现在补齐了**旗舰与常用**的那几个：
+卡片覆盖 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index` / `init`，并补齐：
 
-- **`explore`**：与 MCP 的 `codegraph_explore` 同输出（相关符号源码 + 调用路径）。模型那条路走 MCP，人在卡片上此前够不着同一个能力——这有点荒谬，现在补上了。
-- **`context`**：为一个**任务**组装上下文（与 explore 面向「区域」的区别）。
-- **`files`**：索引里的文件结构（语言 / 符号数 / 大小）。
-- **`affected`**：由改动文件反向查出**受影响的测试**（实测本仓库：改 `src/index.ts` → 5 个测试文件）。这条对「我改了这里，该跑哪些测试」特别实用。**插件刻意不替你猜改动列表**（不读 `git status`、不猜编辑器状态）：待测文件从哪来是上游流程的事，卡片只负责把你给的列表交给 CLI。
-- **`uninit`**：删除 `.codegraph/`——与 `init` 反向，是本卡片第二个破坏性动作，同样两步确认。实测**必须带 `-f`**：不带时 CLI 问 `Continue? (y/N)`，而运行器没有 TTY、读到 EOF 就中止且不删除（安全但无效），所以确认由卡片负责。
-- **`telemetry`**：只读转达上游匿名用量统计的状态。**刻意不给开关**——那是用户的全局偏好（`~/.codegraph/telemetry.json`，由 CLI 自己的 `telemetry on|off` 管），插件替他翻等于越权改别人的全局设置。
-- **查询参数面板**：`query -k/--kind`（类型过滤）、`callers|callees -l/--limit`（CLI 默认 20，会把大符号截断而卡片此前无从知道）。
+- **`explore`**（与 MCP 的 `codegraph_explore` 同输出）、**`context`**（为一个**任务**组装上下文，与 explore 面向「区域」相对）、**`files`**（索引里的文件结构：语言 / 符号数 / 大小）。
+- **`affected`**：由改动文件反向查出**受影响的测试**；**刻意不替你猜改动列表**（不读 `git status`、不猜编辑器状态）。
+- **`uninit`**：删除 `.codegraph/`（与 `init` 反向，本卡片第二个破坏性动作，两步确认）。**必须带 `-f`**：不带时 CLI 问 `Continue? (y/N)`，而运行器没有 TTY、读到 EOF 就中止且不删除。
+- **`telemetry`**：只读转达上游匿名用量统计状态；**刻意不给开关**（那是用户的全局偏好，由 CLI 自己的 `telemetry on|off` 管）。
+- **查询参数面板**：`query -k/--kind`（类型过滤）、`callers|callees -l/--limit`（CLI 默认 20，会截断大符号）。
 
 `kind` 用**自由文本**而不是下拉枚举：上游加新 kind 时插件不必跟着改，填错 CLI 自己回空结果。
 
 ## 项目列表（一键切换）
 
-一台 codegraph MCP 服务器同一时刻只挂一个项目，所以「换项目」是高频动作，而卡片此前只能手敲绝对路径。`GET /projects` + 卡片上一排胶囊按钮解决它。
-
-候选**只用界内的数据源**：宿主 `sessions.list()` 的活跃会话 `header.cwd`，以及插件自己观察到的路径（`/follow` 上报、查过 `/status` 的目录、当前默认项目）。**刻意不读 `~/.dsh/sessions/`**——那里确实有历史项目路径，但那是 DSH 的内部存储格式（会话桶名是路径编码、日志是多帧 zstd），插件解析它会在 DSH 改格式时静默失效；实测按桶名解码 51 个目录，**一个都没解对**。宁可比用户记忆少几个项目，也不要一个「有时准有时不准」的列表。
-
-每个候选现算 `locateIndex`：只有**真索引**才可作为切换目标；未索引的也列出但**禁用**（用户会想知道「这个项目还没索引」），点击无效。列表按「最近见过」排序，容量 50 条、淘汰最久未见者。切换复用「设为默认项目」那条链路（持久化 `defaultPath` → 关闭跟随 → 热切换 MCP）。
+一台 codegraph MCP 服务器同一时刻只挂一个项目，所以「换项目」是高频动作：`GET /projects` + 卡片上一排胶囊按钮解决它。
+候选**只用界内的数据源**：宿主 `sessions.list()` 的活跃会话 `header.cwd` + 插件观察到的路径（`/follow` 上报、查过 `/status` 的目录、当前默认项目）；**刻意不读 `~/.dsh/sessions/`**（那是 DSH 的内部存储格式，改格式即静默失效）。每个候选现算 `locateIndex`：只有**真索引**才可切换，未索引的列出但**禁用**；按「最近见过」排序、容量 50 条，切换复用「设为默认项目」链路（持久化 `defaultPath` → 关闭跟随 → 热切换 MCP）。
 
 ## API
 
@@ -76,8 +60,6 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/index` | POST | 全量重建 `{ path }`（要求项目**已经初始化过**，见下） |
 | `/api/dsh-codegraph/init` | POST | 在**未初始化**的目录跑一次 `codegraph init`（建 `.codegraph/` + 首次索引），成功后重算 MCP 托管行；已索引目录回 409 |
 | `/api/dsh-codegraph/default-path` | GET | 绑定路径 `defaultPath` + 生效路径 `effectivePath` + `sessionPath` + `followSession` + 提示词开关 + `cliAvailable` / `cliProbeError` / `cliProbeAt` + MCP 托管状态 `mcp` + **`mcpTools`**（`{ tools, reason, nextStep? }`：这个会话到底有没有 `mcp__codegraph__*`——托管行在 ≠ 工具在，空占位 `- insert: []` 时给原因与下一步）（`indexState` 针对**生效路径**） |
-
-`mcp` 是**盘上快照**（不推测下次写入）：`mode` / `cwd` / `disabled` / `indexed` / `cwdExists` + `note`。托管行为空的两种已知空态由 `note` 自证——空占位 `- insert: []` 且默认项目未索引时是「没有已索引的默认项目…设为默认项目后会自动写入」，per-agent 生效时是「托管行已挂起（工具按 agent 挂载）」；真有行在托管时不写 `note`（卡片上 cwd / disabled 已经说清状态，不让它每刷一次重复一遍）。
 | `/api/dsh-codegraph/follow` | POST | 上报活动会话目录 `{ path }`（空 = 无活动会话）；宿主据此对齐托管行 cwd，非索引目录自动回落 |
 | `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔）与 `{ mcpScope? }`（`'managed'` / `'per-agent'`，非法值 400），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
@@ -95,6 +77,8 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/diagnose` | GET | 收集诊断包 `{ path?, report }`：`report` 是一段纯文本，含版本/平台、CLI 探测实测原文、索引状态、托管行与**脱敏后**的补丁区块原文、`~/.codegraph` 的 daemon 登记与日志尾、最近一次 CLI 失败、以及采纳率 |
 | `/api/dsh-codegraph/metrics` | GET | 采纳率 `{ path? }`：不带 `path` 回全部项目 `{ summaries, since }`；带 `path` 回该项目 `{ project, summary, text, since }` |
 
+`mcp` 是**盘上快照**（不推测下次写入）：`mode` / `cwd` / `disabled` / `indexed` / `cwdExists` + `note`。托管行为空的两种已知空态由 `note` 自证——空占位 `- insert: []` 且默认项目未索引时是「没有已索引的默认项目…设为默认项目后会自动写入」，per-agent 生效时是「托管行已挂起（工具按 agent 挂载）」；真有行在托管时不写 `note`（卡片上 cwd / disabled 已经说清状态，不让它每刷一次重复一遍）。
+
 所有路由均为 loopback-only，防止远程访问。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。`diagnose` 只认 GET（只读），但它可能补跑一次探测，所以不会在写路径上被顺手调用。
 
 诊断包的脱敏口径（`diagnose`）：`~/.dsh/cordis.patch.yml` 是所有 MCP 服务器共用的文件，别家的行里可能有 `headers` / `env` 这类凭据，所以**只摘 codegraph 相关的两个区块**（本插件区块 + dsh-mcp 卡片区块），并按**键名**处理——`id` / `name` / `serverName` / `transport` / `command` / `args` / `cwd` / `disabled` 留值（这些正是排查要看的东西），其余键一律 `<redacted>`，且 `headers:` / `env:` 这类敏感键会污染整棵子树（连 `authorization:` 的值一起抹掉，但键名保留）。新增字段默认脱敏（fail-closed）。
@@ -104,13 +88,10 @@ Searched for a .codegraph/ directory starting from: /Users/you
 卡片上那行「采纳率」回答的是**配置之外**的问题：配好了之后，模型到底买不买账。
 
 - **数据来源**：宿主既有的 `session/event` 事件流（只数 `tool/call`，与 `dsh-agent-instructions` / `dsh-acp` 同一个公开订阅面）。不数 `tool/result`——采纳率问的是「模型想不想用」，失败了也是想用（那是另一个问题，由诊断包回答）。
-- **分子/分母（两个口径，窄口径是主口径）**：`codegraph` 命中 `mcp__codegraph__*`；**窄口径**分母是「发现类」调用（`grep` / `glob` / `search` / `find` / `list_dir`），**宽口径**分母还包含 `read` / `view` / `open`。之所以两个都报：真实历史里 `read` 占 1956 次而 `grep` 只有 100 次，而 `read` 多半是「打开已知道要改的文件」——codegraph 替代的是「找东西」，把 `read` 算进主口径会把数字永久压在个位数（实测宽口径 2.2% vs 窄口径 28.8%）。
-- **`bash` / 媒体 / 网络类不计入分母**：模型用 bash 干的事大部分（跑测试、装依赖、git）与代码探索无关；`read_image` / `read_pdf` / `web_search` 同理（这一条是拿真实历史量过之后补的，见下）。
-- **实测数字见 [docs/adoption-audit.md](./docs/adoption-audit.md)**：从 177 个真实历史会话回溯——会话级 23%、窄口径 28.8%、最近三天 47%，并给出 codegraph 调用 query 的质量抽样（34/47 带具体符号名）。
-- **分母为 0 显示「还没有探索类调用」而不是 0%**：「一次都没探索」与「探索了但全用 grep」是两回事。
-- **项目键 = 索引根**（`resolveIndexedRoot`），与托管行 cwd、注入门禁同一口径；所以同一个仓库的多个会话（换会话、子 agent、重启宿主）会归并成一条，而不是散成一堆没有统计意义的小样本。未索引项目也会记，但文案会标明「这个数字不代表提示词效果」，且 `/metrics` 额外给 `grouped.indexed` / `grouped.unindexed` 两组合计——未索引项目里模型本就不该用它，混进整体会得出没有意义的数字。
-- **只在内存里，宿主重启即归零**，`since` 会如实给出起点。不落盘是有意的：它是「现在要不要调提示词」的观测值，不是审计日志，落盘会把工具名与项目路径长期留在磁盘上。
-- 同一份数据也进诊断包（`/diagnose`），因为报告「codegraph 好像没效果」时，第一个要分清的就是「模型根本没用」还是「用了但结果不对」。
+- **分子/分母（窄口径是主口径）**：命中 `mcp__codegraph__*`；**窄口径**分母是「发现类」调用（`grep` / `glob` / `search` / `find` / `list_dir`），**宽口径**还含 `read` / `view` / `open`。两个都报：`read` 多半是「打开已知道要改的文件」，而 codegraph 替代的是「找东西」——把 `read` 算进主口径会把数字永久压在个位数。
+- **`bash` / 媒体 / 网络类不计入分母**：跑测试、装依赖、git 与代码探索无关；`read_image` / `read_pdf` / `web_search` 同理。**实测数字、两个口径的取舍与对路线图的影响见 [docs/adoption-audit.md](./docs/adoption-audit.md)**。
+- **分母为 0 显示「还没有探索类调用」而不是 0%**（「一次都没探索」与「探索了但全用 grep」是两回事）；**项目键 = 索引根**（`resolveIndexedRoot`，与托管行 cwd、注入门禁同一口径），所以同一仓库的多个会话归并成一条。未索引项目也会记，但文案标明「这个数字不代表提示词效果」，`/metrics` 另给 `grouped.indexed` / `grouped.unindexed` 合计。
+- **只在内存里，宿主重启即归零**，`since` 如实给出起点（观测值，不是审计日志；落盘会把工具名与项目路径长期留在磁盘上）。同一份数据也进诊断包（`/diagnose`）：报告「codegraph 好像没效果」时，第一个要分清的就是「模型根本没用」还是「用了但结果不对」。
 
 请求语义（v0.4.2 起）：
 
@@ -120,30 +101,22 @@ Searched for a .codegraph/ directory starting from: /Users/you
 
 ## 兼容性（DSH / codegraph CLI）
 
-- **DSH**：宿主版本矩阵——**支持十一档**：`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`。
-  其中 **`0.2.1-alpha.5` 是唯一带着真实宿主行为变化的一档**（判定器字段名、`engines.dsh` 的读法、凭据层级、macOS picker 四处）；
-  其余各档对宿主要么零差异、要么只是范围覆盖问题（`0.2.0-rc.1` 是唯一真正需要补边界的那个）。
-  - **逐档证据不在这里**：每档的验证方式、实测记录、API 面比对与「未跑」清单在
-    [ROADMAP § 已完成](./ROADMAP.md#已完成042-之后的工作树) 的「host cohort 逐档实测证据」——README 只留声明；
-    同一事实两处全文是债（[docs/conventions.md](../../docs/conventions.md#文档分层)）。
-  - **`0.1.6-alpha.2` / `0.1.5-rc.2` / `0.1.0-rc.7`（历史基线，已不支持）**：这些档位的 `settings` 服务还是旧的 `register(ns, schema)` API，而 0.1.7 线已把它换成 `SettingsForms`（`describe/update` + 导出 volatile Config）；本包的 `peerDependencies` 下限 `^0.1.7-rc.2` 也会让新宿主在安装前/启动时拒绝加载到旧宿主上。旧档位当时的证据（`0.1.6-alpha.2` 40/40、`0.1.5-rc.2` 无脚本、`0.1.0-rc.7` 审计基线）保留在 git 历史里，仅作参考。
-  - `package.json` 声明 `peerDependencies: { "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4 || ^0.2.1-rc.5" }`（并在 `peerDependenciesMeta` 标 `optional`，只压 pnpm 的 unmet-peer 噪音）。DSH 0.1.7-rc.1 起**安装前**与**启动时**都据此判定兼容性：不兼容时安装抛 `incompatible-version`、启动时该行整行 `disabled`（bundle 则整包 skip）。同时保留 `dsh.engines.dsh: ">=0.1.7-rc.2"` 作为**市场展示位**（宿主不读它，见下条；市场解析器只认单段，所以它写的是**最低档**），peer 覆盖的最低档由 `scripts/check-dsh-peers.mjs` 校验一致。
-  - **为什么是 peer 而不是 `engines.dsh`**：`dsh-app-boot` 只遍历 `peerDependencies` 里名为 `@deepseek-ai/dsh` 或以 `@deepseek-ai/dsh-` 开头的项，用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（**预发布参与范围匹配**）。**但 `engines.dsh` 仍然声明**——宿主不读它，插件市场 / 社区条目却按它展示兼容性，所以保留为标准形式 `>=0.1.7-rc.2`（市场解析器只认 `>=X.Y.Z[-预发布]`，写 `||` 会被判成「无法验证」而 fail-closed），且与 peer 覆盖的最低档一致。证据：`dsh-app-boot/lib/index.js` 的 `evaluatePluginCompatibility`，以及 app-boot README 原文「这些检查使用 peer 声明，而不是 `engines.dsh`」。
-  - **为什么范围是十一段 `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4 || ^0.2.1-rc.5`**：预发布参与匹配，`^0.1.7-rc.2` = `>=0.1.7-rc.2 <0.2.0-0`——单段会把整条 0.2 线判死（这正是 0.2.0-rc.1 上线后本仓插件在桌面版里显示「异常 / 不包含任何组件」的原因）；第二段补上 0.2.0-rc.1 这一档并顺带覆盖整条 0.2.0 rc 线与 0.2.x 正式版；第三段 `^0.2.0-rc.2`、第四段 `^0.2.1-alpha.1` 与第五段 `^0.2.1-alpha.2` 都是**显式声明**（前一段已经覆盖它们；各自另有实测与 API 面比对，见 ROADMAP 的 cohort 逐档实测证据），这三档确实**对宿主行为零差异**；**但第六段 `^0.2.1-alpha.5` 不是**——它那一档真的改了判定器字段名、`engines.dsh` 的读法与凭据层级，所以它是按「修边界」的力度逐条比对了 API 面与本仓引用面（见 ROADMAP 的 cohort 逐档实测证据）；第七段 `^0.2.1-rc.1` 又回到**显式声明**，且这一档对宿主**零差异**（14 个宿主包与判定器 `lib/` 逐字节相同、仅 5 个客户端产物的版本字符串不同，见 ROADMAP 的 cohort 逐档实测证据）；第八段 `^0.2.1-rc.2` 同样**零差异**（9 个差异文件逐个查清后均与本仓无关）；第九段 `^0.2.1-rc.3` 也是**零差异**，且这一档的比对更彻底——**本仓 import 的 22 个宿主包 `lib/` 全部逐字节相同**，17 个有差异的包全部落在本仓零引用面内（均见 ROADMAP 的 cohort 逐档实测证据）；第十段 `^0.2.1-rc.4` 同样**零差异**——本仓引用的 27 个宿主包里 26 个 `lib/` 逐字节相同，唯一有改动的 `dsh-mcp-client` 落在本仓零引用面内（改的是 MCP `resources/*` 处理器，本仓只用 `mcp__*` 的 tools），客户端槽目录 103 → 103 一条没动（见 ROADMAP 的 cohort 逐档实测证据）；第十一段 `^0.2.1-rc.5` 同样**零差异**——`@deepseek-ai/dsh` 的依赖集合 86 → 86 无增删，`cordis`（`~4.0.5`）与 `schemastery`（`~3.18.5`）声明未动，`dsh-tools`（28 文件）与 `dsh-mcp-client`（11 文件）除 `package.json` 外逐字节相同，客户端槽定义 104 → 104、唯一语义差异是 reasoning 正文槽新增 `rawText`（本仓不注册该槽）（见 ROADMAP 的 cohort 逐档实测证据）。留着这些显式段是因为本仓的规则是「适配到哪一档就把哪一档写进范围，并留下实测证据」，而不是「范围恰好够用就行」——`RELEASING.md` 的加档规则也据此写明「零差异不是显式化的定义、只是常态」。命中任一段即放行，十一档的 API 面都已逐文件比对（见 ROADMAP 的 cohort 逐档实测证据）。`0.1.7` 正式版与后续 `0.1.7-rc.N` / `0.1.8` 仍走第一段，`0.1.7-rc.1`、`0.1.7-alpha.2`、`0.1.6-*` 依旧不通过。要临时放行别的版本组合，把豁免写进 profile 自己的 `compatibility.json`（`dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-risk`），而不是随手往范围里加段——每加一段都必须是实测过、且 API 面比对过的 cohort。
+- **DSH**：支持十一档——`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`。其中 **`0.2.1-alpha.5` 是唯一带着真实宿主行为变化的一档**（判定器字段名、`engines.dsh` 的读法、凭据层级、macOS picker 四处），`0.2.0-rc.1` 则是唯一需要补**范围边界**的那档；其余各档要么零差异、要么只是范围覆盖问题。
+  - **逐档证据不在这里**：每档的验证方式、实测记录、API 面比对与「未跑」清单在 [ROADMAP § 已完成](./ROADMAP.md#已完成042-之后的工作树) 的「host cohort 逐档实测证据」——README 只留声明；同一事实两处全文是债（[docs/conventions.md](../../docs/conventions.md#文档分层)）。
+  - **`0.1.6-alpha.2` / `0.1.5-rc.2` / `0.1.0-rc.7`（历史基线，已不支持）**：那些档位的 `settings` 服务还是旧的 `register(ns, schema)` API，0.1.7 线已换成 `SettingsForms`；本包 `peerDependencies` 下限 `^0.1.7-rc.2` 也会让新宿主拒绝加载到旧宿主上。旧档位的证据保留在 git 历史里，仅作参考。
+  - `package.json` 声明 `peerDependencies: { "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2 || ^0.2.1-alpha.5 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4 || ^0.2.1-rc.5" }`（`peerDependenciesMeta` 标 `optional`，只压 pnpm 的 unmet-peer 噪音）。DSH 0.1.7-rc.1 起**安装前**与**启动时**都据此判定：不兼容时安装抛 `incompatible-version`、启动时该行整行 `disabled`（bundle 则整包 skip）。同时保留 `dsh.engines.dsh: ">=0.1.7-rc.2"` 作为**市场展示位**（宿主不读它；市场解析器只认单段，所以写最低档），peer 覆盖的最低档由 `scripts/check-dsh-peers.mjs` 校验一致。
+  - **为什么用 peer 而不是 `engines.dsh`**：`dsh-app-boot` 只遍历 `peerDependencies` 里名为 `@deepseek-ai/dsh` 或以 `@deepseek-ai/dsh-` 开头的项，用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定。`engines.dsh` 仍然声明——宿主不读它，但插件市场 / 社区条目按它展示兼容性（解析器只认 `>=X.Y.Z[-预发布]`，写 `||` 会被判「无法验证」而 fail-closed），且与 peer 覆盖的最低档一致。
+  - **为什么范围是多段**：预发布参与匹配，`^0.1.7-rc.2` = `>=0.1.7-rc.2 <0.2.0-0`——单段会把整条 0.2 线判死；后续段把适配过的档位逐档显式写出（本仓规则是「适配到哪一档就把哪一档写进范围，并留下实测证据」，`RELEASING.md` 的加档规则据此写明「零差异不是显式化的定义、只是常态」）。命中任一段即放行，十一档的 API 面都已逐文件比对。要临时放行别的组合，把豁免写进 profile 自己的 `compatibility.json`（`dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-risk`），而不是随手往范围里加段——每加一段都必须是实测过、且 API 面比对过的 cohort。
 - **codegraph CLI**：版本矩阵——`1.5.0`（macOS）与 `1.6.0`（Windows / macOS）实测过全链路；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。升级 CLI 后请重验：`-y` 这类旗标恰好是版本相关的（本插件刻意不带它，见下）。
 - **浏览器半体的 URL 形态**：当前 DSH 走 client-modules 的 combo 路由，单包直链 `/plugins/@hyzyn/dsh-codegraph/client.js` 已不再直接可用；浏览器只用 boot graph（`window.__DSH_BOOT__`）下发的 `/plugins/??<id>/client.js&rev=…`，插件侧无需改动。
 - **操作系统**：Windows / macOS / Linux 都按同一份代码走，CI 已是三平台矩阵（`pnpm -r build` + `typecheck` + `test`）。
   - **Windows**：CLI 走 `%COMSPEC% /d /s /c` + cmd 转义（npm / pnpm 全局安装只给 `.cmd` shim，`execFile` 直连会 `ENOENT`）；超时用 `taskkill /pid <pid> /T /F` **连 shim 里的孙进程一起收**（只杀 cmd.exe 的话大仓库 `index` 会继续跑完）；补丁文件重写沿用原文件行尾（CRLF 文件不会被写成混合行尾，重写也不改变行数）。
   - **`index` 不会替你初始化**：`codegraph index --help` 写着「same result as a fresh init」，但那说的是**全量重建的结果**等同于刚 init 完，不是「index 会初始化」。对没有 `.codegraph/` 的目录，`index` / `sync` 都会直接报 `CodeGraph not initialized in <path>` + `Run "codegraph init" first`。故卡片的「初始化索引」按钮走的是 `init`。
-    - 参数固定为 `init -- <path>`：**不带 `-y`**——那是 CLI 1.6.0 才有的旗标，1.5.0 会 `error: unknown option '-y'`；而不带也不会挂起（运行器无 TTY，1.5.0 / 1.6.0 实测都自己取默认值跑完）。**也不带 `-f`**（CLI 用它兜住「家目录 / 文件系统根」这类误伤，不该由插件替用户绕过）。
-    - 这是本插件**唯一往用户项目里写东西**的动作：它只在 `.codegraph/` 下建 `codegraph.db` 与一个自忽略的 `.gitignore`（内容 `*` + `!.gitignore`），**不碰任何源文件、也不改项目根的 `.gitignore`**；`codegraph uninit` 可整体撤销。卡片上是两步确认，且**绝不会自动触发**。
-    - `init` / `index` 会触发 codegraph CLI 自己的匿名用量统计（上游会在输出里提示；`codegraph telemetry off` 或 `CODEGRAPH_TELEMETRY=0` 可关）。插件不改这个开关——那是用户的偏好。
-  - **PATH**：探测与调用都用插件配置的 `command`（默认 `codegraph`，走 PATH）。从 Dock / 开始菜单这类**不继承 shell 环境**的入口启动宿主时，PATH 里可能没有 CLI——此时 usage 段不注入（公告段照常，它不依赖 CLI）、卡片点不出可用命令。
-    - **PATH 是在宿主进程启动时读取的**，所以「刷新页面 / 重开卡片」改不了它，宿主自己也不会变。两条修法：① 把 `command` 写成 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。
-    - 改完之后点卡片上的**重新探测**（`POST /reprobe`）即可就地确认，不必重启宿主。卡片会把探测失败的**实测原文**（`spawn codegraph ENOENT`、非零退出的 stderr、超时）显示出来，用来区分「没装 / 装错 / 命令不在 PATH」。
-    - 中文（及其它非 UTF-8 代码页）Windows 上，CLI 与 cmd.exe 的 stderr 按控制台代码页输出；插件用 `@hyzyn/dsh-kit` 的容错解码器（UTF-8 优先，遇非法字节整体回落代码页）解，卡片上的报错是中文原文而不是 `���`。
-  - **MCP 行**：`dsh-mcp-client` 用官方 SDK 的 `StdioClientTransport`（SDK 依赖 `cross-spawn`），Windows 上 `.cmd` shim 由它自己解析，托管行无需平台分支。
-  - 上游 CLI 本身三平台 × x64/arm64 官方支持（自带 Node 运行时）；本插件侧的索引判定只看 `.codegraph/` 下的 `*.db`，不写死库文件名，上游改名也不受影响。
+    - 参数固定为 `init -- <path>`：**不带 `-y`**（那是 CLI 1.6.0 才有的旗标，1.5.0 会 `error: unknown option '-y'`；不带也不会挂起，运行器无 TTY，两版实测都自己取默认值跑完）。**也不带 `-f`**（CLI 用它兜住「家目录 / 文件系统根」这类误伤，不该由插件替用户绕过）。这是本插件**唯一往用户项目里写东西**的动作：只在 `.codegraph/` 下建 `codegraph.db` 与一个自忽略的 `.gitignore`（内容 `*` + `!.gitignore`），**不碰任何源文件、也不改项目根的 `.gitignore`**；`uninit` 可整体撤销。卡片上是两步确认，且**绝不会自动触发**。
+    - `init` / `index` 会触发 codegraph CLI 自己的匿名用量统计（`codegraph telemetry off` 或 `CODEGRAPH_TELEMETRY=0` 可关）。插件不改这个开关——那是用户的偏好。
+  - **PATH**：探测与调用都用插件配置的 `command`（默认 `codegraph`，走 PATH）。从 Dock / 开始菜单这类不继承 shell 环境的入口启动宿主时，PATH 里可能没有 CLI——此时 usage 段不注入（公告段照常）、卡片点不出可用命令。**PATH 在宿主进程启动时读取**，所以两条修法：把 `command` 写成绝对路径（改 profile 补丁触发热重载并重新探测），或从新开的终端重启宿主；改完点卡片上的**重新探测**（`POST /reprobe`）即可就地确认，卡片会把探测失败的**实测原文**（`spawn codegraph ENOENT`、非零退出的 stderr、超时）显示出来，用来区分「没装 / 装错 / 命令不在 PATH」。
+    - 中文（及其它非 UTF-8 代码页）Windows 上 stderr 按控制台代码页输出；插件用 `@hyzyn/dsh-kit` 的容错解码器（UTF-8 优先，遇非法字节整体回落代码页）解，卡片上的报错是中文原文而不是 `���`。
+    - **MCP 行**：`dsh-mcp-client` 用官方 SDK 的 `StdioClientTransport`（SDK 依赖 `cross-spawn`），Windows 上 `.cmd` shim 由它自己解析，托管行无需平台分支。上游 CLI 本身三平台 × x64/arm64 官方支持（自带 Node 运行时）；本插件侧的索引判定只看 `.codegraph/` 下的 `*.db`，不写死库文件名。
 
 ## 开发
 
@@ -152,18 +125,15 @@ pnpm --filter @hyzyn/dsh-codegraph build
 pnpm --filter @hyzyn/dsh-codegraph typecheck
 pnpm test                                   # 仓库级 vitest（也可 vitest run packages/codegraph）
 pnpm --filter @hyzyn/dsh-codegraph test     # 只跑本包（托管行决策矩阵 + CLI 旋钮 + 路由回归）
-node packages/codegraph/scripts/preview-card.mjs        # 渲染卡片预览 HTML 到 .preview/（--png 需在普通终端跑，Chrome 起不来于受限环境）
-                                                        # 另有 --per-agent / --fallback：离线看 per-agent 的「生效中」与「已退回 managed」两态
-node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # 真机端到端：indexForce 是否真的带 --force 起进程（需要本机装好 DSH）
-node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # 真机端到端：宿主契约全绿（路由 + 门禁 + 供给产物 + 托管行 + per-agent 模式开关 + settings 写路径；项数以脚本输出为准）；需要本机装好 DSH
-#   全局 dsh 不是 rc.1 时，加 --dsh-bin <独立安装的 rc.1 dsh> --runtime-store <该安装的 .pnpm/node_modules/@deepseek-ai>
-#   —— 后者把复制出来的临时 profile 的运行时链接重指到该 cohort，否则会因兼容性 preflight 禁用整套旧运行时而起不来。
-                                                                          # 注：DSH 要写 ~/.dsh/profiles/<profile>/cordis.yml，沙箱只读时会被 EPERM 拦住
+node packages/codegraph/scripts/preview-card.mjs        # 卡片预览 HTML → .preview/（--png 需普通终端）
+node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086    # 真机：indexForce 真的带 --force
+node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087 # 真机：宿主契约全绿（项数以输出为准）
+#   旧宿主需加 --dsh-bin / --runtime-store；DSH 要写 ~/.dsh/profiles/…，沙箱只读时会被 EPERM 拦住
 ```
 
 ### per-agent 的三层验收
 
-三层各测一件事，**缺一层就有一个真问题测不到**——这不是凑数，是补缺口：
+三层各测一件事，**缺一层就有一个真问题测不到**：
 
 | 脚本 | 层次 | 测什么 |
 | --- | --- | --- |
@@ -171,11 +141,7 @@ node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # �
 | `verify-codegraph-host-contract.mjs` | 路由/开关 | 起真宿主：全部路由、`mcpScope` 切换、全局托管行挂起/恢复、真实补丁逐字节未变 |
 | `verify-codegraph-agent-integration.mjs` | **集成** | 挂**真插件**，用真 `AgentRegistry` 驱动一次真 `agent/created` → 断言工具落到**那个 agent**、无索引的 agent 不挂、`agent/disposed` 回收 |
 
-第三层是补出来的：前两层全绿也**证明不了**「用户开会话时 MCP 真的挂上了」——机制脚本用假 agent，
-宿主脚本那个宿主里**没有 agent 被创建**（每轮 `/agents` 都是 `mounted=0`）。而 per-agent 的全部价值就在那条路径上。
-
-三个脚本都自造临时项目、自收子进程，并断言真实 `~/.dsh/cordis.patch.yml` 逐字节未变；后两个还给被测对象
-隔离 `DSH_HOME`（前一版的教训：不隔离时插件当场去写用户真实配置，CG45）。
+第三层是补出来的：前两层全绿也**证明不了**「用户开会话时 MCP 真的挂上了」——机制脚本用假 agent，宿主脚本那个宿主里没有 agent 被创建。三个脚本都自造临时项目、自收子进程，并断言真实 `~/.dsh/cordis.patch.yml` 逐字节未变；后两个还给被测对象隔离 `DSH_HOME`（不隔离时插件当场去写用户真实配置，CG45）。
 
 浏览器半体的源码在 `client-src/index.js`；`build` 经 `scripts/build-client.mjs` 产出包根的 `client.js`——删掉 index.js 对 `client-src/pure.js` 的 import、把 pure.js（纯逻辑，可在 vitest 里直接测，见 `test/client-pure.test.ts`）剥掉 `export` 后内联进 factory，产物仍是单文件无 import。CI 的 artifact-diff 以逐字节一致为闸，改源码后忘了重新 build 会直接红。
 
@@ -201,9 +167,8 @@ dsh plugin --profile web add link:$(pwd)
 
 ## 配置
 
-设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**：`0.2.0-rc.1` 起挂
-`plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
-（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
+设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**——各代际的落点与四条注册契约的唯一归宿在
+[conventions.md § 客户端设置面](../../docs/conventions.md#客户端设置面内联优先)。
 
 ```ts
 export interface Config {
@@ -219,34 +184,27 @@ export interface Config {
   defaultPath?: string
   /** 是否托管 codegraph MCP 服务器行。默认开；关闭时撤销本插件写入的托管行。 */
   mcpIntegration?: boolean
-  /**
-   * 托管行 cwd 是否跟随活动会话。默认开；「设为默认项目」会把它关掉（那是一次显式指定）。
-   * `mcpScope: 'per-agent'` 生效时本项无意义（每个 agent 直连自己的进程，没有「跟谁走」）。
-   */
+  /** 托管行 cwd 是否跟随活动会话。默认开；「设为默认项目」会把它关掉。per-agent 生效时本项无意义。 */
   followSession?: boolean
   /**
    * MCP 挂载模式，默认 `'per-agent'`。
-   * - `'managed'`：一行托管 + 按会话热切换（时分复用，一台服务器服务所有项目）；那行建在
-   *   **根 scope** 上，所以没有索引的会话也会继承它（工具名相同、语义随全局 cwd 漂移）。
+   * - `'managed'`：一行托管 + 按会话热切换；那行建在根 scope 上，没有索引的会话也会继承它。
    * - `'per-agent'`：每个 agent 在自己的 scope 里挂一份 dsh-mcp-client，cwd = 它会话的索引根；
-   *   **没有可用索引的会话不挂**（不回落），于是「没索引就拿不到工具」成为默认行为。
-   *
-   * 默认 per-agent（2026-10-24 从 managed 翻过来）：披露面收口——工具不该在「没有索引的
-   * 会话」里出现，也不该指向别的项目。前提不成立时会退回 managed 并在卡片上说明原因
-   * （宿主没有 agent 事件面 / 存在区块外手工 codegraph 行 / MCP 总开关关闭），不会静默退回；
-   * 退回后行为与旧版一致。回滚就是显式写 `'managed'`。代价：每个已索引会话一个子进程（约 40MB）。
+   *   **没有可用索引的会话不挂**（不回落）。
+   * 前提不成立时退回 managed 并在卡片上说明原因（无 agent 事件面 / 区块外手工 codegraph 行 /
+   * MCP 总开关关闭），不会静默退回。回滚就是显式写 `'managed'`。代价：每个已索引会话约 40MB。
    */
   mcpScope?: 'managed' | 'per-agent'
   /** 查询类命令（status/query/callers/callees/impact/node）超时毫秒数，默认 60000；0 = 不限时。 */
   cliTimeoutMs?: number
-  /** 索引类命令（sync/index）超时毫秒数，默认 600000；0 = 不限时。大仓库全量重建会超过查询档。 */
+  /** 索引类命令（sync/index）超时毫秒数，默认 600000；0 = 不限时。 */
   indexTimeoutMs?: number
   /** 给 `codegraph index` 追加 `--force`（CLI 拒绝索引家目录/文件系统根时会用到）。默认关。 */
   indexForce?: boolean
   /**
-   * 检测到索引过期时**自动重建**（`session/event` 首次 `user/message` 时检查，每项目每次
-   * 宿主运行最多一次）。默认关——重建在大仓库上是分钟级操作。语义是重建而不是同步：
-   * 实测 `codegraph sync` 对「提取器版本落后」会返回 `Already up to date` 且不清除信号。
+   * 检测到索引过期时**自动重建**（`session/event` 首次 `user/message` 时检查，每项目每次宿主运行
+   * 最多一次）。默认关。语义是重建而不是同步：实测 `codegraph sync` 对「提取器版本落后」会返回
+   * `Already up to date` 且不清除信号。
    */
   autoReindex?: boolean
 }
@@ -267,13 +225,13 @@ settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegratio
 
 ## 系统提示词
 
-安装后自动向 systemPrompt 注入两段提示（合计最多约 220 token：公告段 ≤70 字符，usage 段 ≤600 字符且在生效路径已索引、CLI 探测可用时才出现）：
+安装后自动向 systemPrompt 注入两段提示（合计最多约 220 token）：
 
-- `plugin:dsh-codegraph`（order 150）：插件能力公告（中文，≤70 字符），只说「本机有这个插件、用户提到代码图谱/索引/调用链就引导他打开卡片」；卡片内部有哪些按钮是 UI 细节，不占模型上下文（旧版列过 6 个功能，327 字）。
-- `plugin:dsh-codegraph:usage`（order 151）：CodeGraph 使用指引（CODEGRAPH_START 区块，≤600 字符）。这块对应上游 `CODEGRAPH_INSTRUCTIONS_BLOCK` 的定位（上游把它定义为「给子 agent / 非 MCP harness 的短块」，长 playbook 走 MCP `initialize` 的 `instructions`）——**但 DSH 的 MCP 客户端不读 `instructions`**，上游那份「无根索引 → 按项目传 `projectPath`」的变体模型收不到，所以这块补的就是它，外加三条：**何时用它**（`.codegraph/` 里要有索引库，只看目录存在会把家目录里 CLI 自己的 `~/.codegraph` 安装目录误判成已索引项目）、**两个入口**（MCP 工具 + shell 兜底：命令名按 `command` 配置渲染、`--path` 换项目）、**失败怎么办**（没索引就用常规搜索，别替用户跑 `codegraph init`）。
+- `plugin:dsh-codegraph`（order 150）：插件能力公告（中文，≤70 字符），只说「本机有这个插件、用户提到代码图谱/索引/调用链就引导他打开卡片」；卡片内部有哪些按钮是 UI 细节，不占模型上下文。
+- `plugin:dsh-codegraph:usage`（order 151）：CodeGraph 使用指引（CODEGRAPH_START 区块，≤600 字符）。**DSH 的 MCP 客户端不读 `instructions`**，所以这块补的是上游 `CODEGRAPH_INSTRUCTIONS_BLOCK` 的定位，外加三条：**何时用它**（`.codegraph/` 里要有索引库）、**两个入口**（MCP 工具 + shell 兜底：命令名按 `command` 配置渲染、`--path` 换项目）、**失败怎么办**（没索引就用常规搜索，别替用户跑 `codegraph init`）。
 
 两段门禁**刻意不对等**：
 
 1. **开关**：卡片上的两个复选框写 settings 命名空间（`POST /api/dsh-codegraph/settings`），改完即时增删 section；也可以用安装级配置关掉（`announceToAgent: false` / `usageGuidance: false`）。两段都受它管。
-2. **CLI 探测（仅 usage 段）**：挂载时跑一次 `<command> --version`，未落地或失败时 usage 段不注入（并 `console.warn`，带上失败原文）——不向模型宣告跑不起来的能力。**公告段不跟它走**：卡片路由是无条件注册的（插件装着、卡片就能用），CLI 探测没落地时把公告也吞掉，等于「卡片明明能用，模型却不知道它存在」。探测结果不是锁死的：卡片「重新探测」或 `POST /reprobe` 会重跑一次并即时刷新两段 section（CLI 后装好、或 `command` 改成绝对路径之后不必重启宿主）。
-3. **索引门禁（仅 usage 段）**：生效路径（`effectivePath`，即托管行实际用的那个目录）必须是**有效索引**才注入用法指引——判据与宿主 `indexState` 同口径，只是 `.codegraph/` 目录存在不算。所以在没有索引的仓库里不会白白占掉那 600 字符的用法指引（那段话本身讲的正是「本仓库有索引时该怎么做」），也不会诱导模型去调必然失败的工具。判据每次 `refreshGuidance` 现算，因此跟随会话切换、「设为默认项目」、`init` 成功、项目被 `uninit` 都会立刻反映到注入与否上。**公告段不设这道门禁**：它讲的是「有这张卡片」，与索引无关。
+2. **CLI 探测（仅 usage 段）**：挂载时跑一次 `<command> --version`，未落地或失败时 usage 段不注入（并 `console.warn`，带上失败原文）。**公告段不跟它走**：卡片路由无条件注册，探测没落地时把公告也吞掉，等于「卡片明明能用，模型却不知道它存在」。探测结果不是锁死的：卡片「重新探测」或 `POST /reprobe` 会重跑一次并即时刷新两段 section。
+3. **索引门禁（仅 usage 段）**：生效路径（`effectivePath`）必须是**有效索引**才注入用法指引——判据与宿主 `indexState` 同口径，`.codegraph/` 目录存在不算。所以没有索引的仓库不会白白占掉那 600 字符，也不会诱导模型去调必然失败的工具；判据每次 `refreshGuidance` 现算。**公告段不设这道门禁**。

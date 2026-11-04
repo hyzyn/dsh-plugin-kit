@@ -310,7 +310,9 @@ POST /api/dsh-docker/elevate/revoke  { capability } → revoke（200，零确认
   - 修复点按维护规则在**代码注释里落编号**。
 - `ROADMAP.md`：把原「终端票据」条目标为已落地（本方案即其实现，形态从"一次性票据"收敛为
   "nonce 文件"）。
-- 本方案文档是**执行用文档**：实施完成后删除或归档，不要留在 `docs/` 里当长期文档。
+- 本方案文档**已经转为长期设计依据**（头注：各 PR 已落地；[conventions.md 的知识归属表](./conventions.md)
+  登记了它，`architecture.md` §7 与 ROADMAP 都引用它）——**不删除、不归档**；要改这套通道的行为，
+  先改这里，再落到代码与包 README。
 
 ## 7. 宿主级验收（并入 `scripts/test/live-profile.test.ts` 风格）
 

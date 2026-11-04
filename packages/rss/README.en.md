@@ -41,10 +41,9 @@ Implementation notes (the accent-token trap, why absolute positioning is mandato
 
 ![RSS settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
-Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
-`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
-below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
-sub-page under the Plugins sidebar.
+Where the settings surface lives changes with the DSH version, but it is **always the same form** — the
+per-generation landing spots and the four registration contracts live in
+[conventions.md § client settings surface](../../docs/conventions.md#客户端设置面内联优先).
 
 Sidebar “Today's Worth Reading” modal (grouped by category, sources with "View more" linking straight to their websites, manual refresh at the bottom):
 

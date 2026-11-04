@@ -9,11 +9,11 @@
 - **Real PTY + WebGL rendering**: node-pty real PTY, so TUIs such as vim / htop / a dev server all run; multi-tab.
 - **Optional tmux session persistence**: reopen after a host restart / network blip and the scene is back; “command tabs” such as docker exec reopen automatically.
 - **Native ssh2 connections**: agent forwarding + host-key TOFU pinning, managed uniformly through the connection book; plus **SFTP** upload/download and **port forwarding** (-L / -R, reconnecting automatically after a drop).
-- **The agent reads the terminal at “command” granularity**: shell integration (OSC 133/7) lets `tty_capture{last}` / `tty_expect` read the output and exit code of “the previous command” instead of capturing the screen and guessing; `tty_list` reports whether a command is currently running (`running`, three states: running / finished / cannot tell), and `tty_run` returns the output and exit code of one command in a single call.
-- **Two client services exposed to other plugins**: `ttyConnbar` (connection-bar actions) and `ttyTerminal` (open a terminal in place); dsh-docker’s “Containers / Terminal” buttons go through them.
-- **AI assist: explain failures (0.24.0, off by default)**: when a command exits non-zero a chip appears in the corner; clicking it sends **that command's output tail** (cleaned / truncated / secrets masked) plus the current screen to the model and renders a short "what happened / next step". A suggested command is only typed into the prompt line — never submitted for you. See [AI assist](#ai-assist-explain-failures-0240-off-by-default).
+- **The agent reads the terminal at “command” granularity**: shell integration (OSC 133/7) lets `tty_capture{last}` / `tty_expect` read the output and exit code of “the previous command” instead of capturing the screen and guessing; `tty_list` reports whether a command is currently running (`running`, three states), and `tty_run` returns the output and exit code of one command in a single call.
+- **Client services for other plugins**: `ttyConnbar` (connection-bar actions), `ttyTerminal` (open a terminal in place) and `ttyPanel` (mount slots inside the panel); dsh-docker’s “Containers / Terminal” buttons go through them.
+- **AI assist: explain failures (0.24.0, off by default)**: when a command exits non-zero a chip appears in the corner; clicking it sends **that command's output tail** (cleaned / truncated / secrets masked) plus the current screen to the model and renders a short “what happened / next step”. A suggested command is only typed into the prompt line — never submitted for you. See [AI assist](#ai-assist-explain-failures-0240-off-by-default).
 
-![Terminal panel: xterm modal + server status bar + resource dashboard. Above the terminal is the full-mode monitor bar (CPU percentage with a mini meter / cores / memory used-of-total / disk used-of-total / uptime / TCP / CPU temperature / network up-down); below right is the expanded resource dashboard (per-core bars / up-down lines / top processes)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
+![Terminal panel: xterm modal + server status bar + resource dashboard](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
 ## Installation
 
@@ -22,167 +22,132 @@ dsh plugin --profile web add @hyzyn/dsh-tty    # npm install (after release)
 dsh plugin --profile web add link:$(pwd)/packages/tty   # repo development/debugging
 ```
 
-After installing, restart `dsh web`; a “Terminal” entry appears in the sidebar — click it to open the panel; the “Terminal Panel” card lets you change the configuration (**saving takes effect immediately**, no restart needed).
+After installing, restart `dsh web`; a “Terminal” entry appears in the sidebar — click it to open the panel;
+the “Terminal Panel” card lets you change the configuration (**saving takes effect immediately**, no restart needed).
 
 ## How to use
 
 - Opening the panel automatically creates the first terminal (default `$SHELL`, usually zsh on macOS);
-- **Multi-tab**: “+” in the tab bar creates a new terminal (since 0.2.0 “+” is a menu: local terminal /
-  SSH connection book (entries have ✎ to edit) / SSH connection…, see the next section for SSH), and ✕ closes
-  a tab; **double-clicking a tab renames it** (the name is persisted with the tab and survives a reconnect);
-  each tab is an independent session (local PTY or SSH channel); when the tab bar runs out of room it
-  **scrolls horizontally** (no scrollbar — wheel / trackpad, with fades at both edges) and a
-  **“⋯” tab list** appears at the strip’s right edge listing only the tabs **scrolled out of view**
-  (status dot + target, with the current tab highlighted when it is one of them): one click to switch,
-  and an inline ✕ to close it right there (the list stays open so you can close several in a row);
-- **Close a batch of tabs at once (0.30.0)**: no more clicking ✕ one by one — **right-click** any tab to get
-  a menu anchored on it (Close this tab / Close other tabs (N) / Close tabs to the left (N) / Close tabs to
-  the right (N) / Clean up exited tabs (N); rows with nothing to close are not shown — no “left” row when the
-  anchored tab is first, no “right” row when it is last), and **middle-click** closes the tab under the
-  pointer. The **“⋯” menu carries the same batch rows** (anchored on the current tab) and, since 0.30.0,
-  **appears whenever there are ≥ 2 tabs** (overflow or dead tabs are no longer required): right-click is the
-  fast path, but it must not be the only way in; with a single tab it still stays hidden (there is nothing to
-  manage — that is the only real noise here). Actions that would **end ≥ 2 live sessions** ask once first
-  (how many, and how many of those the AI opened); closing a single live session is the same as clicking its
-  own ✕, so it does not ask (the rule lives in `client-src/tab-bulk.js`, same “what do you lose” criterion
-  as the D98 panel-close guard);
-- **“Hidden from the AI” tabs (0.30.0, off by default)**: the context menu gains “Hide this tab from the AI” —
-  once hidden, the **agent side cannot see it at all**: it is absent from `tty_list` and from the per-turn
-  systemPrompt session block (not even cwd or whether a command is running; that block only reports
-  “N more tabs are set to be invisible to the agent”), and `tty_capture` / `tty_screen` / `tty_send` /
-  `tty_expect` / `tty_stats` are refused for it by sid. The marker is a 🙈 before the tab title plus a
-  tooltip (the “⋯” list shows it too). **In your own panel the tab stays fully usable** (view, type, close);
-  enforcement happens on the host and applies to the agent only — keep one terminal of your own for keys,
-  personal work, or anything unrelated to this turn without worrying about it being screen-scraped.
-  **Tabs the AI opened do not get this item** (hiding them would erase its behaviour from your view); the
-  rule lives in `client-src/tab-hidden.js` plus the host’s `setHiddenFromAgent`, and after a reconnect only
-  “hidden” is re-asserted (the hidden state is never silently cleared);
-- **The working directory follows the current DSH session**: new tabs open in the current session’s
-  working directory (the host `cwd` configuration is the fallback). Since 0.1.6 the session list
-  snapshot no longer carries `current` (view selection moved to the workspace domain), so the client
-  reads `retainedBy.mainView > 0` to find the current session — trusting only the legacy field leaves
-  the cwd empty and new tabs fall back to the host’s start directory;
+- **Multi-tab**: “+” in the tab bar is a menu (local terminal / SSH connection book (entries have ✎ to edit) /
+  SSH connection…), ✕ closes a tab, and **double-clicking a tab renames it** (persisted with the tab); each
+  tab is an independent session (local PTY or SSH channel); when the tab bar runs out of room it
+  **scrolls horizontally** (with edge fades) and a **“⋯” tab list** appears at the right edge listing only
+  the tabs scrolled out of view (status dot + target): one click to switch, an inline ✕ to close it (the
+  list stays open so you can close several in a row);
+- **Close a batch of tabs**: **right-click** any tab for a menu (Close this tab / Close other tabs / Close
+  tabs to the left / Close tabs to the right / Clean up exited tabs; rows with nothing to close are not
+  shown), and **middle-click** closes the tab under the pointer. The **“⋯” menu carries the same batch rows**.
+  It is always present once there are ≥ 2 tabs. Actions that would **end ≥ 2 live sessions** ask once first
+  (how many, and how many of those the AI opened); closing a single live session equals clicking its own ✕,
+  so it does not ask;
+- **“Hidden from the AI” tabs (off by default)**: the context menu gains one item — once hidden the tab is
+  absent from `tty_list` and from the per-turn systemPrompt session block (which only reports “N more tabs are
+  set to be invisible to the agent”), and every sid-based read/write tool refuses it. **In your own panel it
+  stays fully usable.** **Tabs the AI opened do not get this item**;
+- **The working directory follows the current DSH session**: new tabs open in the current session’s working
+  directory (the host `cwd` configuration is the fallback);
 - Supports TUIs such as vim / htop / less (TERM is injected as `xterm-256color`);
 - Panel size changes are resized automatically (xterm fit → native PTY resize); **inactive tabs do not
   follow** — each keeps its own last valid size (D79: when the container is invisible or the probe is
   degenerate, no resize frame is sent at all);
 - **Ctrl+F searches inside the terminal** (Enter next / Shift+Enter previous / Esc closes only the search
-  box), links in the output are clickable, and the header toolbar keeps just search / clear — copy and
-  paste use the terminal’s own shortcuts (Cmd+C / Ctrl+Shift+C to copy a selection, Cmd+V / Ctrl+V to paste);
-- **Reconnect on disconnect (0.3.0)**: after an abnormal disconnect such as a page refresh or a network
-  blip, the session is kept alive on the host for `reconnectGraceSec` (120 seconds by default) and the
-  client reconnects automatically with exponential backoff (capped at 5s); after reconnecting it
-  **attaches back to the original session by sid and replays the output buffered during the disconnect**;
-  after a page refresh the tab list is restored from sessionStorage (sessions already finished on the host are dropped);
-- **WebGL renderer (0.3.0)**: high-throughput output (build logs) renders dramatically faster; on WebGL
-  context loss (e.g. too many tabs exceeding the browser quota) it automatically falls back to the DOM renderer;
-- **Minimize (state folded into the sidebar entry)**: clicking outside the modal, pressing Esc or the
-  title-bar “—” collapses the panel — PTY sessions and output buffers stay alive, the sidebar “Terminal”
-  entry shows a “running / total” badge and a status dot (pulsing when there is output), and clicking the
-  entry restores it; only the floating bar’s ✕ / the title-bar ✕ really closes it and ends every session;
-- **Closing the panel asks first (issue #8)**: while the panel still has live sessions, ✕ (including the
-  one on the floating bar) opens a confirmation that states how many sessions this ends, how many of them
-  the AI opened, and puts **Minimize** (sessions and output keep running) on the same button row — it used
-  to only point at «—» on the title bar, which that very layer covers and swallows, so the way out was
-  “cancel first, then go find «—»”; putting it in reach turns the misclick into the right action. With only
-  exited tabs (or none) it closes straight away: the predicate is *what would be lost*, not *how many tabs
-  are open* (a confirmation that fires too often gets clicked out of habit, and then the real one stops
-  working);
-- **Exited sessions no longer cover their output (issue #7①②)**: the exited state is now a strip at the top
-  of the terminal area (one line — “Exited code=…” / “The AI finished this session” — plus at most one action
-  button), so output stays readable, scrollable and selectable. The previous full-area overlay was both why
-  “the AI’s command output is unreadable” (users hid `.tt_overlay` from devtools) and why clicking anywhere
-  was swallowed — even selecting text was impossible. Error and “reconnecting” overlays stay: their job is
-  to explain why there is no output;
-- **“Clean up exited tabs (N)” in the “⋯” menu (issue #7③)**: removes every exited tab in one go (which also
-  makes the host release their read-only retention right away); the “⋯” button now also appears when there
-  are dead tabs without overflow — it used to show up only on overflow, while the AI leaves one dead tab per
-  command (a user collected 47 of them and had to close them one by one);
-- **Tabs opened by the AI follow their session (issue #7④)**: once the AI releases a session (`tty_close`,
-  or `tty_run`’s default cleanup), its tab goes away with it — the one **you switched to and are looking at** gets
-  one step of grace (a tab the client itself promoted to the foreground does not count) (the strip says “The AI finished this session” with a “Dismiss” button; switching away or
-  clicking it closes the tab). Sessions still in read-only retention (`tty_run keep:true`, `tty_open command=`
-  that was never closed) keep their tabs — readable, swept by the cleanup entry above;
+  box); links in the output are clickable; copy and paste use the terminal’s own shortcuts (Cmd+C /
+  Ctrl+Shift+C to copy a selection, Cmd+V / Ctrl+V to paste);
+- **Reconnect on disconnect**: after an abnormal disconnect such as a page refresh or a network blip, the
+  session is kept alive on the host for `reconnectGraceSec` (120 seconds by default) and the client
+  reconnects automatically with exponential backoff (capped at 5s); after reconnecting it **attaches back
+  to the original session by sid and replays the output buffered during the disconnect**; after a page
+  refresh the tab list is restored from sessionStorage (sessions already finished on the host are dropped);
+- **WebGL renderer**: high-throughput output (build logs) renders dramatically faster; on WebGL context loss
+  (e.g. too many tabs exceeding the browser quota) it automatically falls back to the DOM renderer;
+- **Minimize**: clicking outside the modal, pressing Esc or the title-bar “—” collapses the panel — sessions
+  and output buffers stay alive, and the sidebar entry shows a “running / total” badge and a status dot;
+  only the floating bar’s ✕ / the title-bar ✕ really closes it and ends every session;
+- **Closing the panel asks first**: while there are live sessions, ✕ opens a confirmation that states how
+  many sessions this ends and how many of them the AI opened, and puts **Minimize** on the same button row;
+  with only exited tabs (or none) it closes straight away (the predicate is *what would be lost*, not *how
+  many tabs are open*);
+- **Exited sessions no longer cover their output**: the exited state is a strip at the top of the terminal
+  area (“Exited code=…” / “The AI finished this session” plus at most one action button), so output stays
+  readable, scrollable and selectable; error and “reconnecting” overlays stay (they explain why there is no output);
+- **“Clean up exited tabs (N)” in the “⋯” menu**: removes every exited tab in one go and makes the host
+  release their read-only retention right away;
+- **Tabs opened by the AI follow their session**: once the AI releases a session (`tty_close`, or `tty_run`’s
+  default cleanup), its tab goes away with it; the one **you are looking at** gets one step of grace (strip +
+  “Dismiss”). Sessions still in read-only retention keep their tabs, swept by the cleanup entry above;
 - The title-bar ✕ closes the panel and ends every session (PTY tree-level cleanup; tmux persistent tabs also
   get kill-session); after a session exits, reopen it from the top strip (a local tab opens a fresh session
   from its spec, persistent tabs reattach to tmux, command tabs run again);
-- The concurrency limit defaults to 4 (`maxSessions` configuration, 1~16).
+- The concurrency limit defaults to 4 (`maxSessions`, 1~16).
 
 ![Terminal panel settings card: shell / TERM / concurrency limit and so on take effect on save](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
 ## Windows hosts (best-effort)
 
-Windows support is **best-effort**: the default shell is `%COMSPEC%` (guaranteed to exist); for PowerShell,
-put the full path to `powershell.exe` / `pwsh.exe` in the settings card’s “Shell path” (the candidate list
-offers `%COMSPEC%` + Windows PowerShell 5.1 + PowerShell 7 when installed, default first). **There is no
-POSIX wrapper layer on Windows**: plain `[shell]`; the PowerShell family gets `-NoLogo` but deliberately
-**not `-NoProfile`** (the user’s profile is where aliases and functions come from); TERM / COLORTERM are
-meaningless for ConPTY and are no longer injected.
+The default shell is `%COMSPEC%` (guaranteed to exist); for PowerShell, put the full path to
+`powershell.exe` / `pwsh.exe` in the settings card’s “Shell path”. **There is no POSIX wrapper layer on
+Windows**: plain `[shell]`; the PowerShell family gets `-NoLogo` but deliberately **not `-NoProfile`**
+(the user’s profile is where aliases and functions come from); TERM / COLORTERM are meaningless for ConPTY
+and are no longer injected.
 
 - **“Run one command” tabs** (docker exec, command tabs opened by the agent) use `cmd /c` or
   `PowerShell -Command`. **PowerShell’s `-Command` collapses a non-zero last command into process exit
   code 1** (`cmd /c exit 5` → 1, both versions), so let the command `exit 5` itself to get a concrete code
   (POSIX `sh -c` does not behave this way).
 - **Input line-ending normalisation (D74)**: conhost treats Enter as **CR**, so a bare LF only moves the
-  cursor down and **does not submit the command line**. For **local sessions on win32** the plugin turns a
-  bare LF into CRLF (an existing CRLF is not doubled; non-Windows and SSH sessions pass through untouched),
-  so the documented `\n` path just works.
+  cursor down and **does not submit the command line**. For win32 local sessions the plugin turns a bare LF
+  into CRLF (an existing CRLF is not doubled; non-Windows and SSH sessions pass through untouched).
 - **Shell integration (OSC 133/7) depends on the shell family**: the **PowerShell family is supported**
   (`powershell.exe` / `pwsh.exe`) through a stable `-File` stub that hooks `prompt` and
   `PSConsoleHostReadLine` — yielding cwd tracking, exit codes, the `running` state and command-granular
   `tty_expect`. **cmd is not** (no command-boundary hooks), so the settings card greys the switch out and
-  points at “switch the shell path to PowerShell”. **The two versions differ**: `&&` / `||` are
-  **PowerShell 7** only — on 5.1 `&&` is a parse error and not a single command runs.
-  - **Exit-code rule**: in the PowerShell family a **parse error** (`&&` on 5.1, `echo (1` on both) runs
-    nothing yet the D marker reports **0** — never judge success by the exit code alone; the error text is
-    in the output.
-  - **Two boundaries of the stub**: it only loads through `-ExecutionPolicy Bypass` (process-scoped) — when
-    **Group Policy** locks the execution policy to Restricted / AllSigned that parameter does **not**
-    override GPO, so the stub fails to load and the tab opens with integration silently absent (the same
-    degradation as “the user turned PSReadLine off”); the parameter also writes the value into
-    `$Env:PSExecutionPolicyPreference`, which PowerShell processes started from that session inherit.
-  - **Known side effect**: wrapping `prompt` makes the user’s original prompt see its own `$?` as the result
-    of our writes (always true), so failure indicators that rely on `$?` stop working.
-  - **A record not reproduced**: it was once reported that on PowerShell 7 command output reaches ConPTY
-    after the D marker and `tty_capture{last}` may come back empty; on 2026-10-13 this was re-measured on
-    pwsh **7.6.6** (Win11 ARM64) across three output shapes with **0/20 empty windows** — not reproduced.
-    If you do hit one, read the tail with `tty_capture` and report the pwsh version.
-- **Two things are not supported** (the host turns them off and the settings card explains why):
-  **tmux persistence** (there is no tmux on Windows; local tabs open normally but are not managed — SSH into
-  a Linux host still works) and the **server status bar** (locally only CPU / memory / uptime are available
-  via `node:os`; disk / TCP / network throughput / temperature show “无”; remote **Windows** hosts go
-  through the PowerShell hop, see the status-bar section).
+  points at “switch the shell path to PowerShell”. `&&` / `||` are **PowerShell 7** only — on 5.1 `&&` is a
+  parse error and not a single command runs.
+  - **Exit-code rule**: in the PowerShell family a **parse error** runs nothing yet the D marker reports
+    **0** — never judge success by the exit code alone; the error text is in the output.
+  - **Stub boundaries**: it only loads through `-ExecutionPolicy Bypass` (process-scoped) — when **Group
+    Policy** locks the execution policy, that parameter does not override GPO, so the stub fails to load and
+    the tab opens with integration silently absent (the same degradation as “the user turned PSReadLine
+    off”); the parameter also writes into `$Env:PSExecutionPolicyPreference`, which PowerShell processes
+    started from that session inherit. Wrapping `prompt` also makes the user’s original prompt see its own
+    `$?` as the result of our writes (always true), so failure indicators that rely on `$?` stop working.
+- **Two things are not supported** (the host turns them off and the settings card explains why): **tmux
+  persistence** (no tmux on Windows; SSH into a Linux host still works) and the **server status bar**
+  (locally only CPU / memory / uptime are available; disk / TCP / network throughput / temperature show “无”;
+  remote **Windows** hosts go through the PowerShell hop).
 
-Why no local terminal worked before 0.18.1, the landing points, how far it was verified on real hardware,
-and the W6–W8 coverage of `windows-smoke` are in the [ROADMAP § completed](./ROADMAP.md#已完成落点--门槛)
-section “Windows 宿主（0.18.1）” (Chinese).
+Full boundaries, what 0.18.1 fixed and the W6–W8 coverage of `windows-smoke` are in the
+[ROADMAP § completed](./ROADMAP.md#已完成落点--门槛) section (Chinese).
 
 ## Agent tools
 
-The plugin injects nineteen tools into the agent (operations show up live in the user’s terminal; **every call is subject to the session permission tier**, see below):
+The plugin injects nineteen tools into the agent (operations show up live in the user’s terminal; **every
+call is subject to the session permission tier**, see below):
 
-> **A zero-config install registers only 9** (conditional registration since 0.33.0): the seven `sftp_*` tools need an SSH connection-book entry and the three `tunnel_*` tools need a tunnel — with no such config there is nothing they could call, and registering them only sends the model at tools bound to fail. The table above is the full surface **once configured**; a restricted tier trims the write / exec ones further (see below).
+> **A zero-config install registers only 9** (conditional registration since 0.33.0): the seven `sftp_*`
+> tools need an SSH connection-book entry and the three `tunnel_*` tools need a tunnel. The table is the full
+> surface **once configured**; a restricted tier trims the write / exec ones further (see below).
 
 | Tool | Purpose |
 | --- | --- |
-| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal, see below). **`running` says whether a command is currently executing** (true = it is: do not send into it now; false = the command has finished; **omitted = cannot tell** — non-persistent SSH / fish·csh / Windows cmd sessions carry no shell-integration markers, which is *not* the same as “idle”), and the same-source `lastExitCode` / `lastExitAt` are the exit code and end time of “the previous completed command” (0.23.0). The rendered text spells the three states `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知——…]`; **“unknown” also covers one more case** — the host has seen **no marker for that session since this boot** (typically a tmux persistent session already sitting at its prompt before the host restarted): send it a bare Enter or run a command and the marker arrives, turning it into `[空闲]`; non-persistent SSH / fish·csh / Windows cmd sessions never emit markers, so `[命令状态未知]` is their normal state |
-| `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of code in the host shell’s syntax** — on a POSIX shell `cd x && cmd`, `a; b` and multi-line scripts work, while **Windows cmd / PowerShell use their own syntax**; the current shell and syntax are restated every turn in the systemPrompt terminal line; it is *not* subject to the “single line ≤2000” client rule below — D78), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
-| `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (by default it is retained **until explicitly closed**, never on a timer) |
-| `tty_run` | **One-shot command** (0.23.0): open a session, run `command`, wait for it to finish and return the tail output + exit code directly — collapsing “`tty_open` → wait → `tty_capture{last}` → `tty_close`” into a single call. It **closes the session once the command finishes** by default (the result is already in this call); `keep:true` leaves it in read-only retention instead. If it is still running at `timeoutSec` (1~600, default 120) it returns `running:true` and **does not kill the session** (whether to keep waiting or close it is the caller’s call). When to use this instead of the bash tool: when the user should **see** the command, or when it must run inside a terminal session; for purely non-interactive commands bash is more direct |
-| `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime / 1-minute load / swap / SSH round-trip (last three since 2026-11-01). Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
-| `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0). **A command-type session (`tty_open command=` / `tty_run`) has no “previous command”** (it injects no shell-integration hooks), so `last:true` on one errors explicitly and points at `lines` (0.23.0, D87) |
-| `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus. The text is tail-capped at 32KB: beyond that it returns `truncated:true` and the rendered text ends with a hint to use `tty_capture` for the full scrollback (only large screens full of text reach the cap) |
-| `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; **the echo of the command just sent never counts as a hit** (via the OSC 133 A..B boundary, or via the send record where there are no markers — see the next section; when only the echo ever matched, the timeout result carries `echoOnly:true`); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72; echo exclusion, see D75) |
-| `tty_send` | Send text and/or keys to a given session (such as `q` to a dev server, a menu selection, or `:wq` in vim). **Use the named `keys` for control and arrow keys** (`["C-c"]`, `["Down","Down","Enter"]` — a whitelisted lookup: an unknown name errors out instead of being silently sent as a literal), and **never hand-build escape sequences inside `data`** — `"\\x1b[B"` / `"^[[B"` get printed into the terminal as ordinary characters while the `sent` count looks identical (0.23.0); give at least one of `data`/`keys`, and when both are present `data` goes first followed by `keys` in order. End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched. On an **exited** session it fails explicitly (such sessions are read-only) |
-| `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
-| `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte (handy for log tails), an invalid `maxBytes` errors out instead of silently falling back, and binary detection is a double test (NUL + illegal-UTF-8 ratio) (0.19.0) |
+| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry `persist`; agent-opened ones carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still in read-only retention** (`exited:true` + exit code/signal); **`running` has three states** (true = a command is running, do not send into it now; false = the command has finished; **omitted = cannot tell** — non-persistent SSH / fish·csh / Windows cmd sessions carry no shell-integration markers, which is *not* the same as “idle”; “unknown” also covers “the host has seen no marker for this session since this boot”, typically a tmux session already sitting at its prompt before the host restarted — send it a bare Enter or run a command and the marker arrives); the same-source `lastExitCode` / `lastExitAt` describe the previous completed command |
+| `tty_open` | **Open a terminal session yourself**: a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of code in the host shell’s syntax**, Windows cmd / PowerShell use their own syntax; *not* subject to the “single line ≤2000” client rule, D78), with optional tmux persistence via `persistName`; the current shell and syntax are restated every turn in the systemPrompt terminal line. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
+| `tty_close` | Close a session opened by `tty_open`. **Only the agent’s own sessions may be closed** (a user-opened tab is refused, so the agent never ends a terminal the user is working in). It also works on an **exited session still in read-only retention** — that is its release entry point |
+| `tty_run` | **One-shot command**: open a session, run `command`, wait for it to finish and return the tail output + exit code directly (collapsing open → wait → capture → close into one call). It **closes the session once the command finishes** by default; `keep:true` leaves it in read-only retention. If it is still running at `timeoutSec` (1~600, default 120) it returns `running:true` and **does not kill the session**; when the caller cancels (`exec.signal`) it returns `cancelled:true` immediately — that cancels this call, **not the command**. Use it when the user should **see** the command or when it must run inside a terminal session; for purely non-interactive commands bash is more direct |
+| `tty_stats` | Read live host metrics for a session’s machine: CPU / memory / disk / TCP / network rates / temperature / uptime / 1-minute load / swap / SSH round-trip. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal |
+| `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers); when a command is **in flight** it returns `inProgress:true` without the stale result. **A command-type session has no “previous command”**, so `last:true` errors explicitly and points at `lines` (D87) |
+| `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus. The text is tail-capped at 32KB; beyond that it returns `truncated:true` |
+| `tty_expect` | Wait with a regex for a readiness signal. It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` / `last` / `buffered`). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**), and a command that ends early returns early with its exit code; **the echo of the command just sent never counts as a hit** (the OSC 133 A..B boundary, or the send record where there are no markers; when only the echo ever matched the result carries `echoOnly:true`); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB; a caller cancel settles as `cancelled:true` |
+| `tty_send` | Send text and/or keys to a session. **Use the named `keys` for control and arrow keys** (`["C-c"]`, `["Down","Down","Enter"]` — a whitelisted lookup: an unknown name errors out instead of being silently sent as a literal), and **never hand-build escape sequences inside `data`** (`"\x1b[B"` gets printed as ordinary characters); give at least one of `data`/`keys`, and when both are present `data` goes first followed by `keys` in order. End a command with `\n` (a local Windows session normalises it to CRLF, D74). On an **exited** session it fails explicitly |
+| `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink |
+| `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte, an invalid `maxBytes` errors out, and binary detection is a double test (NUL + illegal-UTF-8 ratio) |
 | `sftp_write` | Write a remote text file (overwrite by default, `append:true` appends; ≤1MB per call) |
-| `sftp_mkdir` | Create a remote directory; `parents:true` fills in missing parents level by level (equivalent to `mkdir -p`, created bottom-up, existing directories skipped idempotently) |
+| `sftp_mkdir` | Create a remote directory; `parents:true` fills in missing parents level by level (equivalent to `mkdir -p`, existing directories skipped idempotently) |
 | `sftp_rename` | Rename/move a remote file or directory (a `to` in a different directory means a move; never overwrites an existing target) |
-| `sftp_remove` | Delete a remote file/directory; a directory uses rmdir by default (a non-empty one errors explicitly), and `recursive:true` deletes the whole tree (irrecoverable); paths pointing at `/`, `~`, or containing `.`/`..` segments are refused (guard for an irrecoverable operation, 0.19.0) |
+| `sftp_remove` | Delete a remote file/directory; a directory uses rmdir by default (a non-empty one errors explicitly), and `recursive:true` deletes the whole tree (irrecoverable); paths pointing at `/`, `~`, or containing `.`/`..` segments are refused |
 | `sftp_tree` | Recursively list a remote directory structure (depth-first, directories first; `maxDepth` 1~8 / `maxEntries` 1~2000 cap it, `truncated:true` when exceeded; symlinks are not followed, to avoid cycles) |
-| `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts) |
-| `tunnel_start` / `tunnel_stop` | Start or stop one port-forwarding tunnel (0.25.0; `name` comes from `tunnel_list`). These **rewrite the configuration** — the same thing as ticking/unticking “Enable” in the settings card (settings → hot apply → `reconcile`), so the change is persistent and visible to the user. The returned snapshot usually still says `connecting` (dialling is async); call `tunnel_list` again for the final verdict |
+| `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts); `fatal:true` = needs a human (local listen failure / missing book entry), **never retried automatically** |
+| `tunnel_start` / `tunnel_stop` | Start or stop one tunnel (`name` comes from `tunnel_list`). These **rewrite the configuration** — the same thing as ticking/unticking “Enable” in the settings card (settings → hot apply → `reconcile`). The returned snapshot usually still says `connecting` (dialling is async); call `tunnel_list` again for the final verdict |
 
 ### Session permission tier gate (tier gate)
 
@@ -194,45 +159,33 @@ switched by the user in the session, and the very next call follows the new tier
 | --- | --- | --- |
 | Read | `tty_list` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | Allowed on every tier |
 | Write (bounded mutation) | `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_remove` `tunnel_stop` | Approval prompt (runs only if the user allows this one call); deterministically denied when unattended (approval policy `never`) |
-| Execute (unbounded command surface) | `tty_open` `tty_run` `tty_send` `tunnel_start` | Same — these tools can run arbitrary commands on the local or a remote shell and open listening ports; they are the fence-sensitive surface |
+| Execute (unbounded command surface) | `tty_open` `tty_run` `tty_send` `tunnel_start` | Same — these tools can run arbitrary commands on a local or remote shell and open listening ports |
 
-**Full access never prompts** (that tier’s intent is fewer confirmation steps); under **Auto review the
-plugin does not add its own prompt** (the host’s model pre-review already examines every call). When the
-host has not composed the `sandboxPolicy` / `approval` services (older hosts, minimal deployments) the
-gate is **off** (behaviour identical to before the gate), and the startup log says so:
+**Full access never prompts**; under **Auto review the plugin does not add its own prompt** (the host’s model
+pre-review already examines every call). When the host has not composed the `sandboxPolicy` / `approval`
+services the gate is **off**, and the startup log says
 `tier-gate: services absent (…), per-call gate disabled`. The mechanism (decision matrix / the two-layer
-relationship with the static `allowProxyCommand` switch) lives in
+relationship with `allowProxyCommand`) lives in
 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
 
-**A confined session does not even see the tools it cannot use** (pilot, the host’s `tools.restrict`): when the
-tier is Read Only / Workspace Write, the plugin drops the Write and Execute classes above from that session’s
-**agent-scoped** tool table — the agent sees 10 tty tools instead of 19 (only the Read row remains). **The
-per-call matrix above is still the security boundary**: trimming merely removes, up front, the tools that cannot
-succeed under the current tier, saving the “try → denied → switch tool → try again” round trips; a missing name,
-or a tool registered after the session started, only affects what the model can see, not what it may do (the gate
-still denies those calls). **Full access / Auto review**, and a host that has not composed the tier services,
-**are not trimmed** (the same allow branches as the gate). The log carries
-`tier-restrict: agent <id> mode=… → tty tools 19 → 10 (denied N write/exec: …)`.
-**A mid-session tier switch does recompute** (since 2026-10-25): the host records the tier as session events
-(`sandbox/mode` / `approval/policy` / `permission/preset`), and kit maps the session back to its agent and
-recomputes once — upgrading puts the tools back, downgrading drops them again, both before the next model
-request (the tool table is projected when the request is built). **Current limits**: other sessions are
-unaffected, and a single switch's up-to-three knob events coalesce into one recompute.
+**A confined session does not even see the tools it cannot use** (`tools.restrict`): when the tier is Read
+Only / Workspace Write, the plugin drops the Write and Execute classes from that session’s **agent-scoped**
+tool table — the agent sees 10 tty tools instead of 19. **The per-call matrix above is still the security
+boundary**: trimming merely removes, up front, the tools that cannot succeed under the current tier; a
+missing name, or a tool registered after the session started, only affects what the model can see, not what
+it may do. **Full access / Auto review** are not trimmed. **A mid-session tier switch does recompute**
+(upgrades put the tools back, downgrades drop them again, both before the next model request).
 
-Typical agent flow (recommended): for a command that simply runs to completion, use `tty_run` to get its
-output + exit code in one call; for a **long-lived** session, `tty_open` opens one (pass `persistName` for tmux
-persistence on long-running work) → `tty_send` starts the command → `tty_expect` waits for the readiness marker →
-`tty_capture{last:true}` gets the result of that single command → `tty_close` when done. In addition, a dynamic
-context is registered in `systemPrompt` so that every turn automatically carries a snapshot of active
-terminals (sid / kind / cwd / owner, plus a `[running]` marker) — you have context without calling `tty_list` first.
+Typical agent flow: for a command that simply runs to completion, use `tty_run` to get its output + exit code
+in one call; for a **long-lived** session use `tty_open` → `tty_send` starts the command → `tty_expect` waits
+for the readiness marker → `tty_capture{last:true}` gets that single command’s result → `tty_close`.
+A dynamic context is also registered in `systemPrompt`, so every turn carries a snapshot of active terminals
+(sid / kind / cwd / owner, plus a `[running]` marker) without calling `tty_list` first.
 
-**Agent-opened session boundaries (0.20.0)**: a session opened by `tty_open` is an **ordinary tab in the
-panel** (marked “agent”) — the user can see it, switch to it, take it over and close it. Hidden sessions
-are deliberately not used, because “the user does not know what is running on the machine” is exactly
-where zombie sessions come from. Such a session has no client bound from birth, so it is **not reaped by
-the orphan collector** (which only reaps disconnected *user* sessions); it ends via the agent’s
-`tty_close` or the user closing the tab. Conversely the agent **cannot close a user-opened tab**
-(`tty_close` refuses explicitly).
+**Agent-opened session boundaries**: a session opened by `tty_open` is an **ordinary tab in the panel**
+(marked “agent”) — the user can see it, take it over and close it. Hidden sessions are deliberately not used.
+Such a session has no client bound from birth, so it is **not reaped by the orphan collector**; it ends via
+the agent’s `tty_close` or the user closing the tab. Conversely the agent **cannot close a user-opened tab**.
 
 ### Read-only retention after the process exits (D77)
 
@@ -240,1335 +193,835 @@ A process exit **no longer means the session is gone** — the session turns int
 **kept until it is explicitly closed** by default (`EXITED_RETAIN_MS = ∞`; a host/plugin restart clears them).
 While retained:
 
-- **Reads keep working**: `tty_capture` (tail or `last`, including the final batch of output printed
-  before exit), `tty_screen` (the screen as of the exit) and `tty_list` (entry carries `exited:true` +
-  `exitCode`/`signal`) all still answer, and their results carry an `exited` marker;
-  `tty_expect` no longer burns its timeout — it settles against the existing output and returns
-  `exited:true`;
-- **Writes are refused**: `tty_send` reports an explicit error (the process is gone; a write would
-  vanish into a dead PTY), and `tty_resize` / `tty_stats` no longer apply to it (stats honestly returns
-  `available:false`);
-- **No re-attaching a terminal**: `attach` is explicitly refused (there is no live PTY; the panel does
-  not create a tab for it either) — read the output with `tty_capture`;
+- **Reads keep working**: `tty_capture`, `tty_screen` and `tty_list` (entry carries `exited:true` +
+  `exitCode`/`signal`) still answer; `tty_expect` no longer burns its timeout — it settles against the
+  existing output and returns `exited:true`;
+- **Writes are refused**: `tty_send` reports an explicit error (the process is gone; a write would vanish
+  into a dead PTY), `tty_stats` no longer applies to it (honestly returns `available:false`), and the
+  panel's `resize` is meaningless as well;
+- **No re-attaching a terminal**: `attach` is explicitly refused (there is no live PTY; the panel does not
+  create a tab for it either);
 - **Who releases it**: the agent’s `tty_close` (its own sessions only), the user closing that tab in the
-  panel, or a host/plugin restart (retention lives in memory). The concurrency limit counts **live
-  sessions only** (retained ones do not consume a slot) — and the client’s “+” pre-check counts the same
-  way (D85: the `sessions` frame’s list includes retained sessions, so taking `list.length` as the live
-  count made the client block the user’s own “+” with “session limit reached” even though there was no
-  tab left to close). At most `MAX_EXITED_SESSIONS` (16) retained
-  sessions are kept — the oldest is evicted beyond that (each eviction logs the sid it drops). So the
-  rule is “the last 16 exited sessions stay readable”, which is the only bound on memory and handles
-  (16 of them is on the order of ~20MB).
+  panel, or a host/plugin restart. The concurrency limit counts **live sessions only** (retained ones do not
+  consume a slot, and the client’s “+” pre-check counts the same way). At most `MAX_EXITED_SESSIONS` (16)
+  retained sessions are kept — the oldest is evicted beyond that (each eviction logs the sid it drops).
 
-  Why **not** a timer: memory and handles are not actually time-driven (see above), while a deadline is a
-  second surprise for whoever reads the output — the gap between “the command finished” and “the next
-  round reads the result” spans people walking away and queued model turns. An output that vanishes on
-  schedule is harder to reason about than one you have to close. If you do want a time bound (or no
-  retention at all), set `EXITED_RETAIN_MS` to a millisecond value / 0 — the `reapExited` path is still
-  wired into the reaper, and `tty_list`’s `retainMs` field only appears when a timer is in play.
-
-This is why “`tty_open` a command that finishes and read the result afterwards” now just works — no
-`sh` wrapper needed (the request in issue #4).
+Retention is deliberately **not time-based**: memory and handles are not actually time-driven, and a deadline
+is a second surprise for whoever reads the output (the gap between “the command finished” and “the next round
+reads the result” can be arbitrarily long). If you do want a time bound, set `EXITED_RETAIN_MS` to a
+millisecond value / 0 — the `reapExited` path is still wired in. The full fix and its regressions are in
+[DEFECTS D77](./DEFECTS.md).
 
 ### Shell integration (OSC 133/7, 0.4.0)
 
-On POSIX, hooks are injected through the existing `-c` wrapper layer according to the shell type; on
-Windows the PowerShell family gets a stable `-File` stub instead (see the Windows section above). Both are
-transparent to the user and change no rc:
+On POSIX, hooks are injected through the existing `-c` wrapper layer according to the shell type; on Windows
+the PowerShell family gets a stable `-File` stub instead. Both are transparent to the user and change no rc:
 
 - **zsh**: `ZDOTDIR` points at a temporary stub directory (the same approach VS Code uses); the stub sources
   the user’s original rc first and then appends `precmd`/`preexec` hooks;
 - **bash**: an `--rcfile` stub (sources `~/.bashrc` first); the command-start marker has two variants by
-  version: bash ≥ 4.4 uses `PS0`; bash < 4.4 (the 3.2 shipped with macOS) has no PS0 and falls back to a
-  **DEBUG trap** (the handler filters by `$BASH_COMMAND` to drop fires caused by the PROMPT_COMMAND
-  machinery itself, so phantom markers do not cut the user’s output out of the capture window; on bash 3.2
-  `trap - DEBUG` inside the handler does not take effect, hence the “permanently armed + filtered” design).
-  Side effect: internal commands of compound commands such as loops emit extra B markers, which only affects
-  where `tty_capture{last}` starts capturing for those commands — D/exit-code and `tty_expect` are
-  unaffected; the PROMPT_COMMAND hook supports both the string and the array (bash 5.1+) forms;
-- Marker semantics: `133;A` prompt start / `133;B` command start / `133;D;<exit>` command end with exit
-  code / `OSC 7 file://…` cwd reporting (`tty_list.cwd` follows `cd`, and SSH sessions report the remote path);
-- Other shells are silently disabled; `shellIntegration: false` turns the whole thing off (escape hatch).
+  version: bash ≥ 4.4 uses `PS0`, bash < 4.4 (the 3.2 shipped with macOS) falls back to a **DEBUG trap**
+  (the handler filters by `$BASH_COMMAND` to drop fires caused by the PROMPT_COMMAND machinery itself). Side
+  effect: internal commands of compound commands such as loops emit extra B markers, which only affects where
+  `tty_capture{last}` starts capturing for those commands;
+- **PowerShell (Windows)**: the `-File` stub (pure ASCII — 5.1 reads .ps1 by the ANSI code page) wraps
+  `prompt` and `PSConsoleHostReadLine`, with the user’s profile still in effect. Exit-code rules are in the
+  “Windows hosts” section;
+- Marker semantics: `133;A` prompt start / `133;B` command start / `133;D;<exit>` command end with exit code /
+  `OSC 7 file://…` cwd reporting (`tty_list.cwd` follows `cd`, and SSH sessions report the remote path);
+- Other shells (including Windows cmd) are silently disabled; `shellIntegration: false` turns the whole thing
+  off (escape hatch).
 
-**Look-back matching and the read watermark (D72)**: `tty_expect` first looks back at output that has
-**not been read yet** (when a command finishes instantly, the marker you are waiting for is already in the
-buffer). The look-back lower bound is raised to “just after the last `B` marker” inside the unread region —
-the echo sits between `A` and `B`, so text in the echo never counts as a hit (deliberately no text
-comparison here: line wrapping / ANSI / multi-line paste would break it).
+**Look-back matching and the read watermark (D72)**: `tty_expect` first looks back at output that **has not
+been read yet**, with the lower bound raised to “just after the last `B` marker” inside the unread region —
+the echo sits between `A` and `B`, so text in the echo never counts as a hit (deliberately no text comparison
+here: line wrapping / ANSI / multi-line paste would break it). **Environments without `B` markers**
+(integration off / Windows cmd / a remote host without the hooks / PSReadLine turned off by the user) exclude
+the echo by a different test (D75 / D101): the command lines that the most recent `tty_send` submitted are
+stripped out of the candidate text and the pattern is retried — only “no longer matches after stripping”
+counts as a pure echo; a timed-out wait that only ever matched the echo carries `echoOnly:true`.
 
-- **Environments without `B` markers** (integration off / local Windows cmd tabs / a remote host without
-  the hooks / PSReadLine turned off by the user) have no boundary to cut at, so since D75 the echo is
-  excluded by a different test: the command
-  lines that the most recent `tty_send` submitted are stripped out of the candidate text and the pattern
-  is retried — only “no longer matches after stripping” counts as a pure echo. That removes the false
-  positive where the command never ran yet the wait reported `matched:true`, while the same text really
-  printed later still matches. When the wait times out and the pattern only ever matched the echo, the
-  result carries `echoOnly:true` and the message says plainly that the command was probably never
-  executed. **Boundary**: only lines written by `tty_send` are known (typing in the panel is not
-  simulated as line editing), and stripping is disabled while a command is running (in a full-screen TUI
-  redraw, the typed text appearing on screen is real output);
-- **The tradeoff in that look-back range**: raising the lower bound to “just after the last `B` marker”
-  costs you the unread output that precedes the newest command’s start. It deliberately prefers a miss
-  over a false hit — treating the echo as a match would make the agent believe the event just happened.
-  Use `tty_capture` for that text. The mirror-image corner exists too: right after `tty_send`, before the
-  new command’s `B` marker arrives, the unread region still holds the previous command’s output, so a
-  pattern in it matches at once (the agent’s next call almost always lands after that `B`, where this
-  text has already been cut off by it);
-- **Read watermark**: whatever `tty_capture` / `tty_expect` returns counts as read, and later
-  `tty_expect` calls will not look back at it (use `tty_capture` to re-read older output). `tty_screen`
-  deliberately does **not** advance it (the screen is a different representation, not a text stream);
-  `tty_send` only initialises it (the output of the command just sent has not been seen yet); **a timeout
-  does not consume the unread region** either (another pattern can still look back at the same output).
-  A tab the user opened gets its watermark placed at the moment the agent first touches it — history
-  before that does not count as unread.
+**Read watermark**: whatever `tty_capture` / `tty_expect` returns counts as read, and later `tty_expect`
+calls will not look back at it; `tty_screen` deliberately does **not** advance it, `tty_send` only
+initialises it, and **a timeout does not consume the unread region** either (another pattern can still look
+back at the same output). Use `tty_capture` to re-read older output.
 
 SSH sessions are scheduled on the same table: entries with `kind: 'ssh'` in `tty_list` are identified by
-`target` (user@host[:port]), and `tty_capture` / `tty_expect` / `tty_send` are used exactly as for local
-sessions — dev server logs and key interactions on the remote machine remain available as usual.
+`target` (user@host[:port]), and `tty_capture` / `tty_expect` / `tty_send` are used exactly as for local sessions.
 
 ### Credential storage (a connection password need not stay plaintext)
 
-Under **Password** in the connection dialog sits a **credential storage** row: tick "store when saving" and the
-password is written to the **official credential store**, leaving only an `env:NAME` reference in the field (the value
-lives in `~/.dsh/.credentials.yaml`, never materialized into the environment and never sent back to the browser).
-**That checkbox is ticked by default** (whenever the host provides `remote.credentials`): type a plaintext password,
-save, and the value goes to the store while the settings keep only a reference — better than writing the password
-plaintext into the settings file, which *is* shipped to the browser while the store's values never are. When the host
-lacks that service the box is switched back off and disabled, with a note that only plaintext saving is available.
+Under **Password** in the connection dialog sits a **credential storage** row: tick “store when saving” and
+the password is written to the **official credential store**, leaving only an `env:NAME` reference in the
+field (the value lives in `~/.dsh/.credentials.yaml`, never materialized into the environment and never sent
+back to the browser). **It is ticked by default** (whenever the host provides `remote.credentials`); when the
+host lacks that service the box is disabled, with a note that only plaintext saving is available.
 
-- **It rides along with saving — no extra click**: the tick is executed by "save changes" / "connect (and save)", so
-  there is no dangling reference from "stored but not saved". **Without "save to the connection book" it never touches
-  the store** — there would be no configuration to reference the value, only an orphan. **The settings card's inline
-  editor is the same row with the same default**, except that its commit entry point is "apply" (that card's
-  row-level commit, followed by the card's "save"), so the checkbox reads "store into credential storage on apply";
-  the same caveat applies there: the value lands in the store first, and abandoning "save" afterwards leaves a name
-  that is not referenced yet (visible and clearable in the reference picker).
-- **Two side effects of the default (so neither is a surprise)**: (1) editing an older connection whose password is
-  **plaintext** and hitting "save changes" for an unrelated field also moves the password into the store (the settings
-  keep a reference instead) — untick the box if you do not want that; (2) when the store refuses the write (typically a
-  read-only source shadowing the reference) **saving is aborted** and the official verbatim error is shown, rather than
-  quietly falling back to plaintext (the derived name carries a `DSH_TTY_` prefix plus a hash, so shadowing is
-  practically impossible).
-- **Deliberately compact**: in plaintext mode the row is a single checkbox; only once the field holds a reference does
-  it swap in "clear stored credential" and the status (`already stored (source file) · reference name`). The full
-  security boundary lives in the checkbox's tooltip instead of taking up dialog space.
-
-- **Model**: configuration holds a **reference**, the store owns the value — the same family as SecureCRT's
-  "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The
-  implementation goes through DSH's official `ctx.remote.credentials` (`describe` / `set` / `unset`, where
-  **values cross in one direction only — no read path exists**), exactly as the official settings cards do.
-- **Name** (the rule is fixed): `DSH_TTY_<username>_<host>[_<port>]_<field>`, where the port is **omitted when
-  empty or 22 (the default)** — matching the connecting side's `spec.port ?? 22` (empty means 22), so
-  “empty / `22` / `" 22 "`” all collapse into one key and the same account never ends up with two names or one
-  password stored twice; a non-default port does take part (the same host on another port is often a different
-  box behind NAT). `field` is `PASSWORD` / `PASSPHRASE`; e.g. `operator@192.0.2.10:22` →
-  `DSH_TTY_OPERATOR_192_0_2_10_PASSWORD` (the dots of a dotted IP fold to `_`). It is **derived from the resource identity and carries no hash** — the
-  same school as git-credential-store's `protocol://username@host` and docker credential helpers'
-  `ServerURL` + `Username`: host and username **are ASCII identifiers already**, so nothing needs sanitizing and
-  nothing needs a hash to disambiguate. The old hash-based version was patching over "sanitize a human label into a
-  key": the reference grammar accepts ASCII only, so `web 01` / `web_01` (space vs underscore) collapse to exactly the same
-  string and only a hash could stop them silently overwriting each other. A resource identity has no such trap — a
-  collision can only happen for **the same host, the same user, the same port**, which is the same password by
-  definition (sharing it is correct behaviour). **The connection name never takes part in the key**, so renaming a
-  connection or rewriting its label never changes the key. An empty host or username is refused (they are the key's
-  entire source; drop either and the derivation degenerates into a constant). The trade-off is readability: this
-  dialog's "store" **names it by the rule above and offers no custom name** ✗ — to reuse a custom name, type
-  `env:name` into the field directly (the name must already resolve in the credential layer, e.g. managed by the
-  official settings or env card).
-- **Derivation happens only at store time**: afterwards the `env:NAME` in the configuration is the single source of
-  truth and nothing re-derives it — so renaming a connection does **not** invalidate a stored value and no longer
-  leaves an orphan (only the old hash-based rule did: with the name in the key, storing again after a rename left the
-  previous name behind; clear it with "clear stored credential", which acts on the reference in the field).
-- **Shared**: references live in one flat namespace, so any consumer resolving the same way can use it — put
-  the same name in a dsh-docker target's `password` and one secret serves both.
-- **Visibility**: the dialog's reference picker lists **the names the store already holds** — the host-side
+- **It rides along with saving — no extra click**: the tick is executed by “save changes” / “connect (and
+  save)”, so there is no dangling reference from “stored but not saved”. **Without “save to the connection
+  book” it never touches the store** (there would be no configuration to reference the value, only an
+  orphan). The settings card’s inline editor is the same row with the same default, except that its commit
+  entry point is “apply”.
+- **Two side effects of the default**: (1) editing an older connection whose password is **plaintext** and
+  saving any unrelated field also moves the password into the store (untick the box if you do not want
+  that); (2) when the store refuses the write, **saving is aborted** and the official verbatim error is
+  shown, rather than quietly falling back to plaintext.
+- **Name rule**: `DSH_TTY_<username>_<host>[_<port>]_<field>`, where the port is **omitted when empty or 22**;
+  `field` is `PASSWORD` / `PASSPHRASE`; e.g. `operator@192.0.2.10:22` →
+  `DSH_TTY_OPERATOR_192_0_2_10_PASSWORD`. It is **derived from the resource identity and carries no hash**
+  (host and username are ASCII identifiers already); the connection name never takes part in the key, so
+  renaming a connection never changes it. An empty host or username is refused.
+- **Resolution path**: connecting, the probe, SFTP and tunnels all funnel through one `buildConnectConfig`,
+  whose `env:NAME` is resolved by the **official credential provider** (re-resolved per operation — a change
+  lands on the next operation). Only when the provider has no such reference, or the host has no such
+  service, does it fall back to `process.env`. **Why the provider is mandatory**: values in the credential
+  store are **never materialized into the environment**, so reading `process.env` alone means “a stored
+  password is unreadable at connect time”.
+- **Visibility**: the dialog’s reference picker lists the names the store already holds — the host-side
   `/api/dsh-tty/credential-refs` reads back only the `refs:` keys (names only; values never leave the host).
-  Why read it ourselves: the reference half is **not enumerable** over the protocol (rationale in the picker
-  section), yet “which names have I stored” is exactly the question this picker answers. It also makes
-  **orphan references** (old names left behind by a naming-rule change) visible, selectable and
-  clearable again.
-- **Resolution path (what makes a stored value actually usable when connecting)**: connecting, the probe, SFTP
-  and port tunnels all funnel through one `buildConnectConfig`, whose `env:NAME` is resolved by the **official
-  credential provider** (`resolve`, re-resolved per operation — a change lands on the next operation, no host
-  restart). Only when the provider has no such reference, or the host has no such service, does it fall back to
-  `process.env`. **Why the provider is mandatory here**: values in the credential store are **never materialized
-  into the environment** (the provider README's own words: “a store the harness owns and never materializes into
-  the environment”), so reading `process.env` alone means “a stored password is unreadable at connect time”. A
-  provider error is never swallowed — when the environment lacks it too, the error names both sources (otherwise
-  “the credential service is broken” masquerades as “you did not configure it”).
-- **The conservative boundary (know this)**: `~/.credentials.yaml` is a **0600 plain file with no master
-  password and no OS keychain** — it keeps out **other OS users**, not processes running as you, and not the
-  agent; and it is **machine-local**, so a new machine means storing again. The industry consensus still
-  stands: **prefer keys / agent over stored passwords** (this plugin supports both).
-- **Degradation**: without `remote.credentials` (older host) the buttons disable with a reason and plaintext
-  saving still works.
+  This is a deliberate deviation from the official “references are not enumerable” design (names reach the
+  browser, values do not).
+- **The conservative boundary**: `~/.credentials.yaml` is a **0600 plain file with no master password and no
+  OS keychain** — it keeps out **other OS users**, not processes running as you, and it is **local to the
+  machine** (re-store after moving). Prefer a key / agent over storing a password (both are supported).
 
 ## Port forwarding (0.5.0)
 
-Maintain tunnels in the “Port forwarding” block of the “Terminal Panel” card; each tunnel
-references one connection-book entry (host and authentication come with it), in two directions:
+The “Terminal Panel” card’s “Port forwarding” block maintains tunnels; each tunnel references one
+connection-book entry (host and authentication follow it), in two directions:
 
-- **Local forwarding (-L)**: listen on local `127.0.0.1:localPort` → connect through SSH on the server side
-  to `remoteHost:remotePort` — maps a remote database/internal service to the local machine (the most
-  frequent use: `localPort=5432 → db.internal:5432`);
-- **Remote forwarding (-R)**: the server listens on `remoteHost:remotePort` (default
-  127.0.0.1) → inbound connections are dialed back to local `localTargetHost:localTargetPort` — exposes a
-  local dev server to a remote network/intranet;
-- **The host owns the lifecycle**: tunnels and terminal tabs are independent of each other (each has its own
-  SSH connection), and tunnels keep running with the panel closed; SSH disconnects reconnect automatically
-  with exponential backoff (1s→15s cap), and the remote direction re-runs forwardIn after a reconnect; after
-  the connection-book password changes, a reconnect uses the new credentials automatically;
-- **Profiles running side by side must offset their localPort**: port forwarding is a **machine-level**
-  resource, while the configuration is stored per profile (copying a profile copies its tunnels too). Two
-  profiles running the same tunnel at the same time leave the later one with `EADDRINUSE`, stuck in
-  `error` with `fatal:true` (**no retry**; changing the configuration rebuilds it from the new spec). The
-  error message names “possibly the host process of another DSH profile” and offers two ways out;
-- **Ports are probed at save time (0.26.0)**: saving the tunnel configuration first **probes each local
-  port** (an exclusive probe: `listen`, then release immediately) so two classes of problem surface at the
-  moment you save instead of later — ① the configuration being submitted has two local tunnels on the same
-  `localPort` (decidable at configuration level), and ② the port is held by something **outside this
-  process** (another profile's host, or another program).
-  **The probe only warns; it never blocks the save**: the 200 response carries an extra `warnings` array and
-  the card shows it in the **yellow** warning slot (which replaces the green “is active” — that tunnel will
-  sit in red `error` and never retry, so “is active” would read as everything being fine). Why not reject:
-  the card saves the **whole table at once**, so rejecting would lock a user whose config already contains a
-  conflict out of saving *anything* — and fixing it is exactly what requires saving first.
-  Two rules worth remembering: a port **this process already holds is exempt** (editing a running tunnel's
-  other fields leaves its port held by itself — that is not a conflict, since reconcile stops then starts and
-  the port returns in the same tick), while a **disabled** tunnel still counts as a duplicate (it can be
-  enabled at any moment). A remote direction's `remotePort` is listened on the server side and is not probed
-  locally;
-- **Status badges**: while the card is expanded it polls live status every 2s (active green/connecting
-  blue/error red/stopped grey + last error); connection-book entries in the “+” menu show a `⇄N` tunnel
-  badge; the agent can query status with the `tunnel_list` tool;
-- **Connbar entry (0.20.0)**: a connection **with enabled tunnels** gets a permanent “隧道 N” button
-  (click for live status); one **without** them folds into a “**⋯ More**” menu — previously such a
-  connection gave **no hint at all** that port forwarding existed, so the user had to stumble onto the
-  settings card. Folding it into “⋯” adds a discovery path without occupying permanent width (the connbar
-  gives its width to the tab strip first). Note a tunnel must reference a connection-book entry, so only
-  book-backed connections get this entry; an unsaved ad-hoc connection from the “new connection” dialog
-  cannot have tunnels. **Since 2026-10-31 “⋯” is always present** — it no longer exists only as the tunnel
-  fallback, it also carries “copy connection info / copy ssh command”. See “Connection bar: identity and
-  copy” below.
-- **Form layout (0.20.0)**: direction uses a **segmented control** (local -L / remote -R — two values do
-  not deserve a dropdown); the two ends are shown in pairs as **host:port**, with an **arrow** between them
-  showing the data flow (it flips when you switch to -R). Each direction has **exactly one fixed end**
-  (the host hardcodes it) and that end renders as **static text rather than an input** — an input you cannot
-  change would be a lie:
-  - `-L`: the left end is fixed at `127.0.0.1` (bound locally, not exposed to the LAN); the right end takes
-    the SSH-server-side target;
-  - `-R`: the left end takes the SSH-server-side listen address; the right end is fixed at `127.0.0.1`
-    (the local service being reached).
-  Two styling rules (from a user screenshot: “输入框的样式优化一下”): the group **hugs its content** instead of
-  stretching with the row (otherwise the left group leaves a dead zone after the port box, while the right
-  group's host soaks up all the slack and pushes the colon and port to the card's right edge); and the inputs
-  inside the group **do not paint their own focus ring** — the group is `overflow: hidden`, so a 2px ring gets
-  clipped down to a single vertical line that reads like a stray separator; the whole group lights up instead
-  (`test/tunnel-endpoint.test.ts` pins that pairing).
-- **Editing (0.20.0)**: “Edit” on a row loads it back into the form below and the button pair becomes
-  “Save changes / Cancel”. Saving locates the entry by its **original name** — a tunnel name is derived
-  (`<book>-L<localPort>`), so changing the port *is* changing the name and the new name cannot find the old
-  row; `enabled` **keeps its previous value** (editing a spec never silently enables a stopped tunnel); the
-  row being edited gets a left accent bar. **A name clash is reported explicitly** (no more silent `-2`
-  suffix, which used to spawn a second tunnel differing only by a trailing number).
-- **A failed local listen is sticky**: when the port is taken (`EADDRINUSE`) the state stays red `error`
-  with the reason kept, and is **not** rewritten to “connecting” by the SSH-side retry (fixed in 0.20.0).
-  Recover by changing the port (with the editor) or freeing it.
-  ⚠️ `~/.dsh/settings.yaml` is **shared across profiles**: with several profiles on one machine the same
-  tunnel gets started by each of them and they fight over the same local port — a configuration conflict,
-  not a plugin bug.
-- TOFU shares the same `hostKeys` pinning as terminal sessions; ports do not consume `maxSessions` slots.
+- **Local forwarding (-L)**: listen on local `127.0.0.1:localPort` → connect to `remoteHost:remotePort` on the
+  server side over SSH (the most common use: `localPort=5432 → db.internal:5432`);
+- **Remote forwarding (-R)**: the server listens on `remoteHost:remotePort` (default 127.0.0.1) → inbound
+  connections dial back to the local `localTargetHost:localTargetPort`;
+- **The host owns the lifecycle**: tunnels are independent of terminal tabs (each has its own SSH
+  connection), so they keep running after the panel is closed; SSH drops reconnect with exponential backoff
+  (1s→15s cap), and the remote direction re-forwards on reconnect. **Exception**: a local listen failure /
+  missing book entry needs a human — the state stays at `error` with `fatal:true` and is **never retried**;
+- **Multiple profiles must use different localPorts**: port forwarding is a machine-level resource while
+  configuration is stored per profile; two profiles grabbing the same port → the later one gets
+  `EADDRINUSE`, and the error names “possibly another DSH profile’s host process”;
+- **Ports are probed when saving (0.26.0)**: on save the host probes the local ports (exclusive probe,
+  released immediately on success), surfacing “two tunnels share one localPort” and “the port is taken by
+  something outside this process” at save time. **A probe only warns, it never blocks saving** (shown as a
+  yellow warning; hard-rejecting a whole-table submit would lock the user out of saving anything). Ports
+  this process already holds are exempt; a disabled tunnel still counts as a name conflict; the remote
+  direction’s `remotePort` is listened on the server and is not probed locally.
+- **Status badges**: while the card is expanded it polls live state every 2s (active green / connecting blue /
+  error red / stopped gray + last error); the “+” menu shows a `⇄N` badge on book entries; agents query with
+  `tunnel_list`;
+- **Connection-bar entry**: a connection **with an enabled tunnel** gets a permanent “Tunnel N” button;
+  without one it folds into “**⋯ More**” (a discovery path that costs no permanent width). Tunnels must
+  reference a book entry, so only entry-based connections have this entry;
+- **Form layout**: the direction is a **segmented control**, both ends are shown as a “**host:port**” pair
+  with an **arrow** between them indicating the data flow (flipped for -R). Each direction has **exactly one
+  fixed end** (-L: `127.0.0.1` on the left; -R: `127.0.0.1` on the right), rendered as static text rather
+  than an input box;
+- **Editing**: each row’s “Edit” fills the form below and the button becomes “Save changes / Cancel”; saving
+  locates the original by **its old name** (the name is derived as `<book entry>-L<local port>`, so “change
+  the port” means a new name), and `enabled` keeps its value; a name collision is an explicit error;
+- **A local listen failure is sticky**: the state stays at red `error` with the reason, and is not overwritten
+  by SSH-side retries; recover by changing the port or freeing it;
+- TOFU shares the same `hostKeys` pinning as terminal sessions; ports do not consume a `maxSessions` slot.
 
 ## SFTP file transfer (0.7.0, enhanced in 0.8.0/0.9.0)
 
-Remote file operations go straight over the SSH connection without touching the terminal or using a session
-slot (`ssh2`’s sftp subsystem, host half in `src/sftp.ts`):
+Remote file operations directly over the SSH connection, without touching the terminal or consuming a session
+slot (`ssh2`’s sftp subsystem, host half `src/sftp.ts`):
 
-![SFTP single pane (docked in a drawer below the terminal since 0.16.0): browsing a remote directory, with inline download/rename/delete](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
+![SFTP single-pane (docked under the terminal since 0.16.0): remote directory browsing with inline download / rename / delete](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
 
-![SFTP dual pane (0.9.0; docked in a drawer below the terminal since 0.16.0): local on the left / remote on the right, with inline ⇨/⇦ server-side direct transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP dual pane (0.9.0; docked under the terminal since 0.16.0): local on the left / remote on the right, inline ⇨/⇦ server-side transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-- **Placement (0.16.0)**: when the terminal panel is open and **this tab’s** mount slot is free, the File Browser
-  **docks below the terminal** — the path bar / list / transfer progress take the full width (a file list is
-  a wide table, so full width below beats a narrow column on the right, and the terminal also keeps its width
-  without wrapping; a dual pane side by side needs that width even more), and the terminal stays visible and
-  usable. The height is draggable and can collapse into a single title bar (collapsing neither closes the
-  panel nor interrupts browsing); when another panel (such as the containers panel) already holds the slot on
-  the same tab, or the panel is not open, it falls back to the original centered dialog, **without pushing
-  anyone else’s panel out**. The title / collapse / ✕ come from tty’s mount slot;
-- **Follows the tab (0.19.0)**: the File Browser talks to the host of the tab that opened it, so it belongs to
-  that tab: switching away hides it (in-flight transfers keep running and the scene is restored when you come
-  back), and closing the tab tears it down. **Every entry follows the same rule** — the connection bar’s
-  “SFTP”, the 📂 on a connection-book entry and “File Browser” in the SSH dialog / settings card all become
-  owned by whatever tab was active when they were opened; only “panel open with no tabs at all” counts as
-  owned by no tab (always visible). Before this, the pane stayed put across a tab switch — title reading host
-  A while the active tab was B, worst case uploading to the wrong host;
-- **Entries**: ① connection-book entries in the tab bar “+” menu carry a 📂 (open the File Browser for that
-  entry); ② fill in host/authentication in the SSH connection dialog and click “File Browser” (you can
-  browse without saving to the connection book); ③ the “SFTP” button in an SSH tab’s connection bar (owned by
-  that tab, see the previous bullet);
-- **Operations**: directory browsing (Enter in the path box to jump, `.. (parent directory)`, a single click
-  on a file downloads it), **upload** (multi-select files, XHR streaming + percentage progress; since 0.8.0
-  **drag & drop** is supported — files and folders can be dropped straight into the dialog, folders are
-  expanded recursively through `webkitGetAsEntry` and uploaded one by one, and directories are filled in
-  level by level with mkdir parents), **download** (POST → browser Blob
-  → `<a download>`), **new directory**, **rename** (inline editor), **delete**
-  (🗑 with a second click to confirm, directories deleted with `recursive`);
-- **Transfer progress bar (0.11.0)**: a thin progress bar + percentage was added on the right of the bottom
-  status line — uploads use XHR streaming progress (multi-file shows an `i/n · filename` label); downloads
-  now stream `response.body` and compute the percentage live from the response `content-length` (with no
-  length it degrades to a transferred-bytes text);
-- **Cancelling a transfer (0.12.0)**: the ✕ on the right of the progress bar — **upload** aborts the
-  in-flight XHR (remaining files in the batch are skipped too); **download** uses `AbortController` to break
-  off the streaming read; **dual-pane ⇨/⇦ direct transfer** became a server-side job (start returns a jobId
-  → 400ms polling of real byte progress → ✕ sends cancel to abort), no longer an unbreakable synchronous
-  HTTP request. After a cancel the **half-written file is deleted automatically** (the leftover remote file
-  of an upload / the leftover local file of a download; a failed cleanup is only logged), the status line
-  reads “cancelled” instead of a red failure state; closing the File Browser dialog also collects in-flight
-  transfers, leaving no background copying that is “invisible but still writing to the remote”;
-- **Connection management**: a lazy connection pool — the SSH connection is created on the first operation,
-  recycled after 120 seconds idle, and reconnected automatically on the next operation after a drop;
-  connection-book entries are resolved live on every (re)connect (a changed password takes effect
-  automatically); TOFU shares the same `hostKeys` pinning with terminal sessions/tunnels, and a changed
-  fingerprint is rejected the same way; SFTP does not count against `maxSessions`;
-- **Resumable downloads (0.25.0, panel downloads)**: when a download drops, it **resumes from the bytes
-  already received** — the host's `/sftp/download` route now accepts `offset` (`>0` returns 206 +
-  `content-range` with `content-length` reporting the **remaining** length; `offset ≥ file size` returns 416
-  rather than a zero-byte 200, so “what you wanted is already local” is never mistaken for “the file is
-  empty”). The rules live in the pure module `client-src/download-resume.js` (`planResume`): **clicking ✕
-  never resumes** (cancel means “stop”, auto-retrying ignores the user), zero progress never resumes, the
-  retry budget is capped (3 by default), and the progress bar does **not** reset to zero while resuming.
-  Directory-level direct transfer (dual-pane ⇨/⇦) still sends everything again;
-- **Dual-pane drag & drop and hidden files (0.25.0)**: drop a file/folder from the file manager onto the
-  **right-hand remote pane** to upload it into that pane's current directory (folders are expanded through
-  `webkitGetAsEntry` and filled in with `mkdir parents`, same as the single-pane path); dropping onto the
-  **local pane** says explicitly that there is nothing to do instead of failing silently — the rule lives in
-  `client-src/sftp-view.js` (`planDrop`). Each pane's toolbar gains a “Hidden files” toggle (off by default,
-  preference kept in localStorage) so `.env` / `.gitignore` can be shown on demand; **filtering happens only
-  in the render layer** — the host `list` and the agent's `sftp_list` always return every entry (an agent
-  that cannot see hidden files draws wrong conclusions);
-- **Transfer channel**: `POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
-  upload` (all loopback-fenced). `download` also accepts an optional `offset` (resume). The connection spec travels in the JSON body (connection-book name or
-  inline fields, with the same semantics as WS ssh frames: “entry as the base + inline per-field overrides”)
-  or, for upload, in the `x-dsh-sftp-meta` header (base64url) — **credentials never enter the URL/query
-  string**; uploads and downloads are streamed pipes, and a whole file never enters memory;
-- **Agent tools**: `sftp_list` / `sftp_read` / `sftp_write` / `sftp_mkdir` /
-  `sftp_rename` / `sftp_remove` / `sftp_tree` (see the table above) — they accept only a
-  `book` connection-book entry name and **take no inline credentials** (agent context never carries plaintext secrets);
-- **Dual-pane style (0.9.0, optional, `sftpStyle` configuration)**: local left / remote right — browsing and
-  file operations on the local side go through the new `/api/dsh-tty/local-fs` route (list/mkdir/rename/
-  remove, loopback-fenced); the inline `⇨ / ⇦` copies an entry to the current directory of the opposite pane
-  (`/api/dsh-tty/local-fs/transfer` streams the two paths server-side, recursing into directories and
-  overwriting same-named files, **with bytes never passing through the browser**); the single-pane style is
-  unchanged; switch it in the settings card and reopen SFTP for it to take effect.
+- **Placement (0.16.0)**: while the terminal panel is open and **this tab’s** mount slot is free, file browsing
+  docks **under the terminal** (path bar / list / transfer progress use the full width) and the terminal
+  stays visible and usable; the height is draggable and collapsible to a title bar. When the slot is taken by
+  another pane, or the panel is closed, it falls back to the centered dialog (never evicting someone else’s pane);
+- **Follows the tab (0.19.0)**: a file browser belongs to the tab that opened it (it is connected to that
+  host): switching tabs collapses it (transfers keep running, and it is still there when you come back), and
+  closing the tab removes it. Every entry point uses the same rule;
+- **Entry points**: (1) book entries in the “+” menu carry 📂; (2) the SSH dialog’s “File browsing” button
+  (works without saving a book entry); (3) the “SFTP” button on an SSH tab’s connection bar (belongs to that tab);
+- **Operations**: directory browsing (path box + Enter to jump, `..（parent directory）`, a single click on a
+  file downloads it), **upload** (multi-select, XHR streaming + progress; **drag & drop** since 0.8.0 —
+  folders expand recursively via `webkitGetAsEntry`, directories created with mkdir parents), **download**
+  (POST → Blob → `<a download>`), **new directory**, **rename** (inline editor), **delete** (🗑 with a second
+  click; a directory is deleted with `recursive`);
+- **Progress and cancel**: a thin progress bar + percentage sits at the right of the status row (downloads
+  compute it from `content-length`, falling back to transferred bytes); ✕ cancels a transfer — uploads abort
+  the in-flight XHR, downloads use `AbortController`, dual-pane transfers send a host-side cancel, **half
+  files are deleted automatically**, and the status row says “cancelled”; closing the browser also stops
+  in-flight transfers;
+- **Connection management**: a lazy pool — the SSH connection is created on first use, reaped after 120s of
+  idleness, and reconnected on the next operation; book entries are resolved on every (re)connect (a changed
+  password is used next time); TOFU shares `hostKeys` with terminal sessions and tunnels;
+- **Resumable downloads (0.25.0, panel downloads)**: a download interrupted mid-way **resumes from the bytes
+  already received** — the host’s `/sftp/download` accepts `offset` (>0 returns 206 + `content-range` with
+  `content-length` reporting the **remaining** length; `offset ≥ file size` returns 416). The rule lives in
+  `client-src/download-resume.js` (`planResume`): **an explicit ✕ never resumes**, zero progress does not
+  resume, retries are capped (3 by default), and the progress bar does not reset while resuming. Directory
+  transfers are still full re-sends;
+- **Dual-pane drag & drop and hidden files (0.25.0)**: drag an item onto the **remote pane** to upload it to
+  that pane’s current directory; dragging onto the **local pane** says explicitly “no action available”
+  (decided in `client-src/sftp-view.js`’s `planDrop`). Each pane’s toolbar has a “hidden files” toggle
+  (preference stored in localStorage); **filtering happens in the renderer only** — the host `list` and
+  `sftp_list` always return everything;
+- **Transport**: `POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|upload` (all behind the loopback
+  fence); `download` also takes an optional `offset`. Connection specs travel in the JSON body or in the
+  upload’s `x-dsh-sftp-meta` header (base64url) — **credentials never go in the URL/query string**; uploads
+  and downloads are streamed pipe to pipe, not buffered whole in memory;
+- **Agent tools**: `sftp_list` / `sftp_read` / `sftp_write` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` /
+  `sftp_tree` — they only accept a `book` entry name, **never inline credentials**;
+- **Dual-pane style (0.9.0, config `sftpStyle`)**: local on the left / remote on the right; the local side
+  goes through the `/api/dsh-tty/local-fs` routes; inline `⇨ / ⇦` copies an item to the opposite pane’s
+  current directory (`/api/dsh-tty/local-fs/transfer` streams it server-side, directories recursive, same
+  name overwritten, **bytes never pass through the browser**). Switched in the settings card and applied when
+  SFTP is reopened.
 
 ## Session persistence (tmux, 0.10.0)
 
-The default safety model is unchanged: sessions live and die with the host (kernel-level PTY cleanup). For
-work that must “outlive the host” (dev servers, builds, training jobs), turn on a **persistent terminal** —
-session state is delegated to a tmux server (a dedicated socket, fully isolated from the user’s own tmux),
-so it survives the keep-alive timeout and can even be reattached after a host restart:
+The default security model is unchanged: sessions live and die with the host (kernel-level PTY cleanup). For
+work that must outlive the host (dev servers, builds, training jobs), open a **persistent terminal** — the
+session is delegated to a tmux server (dedicated socket, fully isolated from your own tmux), so it survives
+disconnects and even a host restart:
 
-> **The socket is profile-scoped** (since 0.25.0): `tmux -L dsh-tty-<profile>`, and the runtime assets
-> (`tmux.conf` / `inner.sh` / shell stubs under `<DSH_HOME>/tty/<profile>/`) are layered the same way — with
-> several profiles running, each sees only its own persistent sessions and `kill-server` only affects its
-> own. **A host started without a profile keeps the historical `dsh-tty`** (and `<DSH_HOME>/tty/`), so a
-> single-profile user sees no path or behaviour change after upgrading.
+> **The socket is per profile** (since 0.25.0): `tmux -L dsh-tty-<profile>`, and the runtime assets
+> (`<DSH_HOME>/tty/<profile>/`) are layered to match — multiple profiles never see each other’s persistent
+> sessions. **A host started without a profile keeps the historical name `dsh-tty`**, so a single-profile
+> user’s behaviour and paths are **unchanged after upgrading**.
 
-- **Entry (simplified in 0.10.1)**: choosing `tmux` for “Session persistence” in the settings card is the
-  only switch — once it is on, **every newly opened tab is persistent by default**: “Local terminal” in the
-  “+” menu, clicking a connection-book entry, and the SSH connection dialog (“persistent session” is checked
-  by default and can be unchecked for a single connection). There is no longer a separate “persistent
-  terminal” menu item;
-- **Per-entry opt-out (`sshHosts[].persist`)**: the “persistent session” checkbox on a connection-book entry
-  stores an **opt-out** — entries explicitly unchecked (`persist: false`) are no longer tmux-backed when
-  clicked, everything else (`true` or never written, e.g. entries imported from `~/.ssh/config`) follows the
-  global switch. Both the settings card and the connection dialog show that checkbox only while the global
-  switch is on, and **editing an entry in the settings card no longer drops it** (before 0.17.x, renaming a
-  single field silently reset it to `false`);
+- **Entry point**: choosing `tmux` for “Session persistence” in the settings card is the only switch — once
+  on, **every new tab is persistent by default** (“+” menu’s local terminal, book entries, the SSH dialog
+  (“persistent session” ticked by default, cancellable per connection));
+- **Per-entry opt-out (`sshHosts[].persist`)**: the checkbox on a book entry stores an **opt-out** — an entry
+  with `persist: false` is no longer tmux-managed, while every other entry follows the global switch (entries
+  imported from `~/.ssh/config` are unaffected);
 - **Mechanism**: spawn/ssh frames carry `persist` plus a stable `persistName` generated by the client and
-  saved with the tab spec — locally the `-c` wrapper layer becomes `exec tmux -L <socket> -f
-  <conf> new-session -A -s dsh-<name>` (cwd is inherited from the node-pty spawn); over SSH the remote runs
-  `exec tmux -L <socket> -f /dev/null new-session -A -s dsh-<name>` to open the pty channel
-  (`<socket>` = `tmuxSocketName()`, profile-scoped since 0.25.0). `-A` is
-  attach-or-create: after a host restart, reopening a tab reattaches to the same tmux session by name,
-  restoring running programs and pane state exactly;
-- **Recovery chain**: after the browser reconnects it queries `sessions` — persistent tabs whose sid is gone
-  are respawned automatically by the client with the original persistName (non-persistent tabs keep the drop
-  semantics); when the keep-alive reaper times out it kills only the PTY (the tmux client) and **not the tmux
-  session**, so it can still be reattached afterwards; a reconnect (attach) within the same host does **not
-  replay the host buffer** for a tmux session — replaying would first write the visible screen into a
-  brand-new xterm (ghost scrollbar) and then the tmux full-screen redraw would paint it again (double image)
-  — instead it forces exactly one `tmux refresh-client` redraw;
-  persistent tab specs are also written to **localStorage** (sessionStorage is visible only to the same
-  browser tab, so a new window that dsh opens automatically after a restart could not read it and recovery
-  broke exactly there) — when a brand-new window opens the panel it respawns straight from the spec: if the
-  tmux session is alive it reattaches to the original scene, and if it is gone (remote reinstall/lost) it
-  starts a new shell; specs are only dropped when “the tab is actively closed/exited”, with no up-front
-  liveness check (once the retained state such a check relies on drifts, recovery would fail silently);
-- **Close semantics**: for a tmux-backed session the kill frame (tab ✕ / closing the panel) runs
-  `tmux kill-session` before killing the client — a real end, not a detach that leaves a live session
-  behind; closing the whole page **retains** by default (recoverable after the keep-alive window), while
-  `endOnPageClose: true` also ends the tmux session when the keep-alive window expires;
-- **Shell integration compatibility**: tmux swallows escape sequences it does not recognize — the hooks
-  detect `$TMUX` and wrap OSC 133/7 in a DCS passthrough envelope (ESC inside the payload is doubled), and
-  with tmux ≥3.3 + `allow-passthrough on` (written into the stub conf by the host automatically) it is
-  unwrapped and forwarded, so the host parser still sees bare markers: `tty_expect` / OSC 7 cwd tracking keep
-  working inside persistent tabs; `tty_capture{last}` has one further correction — tmux pane redraws are
-  asynchronous and batched, so command output can land after the D marker and escape the capture window, so
-  the hook runs `capture-pane` before emitting D and sends the pane content inline as `OSC 133;T` (base64,
-  last 200 lines), and the host prefers the T snapshot as the command output (output beyond 200 lines is
-  truncated at the head, consistent with the ring-buffer semantics);
+  saved with the tab spec — locally the `-c` wrapper is replaced by
+  `exec tmux -L <socket> -f <conf> new-session -A -s dsh-<name>`; for SSH the remote side runs
+  `exec tmux -L <socket> -f /dev/null new-session -A -s dsh-<name>` with a pty channel. `-A` is
+  attach-or-create: after a host restart a reopened tab reattaches by name;
+- **Recovery path**: after reconnecting, the browser queries `sessions`; for persistent tabs whose sid is gone,
+  the client respawns with the original persistName. The keep-alive reaper only kills the PTY (the tmux
+  client), **not the tmux session**, so it can still be reattached. An in-host reconnect (attach) does **not**
+  replay the host buffer for tmux sessions; it forces one `tmux refresh-client` redraw instead (replaying
+  would double-draw). Persistent tab specs are also written to **localStorage** (sessionStorage is only
+  visible to the same browser tab, so a new window would otherwise restore nothing);
+- **Close semantics**: a kill frame (tab ✕ / closing the panel) runs `tmux kill-session` before killing the
+  client — a real end rather than a detach. Closing the whole page keeps sessions alive by default (they can
+  be reattached after the keep-alive window); `endOnPageClose: true` also ends the tmux session when the
+  keep-alive window expires;
+- **Shell-integration compatibility**: tmux swallows escape sequences it does not know — the hooks detect
+  `$TMUX` and wrap OSC 133/7 in a DCS passthrough envelope (ESC doubled inside the payload); tmux ≥3.3 with
+  `allow-passthrough on` (written by the host into the stub conf) unwraps and forwards it.
+  `tty_capture{last}` gets a separate correction: before sending D the hook runs `capture-pane` and streams
+  the result as `OSC 133;T` (base64, last 200 lines), which the host prefers as the command output;
 - **Runtime assets**: a stable stub directory under `<DSH_HOME|~/.dsh>/tty/` (the tmux server outlives the
-  host process, so a temporary directory will not do): `tmux.conf` (status off to keep redraws from
-  polluting captures, true-color overrides, `default-command` pointing at the inner launcher) and `inner.sh`
-  (execs the inner shell from the current configuration, with the zsh ZDOTDIR / bash --rcfile stubs injected
-  as usual); configuration changes apply hot to newly opened panes, while `tmux.conf` itself is read only
-  when the tmux server first starts;
-- **Degradation**: with no tmux installed locally/remotely, a persistent spawn falls back to a normal session
-  automatically and the terminal prints a grey one-line hint; everything works fine without installing
-  anything, just without persistence.
+  host process, so a temp directory will not do): `tmux.conf` (status off, true-color overrides,
+  `default-command` pointing at the inner launcher) and `inner.sh` (execs the inner shell with the current
+  configuration). Config changes apply to new panes; `tmux.conf` itself is read only when the tmux server
+  first starts;
+- **Degradation**: when tmux is not installed locally/remotely, a persistent spawn falls back to an ordinary
+  session and prints one gray line in the terminal.
 
 ## SSH connections
 
-Since 0.2.0 the tab bar “+” is a one-click menu that, besides local terminals, also opens **SSH tabs**: the
-host half connects natively with `ssh2` and opens a shell channel (no local ssh process and no node-pty),
-wrapped into a session object identical to a local PTY — input, resize, close, output buffer, backpressure
-and the agent tools all reuse the same scheduling.
+Besides local terminals, the tab bar’s “+” also opens **SSH tabs**: the host half establishes the connection
+natively with `ssh2` and opens a shell channel (not through a local ssh process, not via node-pty), wrapped
+into exactly the same session object as a local PTY — input, resize, close, output buffer, backpressure and
+agent tools all reuse the same scheduling.
 
-- **Three entries in the “+” menu**: local terminal / **SSH connection book** (entries saved in the
-  configuration, shown as `user@host[:port] · auth`, **entries carry 📂 File Browser and ✎ edit**) / SSH connection…
-  (a form for host / port / username / auth with an option to save before connecting, and a “File Browser” at
-  the bottom of the dialog to open SFTP with the current information, skipping the terminal);
-- **Connection book**: ticking “save to connection book” in the SSH connection dialog stores an entry (the
-  same name overwrites; an empty name uses the hostname); the ✎ on a “+” menu entry and the **edit** in the
-  settings card use the **same form** — three grouped sections (connection / authentication / options) plus
-  credential storage, the credential-reference picker, “test connection” and “File Browser”, renaming
-  supported and duplicate names rejected. The “Book name” row is **always visible** (0.31.0): typing a name
-  **automatically ticks** “save to connection book”, clearing it **automatically unticks**, and unticking by
-  hand clears the name too — what a click will save is always what the form shows. The dialog itself is a
-  **three-part shell** (0.31.0): the title
-  and the bottom action row are pinned and **only the middle scrolls**; the low-frequency items (jump host /
-  proxy command / host key alias) live in an “**Advanced**” disclosure that starts expanded when the entry
-  actually has them and collapsed otherwise (when collapsed, that row names what is configured — it is not a
-  black box). The only difference is **how it is submitted**: the menu dialog
-  (“save changes” / “connect (and save)”) writes through immediately, while the settings card commits into the
-  card's form with “apply” and persists with the card's “save”;
+- **Three entries in the “+” menu**: local terminal / **SSH connection book** (entries carry 📂 file browsing
+  and ✎ edit) / SSH connection… (a form; you may save before connecting, and “File browsing” at the bottom
+  skips the terminal and opens SFTP directly);
+- **Connection book**: ticking “save to the connection book” in the dialog stores an entry (same name
+  overwrites, an empty name uses the host name); the menu entry’s ✎ and the settings card’s **Edit** use the
+  **same form** (three groups: connection / authentication / options, plus credential storage + reference
+  picker + test + file browsing), supporting rename and duplicate-name validation. The “connection book name”
+  row is **always visible**: typing a name ticks save automatically and clearing it unticks. The dialog is a
+  **three-part shell** (title and bottom action row fixed, only the middle scrolls); low-frequency items (jump
+  host / proxy command / host-key alias) live in an “**Advanced**” fold;
 - **Authentication (auth), one of three**:
-  - `agent` (default) — uses ssh-agent (`SSH_AUTH_SOCK`), credentials never touch disk, most recommended;
-  - `key` — `keyPath` private key file (a leading `~` may omit home), `passphrase` optional;
-  - `password` — password authentication, with keyboard-interactive attached as well (many servers only offer that);
-- **Passwords / passphrases support `env:VAR`**: when `password` / `passphrase` is `env:MY_SECRET`, the value
-  is resolved through the **credential layer** — the official credential provider first (layering
-  `$DSH_HOME/.credentials.yaml`, the process environment, `project-env` and `user-env`, re-resolved on every
-  connection), falling back to the host process environment only when the provider has no such reference
-  (pair it with the dsh-env-manager plugin to hold secrets, keeping plaintext out of the settings file). A
-  failed resolution names both the reference and the fact that neither source had it;
-- **Port**: 22 by default; a non-22 port shows in the target as `user@host:port`;
-- **Tabs and status**: an SSH tab title uses the connection name or `user@host` (local tabs are
-  “Terminal N”); while connecting it first echoes a grey `Connecting user@host …`, and once ready the status
-  bar shows `SSH user@host connected`; a failed connection (connection timeout / authentication rejected /
-  host unreachable) comes back in an `error` frame with the reason, and since the tab spec was saved with the
-  tab, clicking the terminal area reopens it from the original spec; the status bar describes the **currently
-  active tab** — switching or closing a tab immediately swaps in that tab’s own state (the failure reason and
-  the exit code are kept on the tab itself), so the red text no longer stays on screen after you close the tab
-  that could not connect (host-level messages such as “connection lost — reconnecting” belong to no tab and
-  are not wiped by a tab switch); conversely, **a background tab’s own failure is only recorded on that tab**
-  (its tab-bar status dot turns red and the terminal overlay carries the full text) and never takes over the
-  active tab’s status;
-- **Agent forwarding (0.4.0)**: with “agent forwarding” ticked in the SSH dialog, the remote side can use the
-  local ssh-agent’s keys (such as `git clone` of a private repository remotely). It can be enabled with any
-  authentication method (credentials still never touch disk); if no ssh-agent is running locally the
-  connection fails with an explicit error instead of silently doing nothing. Connection-book entries save
-  `agentForward` and show `· fwd` in the list;
-- **`~/.ssh/config` import (0.4.0)**: “Import from ~/.ssh/config” in the connection-book area of the settings
-  card — parses `HostName/User/Port/IdentityFile` into candidate entries (skipping wildcard blocks and
-  entries without a User; `Include` is not expanded), skips same names, and writes them on “save”.
-  **Every skip is now reported** (this round): blocks that depend on a jump host (`ProxyJump` /
-  `ProxyCommand`) are **not imported and are named** — this version does not support jump hosts, and
-  importing one would only produce an entry that cannot connect and reports a generic timeout; the
-  over-limit count and the “not a concrete host” count are reported too. `ProxyJump none` /
-  `ProxyCommand none` mean an explicit direct connection and are imported as usual.
-  **`ProxyJump` is resolved into the entry's jump host (single hop) and imported with it**: the
-  value may be `user@host:port` (IPv6 as `[::1]:22`) or another concrete Host in the same config
-  (resolved by block name, in any order); the jump host **inherits the target hop's credentials**
-  by default, so set `jump.keyPath` / `jump.password` on the entry when it needs its own.
-  Unresolvable ones (missing alias, or an alias that itself needs a jump) are still skipped and
-  named; `ProxyCommand` is not supported (it would let a settings field drive arbitrary local
-  command execution — a different trust tier, see project ROADMAP item 2). **The dialog also has a “Jump host” section**: one
-  `[user@]host[:port]` input (matching OpenSSH), with user / auth / key / passphrase overrides
-  revealed only after ticking “use separate credentials”; entry rows show “⇢ via X”, and the
-  “Test” button reports the jump hop on its own line;
-- **Credential-reference picker (0.4.0; decoupled from the env plugin since 0.17)**: next to the password /
-  passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
-  **the reference names the credential store already knows** (the host reads the `refs:` keys of
-  `.credentials.yaml` — **names only, never values**) ∪ **the reference names this machine's connection book
-  already uses**; clicking one fills in `env:NAME`, and any `env:NAME` can still be typed by hand (resolution at
-  connect time goes through the **credential layer**: the provider first, `process.env` as the fallback).
-  **Why read the file / why not the env plugin's managed list**: the official discovery path for references is
-  "a configuration surface learns which references exist **from its own settings schema**" — the reference half is
-  **deliberately not enumerable** (the wording in `@deepseek-ai/dsh-credentials`'s `listRecords` docs: “the
-  reference half, which has no enumeration because configuration surfaces learn which references exist from
-  settings schemas”), and the browser-side `ctx.remote.credentials` opens only `describe` / `set` / `unset` — not
-  even `listRecords`. So “what names does this store actually hold” is unanswerable in the browser, while the
-  picker's whole purpose is exactly that question. The host therefore exposes a **read-only** route,
-  `/api/dsh-tty/credential-refs` (behind the loopback fence; it parses `refs:` keys and never returns values —
-  see `readCredentialRefNames`). This is a **deliberate departure** from the official “references are not
-  enumerable” design (cost: reference names reach the browser, values never do); to stay strictly on the official
-  route, use only the connection-book half. Boundaries: references behind a custom provider `path` / `dshHome` are
-  invisible here, and when the host read fails (or an older host lacks the route) the candidates quietly fall back
-  to the connection-book half.
-  When there are no candidates at all, the row **degrades to a single explanatory line** (rather than an input
-  that can never open, which just looks broken): it says either to tick “store on save” above, or to type
-  `env:NAME` into the field. The passphrase row has no checkbox above it, so its wording only mentions typing.
-  **The settings card's edit form has the same row with the same candidates** (also opening only when the filter
-  box takes focus); the only difference is presentation — there it is an **inline** list rather than an overlay,
-  because that card is a long scrollable form where an overlay would be clipped;
-- **Host-key TOFU pinning (0.3.0)**: after the first successful connection the host’s (host:port) sha256
-  fingerprint is recorded in `hostKeys` (persisted with settings); every later connection is verified, any
-  fingerprint in the set matches, and **a changed fingerprint rejects the connection outright** (defense
-  against impersonation), with a reset pointer in the error message. A host’s multiple keys (0.19.0, e.g.
-  rsa + ed25519) are each recorded and merged into one record — algorithm negotiation changes no longer
-  cause false alarms. After a host reinstall or key change,
-  delete the record under the “Terminal Panel” card’s “SSH host key
-  records” and reconnect (the record list supports deletion). **“Import from known_hosts”
-  (0.4.1)**: parses `~/.ssh/known_hosts` in one click to pre-fill existing host fingerprints in bulk, keeping
-  all of a host’s rsa/ed25519 entries (no longer first-entry-only); host
-  names from the connection book are also used to restore `|1|` hashed entries, and non-default ports are
-  parsed as `[host]:port`;
-- **Host-key alias (`hostKeyAlias`, 0.25.0)**: TOFU records and comparisons are located by **connection
-  address** by default, but one real host is often reached through several addresses — the internal IP behind
-  a bastion, or `127.0.0.1:2222` through a port forward. “Same key, different record” then makes every
-  address switch look like a **fingerprint change** (a false MITM alarm that **rejects the connection**),
-  while the user’s `known_hosts` only has one line. Filling in the same alias lets those addresses share a
-  single host-key record. Semantics match OpenSSH’s `HostKeyAlias`: **it only decides where the fingerprint
-  is stored, never the connection address**; empty means address-based (byte-for-byte the old behaviour).
-  A `HostKeyAlias` in `~/.ssh/config` is **imported as-is** (it is a purely local locator with no executable
-  component, a very different trust level from `ProxyCommand`). All four connection points (terminal / SFTP /
-  tunnel / test probe) share one key derivation, so “the test says it matches, the real connection says it
-  changed” cannot happen;
-- **Connection test (0.11.0)**: a “Test” button on each connection-book row of the settings card, plus a
-  “Test connection” button in the SSH connection dialog — both perform **link diagnostics only** (no session,
-  no `maxSessions` slot, no shell): first a TCP pre-check (DNS + connect, failures classified as
-  refused/timeout/DNS/unreachable), then the ssh2 handshake for a host-key TOFU comparison, and finally
-  authentication. The result is shown stage by stage: on success the elapsed time and “host key matched /
-  recorded”; on failure the exact stage reason (such as “authentication rejected: all methods failed” or
-  “host key mismatch” with the recorded and current fingerprints plus a reset pointer). **The connection-book
-  “Test”** does full TOFU: the first test records the new fingerprint into `hostKeys` (the same semantics as a
-  real connection); **the dialog “Test connection”** only compares without persisting (a draft not yet stored
-  establishes no pinning).
-- **Counts against the `maxSessions` concurrency limit**; closing matches local sessions: the tab ✕ / the
-  `kill` frame closes the ssh2 channel, and the `exit` frame brings back the exit code / signal as usual.
+  - `agent` (default) — through ssh-agent (`SSH_AUTH_SOCK`), credentials never hit disk, most recommended;
+  - `key` — a private key file via `keyPath` (`~` may be omitted), optional `passphrase`;
+  - `password` — password authentication, also wired to keyboard-interactive (many servers only enable that);
+- **Passwords / passphrases accept `env:VAR`**: resolved through the **credential layer** — the official
+  credential provider first, falling back to the host process environment (pair it with dsh-env-manager to
+  keep secrets out of the settings file); a resolution failure names the reference and both missing sources;
+- **Port**: default 22; a non-default port shows as `user@host:port` in the target;
+- **Host-key alias (`hostKeyAlias`, 0.25.0)**: TOFU locates records by **connect address** by default, while
+  the same real host is often reached through different addresses (an internal IP behind a bastion, or
+  `127.0.0.1:2222` through a tunnel) — “same key, different record” then flags **a key change** on every
+  address switch (a false MITM alarm that refuses the connection). Filling in one alias makes them share a
+  record; semantics match OpenSSH’s `HostKeyAlias` (**only decides which record the fingerprint lives in, not
+  the connect address**);
+- **Labels and status**: an SSH tab is titled by its connection name or `user@host` (local tabs are “Terminal
+  N”); the status bar describes the **currently active tab** — switching or closing tabs swaps in that tab’s
+  own state (failure reasons and exit codes are recorded on the tab), and a background tab’s own failure does
+  not overwrite the active tab’s display;
+- **`~/.ssh/config` import**: parses `HostName/User/Port/IdentityFile` into candidate entries (wildcard blocks
+  and entries without User are skipped, `Include` is not expanded), skips same names, and writes them with
+  “Save”. **Every kind of skip is explained on the spot**; `ProxyJump` is resolved into the entry’s jump host
+  (single hop) and imported too, while `ProxyJump none` / `ProxyCommand none` are explicit direct connections
+  and import normally; `ProxyCommand` is **never imported automatically** (it only runs after being typed
+  manually with the switch on);
+- **Proxy command / ProxyCommand (0.21.0, off by default)**: a book entry (or the dialog) may carry a **local
+  command** whose stdin/stdout become the SSH transport to the target (typically `ssh -W %h:%p bastion`).
+  `%h` `%p` `%r` `%n` `%%` are supported; **substituted values are whitelisted to alphanumerics and
+  `._@:[]-` — a value containing shell metacharacters is refused outright**. **Gate**: the settings switch is
+  **off by default** and can be elevated two ways: (1) the startup environment variable
+  `DSH_TTY_ALLOW_PROXY_COMMAND=1` (only the inherited `process` layer counts — writing a project `.env` or
+  `~/.dsh/env.yml` is **not** authorization); (2) **in-place elevation** (no restart): click the switch → the
+  panel gives a “run in the host terminal” command → executing it unlocks within ten seconds. HTTP / the UI
+  **cannot open it out of thin air** (passing `true` without authorization is rejected with 400), but
+  **closing** it always works. Authorization is **persistent** (`<DSH home>/dsh-kit/capability-grants.json`,
+  0600): it applies after a host restart and the card shows the time plus a “revoke” entry. When off, a
+  connection carrying a proxy command **fails explicitly instead of falling back to a direct connection**.
+  With a jump host also set, OpenSSH semantics apply: **the jump host wins**. The gate lives in one place
+  (this plugin’s settings): the docker container panel reads the same switch. Like jump hosts, **it is a
+  separate transport whose teardown must pair** (all four paths share one `dispose()`);
+- **Credential reference picker**: next to the password/passphrase field is a filter box + capped list;
+  candidates = **names already in the credential store** (the host reads the `refs:` keys of
+  `.credentials.yaml`, **names only, never values**) ∪ **references already used in the connection book**;
+  clicking fills `env:NAME`, and you may type any name. With no candidates at all the row **degrades to a
+  single explanatory line**. The settings card’s edit form has the same row and the same candidates (inline
+  there rather than a popover);
+- **Host-key TOFU pinning**: after the first successful connection the host’s (host:port) sha256 fingerprint is
+  recorded in `hostKeys` (persisted with settings); every later connection verifies it and any recorded
+  fingerprint matching is allowed, while **a changed fingerprint refuses the connection** (anti-MITM) with
+  reset guidance. Multiple keys of the same host (e.g. rsa + ed25519) are kept as separate fingerprints in one
+  record. After a host reinstall/key change, delete the record in “SSH host key records” and reconnect.
+  **“Import from known_hosts”** prefills them in bulk (all records of a host are kept);
+- **Connection test**: the settings card’s row-level “Test” and the dialog’s “Test” both do **link diagnosis
+  only** (no session, no slot, no shell): TCP pre-check first (DNS + connect, classified as
+  refused/timeout/DNS/unreachable), then an ssh2 handshake for TOFU comparison, then authentication. The
+  entry’s “Test” performs full TOFU (recording a new fingerprint on first test); the dialog’s only compares
+  and does not persist;
+- **Counts against `maxSessions`**; closing behaves like a local session: tab ✕ / a `kill` frame closes the
+  ssh2 channel, and an `exit` frame still carries the exit code / signal.
 
 ## Server status bar (0.17.0)
 
-![Minimal-mode server status bar with the same dashboard: CPU / memory / network, each with a last-60-seconds trend line and a large number](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-stats.png)
+![Minimal-mode server status bar + the same resource dashboard: CPU / memory / network, each with a ~60-second trend line and a large number](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-stats.png)
 
-(The full-mode bar is the screenshot at the top of this README; the **three-state button** at the right end of the panel header switches between the two forms. Both screenshots are **SSH sessions** — local sessions use the same fields.)
+(The full-mode bar is in the screenshot at the top; a **three-state button** at the top right of the panel
+header switches between them. Both screenshots are SSH sessions; local sessions use the same fields.)
 
-Every **visible** tab gets a thin status bar above the terminal showing the resource metrics of the host the
-session belongs to (visually aligned with FinalShell’s session monitor bar):
+Each **visible** tab carries a thin status bar above the terminal showing that session’s host metrics in real
+time (styled after FinalShell):
 
-    CPU ▮▮▯▯ 6% │ Cores 16 │ Mem ▮▮▮▮ 78% (49.6/62.3 GB) │ Disk ▮▮▮ 63% (40.8/68.8 GB) │
-    Uptime 2w4d7h16m │ TCP 570 │ CPU Temp n/a │ Network ↓92.3K/s ↑93.1K/s
+    CPU ▮▮▯▯ 6% │ 核心 16 │ 内存 ▮▮▮▮ 78% (49.6/62.3 GB) │ 磁盘 ▮▮▮ 63% (40.8/68.8 GB) │
+    在线 2w4d7h16m │ TCP 570 │ CPU温度 无 │ 网络 ↓92.3K/s ↑93.1K/s
 
-- **One item per resource** (2026-10-31, aligned with FinalShell’s session monitor bar): the percentage,
-  the mini meter and used/total share one group (`Mem 78% (49.6/62.3 GB)`), so the `Mem` / `Disk` label
-  appears only once and a shared unit is written once. Previously it was `Mem 78%` next to a separate
-  `Mem 49.6 GB/62.3 GB` item — duplicate labels with the eye bouncing between them.
-- **The temperature cell only exists on machines that have one** (2026-11-01): `CPU Temp` is drawn only
-  when **this session has ever reported** a temperature (Linux `/sys/class/thermal`; macOS local, Windows
-  local and most cloud hosts have no such sensor). The rule is “ever reported”, not “present in this frame”
-  — an intermittently failing sensor read must not make the cell blink once a second. Dividers are painted
-  by the **following** cell (`A + B::before`), so hiding the cell drops the one on its left while the
-  `TCP │ Network` divider stays put — the cell simply looks as if it never existed. This also hands the width
-  back to the cells that follow (see the yield ladder below for what happens when it still does not fit).
-
-- **Minimal mode** (2026-10-31): a **three-state button** in the top-right of the panel header (next to
-  search / clear) cycles **full → minimal → hidden → full** (the preference lives in the browser’s
-  `localStorage`, not in the profile — it is a display form, not configuration; “hidden” also stops
-  collection for the current tab, so the host collector and the remote exec channel stop too). The
-  minimal bar keeps only **CPU / memory / network** (plus two text-only cells, **Ping / Swap**, when the machine
-  has them — 2026-11-01), each of the three as “small label +
-  last-60-seconds trend line + large number”: a sparkline also tells you whether the value is *climbing*
-  or *jittering*, which a momentary meter cannot, and under the line sits an **area fill that fades
-  downward** (the gradient is anchored to the chart height rather than the curve’s bounding box — anchored
-  to the box, a nearly flat line (memory sitting at 80%±1) collapses into a solid band that reads as a
-  progress bar). The **line itself is a horizontal “time flow” gradient** (38% opacity on the left rising to
-  full on the right — the past is dim, the present is bright, so the eye is pulled to the newest sample),
-  wrapped in a **very faint glow of its own colour**: a 2px line on a dark bar otherwise floats instead of
-  sitting on it (2026-11-01). The CPU and memory cells (0–100) also carry an **80% warning line** — a
-  sparkline has no axis, so you cannot tell “30%” from “80%” by eye; the network cell does not (its Y axis
-  follows the byte-rate range, where “80%” means nothing). Line and fill change colour by level: **<80 green
-  / 80–90 amber / ≥90 red** (`STATS_WARN_LIMIT`, one value shared with the dashed line’s position — let the
-  threshold and the line drift apart and a 72% curve turns amber while sitting *below* the marker), drawn
-  from a fixed set of **chart colours** for the dark terminal (`--tt-term-stats-*`: green `#2ecc71` / amber
-  `#f0b45c` / red `#ff6f7a`) instead of theme semantic colours (a light theme’s dark green loses half its
-  contrast on the dark bar). **Lifted one step off the ANSI palette on 2026-11-01** (the green used to be
-  `#7ec699`): on the same terminal the host’s running dot is a saturated emerald (`#22c55d` measured on the
-  dark theme), while the ANSI green reads grey on a 2px trace or a 7px core bar — side by side it looked
-  like one was in colour and the other in an old photograph. **Only the chart colours moved;
-  `--tt-an-green` did not** — that one is also `\e[32m` in terminal text (xterm’s `theme.green`), so
-  changing it would repaint real command output. The network cell colours **↓ down
-  traffic light blue (`#5c9dff`) / ↑ up traffic teal (`#2fd6c9`)**, each side on its own — and that pair is
-  **decoupled from ANSI too** (it used to borrow ANSI blue / cyan, `#7aa2f7` / `#7fdbca`): lifting only the
-  three level colours left the same dashboard card showing bright core bars next to an old-toned uplink. The minimal bar is slightly taller (36px) to
-  give the lines room, and the terminal re-fits its rows accordingly. Network uses a **square-root scale
-  with a 64 KB/s floor** (rates span orders of magnitude; linear scaling squashes everything but a burst
-  onto the bottom, while a log scale squashes too hard the other way — a user reported “this little network
-  chart looks broken, the data never changes” on 2026-11-01, and measurement showed `58K ↔ 163K` spanning
-  just **1.32 units** (about 2px) on a log scale versus **5 units** on square root, so the variation inside
-  one order of magnitude comes back. The dashboard's network chart picks the same scale), and dropped
-  frames leave a **gap** instead of a made-up point. Disk / uptime / TCP / temperature stay in full mode.
-- **Resource details (floating dashboard, 2026-10-31)**: the **▾** at the far right of the bar opens a
-  floating card with three cells — **CPU** (one bar per core, turning amber/red at the 80/90 thresholds,
-  with an **80% dashed guide line** above the bars because a bar chart without a Y axis cannot tell 50%
-  from 80% — and that line sits at exactly the value where the bars turn amber; the header reports the
-  *worst* core right next to the title, because an average flattens “one of 16 cores is pinned at 95%”),
-  **Network I/O** (one-minute up/down lines: **the downlink is thicker, glowing and carries a gradient area,
-  while the uplink is one step thinner, dimmer and glow-free** — the two hues sit next to each other
-  (blue / teal) so colour alone cannot separate them where they cross; dashing them was tried and rejected
-  (a dashed sawtooth reads badly at this size), hence weight / brightness / glow instead. A legend sits
-  between the title and “Last minute” with swatches matching the lines in colour and weight. Both lines carry a horizontal
-  “time flow” gradient — dim on the left, bright on the right — plus a very faint glow, and an area whose
-  first stop dropped from .40 to .30 since a full-height wash reads far heavier than the bars next to it; a gradient area under
-  the downlink; the x-axis is **fixed** at 60 seconds, so the blank left side early on is history that has
-  not been collected yet instead of five points stretched to look like a full minute. **The Y axis is a
-  1-2-5 range with 15% headroom and a square-root scale**: linear scaling flattens a minute of normal
-  traffic into a line at the bottom as soon as one burst arrives, while a pure log scale erases variation
-  inside one order of magnitude (58 KB/s vs 163 KB/s differ by only 8% of the height); the 0.5 power keeps
-  both, so a spike never touches the border. The two reference lines are **low-opacity dashes painted
-  under the curves**), and **Processes** (top 5 by CPU, sampled by the host with `ps` every 5 seconds; the
-  frame carries the **union of the CPU top 5 and the memory top 5** (deduped by pid, at most 10) — sending
-  only the CPU top 5 meant “sort by memory” could merely reshuffle those five, so a 1.2 GB process sitting
-  at 1% CPU (WeChat) was never even a candidate and the memory ranking led with a Chrome helper. The
-  memory column is `ps`'s `%mem` (= RSS) while Activity Monitor shows the footprint (compressed and GPU
-  memory included), so WindowServer-style processes rank higher there; trust the ordering, not byte-for-byte
-  equality. Each row shows the **executable name** only — macOS `ps comm` reports a full path, and long paths keep their
-  **tail** (`…/Contents/MacOS/Google Chrome`) before the basename is taken, so the cell always shows a
-  recognisable name instead of a path fragment like `Ecosystem.fra…`; the process column is the widest of
-  the three (1.45fr), the full path and pid live in the tooltip, and the `CPU ▼` / `内存` header cells share
-  the column-width variables with the rows below so their right edges line up). For **local** sessions
-  `%CPU` is an **instantaneous** figure: macOS `ps %cpu` is a decaying average over up to a minute (per
-  `man ps`) and can never line up with Activity Monitor's instantaneous sampling, so the host reads `ps`'s
-  **cumulative CPU time** instead and divides the delta between two samples (5s) by elapsed wall time —
-  falling back to `ps`'s average on first sight, counter rollback, or a too-short interval. The SSH remote
-  loop still uses the remote `ps`'s `%cpu` (collection happens remotely; the two-sample context lives on
-  the host). **Clicking a header cell
-  re-sorts the list**: the same column toggles direction (▼ descending / ▲ ascending), switching columns
-  starts at descending again, and both the footer line and the active-column highlight follow along
-  (the sort lives in memory only — reopening the popover is back to CPU-descending). Names that do not fit
-  are **truncated in the middle** (`com.appl…ontent (Renderer)`): a plain trailing ellipsis turns a family
-  of same-prefix XPC helpers into one indistinguishable `com.apple.WebK…`, while head+tail keeps the
-  distinguishing bracket suffix — the width is measured for real with Canvas `measureText`, and the tail
-  may take at most 70% of it. Once open, **the caret flips
-  to ▴** (its tooltip and `aria-label` change to “hide” along with it) — an unchanged glyph makes the
-  click look like it did nothing; Esc or a click outside closes it and the caret turns back into ▾.
-  The three cells are **equal height** (96px bodies) and
-  the footer line is locked at 16px and never flex-compressed — its `overflow: hidden` is there for the
-  horizontal ellipsis, and a compressed row would slice the bottom off the glyphs. Contents refresh with the
-  per-second stats frame and the client makes no extra requests. Per-core and process data are **optional
-  frame fields** (local sessions use `os.cpus()` + `ps`, SSH remotes piggyback on the resident awk loop);
-  older hosts / Windows remotes / failed collection just show “no data” in that cell. **Frames that omit a
-  low-cadence field reuse the previous value** (the remote awk runs `ps` only every 5th tick, and
-  `cpuCores` needs a second sample before it has a delta window) — “not in this frame” is not “collection
-  failed”, otherwise the process cell flips between the list and “no data” once per second. The merge only
-  covers `cpuCores` / `procs` (unit-tested, guarded by the `stats-sparse` preview scenario); per-second
-  measurements such as CPU / memory / network are never carried over.
-
-- **Item hover card** (2026-11-01): rest the pointer on one cell of the bar for 140ms and a small card pops
-  **below** the bar (6px under its bottom edge — above it is the tab strip): the first line is the **current**
-  reading, the second line onward carries the **last-minute peak** plus that cell's context (core count for
-  CPU, used/total for memory), and the footer names the window (“Last minute”). Why: the bar only shows an
-  instant, and whether “18%” just dropped from 45% or has been sitting there is a question about *moments
-  ago*; the cell used to carry nothing but a native `title` (“CPU: 18%”), no more informative than the bar,
-  roughly a second late and unstylable — so cells now carry an `aria-label` and the visual information
-  moved into this card (the `title` is gone on purpose: two tooltips would stack). **The peak can only come
-  from history the client keeps itself** (the host exposes no history API): the same `statsHistory` the
-  minimal-mode sparklines read (60 samples ≈ one minute), and gaps (`null`) **neither count toward the peak
-  nor read as 0** — letting one failed sample flatten a 45% peak to 0 is a wrong reading, not a conservative
-  one. Monotonic values (disk / uptime) get no peak row and therefore no footer; **a cell with no data pops
-  nothing** (CPU temperature on macOS shows “N/A”, and a card saying “Current N/A” helps nobody). The three
-  minimal-mode cells share the same logic (cpu / mem / net map onto the same keys). **The first line is
-  tinted by that cell's level** (green / amber / red, the same palette as the mini meter and the sparklines;
-  requested on 2026-11-01 — the same data read green on the bar and plain white once opened, which looked
-  like two different things). The network cell is **segmented**: ↓ light blue / ↑ teal, matching the two
-  arrows on the bar, and the peak row is segmented the same way; uptime / cores / TCP / temperature stay
-  neutral because they are neutral on the bar too. The card reuses the
-  dashboard's material (`.5px` hairline, dark terminal surface, blurred backdrop) but **carries no shadow**
-  (the spec explicitly rejects a neutral border paired with an elevation shadow); it is
-  `pointer-events: none` — it is a readout only, and a pointer landing on it would fire the cell's
-  pointerout and make the card dismiss itself. The `stats-tip` preview scenario pins: the current / peak /
-  context text, current ≤ peak, the card sitting below the bar and inside the panel, dismiss on leave, the
-  minimal bar, and no card for empty cells.
-
-- **Load / clock on the right** (2026-11-01): the far right of the bar, **left of the ▾**, holds a fixed
-  group — `Load 0.15 │ 10:45:23`. Load is the first field of `/proc/loadavg` (macOS goes through
-  `os.loadavg()`; **Windows cannot provide it, so the cell hides rather than showing 0.00**), and the clock
-  runs on **its own 1-second timer** instead of the stats frames (with 4s frames a frame-bound clock jumps
-  four seconds at a time). The group sits **outside** the scrolling area, so it never scrolls away with the
-  items; the cost is fixed width — see the **yield ladder** below for what gives way when it does not fit
-  (one ladder arbitrates the whole bar, not just this group).
-
-- **Ping and Swap** (2026-11-01): both cells exist only where the machine has them — a local session has no
-  network peer (no Ping) and a host without swap has none to report; the rule is the same as temperature
-  (“this session has ever reported the field”). **Ping measures the round trip on that SSH connection**:
-  while the stats bar is **subscribed**, the host opens an exec channel on the same connection every 5 seconds
-  and times “send → channel confirmed”,
-  deliberately **excluding** the remote command's own runtime (otherwise “spawn a shell” inflates the number).
-  It answers “how laggy does typing feel”, so the tiers are by feel: `<120ms` green, `120–300ms` amber,
-  `≥300ms` red. `Swap` is used/total (Linux reads SwapTotal/SwapFree from `/proc/meminfo`, macOS goes through
-  `sysctl -n vm.swapusage`).
-- **Yield ladder** (2026-11-01 — one ladder arbitrates the whole bar): with ten cells a 1280px panel no
-  longer fits, so the bar gives things up in **one** order — **cores → uptime → clock → the whole Load / clock
-  group** — stopping as soon as it fits. The first three are all readable elsewhere: core count in the
-  dashboard foot (`16 cores · avg 63%`), uptime in `tty_stats`, and the clock is decoration; **live metrics
-  (CPU / memory / disk / TCP / Ping / Swap / network / load) never yield** — they are why the bar exists.
-  The criterion is **real overflow** (`scrollWidth > clientWidth`) rather than computed widths, because the
-  items' total width changes with their values (the network cell only takes its slot when a rate exists, and
-  uptime grows from `3h2m` to `2w4d7h16m`); each frame recomputes from “everything visible”, so a wider window
-  or a switch back to full mode grows them back, and over SSH (4s frames) the clock's 1-second timer keeps
-  re-checking so the state still settles.
-  **Why one ladder**: it used to be two (the strip yielded cores / uptime, then the right-hand group yielded
-  the clock → the whole group), each returning as soon as it did not overflow — so whenever the strip happened
-  to be exactly full, the right-hand group was judged overflowing every time and hidden, and after Ping / Swap
-  landed the full mode showed **no load or clock at any viewport** (the panel caps at 1280px, so a bigger screen
-  does not help) while the 5-cell minimal mode showed both. Ordered by information value instead, a 1280px full
-  mode now settles at “cores / uptime yield, load + clock stay”; the `stats-extra` preview scenario guards this
-  with a hard assertion (load must be present; the clock may only yield when it genuinely overflows).
-
-- **Two collection paths, one frame shape**: for an SSH session a second **non-PTY exec channel** is opened
-  on **the same ssh2 connection**, running a resident loop on the remote that emits one line of JSON per
-  second (rates such as CPU%/network speed are computed remotely); local sessions are sampled by the host
-  itself (Linux reads /proc directly, macOS uses os/netstat/vm_stat). Neither path touches the PTY data stream.
-- **Remote platform coverage: Linux / Windows**: a POSIX sh + awk script runs by default; if the channel ends
-  **before a single frame of data has been read** (cmd.exe / PowerShell on Windows cannot parse the script),
-  it automatically retries once with the PowerShell version (`-EncodedCommand` delivery, same field shape),
-  and only fails when both hops fail — macOS/BSD remotes are exactly this path (no /proc and no PowerShell).
-- **Subscription-based, lazy start**: the client sends `{t:'statsOn'}` / `{t:'statsOff'}` according to tab
-  visibility, and the host starts collecting only on the first subscription; unsubscribing clears it, and
-  session exit, orphan reaping, plugin disable and configuration off all stop the meter and close the remote
-  channel, leaving no timers or remote loops.
-- **Best-effort**: a field that cannot be obtained is omitted (the frontend shows “n/a”); a collection
-  failure silently stops the meter and hides the whole status bar (it collapses after **8s** without a new
-  frame — not 3s: when a sampling subprocess on the host occasionally slows down, frames get further apart,
-  and too tight a window makes the whole bar blink) — it never writes to the PTY and never raises an error.
-  Progress-bar thresholds: <70 normal / 70~90 yellow / ≥90 red.
-- **A slow command cannot stall the cadence**: subprocess-backed fields (df / netstat / vm_stat / ps) are
-  awaited only on the very first sample; afterwards the sampler uses the last known value and refreshes in
-  the background (a `SLOW_TTL_MS = 5000` slot locally, a `REMOTE_SLOW_EVERY = 5`-tick phase gate inside
-  the resident SSH loop), so a command that hangs on some machine only leaves that one field stale for a
-  few seconds instead of stretching the one-frame-per-second timeline (measured: 3000ms → 3~12ms per
-  frame). It also means `df` / `ps` are not forked every second — disk and the top-process list refresh
-  every 5 seconds and reuse the previous reading in between, so they never blink to “no data”.
-- **Hot effect**: turning `statsEnabled` off stops collection at once (the status bar disappears and no more
-  stats frames go over the WS), and turning it back on restores automatically from the subscriptions still in
-  place — no restart and no need to reopen tabs.
-- **Fixed slots + incremental repaint**: every value owns a fixed-width character slot (right
-  aligned, so even the widest form only takes that one slot), and the items are built once — afterwards only
-  text that actually changed is written. Hence `CPU 5% → 12%`, `TCP 36 → 1024` and
-  `memory 9.2 GB → 17.8 GB` no longer push every following item sideways (which showed up as the whole bar
-  jumping once a second), the progress-bar width can finally animate through its CSS transition, and
-  horizontally scrolling to `Network` in a narrow window is no longer snapped back to the start by the next
-  refresh.
+- **One item per resource**: percentage, mini meter and used/total share one group
+  (`内存 78% (49.6/62.3 GB)`), and the label appears once.
+- **Cells appear by machine capability**: `CPU温度` / `Ping` / `Swap` only appear when **this session has
+  reported that field** (Linux `/sys/class/thermal`, `/proc/meminfo`, SSH round-trip; macOS local and most
+  cloud hosts have no temperature sensor). The test is “has ever reported it”, not “does this frame carry
+  it” — an occasional sensor read failure must not make the cell flicker every second.
+- **Minimal mode**: the header’s **three-state button** cycles full → minimal → hidden; the minimal bar keeps
+  only **CPU / memory / network** (plus Ping / Swap when available), each as “small label + last-60-second
+  trend line + large number”. Line colour follows the tier: **<80 green / 80~90 orange / ≥90 red**
+  (`STATS_WARN_LIMIT`, the same source as the 80% dashed guide); network uses a square-root scale with a
+  64 KB/s floor (linear would flatten everything but a burst), and dropped frames are drawn as gaps.
+- **Resource dashboard (floating)**: the **▾** at the right end expands a card with three columns — **CPU**
+  (one bar per core, orange/red at the 80/90 thresholds, the title reports the worst core), **network I/O**
+  (last-minute up/down lines, downstream thicker and brighter, upstream thinner and dimmed; fixed 60-second
+  x-axis; 1-2-5 range + square-root y-scale), and **processes** (Top 5, the host samples `ps` every 5 seconds
+  and sends the union of top-5 CPU and top-5 memory; column headers switch between CPU / memory sorting;
+  process names are middle-truncated by executable name).
+- **Item hover card**: resting on a cell for 140ms pops a small card — the first line is the **current**
+  reading, the following lines the **1-minute peak** plus context (cores for CPU, used/total for memory). The
+  peak comes from 60 samples the client accumulates; gaps do not participate and are not treated as 0; a cell
+  with no data does not pop a card.
+- **“Load / time” on the right**: `负载 0.15 │ 10:45:23`; load comes from `/proc/loadavg` (macOS uses
+  `os.loadavg()`, and Windows hides the cell when unavailable); the clock has its own 1s timer, not the stats frame.
+- **Give-way ladder**: the whole bar hides cells in **one** order — **cores → uptime → clock → load + clock
+  as a group** — stopping as soon as it fits. Live metrics (CPU / memory / disk / TCP / Ping / Swap / network /
+  load) are never dropped. The test is **real overflow** (`scrollWidth > clientWidth`) rather than a width
+  calculation, recomputed from “show everything” every frame.
+- **Two collection paths, one frame shape**: an SSH session opens another **non-PTY exec channel** on the same
+  ssh2 connection and the remote side runs a resident loop printing one JSON line per second; local sessions
+  are sampled by the host itself (Linux reads `/proc`, macOS uses os/netstat/vm_stat). Neither path touches
+  the PTY data stream. Remote platforms cover Linux / Windows (PowerShell fallback), and a macOS/BSD remote
+  gets nothing — the whole bar hides.
+- **Subscriptions, lazy start**: the client sends `{t:'statsOn'}` / `{t:'statsOff'}` by tab visibility, and the
+  host only starts collecting on the first subscription; unsubscribing, session exit, orphan reaping, plugin
+  disable and configuration off all stop the timer and close the remote channel.
+- **best-effort**: a missing field is simply omitted (the UI shows “无”); a collection failure silently stops
+  the timer and hides the whole bar (no new frame for 8s — **not 3s**: a slow sampling child process can
+  stretch the interval, and too tight a window makes the bar flicker). It never writes to the PTY and never
+  pops an error. Meter colours: <70 normal / 70~90 yellow / ≥90 red.
+- **Slow commands never dictate the pace**: subprocess-backed fields (df / netstat / vm_stat / ps) wait once
+  on the first sample and afterwards always “use the previous value + refresh in the background”
+  (`SLOW_TTL_MS = 5000` slots locally, a `REMOTE_SLOW_EVERY = 5` phase gate in the remote loop) — a stuck
+  command only makes one cell show a few-seconds-old value.
+- **Fixed slots + incremental refresh**: every value has a fixed character slot (right-aligned) and items are
+  created once, then only text that actually changed is written, so a number jumping does not push the items
+  after it sideways; horizontally scrolling to the right end is not yanked back by the next refresh.
+- **Hot apply**: turning `statsEnabled` off stops collection immediately; turning it back on resumes from the
+  still-present subscriptions.
 
 ## AI assist: explain failures (0.24.0, off by default)
 
-When a command **exits non-zero**, a low-key chip showing the exit code appears in the corner of the
-terminal; clicking it sends **the tail of that command's output** to the model and renders a short
-"what happened / next step" answer.
+When a command exits **non-zero**, a discreet chip (showing the exit code) appears in the bottom-right corner
+of the terminal; clicking it sends **that command's output tail** to the model and renders “what happened /
+next step”.
 
-- **Zero input, never automatic**: the chip only says "this failed — want a look?". Sending terminal
-  content off the machine is always a user click. `Ctrl-C` (130) and `SIGPIPE` (141) never raise it (they
-  happen all day; raising it for them just gets the feature turned off), and neither does a missing exit code.
-- **What is sent**: the output tail of that one command (colors and `\r` progress lines stripped, repeated
-  lines collapsed, truncated to 40 lines / 6000 chars, keys / tokens / passwords in connection strings
-  masked) **plus the current screen** — never the scrollback. The two are complementary: the output answers
-  "what did this command do", the screen answers "which command was it" (an empirically confirmed fact:
-  the captured output contains **no command echo**).
-- **Using the answer**: the popover header carries the exit code as a pill; a suggested command is rendered
-  as a "Suggested command" block with an **Insert command** button that only types the bytes into the prompt
-  line (sending `Ctrl-U` first, to clear any half-typed input) and **never presses Enter**; Copy and Close
-  sit next to it. With no suggested command the block is simply absent. The answer lives in the panel UI only
-  and is never echoed into the terminal.
-- **Errors are actionable too**: when the host fails (no model route, a provider error, a timeout) the popover
-  shows a copyable "Copy error" button rather than a dead line of red text with no buttons.
-- **One call per failure**: the answer is cached per failed command — closing the popover and clicking the chip
-  again replays it instead of asking again, and only a previous **error** retries. The host additionally
-  de-duplicates in-flight asks per session, so two tabs clicking at once cannot spend two calls.
-- **Model route**: candidates come from the host's registered model catalog (`provider` / `model` as a
-  **pair**; leave it empty to follow the host default model). When nothing resolves, the panel says
-  "no usable model route" instead of doing nothing.
-- **One control for the pair**: `provider` and `model` are a pair, and neither stands alone (the host
-  rejects a half-filled route), so the card has a single **Model route** field written as `provider/model`.
-  Focusing it lists the host's registered providers grouped together (the whole table arrives in one round
-  trip) and one click fills **both** keys; you can also type, split at the **first** slash (a model id may
-  contain slashes itself: the control is **read-only** — **no manual entry**, because the candidates are exactly
-  what the host can route, and an empty catalog would mean DSH's own chat cannot pick a model either. The
-  candidates are a **floating** list (it never shifts the card's layout), the first row is always "Follow the
-  host default model" (leave it empty to follow), and the currently effective route is highlighted.
-- **A failed fetch says so**: the panel keeps "candidates unavailable — the host may not have restarted"
-  apart from "the host advertises no models" instead of blurring them into one sentence. This route comes
-  from the host half, so a page refresh alone will not make it appear.
-- **Privacy**: off by default. Turning it on authorises terminal content to leave the machine — only the
-  excerpt above, and lightly masked before sending (explicit-form secrets only; normal log lines are never
-  mangled).
+- **Zero input, but nothing is sent automatically**: the chip only says “this one failed — want a look?”;
+  sending terminal content is always the user’s click. `Ctrl-C` (130) and `SIGPIPE` (141) do not raise it
+  (they happen all day), and neither does an unavailable exit code.
+- **What is sent**: that command’s output tail (ANSI and `\r` overwrites stripped, consecutive duplicate
+  lines folded, truncated to 40 lines / 6000 characters, secrets / tokens / passwords in connection strings
+  masked) **plus the current screen** — **no scrollback**. The output answers “what did this command do”, the
+  screen answers “which command was typed”.
+- **How the answer is used**: the panel header is “why this command failed” plus an exit-code pill; a
+  suggested command renders as its own “suggested command” block whose button is “**insert into the prompt**”
+  — it only writes bytes into the prompt (after a `Ctrl-U` to clear any half-typed input), **never presses
+  Enter**; “copy answer” and “close” sit alongside. The answer lives in the panel UI only and is never echoed
+  into the terminal.
+- **A way out on failure too**: when the host errors, the panel offers a copyable “copy error” block instead of
+  a dead message with no buttons.
+- **The same failure is asked once**: answers are cached per command, so dismissing with Esc and clicking the
+  chip again **replays** it; only a previously **errored** answer is retried. A host-side in-flight
+  de-duplication keeps two tabs from spending two calls.
+- **Model routing**: candidates come from the host’s registered model catalog (`provider` / `model` **as a
+  pair**; empty follows the host default). The card shows **one read-only “model route” control**
+  (`provider/model`); opening it lists candidates grouped by provider, and picking one writes both keys.
+  Missing candidates are reported distinctly as “cannot get candidates: the host may not have restarted” vs
+  “the host has no available model”.
+- **Privacy**: off by default. Turning it on authorizes a **terminal-content egress** — only the slice above,
+  with light masking applied before sending (shape-based rules only; better to miss a rare format than to
+  mangle normal logs).
 
 ## Configuration (saving takes effect immediately)
 
-Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
-`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
-below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
-sub-page under the Plugins sidebar.
+Where the settings surface lives changes with the DSH version, but it is **always the same form** — the
+per-generation landing spots and the four registration contracts live in
+[conventions.md § client settings surface](../../docs/conventions.md#客户端设置面内联优先).
 
-| Item | Default | Description |
+| Key | Default | Description |
 | --- | --- | --- |
-| `enabled` | true | Disables the whole plugin (needs a restart) |
-| `announceToAgent` | true | Whether to announce the terminal panel capability to the agent (systemPrompt injection) |
+| `enabled` | true | Disable the whole plugin (needs a restart) |
+| `announceToAgent` | true | Whether to announce terminal-panel capabilities to the agent (systemPrompt injection) |
 | `maxSessions` | 4 | Concurrent PTY session limit (1~16) |
-| `shell` | `$SHELL` | Shell path; the settings card offers a picker and free input (its dropdown is a **floating** list that never shifts the card's layout; candidates come from `/etc/shells` + `$SHELL` + common install paths, listing only existing and executable ones, with `$SHELL` first), and any path can also be typed |
+| `shell` | `$SHELL` | Shell path; the settings card offers selectable + typed input (the dropdown is a popover sourced from `/etc/shells` + `$SHELL` + common install paths, listing only existing executables); any path may be typed |
 | `term` | `xterm-256color` | TERM value |
 | `colorTerm` | `truecolor` | COLORTERM value |
-| `cwd` | host startup directory | Fallback working directory (the client’s current session cwd wins) |
-| `reconnectGraceSec` | 120 | Seconds a session is kept alive after an abnormal disconnect (0~3600): the session survives a page refresh/network blip waiting for a reconnect, and the reaper ends it on timeout; `0` = the old behavior, end immediately on disconnect |
-| `sshHosts` | `[]` | SSH connection book (selectable in the panel “+” menu): entries `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, hostKeyAlias='', persist=false}`; saved as a whole-set replacement, the same name overwrites; `password` / `passphrase` support `env:VAR` references so no plaintext is stored; with persistence on, clicking an entry opens a tmux persistent session by default, and `persist=false` is an **opt-out**; an empty `hostKeyAlias` locates fingerprints by host address (TOFU), while a non-empty one locates them by alias (several addresses of one host share a record — see “SSH connections”) |
-| `hostKeys` | `[]` | SSH host key records (TOFU, maintained automatically): entries `{host, port, fingerprints[]}` (the legacy single `fingerprint` field is migrated and merged on read); unique by host:port, one record holds all of a host’s keys, appended automatically on the first connection, any matching fingerprint is allowed, and a full mismatch rejects the connection; the settings card can delete them to reset |
-| `shellIntegration` | true | Injects the OSC 133/7 shell integration (command boundary markers + cwd reporting; `tty_capture{last}` depends on it); zsh/bash on POSIX and the PowerShell family on Windows (`-File` stub), other shells (including Windows cmd) skipped automatically; can be turned off when compatibility problems appear |
-| `tunnels` | `[]` | Port-forwarding tunnels: entries `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`; `bookName` references a connection-book entry for host and authentication; maintained graphically in the “Port forwarding” block of the card |
-| `sftpStyle` | `dialog` | SFTP File Browser UI style: `dialog` single pane (remote directory + upload/download/drag & drop) / `dual` two panes (local left / remote right, inline `⇨/⇦` server-side direct transfer); reopen SFTP for it to take effect |
-| `persistence` | `off` | Session persistence: `off` sessions live and die with the host (default); `tmux` makes **every newly opened tab hosted by the tmux server by default**, recoverable across a host restart (requires tmux locally/remotely); the SSH dialog can opt out for a single connection |
-| `endOnPageClose` | `false` | Whether to end the tmux persistent session as well when the page (the last connection) disconnects and the keep-alive window ends. `false` by default = retained and recoverable; `true` = nothing is kept alive once the page is closed (a refresh within the keep-alive window still reattaches seamlessly) |
-| `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP transfer limits (browser-side guardrails, all **0 = unlimited**): `maxDownloadMb` per-file download limit (over the limit it aborts and suggests the dual-pane `⇦`/terminal scp), `maxUploadMb` per-file upload limit, `maxUploadFiles` files per batch/drag & drop upload; for large files use dual-pane `⇨/⇦` server-side direct transfer (bytes never pass through the browser, no memory cost) |
-| `assistEnabled` | false | AI assist: explain failures (0.24.0). **Off by default**: when on, a chip appears after a command exits non-zero, and clicking it sends that command's output tail (cleaned, de-duplicated, truncated, secrets masked) plus the current screen to the model — never the scrollback. A suggested command is only typed into the prompt line, never submitted. While off the host also rejects `/api/dsh-tty/assist` |
-| `assistProvider` | `''` | Model route provider for the AI assist; must be set **together** with `assistModel` (both empty = follow the host default model). Setting only one has no effect and does **not** silently fall back |
-| `assistModel` | `''` | Model route model for the AI assist; pairs with `assistProvider` |
-| `statsEnabled` | true | Server status bar (0.17.0): collects and pushes CPU / memory / disk / uptime / TCP connections / network speed / CPU temperature by tab visibility; turning it off stops the meter at once (the remote exec channel is closed too), and saving takes effect immediately |
-| `terminalFontFamily` | `''` | Terminal font stack (0.34.0): comma-separated CSS family names, placed **before** the built-in monospace stack (JetBrains Mono → SF Mono → ui-monospace → …). Empty string = built-in stack only. Rendering only, never the PTY; quotes/backslashes/angle brackets are stripped and each name is double-quoted (CSS generics excepted). Existing terminals re-layout immediately |
-| `terminalFontSize` | 13 | Terminal font size in px (8~32) |
-| `terminalCursorStyle` | `bar` | Cursor shape: `bar` / `block` / `underline` (0.34.0). Programs write this too (DECSCUSR `\e[N q`; zsh’s zle does it on every prompt), so the value is re-asserted once each output batch is parsed — **full-screen programs (vim / less / htop / fzf, alternate screen) are left alone** |
-| `terminalCursorBlink` | true | Whether the cursor blinks. Same story: a program’s `?12h` / `?12l` overrides it; the normal buffer is re-asserted, full-screen programs are left alone |
-| `terminalLineHeight` | 1.35 | Line-height multiplier (1~2). A block cursor usually wants `1`: 1.35 inflates the cell and the cursor towers over the glyphs |
-| `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host `.panelRow` (0.34.0): width `calc(100% - 4px)`, `margin 0 2px`, `min-height 36`, `padding 7px 8px`, 14px font, 16px icon. Default false = the plugin's own sizing (pure additive CSS, no change to the default look) |
+| `cwd` | host start directory | Fallback working directory (the client’s current session cwd wins) |
+| `reconnectGraceSec` | 120 | Seconds a session is kept alive after an abnormal disconnect (0~3600): a page refresh / network blip waits for reconnect, otherwise the reaper ends it; `0` = end immediately |
+| `sshHosts` | `[]` | SSH connection-book entries `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, hostKeyAlias='', persist=false}`; replaced wholesale on save, same name overwrites; `password` / `passphrase` accept an `env:VAR` reference; `persist=false` is an **opt-out**; an empty `hostKeyAlias` locates the fingerprint by host address |
+| `hostKeys` | `[]` | SSH host fingerprints (TOFU, auto-maintained): `{host, port, fingerprints[]}` unique per host:port, multiple keys of one host in one record; the first connection appends, any matching fingerprint is allowed, all mismatching refuses the connection |
+| `shellIntegration` | true | Inject OSC 133/7 shell integration (command-boundary markers + cwd reporting; `tty_capture{last}` depends on it); zsh/bash/PowerShell supported, other shells are skipped |
+| `tunnels` | `[]` | Port-forwarding tunnels `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`; `bookName` references a connection-book entry |
+| `sftpStyle` | `dialog` | SFTP UI style: `dialog` single pane / `dual` two panes (local left / remote right, inline `⇨/⇦` server-side transfer); applied when SFTP is reopened |
+| `persistence` | `off` | Session persistence: `off` sessions live and die with the host; `tmux` makes **every new tab tmux-managed by default**, restorable across host restarts |
+| `endOnPageClose` | `false` | When the page disconnects and the keep-alive window expires, whether to end tmux persistent sessions too. Default `false` = keep them restorable |
+| `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP transfer limits (browser-side protection, **0 = unlimited**); use dual-pane `⇨/⇦` for large files |
+| `allowProxyCommand` | `false` | Allow a book entry’s **proxy command to execute locally**. Off by default: with it off, a connection carrying a proxy command **fails explicitly**, and `~/.ssh/config` import **never** brings the field in. The docker container panel reads the same switch. **Two elevation paths**: (1) the startup environment variable `DSH_TTY_ALLOW_PROXY_COMMAND=1` (only the host’s startup environment snapshot counts); (2) **in-place elevation** (no restart). Authorization is persistent (`<DSH home>/dsh-kit/capability-grants.json`) and applies after a restart (see [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么)) |
+| `assistEnabled` | false | AI assist “explain failures”. **Off by default**: once on, a non-zero exit raises the corner chip, and clicking it sends that command’s output tail (cleaned, de-duplicated, truncated, secrets masked) plus the current screen; no scrollback. When off the host also refuses `/api/dsh-tty/assist` |
+| `assistProvider` | `''` | Provider for the AI-assist model route; paired with `assistModel` (both empty = follow the host default). Setting only one neither takes effect nor **silently falls back** to the default model |
+| `assistModel` | `''` | Model for the AI-assist model route; paired with `assistProvider` |
+| `statsEnabled` | true | Server status bar: collects and pushes metrics by tab visibility; turning it off stops the timer (and closes the remote exec channel); save applies immediately |
+| `terminalFontFamily` | `''` | Terminal font stack: comma-separated CSS family names placed **before the built-in monospace stack**. Empty = built-in stack only. Rendering only, never the PTY; quotes/backslashes/angle brackets are stripped and each name is quoted (generic families excepted). Existing terminals reflow immediately |
+| `terminalFontSize` | 13 | Terminal font size (px, 8~32) |
+| `terminalCursorStyle` | `bar` | Cursor shape: `bar` / `block` / `underline`. Programs inside the terminal write this too (DECSCUSR), so the plugin corrects it back after each parsed output batch; **full-screen programs (vim / less / htop / fzf, alternate screen) are left alone** |
+| `terminalCursorBlink` | true | Whether the cursor blinks. Programs’ `?12h` / `?12l` override it; corrected back on the normal buffer, left alone in full-screen programs |
+| `terminalLineHeight` | 1.35 | Line-height multiplier (1~2). A block cursor usually wants `1`: 1.35 stretches the cell so the cursor is taller than the glyphs |
+| `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host’s `.panelRow`: width `calc(100% - 4px)`, `margin 0 2px`, `min-height 36`, `padding 7px 8px`, 14px font, 16px icon. Default false = the plugin’s own sizing (purely additive styling) |
 
-## Connection bar: identity and copy
+## Connection bar: connection identity and copy
 
-On SSH tabs the connection bar also shows **who this connection is** (read-only; editing still goes through
-the settings card):
+Besides the action buttons, an SSH tab’s connection bar shows **this connection’s identity** on the same row
+(all read-only; editing still goes through the settings card):
 
-- **Clickable address**: the `user@host:port` pill on the left opens a “connection details” popover (mouse
-  click, or Enter / Space when focused): target, host-book entry, authentication method, jump host, proxy
-  command, **persistence** (tmux-hosted / requested but tmux unavailable) and the **last status** (SSH
-  failure reason, exit code…). It reads the session’s `spawnSpec` plus the tab state — no extra request.
-- **Jump-host badge**: when the connection goes through a jump host, a “Jump” badge appears next to the
-  address; its title is the full `[user@]host[:port]`. A connection through a bastion otherwise looks
-  exactly like a direct one, which is the easiest thing to misread while troubleshooting.
-- **Two copy items in “⋯”** (neither includes any credential):
-  - **Copy connection info** — target / entry / auth / jump host / proxy command, one `label: value` per line;
-  - **Copy ssh command** — a ready-to-paste command that carries the port / jump host / proxy command the
-    OpenSSH way (`ssh -p 2222 -J jump@bastion:2200 -o ProxyCommand='…' ops@host`). Passwords, key paths and
-    passphrases **never** reach the clipboard — that would be “leak it more conveniently”, not “connect
-    more conveniently”.
+- **Clickable address**: `user@host:port` on the left is a clickable pill; opening it shows a “connection
+  details” popover with target, book entry, authentication, jump host, proxy command, persistence state and the
+  latest status. The data comes from the session’s `spawnSpec` + tab state.
+- **Jump-host badge**: when a jump host is configured, a badge appears next to the address whose title is the
+  full `[user@]host[:port]` — a connection through a bastion looks exactly like a direct one, and that is the
+  easiest thing to misread while troubleshooting.
+- **Two copy items in “⋯”** (**neither contains any credential**): **copy connection info** (target / entry /
+  authentication / jump host / proxy command, one `title: value` per line) and **copy SSH command** (a command
+  you can paste into a terminal, with port / jump host / proxy command in OpenSSH spelling). Passwords, private
+  key paths and passphrases **never go to the clipboard**.
 
-## Connection-bar extension point (client service `ttyConnbar`, 0.13.0)
+## Client services (for other plugins)
 
-Other plugins can append their own contextual buttons to the SSH connection bar (the row with the SFTP /
-tunnel buttons) without tty knowing about them — tty only exposes one generic client service. **The built-in
-actions (reopen / SFTP / tunnel) go through the same registration channel**, and display order = registration
-order; with no extension registered the behavior is exactly as before. The one exception is **“⋯ More”**: it is
-the action area’s overflow entry and always sits **last** (after every third-party action), so a new plugin
-cannot push it into the middle where it would look like it only covers the buttons before it.
+Other plugins never need tty to know about them; they plug in through the three client services below. **The
+built-in actions use the same registration channel**, and behaviour is unchanged when nothing is registered.
+These service names are likewise not declared on tty’s `Context` type surface, so consumers inject by string
+(optional dependency: injection does not fire when tty is missing or too old).
+
+### Connection-bar extension point (client service `ttyConnbar`, 0.13.0)
+
+Append your own context buttons to the SSH connection bar (the SFTP / tunnel row). Display order = registration
+order; “**⋯ More**” is the action area’s overflow entry and **always comes last** (so a new plugin cannot push
+“More” into the middle).
 
 ```js
-// Optional injection in a consumer's own client half (e.g. dsh-docker): it never fires when tty is absent
+// consumer (e.g. dsh-docker) in its own client half, injected optionally: no tty means no trigger
 ctx.inject(['ttyConnbar'], (c) => {
   const dispose = c.ttyConnbar.addAction(({ tab, spec, bookName, addAction }) => {
-    // Called once per renderConnbar; decide for yourself whether to add a button this time
+    // called on every renderConnbar; decide whether this render adds a button
     if (spec.t !== 'ssh') return
-    addAction(iconSvg, 'Containers', 'Open the Docker container panel for this host', () => { /* open your own panel */ })
+    addAction(iconSvg, 'Containers', 'Open the Docker containers on this host', () => { /* open your panel */ })
   })
-  // Call dispose() on unload
+  // call dispose() on unmount
 })
 ```
 
 | Member | Description |
 | --- | --- |
-| `addAction(factory)` | Registers a button factory; returns a deregister function. `factory` receives `{tab, spec, bookName, addAction}`: `spec` is the session’s spawnSpec (`{t:'ssh', name?, host, port, username, ...}`), `bookName` is the connection-book entry name (`''` for an inline connection), and `addAction(icon, label, title, onClick)` appends a button using tty’s button style |
-| `requestRender()` | Asks tty to re-render the connection bar (for when a consumer has new data asynchronously and needs the button to appear immediately) |
+| `addAction(factory)` | Register a button factory; returns an unregister function. `factory` receives `{tab, spec, bookName, addAction}`: `spec` is the session’s spawnSpec, `bookName` the connection-book entry name (`''` for inline connections), and `addAction(icon, label, title, onClick)` appends a button in tty’s style |
+| `requestRender()` | Ask tty to re-render the connection bar (for a consumer that got new data asynchronously and needs its button to appear now) |
 
-- It only fires on **SSH tabs**; the connection bar of a local tab is hidden anyway.
-- **Command tabs do not fire it** (`spawnSpec.command` non-empty, i.e. a tab running a command through
-  `ttyTerminal.open`, such as dsh-docker’s `docker exec -it …`): those connection-bar extensions act on
-  **the connection itself**, and hanging them on a command tab would mislead (SFTP would browse the host,
-  not the inside of the container the user has in mind). Built-in and third-party actions are hidden
-  together; the reopen entry point for an exited tab is not affected — the terminal body already carries a
-  “click to reopen” overlay.
-- A throwing factory is only logged with `console.warn`, without affecting the connection bar or the built-in buttons.
-- The service name `ttyConnbar` is not declared on tty’s `Context` type surface, so consumers can inject it by
-  string; when tty is not installed or is older than 0.13.0 the injection never fires, so consumers must treat
-  it as an optional dependency.
+- It only fires on **SSH tabs**; the connection bar is hidden on local tabs.
+- **Command tabs do not fire** (`spawnSpec.command` is set, i.e. a tab running one command via
+  `ttyTerminal.open`) — these extensions act on **the connection itself**, and hanging them on a command tab
+  would mislead (SFTP browses the host, not the container the user has in mind).
+- A factory throwing only logs `console.warn`; the connection bar and built-in buttons are unaffected.
 
 ### Terminal command tabs (client service `ttyTerminal`, 0.14.0)
 
-An extension point one step beyond connection-bar buttons: it lets other plugins **open a tab that runs a
-single command** (the typical use is dsh-docker’s card “Terminal” button → `docker exec -it <container> sh`).
+> **`open()` reuses by default** (contract v3): when a live tab for the same “connection + command” already
+> exists, it focuses that instead of opening another. The motivation was empirical — clicking a container
+> card’s “Terminal” button a few times produced three identical `docker exec` tabs, each consuming a session
+> slot. Pass `reuse: false` to get two identical sessions side by side.
+
+One step beyond connection-bar buttons: let other plugins **open a tab that runs one command** (typically
+dsh-docker’s card “Terminal” button → `docker exec -it <container> sh`).
 
 ```js
 ctx.inject(['ttyTerminal'], (c) => {
   c.ttyTerminal.open({
-    command: "docker exec -it 'ems-consumer-test' sh",  // required, single line, ≤2000 characters
-    book: 'lab-a',        // one of the two: connection-book entry name → SSH tab
+    command: "docker exec -it 'demo-consumer' sh",  // required, single line, ≤2000 characters
+    book: 'lab-a',        // either: a connection-book entry name → an SSH tab
     // spec: { host, port, username, auth, agentForward },  // inline SSH fields
-    // (neither = local tab, with cwd giving the working directory)
-    label: 'ems-consumer-test · exec',
+    // (neither = a local tab; use cwd for the working directory)
+    label: 'demo-consumer · exec',
     cwd: '/optional/local/cwd',
   })
 })
 ```
 
-- Command tabs are **not persisted in tmux** (commands are short-lived and attaching is meaningless) and do
-  not go through a login shell; the SSH side uses `conn.exec(command, {pty})`, and the local side uses
-  `sh -c 'export TERM=…; exec <the same shell> -c <command>'` — the outer `exec` makes the process
-  the command itself (faithful exit code and signal), and the **inner `-c`** is what makes the whole
-  string run as shell code: `cd x && cmd`, `a; b`, `for …; do …; done` all run to completion
-  (D78: the old form appended the command straight after `exec`, so only the first one ran and a
-  builtin such as `cd` ended the wrapper shell outright).
-- **Command tabs reopen automatically**: after a host restart / reconnect the sid is gone, and the client
-  re-runs the command from the original spec for tabs with `spawnSpec.command` (ordinary non-persistent tabs
-  keep the old “click to retry” behavior). After a page refresh they are restored by the original command too.
-- The command comes from a **host-side plugin** (not from remote user input), so its trust level equals the
-  plugin’s own; tty only validates the shape: non-empty, single line, length ≤2000 (a newline would break the
-  local `-c` wrapper layer).
-- **“Single line, ≤2000” is this channel’s rule, not `tty_open`’s** (raised in the 2026-09-27 review): the
-  `command` in a `spawn` / `ssh` frame gets spliced into the `-c` wrapper, so `sanitizeCommand` rejects
-  newlines and NUL. The agent’s `tty_open.command` takes a different path — the command is wrapped **whole**
-  in `shSingleQuote` and handed to the inner `-c` (see above), so it **may contain newlines** (multi-line
-  scripts do run) and is bounded only by the tool parameter’s string type. Do not read this section’s limit
-  as a `tty_open` restriction.
-- The service name `ttyTerminal` is likewise not declared on the `Context` type surface; inject it as an
-  optional dependency; when tty is not installed or is older than 0.14.0 it never fires (dsh-docker degrades
-  to “copy command”).
-- **`ttyTerminal` / WS `spawn` is a command surface with no static capability gate** (added 2026-10-07;
-  consumers must not describe it the other way round): this service and the `{t:'spawn'}` frame both accept an
-  arbitrary `command` and are **not governed by any `DSH_*_ALLOW_*`** (this plugin’s own static gate covers only
-  ProxyCommand, the “a config field drives a local command” tier). That is deliberate — the terminal panel *is*
-  the product, and **its permission ceiling rests on the user acting directly**: a human clicks “+” to open a
-  tab and types commands inside it. **Note carefully that the tier gate does not reach here**: the tier gate
-  above hangs on the `tools/pre-execute` waterfall and filters by the `tty_` / `sftp_` / `tunnel_` **prefixes**
-  (`TTY_TIER_PREFIXES`) — i.e. it gates **agent tool calls only**. A browser `spawn` frame or a
-  `ttyTerminal.open` call is a **WS / client-service** path and **never passes through it**. So do not treat it
-  as this command surface’s gate: it does not block a single byte of it (only the `tty_open` agent path is
-  governed).
-  **The cost**: no consumer should advertise “the plugin’s own exec switch” as the boundary that keeps you out of
-  a container — once tty is installed, an in-page script can use `ttyTerminal.open` or a WS `spawn` frame to get
-  an arbitrary command surface strictly stronger than a one-shot exec. See
-  [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) for the threat-model boundary; docker states
-  the same boundary in its own README under “Known limitations”.
+- Command tabs are **not tmux-persistent** (a short command gains nothing from attach) and do not go through a
+  login shell; the SSH side uses `conn.exec(command, {pty})`, the local side
+  `sh -c 'export TERM=…; exec <same shell> -c <command>'` — the outer `exec` makes the process the command
+  itself (faithful exit codes and signals), while **the inner `-c` is what makes the whole thing shell code**
+  (`cd x && cmd`, `a; b`, `for …; do …; done` all run, D78).
+- **Command tabs reopen automatically**: after a host restart / reconnect the sid is gone, so the client
+  re-executes the original command for tabs carrying `spawnSpec.command` (ordinary non-persistent tabs keep the
+  old “click to retry”). A page refresh restores them the same way.
+- The command comes from a **host-side plugin** (not remote user input), so its trust level is the plugin’s;
+  tty only validates the shape: non-empty, single line, ≤2000 characters (a newline would break the local `-c`
+  wrapper). **“Single line ≤2000” is this channel’s constraint, not `tty_open`’s**.
+- **`ttyTerminal` / WS `spawn` is a command surface with no static capability gate**: this service and the
+  `{t:'spawn'}` frame both accept an arbitrary `command` and are **not governed by any `DSH_*_ALLOW_*`** (this
+  plugin’s static gate only covers ProxyCommand, the “configuration field drives a local command” tier). That
+  is deliberate — the terminal panel is the product, and **its permission ceiling is carried by the user’s own
+  actions**: a human clicks “+” to open a tab and types commands in it. **See clearly that the tier gate
+  cannot reach this**: the tier gate above hangs off the `tools/pre-execute` waterfall and filters only by the
+  `tty_` / `sftp_` / `tunnel_` **prefixes** (`TTY_TIER_PREFIXES`), i.e. it gates **agent tool calls only**;
+  the browser’s `spawn` frame and `ttyTerminal.open` are **WS / client-service** channels — this command
+  surface **never passes through it**. So do not present it as this command surface’s gate — it blocks not
+  one byte (only the agent path, `tty_open`, is governed by it). **Cost**: no consumer may advertise “with tty installed, this plugin’s
+  own exec switch” as a “cannot get into the container” boundary — with tty installed, an in-page script can
+  reach a stronger arbitrary-command surface through `ttyTerminal.open` or the WS `spawn`. See
+  [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) for the threat-model boundary.
+
+> `open()` and `ttyPanel.mountPane()` both **make the panel visible**: opening it if closed and **restoring it
+> from minimized** — `minimize()` hides rather than closes, and that is a hard guarantee for callers.
 
 ### Embedded in-place terminal (`ttyTerminal.mount`, 0.15.0)
 
-`open` is “borrow tty’s modal to open a tab” — the user’s panel gets covered or pushed behind by the modal; if
-a consumer would rather **place a terminal inside its own panel** (typically dsh-docker’s terminal drawer:
-watch container logs and drop into the container to type commands without losing context), use `mount`:
+`open` borrows tty’s modal to open a tab; when a consumer wants **a terminal in place inside its own panel**
+(typically dsh-docker’s terminal drawer), use `mount`:
 
 ```js
 ctx.inject(['ttyTerminal'], (c) => {
-  if (Number(c.ttyTerminal.version ?? 0) < 2) { /* older version: fall back to open */ }
+  if (Number(c.ttyTerminal.version ?? 0) < 2) { /* old version: fall back to open */ }
   const dispose = c.ttyTerminal.mount(hostEl, {
-    command: "docker exec -it 'ems-consumer-test' sh",  // the same set of options as open
+    command: "docker exec -it 'demo-consumer' sh",  // the same set of options as open
     book: 'lab-a',                                     // book > spec > local
-    label: 'ems-consumer-test · exec',
+    label: 'demo-consumer · exec',
   })
-  // When collapsing your own drawer:
+  // when collapsing your own drawer:
   // dispose()
 })
 ```
 
-- `hostEl` must be an `HTMLElement`: tty inserts an absolutely positioned `.tt_term` into it, so the mount
-  point needs `position: relative` and a definite size (size changes are caught by a ResizeObserver and
-  synced to the PTY).
-- An embedded terminal **shares the same WebSocket and session table** as tabs, but its semantics are “a piece
-  of terminal inside someone else’s panel”: it does not enter the tab bar, does not write sessionStorage, and
-  does not take part in showing/hiding the tty panel; **closing the tty panel does not affect it** (and
-  conversely: while an embedded session is running, tty’s connection is not closed).
-- Reconnect on disconnect, re-running by the original command after a host restart, and clicking the overlay
-  to reopen after exit all reuse the existing logic; `dispose()` ends the session and unmounts the DOM.
-  Mounting is **cold-start safe** — with the tty panel closed and no connection yet, `mount` still brings the
-  connection up (creation frames are queued first and sent after `onopen`).
-- An embedded terminal has no search/clear toolbar from the tty panel header, and Ctrl+F is handed back to the browser.
+- `hostEl` must be an `HTMLElement`: tty inserts an absolutely positioned `.tt_term`, so the mount point needs
+  `position: relative` and a definite size (size changes are caught by a ResizeObserver and synced to the PTY).
+- An embedded terminal shares the same WebSocket and session table as tabs, but does not enter the tab bar,
+  does not write sessionStorage and does not take part in the tty panel’s visibility; **closing the tty panel
+  does not affect it**.
+- Reconnect, re-running the original command after a host restart, and click-the-overlay-to-reopen all reuse
+  the existing logic; `dispose()` ends the session and removes the DOM. Mounting is **cold-start safe** — even
+  with the tty panel closed and no connection yet, `mount` brings the connection up.
+- An embedded terminal has no search / clear toolbar from the tty panel head, so Ctrl+F returns to the browser.
 
 ### In-panel mount slots (client service `ttyPanel`, 0.16.0)
 
-> tty’s own SFTP File Browser goes through this channel too (0.16.0): when the mount slot is free it docks
-> below, and when another panel on the same tab has taken it, it falls back to the dialog.
+> tty’s own SFTP browser uses this channel too: it docks below when the slot is free, and falls back to the
+> dialog when another pane occupies the same tab’s slot.
 
-`mount` solves “a consumer gives the host and tty puts a terminal in it”; `ttyPanel` is its **mirror** — tty
-gives consumers a slot inside the terminal panel to mount their own UI into. A typical case: dsh-docker opens
-“Containers” from the SSH connection bar and the containers panel docks to the **right** of the terminal,
-which stays visible, clickable and typable instead of being covered by a full-screen modal (which was exactly
-the pain before 0.15).
-
-A mount slot is **connection-scoped**: its credentials / target come from the terminal tab that opened it.
-So since 0.19.0 every pane records its **owner tab** (`options.ownerSid`, defaulting to the active tab at
-mount time): switching to another tab **hides** the pane (`data-dock-hidden`; its DOM and your rendered tree
-survive, in-flight transfers keep running) and switching back restores the scene; closing the owner tab tears
-the pane down. Without this, the pane stayed put across a tab switch — its title read `SFTP · lab-b`
-while the active tab was `192.0.2.10`, leaving **another host**’s file listing on screen (worst case:
-uploading to the wrong host). Passing `ownerSid: null` means “owned by no tab” (always visible); that is what
-happens automatically when the panel is open with no tabs at all, and a consumer can use it to declare “this
-pane has nothing to do with tabs, do not hide it on a switch”.
+`mount` is “consumer gives a host, tty puts a terminal in it”; `ttyPanel` is its **mirror** — tty gives a
+consumer a place inside the terminal panel to mount its own UI (typically dsh-docker opening “Containers” from
+the connection bar: the pane docks to the terminal’s **right**, and the terminal stays visible, clickable and
+typeable).
 
 ```js
 ctx.inject(['ttyPanel'], (c) => {
-  // Use your own modal when the panel is not open (or tty < 0.16)
+  // panel closed (or tty < 0.16): use your own modal
   if (Number(c.ttyPanel.version ?? 0) < 1 || c.ttyPanel.isOpen() !== true) { /* fallback */ }
   const pane = c.ttyPanel.mountPane({
-    title: 'Docker Containers',  // panel title
-    hint: 'prod-web-01',   // grey text right of the title (optional)
-    side: 'right',         // 'right' (default, vertical list / list+detail) | 'bottom' (wide horizontal table)
-    size: 520,             // initial size in px: right = width (default 460), bottom = height (default 320)
-    min: 360,              // minimum size in px (optional, default 280 / 160)
-    ownerSid: tab.sid,     // owner tab (optional): omitted = current active tab, null = owned by no tab
-    onClose: () => { /* called when tty tears the panel down: unmount your React root here */ },
+    title: 'Docker containers',  // pane title
+    hint: 'prod-web-01',         // gray text next to the title (optional)
+    side: 'right',               // 'right' (default) | 'bottom' (wide horizontal tables)
+    size: 520,                   // initial size px: right = width (default 460), bottom = height (default 320)
+    min: 360,                    // minimum size px (optional, defaults 280 / 160)
+    ownerSid: tab.sid,           // owning tab (optional): omitted = current active tab, null = no owner
+    onClose: () => { /* called when tty tears the pane down: unmount your React root here */ },
   })
   createRoot(pane.element).render(<MyPanel />)
-  // When collapsing it yourself: pane.dispose()
+  // when you collapse it yourself: pane.dispose()
 })
 ```
 
 | Member | Description |
 | --- | --- |
-| `isOpen()` | Whether the terminal panel is currently open (minimized does not count). Consumers use it to decide “mount in here” or “use my own modal” |
-| `mountPane(options)` | Mounts a slot on the right / at the bottom of the panel and returns a handle; **only one at a time**, and a later `mountPane` first tears the previous one down (calling its `onClose`). With `side:'bottom'` it spans the full width and is sized by height (drag the top edge), collapsing into a title bar. `ownerSid` records the owner tab (default: the active one); panes owned by another tab are **hidden** on tab switch (DOM and your React tree survive, restored when you switch back — see “connection-scoped” above) |
-| `handle.element` | The host the consumer renders into (flex column, already `overflow:hidden`, filling the body area) |
-| `handle.setTitle(text)` / `setHint(text)` | Change the title / the grey hint |
-| `handle.expand() / collapse() / toggle() / isCollapsed()` | Collapse into a 32px strip (vertical title + expand/close buttons), and the terminal immediately gets its width back |
-| `handle.dispose()` | The consumer tears it down itself (idempotent, does not fire `onClose` again) |
+| `isOpen()` | Whether the terminal panel is open (minimized does not count). Consumers use it to decide “mount inside” vs “use my own modal” |
+| `mountPane(options)` | Mount a place on the right / bottom and return a handle; **only one at a time**, a later call tears the previous one down first (calling its `onClose`). With `side:'bottom'` it spans the width and is sized by height (drag the top edge) and can collapse to a title bar. `ownerSid` records the owning tab (default: current active tab); when switching tabs, panes owned by another tab are **collapsed** (DOM and React tree stay alive and are restored on return) |
+| `handle.element` | The host element for the consumer’s render (column flex, already `overflow:hidden`, fills the body area) |
+| `handle.setTitle(text)` / `setHint(text)` | Change the title / gray text |
+| `handle.expand() / collapse() / toggle() / isCollapsed()` | Collapse to a 32px strip (vertical title + expand/close buttons); the terminal immediately gets the width back |
+| `handle.dispose()` | Consumer-initiated collapse (idempotent; does not call `onClose` again) |
 
-- **Lifecycle**: the side panel’s DOM lives inside the terminal modal — minimize / restore follow the panel,
-  and consumers need not care; when the panel is closed (✕ / host unload) tty **calls `onClose` first**
-  (consumers unmount there) and only then detaches the DOM.
-- **Resizing**: a right pane drags its left edge, a bottom pane drags its top edge (the cap is 72% of the
-  panel card’s long side, leaving room for the terminal), and the size is remembered per direction within the
-  same page session. Terminal-area size changes are caught by the existing ResizeObserver, which refits
-  automatically and syncs the new rows/cols to the PTY.
-- **Viewport anchoring**: opening/closing a pane or dragging its size changes the terminal area’s height, and
-  xterm moving its viewport by itself would “push the content up”. Refit anchors to what the user was doing —
-  if they were at the bottom (watching the newest output) it stays at the bottom, and if they had scrolled
-  back through history it locks to the same lines, so nothing jumps away.
-- **Choosing a direction**: vertical lists / list+detail (such as the containers panel) use `right`; wide
-  tables (such as the SFTP file list or the local↔remote dual pane) use `bottom` — the full width fits more
-  columns and does not squeeze the terminal’s width.
-- The title bar (title / collapse / ✕) is provided by tty, and consumers only own their own body; a throwing
-  `onClose` is only logged with `console.warn`, without affecting closing the panel.
+- **Lifecycle**: the sidebar’s DOM lives inside the terminal modal — minimize / restore follow the panel; when
+  the panel is closed, tty **calls `onClose` first** (consumers unmount there) and only then removes the DOM.
+- **Resizing**: a right pane drags its left edge, a bottom pane its top edge (cap = 72% of the panel card’s long
+  edge); sizes are remembered per direction for the page session. Terminal-area size changes go through the
+  existing ResizeObserver, which refits and syncs the new cols/rows to the PTY.
+- **Viewport anchoring**: opening / closing / resizing the pane changes the terminal area’s height, so a refit
+  anchors to the user’s intent — pinned to the bottom stays pinned, scrolled into history keeps those lines.
+- **Choosing a direction**: vertical lists / list+detail use `right`; wide horizontal tables (file lists, dual
+  panes) use `bottom`.
 
 **`minimize()` (contract v2)** folds the whole terminal panel away: the modal is hidden, but the DOM /
-WebSocket / xterm buffers are all kept and **the session keeps running**; restoring it goes through the badge
-on the sidebar’s “Terminal” entry. Consumers use it to “give the stage back” — the typical case is dsh-docker
-handing the logs over to the session and folding the terminal away automatically, so the user sees the session
-directly instead of staring at a modal covering it and guessing “did my click do nothing?”. The return value is
-the minimized state after the call, which the caller uses to decide whether its message still needs to say
-“the session is behind the panel”.
+WebSocket / xterm buffers are all retained and **sessions keep running**; restore via the sidebar “Terminal”
+entry’s badge. Consumers use it to “give the stage away”.
 
 ```js
 ctx.inject(['ttyPanel'], (c) => {
   if (Number(c.ttyPanel.version ?? 0) < 2 || typeof c.ttyPanel.minimize !== 'function') return false
   if (c.ttyPanel.isOpen() !== true) return false
-  return c.ttyPanel.minimize()   // fold the terminal away so the session shows through
+  return c.ttyPanel.minimize()   // fold the terminal away so the session shows
 })
 ```
 
-> Contract versions: `ttyConnbar.version === 1`, `ttyTerminal.version === 3` (1 = `open` only,
-> 2 = adds `mount`, 3 = `open` reuses an existing live tab for the same connection + command by default),
-> `ttyPanel.version === 2` (1 = `mountPane` + `isOpen`, 2 = adds `minimize`). Consumers **decide capabilities
-> by version number**; do not rely on assumptions beyond `typeof fn === 'function'`; on an older tty the
-> `inject` still fires, but the corresponding fields are absent.
+> Contract versions: `ttyConnbar.version === 1`, `ttyTerminal.version === 3` (1 = only `open`, 2 = adds
+> `mount`, 3 = `open` reuses a live tab for the same “connection + command”), `ttyPanel.version === 2`
+> (1 = `mountPane` + `isOpen`, 2 = adds `minimize`). Consumers **check the version number**. On an old tty,
+> `inject` still fires but the corresponding fields are absent.
 
 ## Frame protocol (/api/dsh-tty/ws, JSON text frames; v3 = one connection with many sessions + reconnect)
 
 | Direction | Frame | Description |
 | --- | --- | --- |
-| C→S | `{t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?, command?}` | Create a session; sid defaults to one generated by the host and cwd to the configured fallback; `persist` + a stable `persistName` (0.10.0) = tmux persistent session (`dsh-<name>`, requires persistence=tmux); `command` (0.14.0) = run a single command directly (no persistence) |
-| C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …, persist?, persistName?}` | Create an SSH session (native ssh2); `name` references a connection-book entry as the base, and inline `host/port/username/auth/keyPath/passphrase/password/agentForward` can override it field by field; `persist` has the same semantics as spawn (remote tmux hosting) |
-| C→S | `{t:'input', sid?, d}` | Key/paste data |
-| C→S | `{t:'resize', sid?, cols, rows}` | Panel size change. **The client only sends it when the container is visible and the size is trustworthy** (D79: hidden tab / detached element / minimized panel send nothing, so the PTY keeps its last valid size); the host clamp is only a safety floor, and non-numeric values (including `null`) fall back to 80×24 instead of being clamped to the floor |
-| C→S | `{t:'refresh', sid?}` | Force a redraw (0.10.1): the host runs `refresh-client` on a tmux session (the client resets to clear stale scrollback and then asks for a fresh redraw; a no-op for non-tmux sessions) |
-| C→S | `{t:'kill', sid?}` | Close a session (orphan sessions can also be killed across connections, to prevent leaks) |
-| C→S | `{t:'sessions'}` | List a global session snapshot (`attachable` marks the reattachable ones) |
-| C→S | `{t:'attach', sid}` | Reattach an orphan session (inside the keep-alive window): after `ready(reattached:true)` a single `data` frame replays the output buffer |
-| C→S | `{t:'statsOn' \| 'statsOff', sid}` | Subscribe/unsubscribe that session’s server status bar (0.17.0): driven by tab visibility, and the host collects only while a subscription exists (lazy start + unsubscribing stops the meter and closes the remote channel) |
-| S→C | `{t:'ready', sid, pid, kind, target?, persist?, reattached?}` | Session ready; `kind:'local'` carries a pid, while `kind:'ssh'` has pid=null and target=user@host[:port]; attach reuses this frame with `reattached:true`; `persist:true` means a tmux persistent session (0.10.0) |
-| S→C | `{t:'data', sid, d}` | Terminal output (utf8 text, StringDecoder covers multi-byte sequences split across frames); **coalesced into frames over a 12ms window / 64KB threshold** (0.4.1), with a forced flush before exit/kill to guarantee frame order — **the last batch before exit is always sent** (D76: it used to be swallowed whole by the exit path’s own `closed` guard, so a process that printed and exited immediately was permanently missing its final lines) |
-| S→C | `{t:'stats', sid, stats}` | Resource metric frame (0.17.0): `{cpuPct, cores, memUsed, memTotal, memPct, diskUsed, diskTotal, diskPct, uptimeSec, tcpConns, rxRate, txRate, tempC?, load1?, swapUsed?, swapTotal?, pingMs?}` (`load1` / `swapUsed` / `swapTotal` since 2026-11-01; `pingMs` is filled in by the **host** probe, never by the remote script); missing fields are omitted (best-effort, the frontend shows “n/a”), byte fields are bytes and rates are B/s |
-| S→C | `{t:'exit', sid, code, signal}` | The PTY exit fact (exactly once; after attach moves to a new connection it is still delivered over the current connection) |
+| C→S | `{t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?, command?}` | Create a session; sid defaults to a host-generated one, cwd defaults to the configuration; `persist` + a stable `persistName` = a tmux persistent session (requires persistence=tmux); `command` = run one command directly (never persistent) |
+| C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …, persist?, persistName?}` | Create an SSH session (native ssh2); `name` references a book entry as the base and inline fields override it; `persist` has the same semantics as spawn |
+| C→S | `{t:'input', sid?, d}` | Keystrokes / pasted data |
+| C→S | `{t:'resize', sid?, cols, rows}` | Panel size change. **The client only sends it when the container is visible and the size is trustworthy** (D79); the host clamps only as a safety floor, and a non-numeric value falls back to 80×24 |
+| C→S | `{t:'refresh', sid?}` | Force a redraw: the host runs `refresh-client` for tmux sessions (no-op otherwise) |
+| C→S | `{t:'kill', sid?}` | Close a session (orphan sessions may be killed across connections, preventing leaks) |
+| C→S | `{t:'sessions'}` | List the global session snapshot (`attachable` marks the reattachable) |
+| C→S | `{t:'attach', sid}` | Reattach an orphaned session (within the keep-alive window): `ready(reattached:true)` followed by one `data` frame replaying the output buffer |
+| C→S | `{t:'statsOn' \| 'statsOff', sid}` | Subscribe / unsubscribe that session’s status bar: driven by tab visibility, the host only collects while subscribed |
+| S→C | `{t:'ready', sid, pid, kind, target?, persist?, reattached?}` | Session ready; `kind:'local'` carries a pid, `kind:'ssh'` has pid=null and target=user@host[:port] |
+| S→C | `{t:'data', sid, d}` | Terminal output (a utf8 text stream; StringDecoder covers multi-byte sequences split across chunks); coalesced into frames **with a 12ms window / 64KB threshold**, and force-flushed before exit/kill to preserve frame order (D76) |
+| S→C | `{t:'stats', sid, stats}` | Metric frame: `{cpuPct, cores, memUsed, memTotal, memPct, diskUsed, diskTotal, diskPct, uptimeSec, tcpConns, rxRate, txRate, tempC?, load1?, swapUsed?, swapTotal?, pingMs?}`; missing fields are omitted, byte values are bytes and rates B/s |
+| S→C | `{t:'exit', sid, code, signal}` | The PTY exit fact (exactly once; still delivered on whichever connection is current after an attach) |
 | S→C | `{t:'error', sid?, m}` | Error |
-| S→C | `{t:'sessions', list, tmux?}` | Session snapshot (`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable, persist?}`); `tmux` = the persistent session names alive on the dedicated socket + retained SSH persistent session names (0.10.1, an observable field) |
+| S→C | `{t:'sessions', list, tmux?}` | Session snapshot (`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable, persist?}`); `tmux` = persistent session names on the dedicated socket + retained SSH persistent names |
 
-Disconnect keep-alive semantics: when the client closes the panel normally it sends `kill` for each session
-before disconnecting; therefore “WS closed with sessions still alive” is treated as an abnormal disconnect —
-sessions become orphans (output keeps accumulating into the ring buffer and is sent to no connection), and
-after `reconnectGraceSec` of keep-alive the reaper cleans them up; during that window a new connection can
-query `{t:'sessions'}` and `{t:'attach', sid}` to reconnect and replay.
+Keep-alive semantics: a normal panel close sends `kill` for each session before disconnecting; therefore
+“WS closed while sessions are still alive” is treated as an abnormal disconnect — the sessions become orphans
+(output keeps accumulating in the ring buffer), and the reaper cleans them up after `reconnectGraceSec`.
+Meanwhile a new connection can `{t:'sessions'}` and `{t:'attach', sid}` to replay them.
 
-When sid is omitted the frame is routed to “the connection’s only session”; with 0 or multiple sessions on the
-connection, omitting sid errors out. The upgrade route carries a loopback trust fence (remoteAddress + Host +
-Origin checks), so only the local Web GUI can connect.
+When sid is omitted, routing falls back to “the only session on this connection”; with zero or several
+sessions, omitting sid is an error. The upgrade route carries a loopback trust fence (remoteAddress + Host +
+Origin checks), so only a local Web GUI can connect.
 
 ## Development
 
 ```bash
 pnpm --filter @hyzyn/dsh-tty build        # tsc host + esbuild browser half (client.js)
 pnpm --filter @hyzyn/dsh-tty typecheck
-pnpm --filter @hyzyn/dsh-tty probe        # M0 probe: PTY primitive verification (needs a real PTY)
-pnpm --filter @hyzyn/dsh-tty integration  # integration tests: real plugin × real DSH service composition
-pnpm --filter @hyzyn/dsh-tty live         # liveness smoke: start dsh web first (default ws://127.0.0.1:3080; DSH_TTY_WS_URL overrides)
-pnpm --filter @hyzyn/dsh-tty tui          # TUI smoke: vim/htop full-screen rendering (start dsh web first, default :3090; DSH_TTY_WS_URL overrides)
-pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH smoke: in-memory SSH server (ssh2.Server) × real spawnSsh end to end (build first)
-pnpm --filter @hyzyn/dsh-tty probe-smoke        # probe classification & TOFU (7 cases, self-contained)
-pnpm --filter @hyzyn/dsh-tty probe-route-smoke  # probe HTTP route + connection book (9 cases)
-pnpm --filter @hyzyn/dsh-tty sftplimits-smoke   # sftpLimits normalisation (6 cases)
-pnpm --filter @hyzyn/dsh-tty windows-smoke      # Windows end to end (only meaningful on Windows; skips elsewhere)
-
-CI (`.github/workflows/ci.yml`) runs `integration` + `ssh-smoke` + the three smokes on ubuntu and
-`windows-smoke` on windows-latest, plus a “build artifacts match sources” gate (`client.js` + `lib/`).
-The 48 fixes shipped in 0.19.0 and their audit index live in [`DEFECTS.md`](./DEFECTS.md).
-pnpm --filter @hyzyn/dsh-tty preview      # visual preview: headless Chrome screenshots per scene (see below)
+pnpm --filter @hyzyn/dsh-tty probe        # M0 probe: PTY primitives (needs a real PTY)
+pnpm --filter @hyzyn/dsh-tty integration  # integration: real plugin × real DSH services
+pnpm --filter @hyzyn/dsh-tty live         # liveness smoke: start dsh web first
+pnpm --filter @hyzyn/dsh-tty tui          # TUI smoke: vim/htop full-screen rendering (start dsh web first)
+pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH smoke: in-memory SSH server × real spawnSsh end to end
+pnpm --filter @hyzyn/dsh-tty probe-smoke        # probe classification and TOFU
+pnpm --filter @hyzyn/dsh-tty probe-route-smoke  # probe HTTP routes + connection book
+pnpm --filter @hyzyn/dsh-tty sftplimits-smoke   # sftpLimits normalisation
+pnpm --filter @hyzyn/dsh-tty windows-smoke      # Windows end to end (other platforms print why and skip)
+pnpm --filter @hyzyn/dsh-tty preview      # visual preview: headless Chrome scenario screenshots (see below)
 ```
 
-The browser half’s source is `client-src/index.js`, with the stylesheet living separately in
-`client-src/tty.css` (inlined into `client.js` by esbuild’s text loader). The build output `client.js`
-(including the xterm core) needs another `pnpm build` and a page refresh (possibly a hard refresh) after
-client-side changes.
+CI (`.github/workflows/ci.yml`) runs `integration` + `ssh-smoke` + three smokes on ubuntu and `windows-smoke`
+on windows-latest, plus a “build artifacts match the sources” gate (`client.js` + `lib/`). The defect ledger is
+in [`DEFECTS.md`](./DEFECTS.md).
+
+The browser half’s source is `client-src/index.js`, its stylesheet is `client-src/tty.css` (inlined into
+`client.js` by esbuild’s text loader). After changing the client, rebuild with `pnpm build` and refresh the
+page (a hard refresh may be needed).
 
 ### Visual preview / screenshot regression (`scripts/preview.mjs`)
 
-Styles should not be changed by “refresh the page and take a look”: the script loads `client.js` into a pure
-static fixture page (`scripts/preview/harness.html` + a fake DSH host from `mock-host.js`: module
-loader / fetch / WebSocket) and renders 50 UI states one by one with headless Chrome, screenshotting them to
-`packages/tty/.preview/shots/`:
+Style changes should not rely on “refresh the page and take a look”: the script loads `client.js` into a purely
+static fixture page (`scripts/preview/harness.html` + a fake DSH host in `mock-host.js`) and uses headless
+Chrome to render **each** UI state and screenshot it into `packages/tty/.preview/shots/` (the scene list and
+its count come from `node packages/tty/scripts/preview.mjs --list`; this file does not hard-code them):
 
 ```bash
-node scripts/preview.mjs                 # all scenes
-node scripts/preview.mjs local menu ssh  # specific scenes
-node scripts/preview.mjs --list          # list scenes
+node scripts/preview.mjs                 # every scenario
+node scripts/preview.mjs local menu ssh  # selected scenarios
+node scripts/preview.mjs --list          # list scenarios
 node scripts/preview.mjs --theme=light   # light theme
 ```
 
-Coverage: local terminal / multi-tab + SSH connection bar / the “+” menu / SSH dialog (new, edit, probe)/
-settings card (also side by side with docker)/ SFTP (single pane, dual pane, placement fallback)/
-**mount slot follows the tab** (`dock-pane-tab`, the 0.19.0 regression)/ minimized badge / exit and error
-overlays / “clean up exited tabs” in the “⋯” menu (and after clicking it)/ where tabs go when the AI
-releases a session / the panel-close confirmation (with live sessions and with only exited tabs)/
-batch tab closing (the “⋯” batch rows, the tab context menu, the “close others” confirmation, middle-click;
-0.30.0)/ tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
-docker panel and “containers → terminal drawer”.
+Coverage: local terminal / multiple tabs + SSH connection bar / “+” menu / SSH dialog / settings card / SFTP /
+the docked pane following the tab / minimized badge / exit strip and error overlays / batch tab closing
+(including the confirmation layer) / tunnel popover / search box / toasts / embedded terminal / the docker pane
+and its “container → terminal drawer”.
 
-A scene may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` means pass,
-a string / array means fail); the script runs it and folds the result into `✓/✗`. An assertion that only
-lives in the fixture, seen by nobody unless someone pulls `diag` by hand, is a regression that is not really
-pinned — which is exactly what bit the 0.19.0 “panel does not follow the tab” fix: the assertion was written
-already, but because it was mixed into a `diag` object containing a function, the whole evaluation failed
-silently and everything reported ✓.
+Scenarios may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` = pass,
+a string / array = fail); the script runs it and counts it in the `✓/✗` report. The fixture renders the
+`--dsw-*` skin variables alongside the real UI, so questions like “is there still a white panel after a
+light/dark theme switch” can be verified. The `.preview/` artifact directory is gitignored.
 
-The fixture also renders the `--dsw-*` skin variables together with the real UI, so it can
-verify things like “is there still a white panel after switching light/dark themes”. The output directory
-`.preview/` is gitignored.
-
-> The fixture’s `ctx.inject` mirrors real cordis: **if any requested service is missing the callback is not
-> invoked** instead of receiving `undefined` in the scope. Filling in `undefined` means one optional
-> dependency (for example the `sidebarRight` / `sidebarRightTabs` branch of dsh-docker) makes **every** scene
-> blow up during mount (`Cannot read properties of undefined (reading 'register')`) — when the fixture does
-> not provide a host-side sidebar service, that branch should simply stay unregistered.
-
-> The fixture needs Chrome/Chromium (it looks for playwright’s cached Chrome for Testing by default, or use
-> `CHROME_PATH`). If the host environment restricts Chrome’s sandbox (child processes denied), it must be
-> loosened before running, otherwise the browser cannot start.
+> The fixture’s `ctx.inject` has the same semantics as real cordis: **a callback does not fire when one of its
+> dependencies is missing**, rather than stuffing `undefined` into the scope. The fixture needs Chrome/Chromium
+> (it looks for playwright’s cached Chrome for Testing by default; `CHROME_PATH` overrides it).
 
 ## Known limitations
 
-- **Resize is an internal coupling**: DSH’s `spawnTerminal` handle does not expose resize, so the plugin
-  passes through `(handle).terminal.resize(cols, rows)` directly (node-pty’s native API, reachable in the
-  same process). If a DSH upgrade changes the internals, since 0.3.0 it warns once and degrades to a fixed
-  size instead of throwing on every frame. **D79 addendum**: the check is now an explicit
-  `typeof terminal.resize === 'function'` — the old `handle.terminal?.resize?.(…)` only reached the warning
-  branch when resize *threw*, so a DSH that renamed or removed `handle.terminal` would neither resize nor
-  warn (the promise was empty and debugging had no lead at all).
-- **TERM is injected through a `-c` wrapper layer (POSIX only)**: DSH hardcodes node-pty `name:"dumb"`, and in
-  node-pty name takes precedence over env.TERM, so the shell is started as
-  `sh -c 'export TERM=...; exec "$shell"'` (transparent to the user; the TERM /
-  COLORTERM values are whitelisted to avoid breaking the wrapper command). **There is no such layer on
-  Windows** — neither cmd nor PowerShell understands that syntax, and ConPTY does not need TERM (see the
-  “Windows hosts” section).
-- **Windows hosts**: local terminals work (default `%COMSPEC%`), but shell integration, tmux persistence and
-  disk / TCP / throughput / temperature are unsupported or unavailable — the full boundary and verification
-  scope are in the “Windows hosts” section.
-- **terminate() has a “survivor” race**: DSH’s tree-level cleanup occasionally reports
-  `terminal cleanup failed; surviving pids`, which the plugin handles best-effort
-  (on failure it degrades to SIGKILL on the top-level shell), and the exit code/signal may be null.
-- **Output is a utf8 text stream**: node-pty data is transported by DSH as utf8, so non-UTF-8
-  bytes get eaten by replacement characters (such as `cat` on a binary file) — expected behavior; multi-byte
-  UTF-8 sequences split across chunks are covered by StringDecoder (0.3.0), so fast Chinese output no longer garbles.
-- The browser half depends on the official `dsh-web-app` sidebar structure (`[data-pane="sidebar"]`), so an
+- **resize is an internal coupling**: DSH’s `spawnTerminal` handle does not expose resize, so the plugin passes
+  through `(handle).terminal.resize(cols, rows)` (the native node-pty API). If a DSH upgrade changes the
+  internals, since 0.3.0 it warns once and degrades to a fixed size instead of throwing every frame (D79).
+- **TERM injection uses the `-c` wrapper layer (POSIX only)**: DSH hard-codes node-pty `name:"dumb"`, and in
+  node-pty the name takes precedence over env.TERM, so the shell is started as
+  `sh -c 'export TERM=...; exec "$shell"'` (transparent to the user; TERM / COLORTERM values are whitelisted).
+  **There is no such layer on Windows.**
+- **Windows hosts**: local terminals work, but shell integration / tmux persistence / disk·TCP·network·temperature
+  do not apply or are unavailable — see the “Windows hosts” section for the full boundary.
+- **terminate() has a “survivor” race**: DSH’s tree cleanup occasionally reports
+  `terminal cleanup failed; surviving pids`; the plugin treats it as best-effort (falling back to SIGKILL on the
+  top-level shell), and the exit code/signal may be null.
+- **Output is a utf8 text stream**: non-UTF-8 bytes are replaced (e.g. `cat` on a binary), as expected;
+  multi-byte UTF-8 sequences split across chunks are covered by StringDecoder, so fast Chinese output no longer
+  garbles.
+- The browser half depends on the official `dsh-web-app` sidebar structure (`[data-pane="sidebar"]`); an
   unofficial Web GUI may not show the entry.
-- **The keep-alive window is limited**: after an abnormal disconnect a session is kept alive and reattachable
-  only for `reconnectGraceSec` (120s by default), and a host process restart ends all sessions; sessions not
-  reconnected before the deadline are ended by the reaper, and scroll history beyond the output buffer
-  (last 256KB) cannot be recovered.
-- **Shell integration covers zsh / bash on POSIX and the PowerShell family on Windows**: other shells
-  (Windows cmd) are skipped automatically (`tty_capture{last}` reports a clear error rather than a wrong
-  one); a PowerShell 7 `tty_capture{last}` empty window was recorded but **not reproduced on pwsh 7.6.6**
-  on 2026-10-13 (0/20 across three output shapes) — if you see one, read the tail with `tty_capture`. bash < 4.4 uses the DEBUG trap fallback: internal commands
-  of compound commands such as loops emit extra B markers, and `tty_capture{last}` captures only the output
-  after the last internal command for those commands (exit codes and `tty_expect` are unaffected). If the
-  user’s rc overrides `PROMPT_COMMAND`/the hook array, the integration may stop working — turn off
-  `shellIntegration` or report a patch for compatibility.
-- **Port-forwarding boundaries**: local listeners are fixed to 127.0.0.1 (never exposed to the LAN); listening
-  on the server side for the remote direction is also limited by the server sshd’s `GatewayPorts`; a tunnel’s
-  SSH connection is independent of terminal sessions and both use TOFU pinning and connection-book
-  authentication; tunnel spec changes (port/target/start-stop) take effect hot on “save”, while hot-changing
-  connection-book credentials takes effect on the next reconnect.
-- **Session persistence (tmux) boundaries**: persistent tabs are hosted by the tmux server (a dedicated socket,
-  profile-scoped since 0.25.0 — `dsh-tty` without a profile, `dsh-tty-<profile>` with one)
-  `dsh-tty`) — when the host is hard-killed / the keep-alive reaper fires / the browser loses the tab spec,
-  the tmux session is **retained** (which is exactly what makes recovery possible) until the machine restarts
-  or `tmux -L <socket> kill-server` is run manually; the agent’s command-granularity tools
-  (capture{last}/expect) depend on DCS `allow-passthrough` in tmux ≥3.3, and on older versions persistence
-  works but that capability degrades (SSH remote sessions do not inject shell integration hooks, so
-  capture{last} was never available there, independently of persistence); recovery redraws the currently
-  visible screen, while pre-disconnect scroll history lives in tmux’s own history buffer (copy-mode), not in
-  the outer xterm scrollback; a persistent tab’s `exit` frame exit code is the tmux client’s (0), while the
-  shell’s exit code remains available through the OSC 133;D marker as usual; `tmux.conf` is read only when the
-  tmux server first starts (after changing the configuration, run `tmux -L <socket> kill-server` so the next
-  spawn rebuilds the server); with `grace=0`, “end immediately on disconnect” also kill-sessions persistent
-  tabs (the tmux session does not survive); persistent SSH sessions require tmux on the remote (without it
-  they degrade to a normal session automatically, and the connection bar shows a permanent “not persistent”
-  marker), and the remote `~/.tmux.conf` does not affect the dedicated socket’s independent conf
-  (`-f /dev/null`); SSH persistent session names are retained with settings; when **two windows reattach to
-  the same persistent session at the same time** they share one host PTY (0.10.1, single-client fan-out, slots
-  do not double), and the row/column count follows the most recently resized window (when the sizes differ,
-  the larger side self-heals with a redraw through onResize).
-- **SFTP boundaries**: file permissions = the terminal permissions of the corresponding SSH account (no extra
-  sandbox/chroot); downloads go through browser memory (for very large files prefer `scp`/`rsync` in the
-  terminal); the agent tool `sftp_read` is ≤1MB and rejects binaries, and `sftp_write` is ≤1MB per call (use
-  panel upload or the terminal for larger content); the `sftp_*` tools accept only connection-book entry
-  names, and inline credentials are for the panel dialog only; overwrite writes go through a same-directory
-  temp part `.dsh-part-<uuid>` + rename (atomic) — if the host process crashes / loses power, a part orphan
-  may remain, and the next overwrite upload to the same directory automatically cleans parts older than 24h.
-- **SSH host keys are TOFU-pinned**: the first connection records the sha256 fingerprint automatically
-  (trust on first use), after which any recorded fingerprint matching is allowed and a full mismatch is
-  rejected — no longer an
-  unconditional accept-and-log. Note TOFU’s inherent boundary: if the first connection already met a MITM,
-  what was recorded is a fake fingerprint; `hostKeys` is persisted with settings, and a fingerprint change
-  requires a human to confirm in the settings card and delete the record; a host’s multiple key types
-  (rsa/ed25519/ecdsa) are merged into one record’s fingerprint set (0.19.0), so algorithm negotiation
-  changes no longer report a false “fingerprint changed”; known_hosts import likewise keeps every
-  fingerprint of a host.
-- **Browser tab persistence contains no plaintext credentials** (0.19.0): the spec copies that SSH tabs
-  write into sessionStorage / localStorage have plaintext `password` / `passphrase` stripped (`env:`
-  references are kept) and are flagged with `credsStripped` — on restore/respawn the terminal asks for
-  re-entry. The in-memory spec of the live session is unaffected.
-- **SSH passwords / passphrases should use `env:VAR` references**: the connection book is persisted in the
-  settings file, so plaintext `password` / `passphrase` is an exposure surface; prefer `env:VAR` +
-  dsh-env-manager, or `agent` authentication outright (credentials never touch disk).
-- **Server status bar (0.17.0) boundaries**: the remote side relies on two fallback hops: POSIX first (needs
-  `/proc` + `awk`), and if not a single frame appears it falls back to PowerShell — this is what covers
-  **Windows remotes** (most components have no temperature and show “n/a”, the disk is the system drive
-  `%SystemDrive%`, TCP comes from `netstat -an`, and network speed from `Get-NetAdapterStatistics` deltas;
-  integers only, which avoids locale decimal points and scientific notation at the root), while **macOS/BSD
-  remotes** satisfy neither hop, get not a single field, and hide the whole status bar; on non-Linux remotes
-  every (re)subscription costs one extra doomed exec (about a hundred milliseconds, without affecting frame
-  latency); on Linux CPU temperature exists only on machines that expose `/sys/class/thermal` (most cloud
-  hosts/VMs do not, showing “n/a”); the disk is always the filesystem holding `/` (the system drive on
-  Windows) (no multi-mount support); the remote script is single-quoted through `sh -c` (so it runs even when
-  the login shell is fish/csh); local-session metrics belong to the **host machine** (several local tabs share
-  one sampling, with a continuous CPU/network delta window), and since macOS has no /proc, `ss` or sysfs it
-  uses os/netstat/vm_stat instead, so the temperature is always “n/a” and memory is active+wired+compressed
-  from vm_stat (os.freemem counts file cache as used and sits at 99% long-term); the metrics are
-  **instantaneous values** with no history curves, and there is no agent tool for them (the agent keeps using
-  the command-granularity tty_* capabilities).
-- **SSH sessions have no local pid**: an ssh2 shell channel is not a local process, so `ready.pid`
-  is `null` and `tty_list` shows `target` instead of a pid; local `ps` / `kill` do not work on remote
-  processes — close with the tab ✕ or the `kill` frame (which closes the ssh2 channel).
+- **The keep-alive window is finite**: after an abnormal disconnect a session is kept only for
+  `reconnectGraceSec`; a host process restart ends all sessions; scrollback beyond the output buffer (last 256KB)
+  cannot be recovered.
+- **Shell integration covers zsh / bash / PowerShell only**: other shells are skipped (`tty_capture{last}`
+  reports an explicit error rather than a wrong result). bash < 4.4 uses the DEBUG trap fallback: internal
+  commands of compound commands emit extra B markers, so `tty_capture{last}` only captures after the last
+  internal command (the exit code and `tty_expect` are unaffected). If the user’s rc overrides
+  `PROMPT_COMMAND`/the hook array, integration may stop working.
+- **Port-forwarding boundary**: local listeners are fixed to 127.0.0.1 (not exposed to the LAN); the remote
+  direction is further limited by the server sshd’s `GatewayPorts`; spec changes (port/target/enable) apply on
+  “Save”, while changed book credentials apply on the next reconnect.
+- **Session persistence (tmux) boundary**: persistent tabs are hosted by the tmux server (dedicated socket, per
+  profile) — if the host is hard-killed / the keep-alive reaper runs / the browser loses tab specs, the tmux
+  session **survives** (that is what makes recovery possible) until the machine restarts or you run
+  `tmux -L <socket> kill-server`; `tty_capture{last}` depends on tmux ≥3.3’s DCS `allow-passthrough` (older
+  versions still persist, but that capability degrades); reattaching redraws only the current visible screen,
+  while scrollback before the disconnect lives in tmux’s own history buffer; a persistent tab’s `exit` frame
+  carries the tmux client’s exit code (0), and the shell exit code remains available via the OSC 133;D marker;
+  `tmux.conf` is read only when the tmux server first starts; `grace=0` also kill-sessions persistent tabs; a
+  persistent SSH session requires tmux on the remote (otherwise it degrades silently); **two windows
+  reattaching to the same persistent session** share one host PTY (no double slot consumption).
+- **SFTP boundary**: file permissions are those of the SSH account’s shell (no extra sandbox/chroot); downloads
+  go through browser memory (use terminal `scp`/`rsync` for very large files); the agent tools `sftp_read` are
+  ≤1MB and refuse binaries, `sftp_write` is ≤1MB per call; overwrites use a same-directory temp shard
+  `.dsh-part-<uuid>` + rename for atomicity, and a crash may leave a shard orphan (the next overwrite upload
+  cleans up leftovers older than 24h).
+- **SSH host keys are TOFU-pinned**: if the very first connection already hit a MITM, the recorded fingerprint is
+  the attacker’s; a fingerprint change must be confirmed by a human in the settings card and the record deleted.
+- **Browser tab persistence contains no plaintext credentials**: the spec copy written to sessionStorage /
+  localStorage strips plaintext `password` / `passphrase` (an `env:` reference is kept) and marks
+  `credsStripped` — restoring/reopening prompts for them again.
+- **Status-bar boundary**: a remote host gets two fallbacks (POSIX → PowerShell), and a **macOS/BSD remote**
+  fails both, so the whole bar hides; on Linux the CPU temperature only exists where `/sys/class/thermal` is
+  exposed; the disk is fixed to the filesystem holding `/` (the system drive on Windows); a local session’s
+  metrics belong to the **host machine** (all local tabs share one sample) and macOS temperature is always
+  “无”, with memory counted as vm_stat’s active+wired+compressed; metrics are **instantaneous**, with no history
+  API (the front end accumulates 60 samples itself).
+- **SSH sessions have no local pid**: an ssh2 shell channel is not a local process, so `ready.pid` is `null`,
+  `tty_list` shows `target` instead of a pid, and the local `ps` / `kill` cannot touch the remote process —
+  close it with the tab ✕ or a `kill` frame.
 
 ## How it works
 
 ```
-Browser half (client.js, esbuild bundle)
+browser half (client.js, esbuild bundle)
   ├─ sidebar “Terminal” entry → large modal
   ├─ tab bar: one xterm.js instance per tab (independent sid; WebGL renderer, DOM fallback on loss)
-  ├─ reconnect: exponential-backoff auto-reconnect + sessions query + attach restore;
-  │  the tab list lives in sessionStorage (after a refresh, reconnect by sid and keep sessions alive)
-  ├─ sessions client service: a new tab carries the current session cwd
+  ├─ reconnect: exponential-backoff reconnect + sessions query + attach restore;
+  │  tab list in sessionStorage (after a refresh, reattach kept-alive sessions by sid)
+  ├─ sessions client service: new tabs carry the current session cwd
   └─ WebSocket ──→ /api/dsh-tty/ws (webServer.registerUpgrade)
                         │
-Host half (src/index.ts)
+host half (src/index.ts)
   ├─ per-connection session table (sid → local PTY / SSH channel, many sessions per connection)
-  ├─ SessionManager (maxSessions cap, hot-adjustable; SSH sessions scheduled from the same table;
-  │  the orphan reaper cleans up abnormally disconnected sessions per reconnectGraceSec)
-  ├─ per-session 256KB ring buffer (tty_capture / disconnect replay) + xterm-headless
-  │  virtual screen (tty_screen) + StringDecoder (utf8 split-frame fallback)
+  ├─ SessionManager (maxSessions limit, hot-adjustable; SSH sessions scheduled on the same table;
+  │  orphan reaper clears abnormally disconnected sessions after reconnectGraceSec)
+  ├─ per-session 256KB ring buffer (tty_capture / reconnect replay) + xterm-headless
+  │  virtual screen (tty_screen) + StringDecoder (utf8 framing fallback)
   ├─ shell integration (src/shell-integration.ts): zsh ZDOTDIR / bash --rcfile
-  │  stub injection of OSC 133/7 hooks; output stream parsing (feedShellIntegration, carrying
-  │  truncated packets across chunks) → command boundary capture (tty_capture{last} / tty_expect
-  │  early stop) and cwd tracking (tty_list)
+  │  stubs inject OSC 133/7 hooks; output parsing (feedShellIntegration, carry across
+  │  chunks) → command boundary capture (tty_capture{last} / tty_expect early stop)
+  │  and cwd tracking (tty_list)
   ├─ local path: ctx.get('subprocess').spawnTerminal({ argv: shell -c wrapper, cwd })
-  │  persistent tabs (0.10.0): the wrapper becomes `exec tmux -L <socket> -f <conf> new -A -s dsh-<name>`
-  │  (src/tmux.ts: probing / asset generation / spawn planning / kill-session; stable assets under
-  │  <DSH_HOME|~/.dsh>/tty/ — tmux.conf + inner.sh + zsh/bash stubs; tmux swallows sequences it
-  │  does not recognize, so the shell-integration hook detects $TMUX and wraps OSC 133/7 in a DCS
-  │  passthrough envelope, tmux ≥3.3 unwraps and forwards it, and the host parser needs no change)
-  ├─ auxiliary routes: /api/dsh-tty/ssh-config (~/.ssh/config import candidates),
-  │  /api/dsh-tty/credential-refs (reference names known to the credential store — names only, see
-  │  “Credential storage”), /api/dsh-tty/env-vars (variable names managed by the env plugin), /api/dsh-tty/known-hosts
-  │  (TOFU fingerprint prefill, src/known-hosts.ts parses hashed entries too),
-  │  /api/dsh-tty/shells (shell path candidates) — all behind the loopback fence (hardened
-  │  tier: the whole 127/8 range + DNS confirmation for alias hostnames + source checks before
-  │  DNS; one implementation only, in @hyzyn/dsh-kit); **state-changing endpoints additionally
-  │  require a same-origin proof** (POST /probe, sftp mkdir/rename/remove/upload, local-fs
-  │  mkdir/rename/remove/transfer); read-only endpoints (including sftp /list and /download)
-  │  need no proof, so bare curl still works. POST /config is deliberately exempt — it is the
-  │  only recovery entry once the plugin is disabled
-  ├─ SFTP (src/sftp.ts, 0.7.0): lazy connection pool (reclaimed after 120s idle, reconnected on
-  │  demand when dropped, TOFU shared) → POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
-  │  upload (spec in body/headers, credentials never in the URL; uploads/downloads streamed via pipe) +
-  │  sftp_list/read/write/mkdir/rename/remove/tree tools (accept only a connection-book name;
-  │  mkdir supports parents, filling levels bottom-up, tree recurses with depth/count limits)
-  ├─ port forwarding (src/tunnels.ts): host-owned tunnels (-L/-R both ways), backoff reconnect on
-  │  drop, TOFU shared, connection counters; GET /api/dsh-tty/tunnels live status + tunnel_list /
-  │  tunnel_start / tunnel_stop tools
+  │  persistent tabs: wrapper becomes `exec tmux -L <socket> -f <conf> new -A -s dsh-<name>`
+  │  (src/tmux.ts: probe / asset generation / spawn plan / kill-session; stable assets under
+  │  <DSH_HOME|~/.dsh>/tty/; tmux swallows unknown sequences, so the hooks wrap
+  │  OSC 133/7 in DCS passthrough under $TMUX, unwrapped by tmux ≥3.3)
+  ├─ helper routes: /api/dsh-tty/ssh-config (~/.ssh/config import candidates),
+  │  /api/dsh-tty/credential-refs (known reference names in the credential store),
+  │  /api/dsh-tty/env-vars, /api/dsh-tty/known-hosts, /api/dsh-tty/shells
+  │  — all behind the loopback fence (hardened: all of 127/8 + hostname DNS confirmation
+  │  + origin check before DNS; one implementation in @hyzyn/dsh-kit); **state-changing
+  │  endpoints also prove same-origin**, while read-only ones (incl. sftp /list and
+  │  /download) do not. POST /config is deliberately exempt — it is the only recovery
+  │  entry after the plugin is disabled
+  ├─ SFTP (src/sftp.ts): lazy connection pool (120s idle reap, reconnect on demand, shared
+  │  TOFU) → POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|upload
+  │  + sftp_* tools (book names only)
+  ├─ port forwarding (src/tunnels.ts): host-owned tunnels (-L/-R both ways), backoff
+  │  reconnect, shared TOFU, connection counts; GET /api/dsh-tty/tunnels + tunnel_list
   └─ frame protocol: spawn|ssh / input / resize / kill / sessions / attach
      ↔ ready/data/exit/error/sessions + backpressure
 
 SSH path (src/ssh.ts)
-  └─ {t:'ssh'} → spawnSsh: native ssh2 Client connection (agent / key / password,
-     password·passphrase support taking secrets from env:VAR; the host key is TOFU-pinned
-     through HostKeyStore), opening a shell channel wrapped into a TermHandle shaped like a PTY
-     (pid=null, kind='ssh', target=user@host[:port]),
-     backpressure is passed through to the channel as well — after that it is scheduled just like a local PTY;
-     with persist on it first probes `command -v tmux` and then `exec tmux -L <socket> -f /dev/null
-     new -A -s dsh-<name>` to open a pty channel (remote tmux hosting; without tmux it degrades to a plain
-     shell channel + a grey-text hint; kill is finished off by `tmux kill-session` inside the connection)
+  └─ {t:'ssh'} → spawnSsh: a native ssh2 Client connection (agent / key / password;
+     password·passphrase support env:VAR; host key pinned by HostKeyStore TOFU),
+     a shell channel wrapped into a TermHandle of the same shape as a PTY
+     (pid=null, kind='ssh', target=user@host[:port]), backpressure passed through;
+     persist probes tmux first, then `exec tmux -L <socket> -f /dev/null new -A -s dsh-<name>`
+     opens a pty channel (no tmux → ordinary shell channel + gray hint)
 ```
 
-The M0 probe, the integration tests (B1~B24, 58 assertions in total) and real-instance smoke tests
-(live / TUI) were verified on a real DSH service composition: TERM injection, resize passthrough, sid
-conflicts, the concurrency limit, the loopback fence, multi-session data isolation, cwd tracking and
-validation, hot configuration reload (settings/updated), the full kill→exit chain, disconnect keep-alive +
-sessions/attach reconnect replay, the tty_screen virtual screen, tty_capture ANSI cleanup, shell integration
-(capture{last} + exitCode, OSC 7 cwd tracking), tty_expect matching and timeout, the ~/.ssh/config parser,
-port forwarding (two active tunnels + forwardOut round trip + reconcile cleanup),
-the shells candidate route, bash 3.2 shell integration (DEBUG trap fallback: capture{last} +
-exitCode, tty_expect early stop when the command ends), SFTP file transfer (list/mkdir/upload/
-download/remove routes + sftp_* tools, test-sshd in-memory sshd end to end), the SFTP management
-loop (agent sftp_mkdir/-rename/-remove/-tree: parents creation, tree depth truncation,
-cross-directory moves, non-empty delete rejection and recursive delete); session persistence (B25/B26: persistence
-gating, tmux session hosting and kill-session cleanup, the no-tmux degradation hint, capture{last} under DCS
-passthrough, keep-alive reaping that kills only the PTY and not the tmux session, reattaching to the same
-persistName — with no local tmux it automatically runs only the degraded path). The SSH path is verified by `ssh-smoke`
-(in-memory SSH server × real `spawnSsh`): password authentication and prompt,
-command round trip, pty-req initial size and resize (window-change), the full terminate /
-exit-status chain, plus TOFU fingerprint recording (S7) and fingerprint-change connection rejection (S8);
-SFTP is covered by ssh-smoke S9 (test-sshd’s sftp subsystem × the real SftpManager):
-directory listing and realpath home, upload overwrite+append, download (stat size as content-length),
-mkdir/rename/non-recursive delete rejection/recursive delete, TOFU fingerprint-change rejection; S9g covers mkdir
-`parents` creation level by level (idempotent) and `tree` depth truncation/full output.
-
+M0 probes, integration tests and live-instance smokes (live / TUI) have verified on real DSH service
+compositions: TERM injection, resize passthrough, sid collisions, the concurrency limit, the loopback fence,
+multi-session data isolation, cwd tracking and validation, hot configuration, the kill→exit chain, keep-alive +
+sessions/attach replay, the tty_screen virtual screen, ANSI cleaning, shell integration, `tty_expect`, port
+forwarding, SFTP and its management loop, and session persistence; the SSH path is covered by `ssh-smoke` (an
+in-memory SSH server × the real `spawnSsh`). The itemised coverage lists and per-round real-hardware
+verification records are in [ROADMAP § completed](./ROADMAP.md#已完成落点--门槛) (Chinese).

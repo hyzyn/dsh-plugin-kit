@@ -46,7 +46,7 @@ build 之后 `git diff` 必须干净（`scripts/` 下那些脚本是例外，它
 git config core.hooksPath .githooks                 # 克隆后做一次
 ```
 
-启用后钩子会替你把产物重建并入本次提交，另跑两道闸门——**具体行为与顺序以
+启用后钩子会替你把产物重建并入本次提交，另跑五道扫描闸门——**具体行为与顺序以
 [docs/conventions.md § 提交](docs/conventions.md#提交) 为准**（本文件不复述机制）。
 
 ## 不可逆的边界（做之前先问）

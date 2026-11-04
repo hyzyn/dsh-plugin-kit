@@ -8,16 +8,15 @@
 
 - **Hot-loaded on save**: rewrites the managed block of `~/.dsh/cordis.patch.yml`; DSH’s HMR watcher reloads it automatically, and tools are registered to the model as `mcp__<server>__<tool>`.
 - **stdio and streamable-http transports**: stdio (command / args / env / cwd) and streamable-http (url / headers, including SSE and session headers); values can be written as `js:` expressions, so secrets never land in the patch file.
-- **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time. The probe also has a verdict for **errors**: a 401/403 on POST or GET is reported at once as `认证失败(HTTP 401)` (with `WWW-Authenticate`), other 4xx/5xx carry their status code — an auth failure is no longer swept into “SSE stream ended”; when a `js:` header or a stdio `env` value evaluates to `undefined` (including the shape hidden inside `Basic …` base64) it names the missing environment variables before sending any request or spawning the process.
+- **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time. Spawning the child process and reading stderr go through `@hyzyn/dsh-kit`'s `spawnPortable` / fault-tolerant decoder (the two Windows `.cmd`-shim and code-page pitfalls are in the [kit README](../kit/README.md)), so a probe never keeps reporting `EINVAL` to be misread as "the CLI is not installed", and the card never shows `���`. That only affects this plugin's probe: **the real tool loading** goes through DSH core's `@deepseek-ai/dsh-mcp-client` (official SDK + cross-spawn), which never had the problem. The probe also has a verdict for **errors**: a 401/403 on POST or GET is reported at once as `认证失败(HTTP 401)` (with `WWW-Authenticate`), other 4xx/5xx carry their status code — an auth failure is no longer swept into "SSE stream ended"; when a `js:` header or a stdio `env` value evaluates to `undefined` (including the shape hidden inside `Basic …` base64) it names the missing environment variables before sending any request or spawning the process.
 - **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading). Name clashes come in two distinct tiers, never conflated (issue #5): `conflicts` holds only rows that **actually reuse** an external serverName — both instances would claim the same `mcp__<serverName>__*` tool names, so the warning banner appears only then; the inventory of instances outside this card travels in `externalServers` and is shown as a neutral info banner (“these names are already taken elsewhere — don’t reuse them here”). Servers can be enabled / disabled (`disabled: true`) / edited / deleted. **“Mounted” is not the same as “connected”**: fiber liveness comes from the loader, while a server that cannot be reached still resolves its `mcp-client` apply (`failOnStartupError` defaults to `false`, so nothing throws) — an unreachable address therefore keeps showing a green “running”. Each managed row now carries a `toolCount` (the number of `mcp__<serverName>__*` tools in the registry): when the row is `active` and `toolCount === 0`, the badge reads **“Not connected”** instead (overriding the green “running”), and a line underneath spells out the cost (every boot waits once for that connection attempt) with a “disable” button right there. When the tool registry cannot be read, `toolCount` is **absent** (not 0) and the UI draws no conclusion — “cannot read” must never be rendered as “not connected”.
 - **Capability notice injected into systemPrompt**: injects a capability notice (systemPrompt section) so that when “MCP config / MCP server” comes up, the model knows it refers to this plugin.
 
 ![MCP Server Configuration card: add / Connection Test / hot reload](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
-Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
-`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
-below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
-sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+Where the settings surface lives changes with the DSH version, but it is **always the same form** — the
+per-generation landing spots and the four registration contracts live in
+[conventions.md § client settings surface](../../docs/conventions.md#客户端设置面内联优先).
 
 ## Permission tiers and agent visibility
 
@@ -52,10 +51,8 @@ tier see it”.
 - **The prefix cut only covers the inherited layer**: the restriction is installed on the agent scope
   and covers the layer inherited from the plugin layer. Codegraph’s per-agent mounts live on the
   agent’s own layer (they are not in the global `schemas()` view), so they are **not** affected by this
-  cut.
-
-The criteria and the runtime evidence are in [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md),
-under the “`mcp__*`” item.
+  cut; the criteria and the runtime evidence are in
+  [permission-tier-plan](../../docs/permission-tier-plan.md), under the “`mcp__*`” item.
 
 ## On-demand tool surface (`agentToolLoading`)
 
@@ -97,27 +94,22 @@ Four boundaries:
 
 ### Why it is worth it: one real measurement
 
-On 2026-10-25 we measured one real session's `request/header` event snapshot on this machine (that is
-the verbatim `tools` array of the request body): **149 tools = 130,439 B, of which MCP's 70 tools =
-66,362 B (≈50.9%)**, ≈948 B per tool, ≈**17k tokens per request** after a CJK-aware conversion — and
-the agent loop resends all of it on every step.
+On 2026-10-25 we measured one real session's `request/header` snapshot on this machine (the verbatim
+`tools` array of the request body): **149 tools = 130,439 B, of which MCP's 70 tools = 66,362 B
+(≈50.9%)**, ≈948 B per tool, ≈**17k tokens per request** after a CJK-aware conversion — and the agent
+loop resends all of it on every step. `on-demand` drops those 66 KB from the model view, a saving
+equivalent to “never registering” them; cache hits only affect **billing**, not the context window.
 
-`on-demand` drops that from the model view, so the request body no longer carries those 66 KB — the
-token saving is equivalent to “never registering” them. Cache hits only affect **billing**, not the
-context window, so the saving holds for the window too.
-
-> This is a single measurement from one local session, **not a promise**: tool counts follow the
-> servers you configure, and the token conversion follows the tokenizer. Its purpose is an order of
-> magnitude, not a price quote.
+> A single measurement from one local session, **not a promise**: tool counts follow your servers and
+> the token conversion follows the tokenizer — the purpose is an order of magnitude, not a price quote.
 
 ### Why not per-agent process mounting
 
 That is codegraph's **isolation** route: one MCP child process per session (≈40 MB), which buys “each
-session only sees its own context” at the cost of changing the patch row format and the card. It
-solves process and context isolation; **this round solves the token bill**, not process isolation —
-tools are still registered by the host, and only the model-facing layer is dropped. The two do not
-replace each other: real isolation still needs per-agent mounting, and on-demand loading still pays
-off on that route too.
+session only sees its own context” at the cost of changing the patch row format and the card. It solves
+process and context isolation; **this round solves the token bill** — tools are still registered by the
+host, and only the model-facing layer is dropped. The two do not replace each other: real isolation still
+needs per-agent mounting, and on-demand loading still pays off on that route too.
 
 ### Configuration and rollback
 
@@ -130,19 +122,17 @@ card):
     agentToolLoading: on-demand
 ```
 
-Rollback has **zero side effects**: delete that line (or write `eager` back) and restart the host —
-the tool surface is exactly what it is today. The `eager` branch registers no own tools and sends no
-extra `restrict()`, so there is no resident state to clean up.
+Rollback has **zero side effects**: delete that line (or write `eager` back) and restart the host — the
+`eager` branch registers no own tools and sends no extra `restrict()`, so there is no resident state to clean up.
 
 ### What is still missing before `on-demand` becomes the default
 
-**One real model turn's acceptance**: with `mcp_servers` / `mcp_load` in view, the model **first
-calls `mcp_servers`, then `mcp_load({ servers: […] })` to assemble the tools it needs, instead of
-detouring through `bash` to read config / run a CLI**. Only a real model can verify that (the script
-proves the surface and the load action are correct; it cannot prove the model's **choice**). Until
-then the default stays `eager`: changing the default re-routes every session that does not set this
-option, and the rollback cost is asymmetric.
-
+**One real model turn's acceptance**: with `mcp_servers` / `mcp_load` in view, the model **first calls
+`mcp_servers`, then `mcp_load({ servers: […] })` to assemble the tools it needs, instead of detouring
+through `bash` to read config / run a CLI**. Only a real model can verify that — the script proves the
+surface and the load action are correct, but it cannot prove the model's **choice**. Until then the
+default stays `eager` (changing it re-routes every session that does not set this option, and the
+rollback cost is asymmetric).
 Real-machine regression: [`scripts/verify-mcp-on-demand.mjs`](../../scripts/verify-mcp-on-demand.mjs)
 (in-process real host, no host spawn, isolated temporary `DSH_HOME`, and it asserts the real patch is
 byte-identical on exit).
@@ -162,12 +152,11 @@ Routes (loopback + same-origin only):
 - `POST /api/dsh-mcp/test` — run one Connection Test with the form configuration
 
 **Fence** (same tier as `docker` / `tty` since 2026-09-25): the loopback fence uses
-`isLoopbackRequestStrict` from `@hyzyn/dsh-kit` (the whole 127/8 range plus DNS confirmation for
-alias hostnames), and the two write routes above additionally require a **same-origin proof**
-(`Sec-Fetch-Site: same-origin` or a matching `Origin`; when both are absent, only requests carrying
-the host session cookie pass — that is the desktop shell's forwarding chain, see `docker D139`).
-The read-only `GET /servers` needs no proof, so bare curl still works. The rationale and the single
-implementation live in `packages/kit/src/http.ts`.
+`isLoopbackRequestStrict` from `@hyzyn/dsh-kit` (the whole 127/8 range plus DNS confirmation for alias
+hostnames), and the two write routes additionally require a **same-origin proof** (`Sec-Fetch-Site:
+same-origin` or a matching `Origin`; with both absent, only requests carrying the host session cookie
+pass — the desktop shell's forwarding chain, see `docker D139`). The read-only `GET /servers` needs no
+proof, so bare curl still works; the rationale and the single implementation live in `packages/kit/src/http.ts`.
 
 ## Installation
 
@@ -187,12 +176,10 @@ so **you only mount it once**. After the plugin code is updated, restart `dsh we
 > The home patch layer should only keep the plugin’s own `# --- dsh-mcp-config managed ...`
 > managed block (server rows, not the plugin row).
 
-The plugin row itself needs no HMR: after you save the **MCP Server Configuration** (the rows inside the managed
-block), DSH’s watcher on the home patch layer hot-loads them as `mcp__<server>__<tool>`
-tools within 1–2 seconds. After refreshing the page, manage servers in the Web GUI’s
-“MCP Server Configuration” card. Note: the browser
-half depends on the core `slots` service, and only the official settings panel of
-`dsh-web-app` provides that slot.
+The plugin row itself needs no HMR: after you save the server rows inside the managed block, DSH’s watcher
+on the home patch layer hot-loads them as `mcp__<server>__<tool>` tools within 1–2 seconds; refresh the page
+to manage servers in the Web GUI’s “MCP Server Configuration” card. Note: the browser half depends on the
+core `slots` service, and only the official settings panel of `dsh-web-app` provides that slot.
 
 ## Uninstallation
 
@@ -200,25 +187,25 @@ half depends on the core `slots` service, and only the official settings panel o
 dsh plugin --profile web remove @hyzyn/dsh-mcp
 ```
 
-After restarting `dsh web`, the plugin row disappears with it. The managed block can stay (just empty lines when no plugin
-is present), or you can first clear the server list in the panel and then manually delete the
+After restarting `dsh web`, the plugin row disappears with it. The managed block can stay (just empty lines
+when no plugin is present), or you can first clear the server list in the panel and then manually delete the
 `# --- dsh-mcp-config managed ...` block.
 
 ## Notes
 
-- The managed block is marked with `# --- dsh-mcp-config managed (auto-generated; do not edit) ---`;
-  the plugin only rewrites that block and keeps everything else as is; the configuration inside the block
-  aligns with the official mcp-client Config schema. An empty list is written as `- insert: []` (a no-op for the
-  entry tree) — be careful not to write a bare `[]`, which would break the top-level YAML document of the home
-  patch file, making HMR config refresh fail to parse and deleted servers unable to unload
+- The managed block is marked with `# --- dsh-mcp-config managed (auto-generated; do not edit) ---`; the
+  plugin only rewrites that block and keeps everything else as is; the configuration inside the block aligns
+  with the official mcp-client Config schema. An empty list is written as `- insert: []` (a no-op for the
+  entry tree) — **never write a bare `[]`**, which would break the top-level YAML document of the home patch
+  file, making HMR config refresh fail to parse and deleted servers unable to unload
 - The save endpoint validates serverName (`[A-Za-z0-9_-]{1,32}`), required transport fields, and reconnect parameter bounds
-- **An empty list needs explicit confirmation to clear**: `/servers/save` replaces the whole table, so `servers: []`
-  means clearing the managed block. To stop a startup race or a stale card from silently wiping the servers you
-  already configured (measured: the file was left with nothing but `- insert: []`, and there was no way to tell
-  afterwards who cleared it), the host answers 400 for a save that is "an empty list without `clearAll: true`" and
-  says in the message how many entries would be removed; the card only sets that flag when the user explicitly
-  deletes the last row (the delete confirmation says so too). A block that was already empty (no entries to begin
-  with) is not destructive and is allowed through — saving an empty card does not error
+- **An empty list needs explicit confirmation to clear**: `/servers/save` replaces the whole table, so
+  `servers: []` means clearing the managed block. To stop a startup race or a stale card from silently wiping
+  the servers you already configured (measured: the file was left with nothing but `- insert: []`, and there
+  was no way to tell afterwards who cleared it), a save that is "an empty list without `clearAll: true`" gets
+  400 with a message saying how many entries would be removed; the card only sets that flag when the user
+  explicitly deletes the last row (the delete confirmation says so too). A block that was already empty is
+  not destructive and is allowed through — saving an empty card does not error
 - The `!!js` expressions of a Connection Test are evaluated inside the host (the same trust model as the loader)
 - **The criterion for “mounted but not connected” is a tool count, not the fiber state**: tools are the only
   artefact “a successful connection + `tools/list`” leaves behind, so counting them yields the real connection
@@ -226,17 +213,17 @@ is present), or you can first clear the server list in the panel and then manual
   `mcp__<serverName>__` prefix, using the same character rules as `publicName()` in the core
   `@deepseek-ai/dsh-mcp-client`; serverName is capped at 32 characters, so the prefix always stays inside the
   core’s 51-character truncation line and the attribution is reliable — should an over-long prefix ever appear,
-  that row is **skipped rather than guessed**. Rows with `disabled` should have no tools anyway and do not count
-  as “not connected”. Note this does **not** change startup cost: an unreachable address still costs one
-  connection attempt per boot (about 10s; up to 60s when reachable but unresponsive) — disable the row to skip it
+  that row is **skipped rather than guessed**; rows with `disabled` do not count as “not connected”. Note it
+  does **not** change startup cost: an unreachable address still costs one connection attempt per boot (about
+  10s; up to 60s when reachable but unresponsive) — disable the row to skip it
 - The browser half is hand-written ESM (the React shell is resolved through `__ModuleLoader__`’s `require`, and the panel itself is pure DOM), so no tsdown is needed; the host half emits ESM straight from tsc
 
 ## Troubleshooting: triaging `server is disconnected`
 
 **The symptom looks the same, but there are four different causes, and the fixes are nothing alike.**
 Do not start by guessing at credentials — locate the row below first, then act (in one real incident on
-2026-10-24 **three causes coexisted**: missing injection + no VPN + exhausted reconnect budget; each layer on
-its own looked like "authentication failure", which is what made it expensive to diagnose).
+2026-10-24 **three causes coexisted**: missing injection + no VPN + exhausted reconnect budget — each on
+its own looks like "authentication failure").
 
 | Criterion (one pasteable command / piece of evidence) | Conclusion | Fix |
 |---|---|---|

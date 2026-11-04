@@ -534,7 +534,8 @@ DSH `0.2.0-rc.1` 的插件管理页把插件配置渲染在**插件详情页「�
 `plugins.bundle.config` 这个**按 bundle 包名派发**的槽；`plugins.row.config` 是 per-row 的
 「>」子页（侧边栏「插件」→ 该 bundle 的**行**）。两者是同一份表单的两个位置，不是两套设置。
 
-四条契约（八个包逐字节相同，只换卡片组件名）：
+四条契约（九个包逐字节相同，只换卡片组件名；名单在
+[`scripts/test/plugin-settings-surface.test.ts`](../scripts/test/plugin-settings-surface.test.ts)）：
 
 1. **挂 `plugins.bundle.config`**，key 只挂**本包自己的** bundle 包名（`@hyzyn/dsh-x`）。
    **不许挂聚合包 `@hyzyn/dsh-all`**：那个 key 是**全仓共享**的（所有插件都在同一个聚合 bundle
@@ -552,6 +553,11 @@ DSH `0.2.0-rc.1` 的插件管理页把插件配置渲染在**插件详情页「�
 
 卡片在 `view === 'page'` 下**只渲染表单、不画卡片头**（标题与面包屑由宿主页面提供），所以同一个
 组件能同时落在「插件配置」行、详情页内联与行详情三处。
+
+另有**第三个入口**（可选，装了 `@hyzyn/dsh-kit-settings` 才有）：设置 → 「插件配置」那一行，
+各包把**同一张卡片**注册进它声明的 `settings.kit.item` 子槽（可折叠卡片形态）。三个入口指向
+**同一份配置**，没有第二套设置——详见
+[kit-settings README](../packages/kit-settings/README.md)。
 
 守卫：`scripts/test/plugin-settings-surface.test.ts`（跨包一致性 + **bundle key 两两不同** +
 反例）。行为验证在
