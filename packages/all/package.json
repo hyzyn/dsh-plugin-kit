@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-all",
-  "version": "0.1.78",
+  "version": "0.1.79",
   "description": "dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件（cordis.patch.yml 与 dependencies 由 scripts/aggregate.mjs 自动生成，勿手改）。",
   "keywords": [
     "dsh",
@@ -49,9 +49,9 @@
     "@hyzyn/dsh-mcp": "0.3.12",
     "@hyzyn/dsh-profile": "0.2.14",
     "@hyzyn/dsh-prompt": "0.2.14",
-    "@hyzyn/dsh-rss": "0.4.14",
-    "@hyzyn/dsh-search": "0.4.16",
-    "@hyzyn/dsh-tty": "0.37.2"
+    "@hyzyn/dsh-rss": "0.4.15",
+    "@hyzyn/dsh-search": "0.4.17",
+    "@hyzyn/dsh-tty": "0.37.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

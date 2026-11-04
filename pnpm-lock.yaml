@@ -39,13 +39,13 @@ importers:
         specifier: 0.2.14
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.14
+        specifier: 0.4.15
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.16
+        specifier: 0.4.17
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.37.2
+        specifier: 0.37.3
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -91,13 +91,13 @@ importers:
         specifier: 0.2.14
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.14
+        specifier: 0.4.15
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.16
+        specifier: 0.4.17
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.37.2
+        specifier: 0.37.3
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
