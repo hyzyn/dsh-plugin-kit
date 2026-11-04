@@ -114,13 +114,16 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 - 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配十二档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
   `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5` 与 `0.2.2-alpha.3`**；
-  `0.1.6-alpha.2` 及更早不再支持（最新六档 `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` / `0.2.1-rc.5` / `0.2.2-alpha.3` 都是纯显式声明：对宿主零差异；
-  第六档 `0.2.1-alpha.5` 才带着真实的宿主行为变化，
-  逐条证据见 [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs) 头部的 cohort 说明）。
+  `0.1.6-alpha.2` 及更早不再支持（最新六档都是显式声明，但**不都是零差异**：`0.2.2-alpha.3` 移除了一个
+  主题令牌，rss / search 的侧栏 hover 已随档适配；`0.2.1-alpha.5` 带着判定器、`engines.dsh`、凭据与
+  macOS picker 的真实行为变化；其余四档对宿主零差异。逐条证据见
+  [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs) 头部的 cohort 说明）。
 - 兼容性由每个可安装插件在 `peerDependencies` 里声明的 `@deepseek-ai/dsh` 范围保证，DSH 在**安装前**
   与**启动时**各校验一次。被拦下长什么样、怎么临时放行 → [docs/troubleshooting.md § 兼容性校验](docs/troubleshooting.md#兼容性校验)。
 - npm 安装无额外要求；从仓库源码安装需要 Node.js >= 22.19 与 pnpm 10（低于此版本 `pnpm install`
   会**直接失败**，不是警告——判据见 [docs/conventions.md § 环境下限](docs/conventions.md#环境下限声明--engine-strict-才真的会拦)）。
+  宿主自己的 Node 下限由宿主声明：`0.2.2-alpha.3` 起要求 **Node >= 24.9**（CI 的挂载车道已切到 Node 24），
+  但本仓的开发下限仍是 `22.19`——老 cohort 继续在 Node 22 上工作。
   npm 侧只会打 `EBADENGINE` 提示、不阻塞安装。
 
 ### 从 npm 安装
