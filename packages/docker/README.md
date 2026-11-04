@@ -727,7 +727,7 @@ HTTP `POST /api/dsh-docker/config` 是卡片的写入通道，只接受下表这
 - **SSH 目标上的通道额度是共享的（`MaxSessions`）**：一个目标只维持**一条** TCP 连接，长流与短命令共用
   这条连接上的通道，而 OpenSSH 的 `MaxSessions` 默认只有 10。长流会一直占到用户关掉面板为止，聚合日志里
   每个被选容器仍各占**一条** channel——叠上刷新 / inspect 这类短命令就可能逼近额度，远端拒绝时看到的是
-  `(SSH) Channel open failure: open failed`。插件对每个 SSH 目标限制**同时最多 8 条长流**（= 10 − 2，留两
+  `(SSH) Channel open failure: open failed`。插件对每个 SSH 目标限制**同时最多 8 条长流**（源码常量 `MAX_STREAMS_PER_TARGET`，即 10 − 2，留两
   条给短命令），聚合上限也定在 3；折叠右侧栏标签会主动断流、把通道还回去。（`D150`）两道补救：① **短命令
   按目标排队**（每条连接同时最多 2 条并发，`DSH_DOCKER_SHORT_CHANNELS` 可覆盖，仅测试 / 排障）；② **额度
   满会自愈**——远端回 `no more sessions` 这类拒绝时，插件丢掉并**关闭**那条连接、重建一条再重试一次，宿主

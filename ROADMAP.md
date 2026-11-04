@@ -126,7 +126,8 @@
 > 机制推演、API 取舍与威胁模型**不在本文**（本文只放「落点 + 门槛」）：全部在
 > [docs/capability-elevation-plan.md](./docs/capability-elevation-plan.md)——§0 是对手表与
 > 三条结论、§1 是不变量、§3 是 kit 侧落点、附录 B 说明为什么砍掉确认码通道、附录 C 是实施记录
-> （含 API 改名与四处偏差）、附录 D 是 tty 接入、§9 是明确不做（OS 级同意仍后置）。
+> （含 API 改名与四处偏差）、附录 D 是 tty 接入、§9 是明确不做（OS 级同意的结论与落地状态见
+> [docs/os-consent-plan.md](./docs/os-consent-plan.md)，PR4 后置）。
 
 **做了什么**：补上**免重启**的第二条通道——页内点开关 → 面板给出一条「在宿主上落地一个随机名
 文件」的命令 → 宿主发现该文件即授权；顺带修掉 5.1 遗留的采样源问题（`.env` / `~/.dsh/env.yml`
@@ -934,6 +935,20 @@ docker 那段是安全契约（D163 守卫钉着）、codegraph 那段是 66 字
 要动预算结构，改「**逐条 250 保留作纪律 + 总和对**」更贴成本模型：7 段时代合计 931 → 现在 8 段
 合计 1181，而真实的账单是**合计**（每轮都在上下文里）。这条**若要做**，判据是「总和上限 + 逐条
 250」，两个数都要能从 `disclosure-report` 现算出来（本轮已具备）。
+
+### 2026-11-04：OS 级同意收尾（PR1–PR3 已落地，PR4 明确不做）
+
+- **落点**：[docs/os-consent-plan.md](./docs/os-consent-plan.md)（状态行改为「PR1–PR3 已落地、
+  PR4 刻意未做」）、`scripts/test/os-consent-scope.test.ts`（§2.1 三条事实 + 基准版本的升级绊线，
+  24 条用例）、[docs/capability-elevation-plan.md](./docs/capability-elevation-plan.md) §9 的约束指针
+  （2026-10-07 写入，PR1）。
+- **门槛**：宿主升级后 `os-consent-scope` **按设计红**（基准 `0.2.1-rc.5` 对不上 → 必须回来复核三条
+  事实）；「原生框替粘贴」（PR4）**不做也成立**——它把「去宿主终端粘贴一条 `touch`」换成「点一下」，
+  是 UX 改进、不是安全等级提升：对手 (b)（跨站页面 / 页内脚本）今天已被「写不了宿主文件」挡住
+  （方案 §0.2）。
+- **边界（不做，别当待办重报）**：不碰 tier gate（对手 (d) 归 `permission-tier-plan`）、不碰对手 (c)
+  （同用户进程，出模型）、不把对话框接到 `approval/request` 瀑布（形态 A 会静默丢掉对 (b) 的防护）、
+  不给 `CapabilityGrantVia` 加 `dialog` 枚举值。
 
 ## 已由 L0 资产承接（不再是待办）
 

@@ -856,7 +856,7 @@ read-only first:
   to just 10. Long streams hold a channel until the user closes the panel, and merged logs still run **one channel
   per selected container**; the next "refresh list" can then be rejected with
   `(SSH) Channel open failure: open failed`. The plugin caps each SSH target at **8 concurrent long streams**
-  (= 10 − 2, leaving two for short commands) and the merge selection at 3; folding the right-sidebar tab drops
+  (the `MAX_STREAMS_PER_TARGET` constant, i.e. 10 − 2, leaving two for short commands) and the merge selection at 3; folding the right-sidebar tab drops
   the streams and hands the channels back. Two remedies attach to this (`D150`): ① short commands **queue per
   target** (at most 2 concurrent per connection, `DSH_DOCKER_SHORT_CHANNELS` overrides, testing only); ② a full
   budget **self-heals** — on a `no more sessions` style refusal the plugin drops and `end()`s the connection and
