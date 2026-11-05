@@ -56,12 +56,13 @@ try {
   const Tools = await loadRuntime('@deepseek-ai/dsh-tools')
   const SystemPrompt = await loadRuntime('@deepseek-ai/dsh-system-prompt')
   const AgentPkg = await loadRuntime('@deepseek-ai/dsh-agent')
+  const Projections = await loadRuntime('@deepseek-ai/dsh-session-projection')
   const { createScope } = await loadRuntime('@deepseek-ai/dsh-scope')
   const plugin = await import(pathToFileURL(join(repoRoot, 'packages', 'codegraph', 'lib', 'index.js')).href)
 
   root = new Context()
   await root.plugin(SystemPrompt.SystemPrompt ?? SystemPrompt.default)
-  await root.plugin(Tools.ToolRuntime ?? Tools.default, { mode: 'native' })
+  await root.plugin(Tools.ToolRuntime ?? Tools.default, {})
 
   /*
    * 关键：**先不装 AgentRegistry**。这就是真机上「agents 的提供者 fiber 还在 LOADING」
@@ -83,6 +84,7 @@ try {
    * 把**真** agents 服务装上：cordis 的 _refresh() 跑 inject 回调 → CG69 的修复路径。
    * 修复前：`agentEventsAvailable` 永远停在 false，此后创建的 agent 一个工具都拿不到。
    */
+  await root.plugin(Projections.SessionProjectionRegistry)
   await root.plugin(AgentPkg.AgentRegistry)
 
   const makeAgent = (id, cwd) => {

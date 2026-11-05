@@ -246,8 +246,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    「适配到哪一档就写到哪一档」落全（`RELEASING.md` 的加档规则：零差异不是显式化的定义、
  *    只是常态）。实测证据：官方判定器（自报运行时 `0.2.2-rc.1`）**十三档 × 14 条目全放行**；
  *    隔离 `DSH_HOME` 起真宿主后 **11/11 个可安装包全部加载、0 行 `skipping profile bundle`、
- *    0 行 `disabling profile plugin row`**（逐条落点见 `packages/codegraph/ROADMAP.md` 的
+ *    0 行 `disabling profile plugin row`**；发版前的全面测试里 `live-smoke --render` **23/23**、
+ *    `verify-client-ui` **17/1/0**、`verify-rss-opml` **9/9**、`verify-codegraph-host-contract`
+ *    **42/42**、`verify-issue-13-14` **15/2/0**（逐条落点见 `packages/codegraph/ROADMAP.md` 的
  *    第十三档条目）。
+ *    ⚠️ **2026-11-05 全面测试补正**：「零差异」只对宿主**包**（`lib/` 逐字节）成立，对宿主的
+ *    **使用面**不成立——0.2.2 线起 `dsh-tools` 删掉了 `ToolRuntime` 的 `mode` 配置项（要原生
+ *    执行得单独 mount `@deepseek-ai/dsh-tool-executor-native`）、`tools.execute()` 改成**批** API、
+ *    `AgentRegistry` 新增 `static inject = ["sessionProjections"]`。五个进程内真机脚本与两处
+ *    浏览器夹具因此红的红、瞎的瞎，已在本轮一并修好；判据与清单见 ROADMAP 第十三档条目。
  */
 const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */

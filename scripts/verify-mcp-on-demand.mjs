@@ -114,7 +114,10 @@ try {
   const Tools = await loadRuntime('@deepseek-ai/dsh-tools')
   const Scope = await loadRuntime('@deepseek-ai/dsh-scope')
   const Agent = await loadRuntime('@deepseek-ai/dsh-agent')
+  const Projections = await loadRuntime('@deepseek-ai/dsh-session-projection')
   const SystemPrompt = await loadRuntime('@deepseek-ai/dsh-system-prompt')
+  // 0.2.2 线起 ToolRuntime 不再吃 `mode`：要不要原生执行由「挂没挂 executor」决定
+  const ExecutorNative = await loadRuntime('@deepseek-ai/dsh-tool-executor-native')
   const McpClient = await loadRuntime('@deepseek-ai/dsh-mcp-client')
   const plugin = await import(pathToFileURL(join(repoRoot, 'packages', 'mcp', 'lib', 'index.js')).href)
   const { createScope } = Scope
@@ -151,7 +154,9 @@ try {
    */
   root.provide('loader', { entries: () => [] })
   await root.plugin(pick(SystemPrompt, 'SystemPrompt'))
-  await root.plugin(pick(Tools, 'ToolRuntime'), { mode: 'native' })
+  await root.plugin(pick(Tools, 'ToolRuntime'), {})
+  await root.plugin(ExecutorNative)
+  await root.plugin(Projections.SessionProjectionRegistry)
   await root.plugin(pick(Agent, 'AgentRegistry'))
 
   /** agent 真正看得见的工具名（宿主按 scope 投影的那一份，不是我们自己算的）。 */
@@ -197,15 +202,25 @@ try {
   await root.agents.announce(agentA, 'startup')
   await root.agents.announce(agentB, 'startup')
 
-  /** 真派发一次工具调用（走宿主 pre/policy/execute/post 全链路，不是直接调 execute）。 */
+  /**
+   * 真派发一次工具调用（走宿主 pre/policy/execute/post 全链路，不是直接调 execute）。
+   *
+   * 0.2.2 线起 `tools.execute()` 收的是**批**（`{ calls, agent, signal }`），单条调用就是
+   * 「一个元素的批」；`calls[].arguments` 是模型产物的**原始 JSON 字符串**。返回值也从
+   * `ToolExecutionResult` 变成 `{ results, additionalContexts, concluded }`——这里取出这一条
+   * 的结果，让调用点保持「一条调用 → 一个结果」。
+   */
   const sequence = { n: 0 }
-  const callTool = (agent, name, args) => root.tools.execute({
-    callId: `${name}-${String(++sequence.n)}`,
-    name,
-    arguments: args,
-    agent,
-    signal: new AbortController().signal,
-  })
+  const callTool = async (agent, name, args) => {
+    const batch = await root.tools.execute({
+      calls: [{ type: 'tool-call', id: `${name}-${String(++sequence.n)}`, name, arguments: JSON.stringify(args) }],
+      agent,
+      signal: new AbortController().signal,
+    })
+    const result = batch.results[0]?.result
+    if (result === undefined) throw new Error(`宿主没有为 ${name} 返回结果（batch.results 为空）`)
+    return result
+  }
 
   /* ---------- 2. on-demand 初始：一个 mcp__* 都看不见 ---------- */
   const restricted = await waitFor(
@@ -270,7 +285,9 @@ try {
   eagerRoot = new Context()
   eagerRoot.provide('loader', { entries: () => [] })
   await eagerRoot.plugin(pick(SystemPrompt, 'SystemPrompt'))
-  await eagerRoot.plugin(pick(Tools, 'ToolRuntime'), { mode: 'native' })
+  await eagerRoot.plugin(pick(Tools, 'ToolRuntime'), {})
+  await eagerRoot.plugin(ExecutorNative)
+  await eagerRoot.plugin(Projections.SessionProjectionRegistry)
   await eagerRoot.plugin(pick(Agent, 'AgentRegistry'))
   // 先手工注册一个 mcp__* 探针工具（eager 下没人该把它摘掉；它同时是「restrict 没发」的证据）
   const probeDef = () => ({

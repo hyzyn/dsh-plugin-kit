@@ -643,6 +643,13 @@ async function main() {
      *   ② 文件逐字节未变——旧实现回 200 并把起始标记之后的全部内容删掉，
      *      只看状态码会把真正的事故判成 PASS。
      */
+    /*
+     * 这一段用的是**新起的宿主**：主 `host` 在上面 14.x 之后就 stopHost 了，而 13E 是后来
+     * 才追加的（顺序在 13.2 之后），第一版因此对着已经停掉的端口 fetch —— 症状是
+     * `FATAL 脚本执行: fetch failed`，看起来像宿主崩了，其实是脚本用错了宿主
+     * （2026-11-05 实测：同一处连跑两次都复现在同一行）。
+     */
+    const envHost = await startHost()
     const envFile = path.join(isoHome, 'env.yml')
     const MARK_ENV_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---'
     const MARK_ENV_END = '# --- end dsh-env-manager managed ---'
@@ -657,7 +664,7 @@ async function main() {
       '',
     ].join('\n')
     fs.writeFileSync(envFile, dangling)
-    const res = await request(host, '/api/dsh-env/save', {
+    const res = await request(envHost, '/api/dsh-env/save', {
       method: 'POST',
       body: { entries: [{ key: 'NEW', value: '2', secret: false }] },
     })
@@ -673,6 +680,7 @@ async function main() {
         res.status === 400 && unchanged,
         `save=${String(res.status)} 文件未动=${String(unchanged)} fileError=${JSON.stringify(res.json?.fileError ?? null)}\n        响应：${res.text.slice(0, 200)}`)
     }
+    stopHost(envHost)
   }
 
   /* ============ 收尾：真实配置逐字节未变 ============ */

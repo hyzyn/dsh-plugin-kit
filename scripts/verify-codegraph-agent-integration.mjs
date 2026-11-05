@@ -131,6 +131,7 @@ let root
 try {
   const { Context } = await loadRuntime('@deepseek-ai/cordis')
   const AgentPkg = await loadRuntime('@deepseek-ai/dsh-agent')
+  const Projections = await loadRuntime('@deepseek-ai/dsh-session-projection')
   const Tools = await loadRuntime('@deepseek-ai/dsh-tools')
   const SystemPrompt = await loadRuntime('@deepseek-ai/dsh-system-prompt')
   const { createScope } = await loadRuntime('@deepseek-ai/dsh-scope')
@@ -138,7 +139,8 @@ try {
 
   root = new Context()
   await root.plugin(SystemPrompt.SystemPrompt ?? SystemPrompt.default)
-  await root.plugin(Tools.ToolRuntime ?? Tools.default, { mode: 'native' })
+  await root.plugin(Tools.ToolRuntime ?? Tools.default, {})
+  await root.plugin(Projections.SessionProjectionRegistry)
   await root.plugin(AgentPkg.AgentRegistry)
 
   // 真插件（per-agent 模式），默认项目 = 已索引临时项目

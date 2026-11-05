@@ -15,37 +15,37 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.19
+        specifier: 0.6.20
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.14.0
+        specifier: 0.15.0
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.16
+        specifier: 0.3.17
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.9
         version: link:packages/kit-settings
       '@hyzyn/dsh-loglens':
-        specifier: 0.1.7
+        specifier: 0.1.8
         version: link:packages/loglens
       '@hyzyn/dsh-mcp':
-        specifier: 0.3.12
+        specifier: 0.3.13
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.14
+        specifier: 0.2.15
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.14
+        specifier: 0.2.15
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.15
+        specifier: 0.4.16
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.17
+        specifier: 0.4.18
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.37.3
+        specifier: 0.38.0
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -67,37 +67,37 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.19
+        specifier: 0.6.20
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.14.0
+        specifier: 0.15.0
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.16
+        specifier: 0.3.17
         version: link:../env
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.9
         version: link:../kit-settings
       '@hyzyn/dsh-loglens':
-        specifier: 0.1.7
+        specifier: 0.1.8
         version: link:../loglens
       '@hyzyn/dsh-mcp':
-        specifier: 0.3.12
+        specifier: 0.3.13
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.14
+        specifier: 0.2.15
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.14
+        specifier: 0.2.15
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.15
+        specifier: 0.4.16
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.17
+        specifier: 0.4.18
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.37.3
+        specifier: 0.38.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
@@ -1234,7 +1234,7 @@ packages:
     resolution: {integrity: sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A==}
 
   ansi-regex@5.0.1:
-    resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
+    resolution: {integrity: sha1-CCyyyJyf6GWaMRpTvWpNxTAdswQ=}
     engines: {node: '>=8'}
 
   ansi-regex@6.4.0:
@@ -1242,7 +1242,7 @@ packages:
     engines: {node: '>=12'}
 
   ansi-styles@4.3.0:
-    resolution: {integrity: sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg==}
+    resolution: {integrity: sha1-7dgDYornHATIWuegkG7a00tkiTc=}
     engines: {node: '>=8'}
 
   ansi-styles@6.2.3:
@@ -1300,11 +1300,11 @@ packages:
     engines: {node: '>= 16'}
 
   color-convert@2.0.1:
-    resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
+    resolution: {integrity: sha1-ctOmjVmMm9s68q0ehPIdiWq9TeM=}
     engines: {node: '>=7.0.0'}
 
   color-name@1.1.4:
-    resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
+    resolution: {integrity: sha1-wqCah6y95pVD3m9j+jmVyCbFNqI=}
 
   compressible@2.0.18:
     resolution: {integrity: sha512-AF3r7P5dWxL8MxyITRMlORQNaOA2IkAFaTr4k7BUumjPtRpGDTZpl0Pb1XCO6JeDCBdp126Cgs9sMxqSjgYyRg==}
@@ -1351,7 +1351,7 @@ packages:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
 
   emoji-regex@8.0.0:
-    resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
+    resolution: {integrity: sha1-6Bj9ac5cz8tARZT4QpY79TFkzDc=}
 
   emoji-regex@9.2.2:
     resolution: {integrity: sha512-L18DaJsXSUk2+42pv8mLs5jJT2hqFkFE4j21wOmgbUqsZ2hL72NsUU785g9RXgo3s0ZNgVl42TiHp3ZtOv/Vyg==}
@@ -1409,7 +1409,7 @@ packages:
     resolution: {integrity: sha512-H2iMtd0I4Mt5eYiapRdIDjp+XzelXQ0tFE4JS7YFwFevXXMmOp9myNrUvCg0D6ws8iqkRPBfKHgbwig1SmlLfg==}
 
   is-fullwidth-code-point@3.0.0:
-    resolution: {integrity: sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg==}
+    resolution: {integrity: sha1-8Rb4Bk/pCz94RKOJl8C3UFEmnx0=}
     engines: {node: '>=8'}
 
   isexe@2.0.0:
@@ -1656,7 +1656,7 @@ packages:
     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
 
   string-width@4.2.3:
-    resolution: {integrity: sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==}
+    resolution: {integrity: sha1-JpxxF9J7Ba0uU2gwqOyJXvnG0BA=}
     engines: {node: '>=8'}
 
   string-width@5.1.2:
@@ -1664,7 +1664,7 @@ packages:
     engines: {node: '>=12'}
 
   strip-ansi@6.0.1:
-    resolution: {integrity: sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A==}
+    resolution: {integrity: sha1-nibGPTD1NEPpSJSVshBdN7Z6hdk=}
     engines: {node: '>=8'}
 
   strip-ansi@7.2.0:
@@ -1810,7 +1810,7 @@ packages:
     hasBin: true
 
   wrap-ansi@7.0.0:
-    resolution: {integrity: sha512-YVGIj2kamLSTxw6NsZjoBxfSwsn0ycdesmc4p+Q21c5zPuZ1pl+NfxVdxPtdHvmNVOQ6XSYG4AUtyt/Fi7D16Q==}
+    resolution: {integrity: sha1-Z+FFz/UQpqaYS98RUpEdadLrnkM=}
     engines: {node: '>=10'}
 
   wrap-ansi@8.1.0:

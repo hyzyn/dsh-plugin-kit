@@ -174,7 +174,7 @@ const cfgFor = (cwd) => ({
 try {
   const root = new Context()
   await root.plugin(SystemPrompt.SystemPrompt ?? SystemPrompt.default)
-  await root.plugin(ToolRuntime, { mode: 'native' })
+  await root.plugin(ToolRuntime, {})
   scopeA = createScope(root, agentA)
   scopeB = createScope(root, agentB)
 

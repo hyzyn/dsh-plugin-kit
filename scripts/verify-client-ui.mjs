@@ -467,8 +467,33 @@ try {
        * `[]`、卡片数 0（2026-09-30 实测：那时弹窗里的按钮只有「稍后配置 / 保存并继续」）。
        * 关掉之后实测导航 5 项（含「插件配置」）、`li button` 卡片 8 张——就是这条断言要的数字。
        */
-      await chrome.evaluate("window.__dshUi.clickText('稍后配置') || window.__dshUi.clickText('关闭')")
-      await new Promise((resolve) => setTimeout(resolve, 1500))
+      /*
+       * 引导弹窗的形态随宿主版本变过：≤0.2.1 是「添加一个 API Key」（按钮「稍后配置 /
+       * 保存并继续」），0.2.2 线起全新 profile 上还会先弹一个欢迎 / 关于窗，按钮只有「继续」
+       * ——它同样是 [role=dialog]，不关掉就会一直抢在设置面板前面（2026-11-05 实测：
+       * 导航读成 []、卡片 0 张，而手工点掉「继续」后一切正常）。
+       * 判据只认「没有设置面板导航标签的 dialog 里的那几个文案」，不碰设置面板本身。
+       */
+      const dismissedDialogs = await chrome.evaluate(`(async () => {
+        const labels = ['稍后配置', '保存并继续', '继续', '开始使用', '知道了', '跳过', '关闭']
+        let clicks = 0
+        for (let round = 0; round < 4; round += 1) {
+          const dialog = [...document.querySelectorAll('[role=dialog]')]
+            .find((el) => el.querySelector('[class*=navLabel]') === null)
+          if (dialog === undefined) break
+          // 0.2.2 线起的首启窗只有「添加 API Key / 登录」两个动作，关它靠右上角 ✕ 的 aria-label。
+          const hit = dialog.querySelector('button[aria-label="关闭"], button[aria-label="Close"], button[title="关闭"]')
+            ?? [...dialog.querySelectorAll('button, [role=button]')]
+              .find((el) => labels.includes((el.innerText ?? '').trim()))
+          if (hit === undefined || hit === null) break
+          hit.click()
+          clicks += 1
+          await new Promise((r) => setTimeout(r, 700))
+        }
+        return clicks
+      })()`)
+      if (dismissedDialogs > 0) console.log(`[verify-client-ui] 关掉 ${String(dismissedDialogs)} 层首启引导弹窗`)
+      await new Promise((resolve) => setTimeout(resolve, 1200))
 
       const kitRow = await chrome.evaluate(`(async () => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

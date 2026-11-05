@@ -250,18 +250,36 @@ try {
    * 0.1.x 上没有这两个按钮，realClick 找不到元素直接返回 false，本函数是空操作。
    */
   const dismissFirstRunOverlays = async () => {
+    /*
+     * 判据：**只在非设置面板的 dialog 里**找那几个文案的按钮。
+     *
+     * 旧版是按「任意元素 innerText 完全等于文案、且子元素 ≤2」找的，两处都脆：0.2.2 线起
+     * 欢迎 / 关于窗的「继续」按钮里嵌了图标（子元素数超标），于是那一层关不掉、设置入口被
+     * 浮层挡住，O0 报「卡片文本长度=2」（2026-11-05 实测）。设置面板本身也有「关闭」，
+     * 所以必须显式排除带 navLabel 的那一层。
+     */
+    /*
+     * 两代都要认：0.2.x 早期的浮层按钮是「继续 / 稍后配置 / 保存并继续」，0.2.2 线起是
+     * 「开始使用」+ 只有「添加 API Key / 登录」两个动作按钮、**右上角一个 ✕（aria-label=关闭）**。
+     * 只看文案时这一层关不掉（2026-11-05 实测：realClick point=null，设置入口被浮层挡住）。
+     * 所以先找 aria-label / title 为「关闭」的按钮，再退到文案匹配。
+     */
+    const labels = ['继续', '稍后配置', '保存并继续', '开始使用', '知道了', '跳过']
     for (let round = 0; round < 4; round++) {
-      let clicked = false
-      for (const label of ['继续', '稍后配置']) {
-        const hit = await realClick(
-          `[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === ${JSON.stringify(label)} && el.children.length <= 2).pop()`,
-        )
-        if (hit === true) {
-          clicked = true
-          await new Promise((resolve) => setTimeout(resolve, 900))
-        }
-      }
-      if (!clicked) return
+      const hit = await realClick(
+        `(() => {
+           const dialog = [...document.querySelectorAll('[role=dialog]')]
+             .find((el) => el.querySelector('[class*=navLabel]') === null)
+           if (dialog === undefined) return null
+           const aria = dialog.querySelector('button[aria-label="关闭"], button[aria-label="Close"], button[title="关闭"]')
+           if (aria !== null) return aria
+           const labels = ${JSON.stringify(labels)}
+           return [...dialog.querySelectorAll('button, [role=button]')]
+             .find((el) => labels.includes((el.innerText ?? '').trim())) ?? null
+         })()`,
+      )
+      if (hit !== true) return
+      await new Promise((resolve) => setTimeout(resolve, 900))
     }
   }
   /** 轮询等页面侧条件成立（替代旧版赌时序的固定 sleep）。 */
@@ -300,6 +318,33 @@ try {
     }
   }
 
+  /**
+   * 打开设置窗。入口形态随宿主版本变过三代（与 `scripts/verify-client-ui.mjs` 的
+   * `openSettings` 同一条判据）：
+   *   · ≤0.2.0：侧边栏底部是一个独立的「设置」触发器，直接点它；
+   *   · ≥0.2.1：那个位置被账号菜单占住，设置变成菜单里的第一项（可访问名「账号菜单」）。
+   * 旧脚本只走第一代，于是 0.2.x 上「点设置」点在空气里 → O0 报「卡片文本长度=2」。
+   */
+  const openSettings = async () => {
+    const settingsReady = () => waitForPage(
+      `(() => [...document.querySelectorAll('*')].some((el) => (el.innerText ?? '').trim() === '插件配置'))()`,
+      5000,
+    )
+    await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '设置' && el.children.length <= 2).pop()`)
+    if (await settingsReady()) return true
+    // 菜单是**开关式**的：已经开着时再点一次会收起来，所以先看有没有菜单项。
+    const menuOpen = await chrome.evaluate(`document.querySelectorAll('[role=menuitem],[role=menuitemradio]').length > 0`)
+    if (menuOpen !== true) {
+      await realClick(`document.querySelector('button[aria-label="账号菜单"]') ?? document.querySelector('button[aria-haspopup="menu"]')`)
+      await new Promise((resolve) => setTimeout(resolve, 700))
+    }
+    await realClick(`(() => {
+      const items = [...document.querySelectorAll('[role=menuitem],[role=menuitemradio]')]
+      return items.find((el) => (el.innerText ?? '').trim().startsWith('设置')) ?? null
+    })()`)
+    return settingsReady()
+  }
+
   const openRssCardFresh = async () => {
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (process.env.RSS_OPML_DEBUG === '1') console.log(`      [debug] openRssCardFresh 第 ${String(attempt)} 轮`)
@@ -310,8 +355,7 @@ try {
       // 0.2 的首启浮层盖在设置入口上：先关掉，再点「设置」（关不掉时旧版行为不变）。
       await dismissFirstRunOverlays()
       await debugShot(`r${String(attempt)}-点击设置前`)
-      await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '设置' && el.children.length <= 2).pop()`)
-      if (!(await waitForPage(`(() => [...document.querySelectorAll('*')].some((el) => (el.innerText ?? '').trim() === '插件配置'))()`, 6000))) continue
+      if (!(await openSettings())) continue
       await new Promise((resolve) => setTimeout(resolve, 600))
       await debugShot(`r${String(attempt)}-点击插件配置前`)
       await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '插件配置' && el.children.length <= 2)[0]`)

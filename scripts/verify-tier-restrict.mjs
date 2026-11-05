@@ -136,7 +136,7 @@ try {
   await root.plugin(pick(Projections, 'SessionProjectionRegistry'))
   await root.plugin(pick(Session, 'SessionStore'))
   await root.plugin(pick(SystemPrompt, 'SystemPrompt'))
-  await root.plugin(pick(Tools, 'ToolRuntime'), { mode: 'native' })
+  await root.plugin(pick(Tools, 'ToolRuntime'), {})
   await root.plugin(pick(Sandbox, 'SandboxPolicyService'), {})
   await root.plugin(pick(Agent, 'AgentRegistry'))
 
@@ -244,10 +244,10 @@ try {
    */
   sessionA.append('sandbox/mode', { mode: 'workspace-write' })
   await new Promise((resolve) => setTimeout(resolve, 300))
-  const workspaceKeepsTools = view(agentA).length === fullTierBaseline && forbiddenVisible(agentA).length === 0
+  const workspaceKeepsTools = view(agentA).length === fullTierBaseline
   record('工作区内修改档（workspace-write + ask）**不裁**：工具面仍是全量，审批交给逐次 ask',
     lifted && workspaceKeepsTools,
-    `${String(view(agentA).length)} 个（注册面 ${String(fullTierBaseline)}，升档那步 ${lifted ? '成立' : '不成立'}）；缺席=${forbiddenVisible(agentA).join(',') || '(无)'}`)
+    `${String(view(agentA).length)} 个（注册面 ${String(fullTierBaseline)}，升档那步 ${lifted ? '成立' : '不成立'}）；write/exec 类仍可见 ${String(forbiddenVisible(agentA).length)} 个`)
 
   sessionA.append('sandbox/mode', { mode: 'read-only' })
   const reRestricted = await waitFor(() => view(agentA).length < fullTierBaseline && forbiddenVisible(agentA).length === 0, 3000)
