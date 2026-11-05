@@ -97,14 +97,15 @@ TERM / COLORTERM 对 ConPTY 没有意义，也不再注入。
 
 ## agent 工具
 
-插件向 agent 注入十九个工具（操作实时显示在用户终端里；**每次调用受会话权限档位约束**，见下节）：
+插件向 agent 注入二十个工具（操作实时显示在用户终端里；**每次调用受会话权限档位约束**，见下节）：
 
-> **零配置时只注册 9 个**（0.33.0 起按配置条件注册）：`sftp_*` 七个要有 SSH 连接簿条目、`tunnel_*`
+> **零配置时只注册 10 个**（0.33.0 起按配置条件注册）：`sftp_*` 七个要有 SSH 连接簿条目、`tunnel_*`
 > 三个要有隧道。下表是**配齐之后**的完整面；受限档位下还会进一步裁掉写 / exec 类（见下节）。
 
 | 工具 | 作用 |
 | --- | --- |
-| `tty_list` | 列出终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist`；agent 自己开的带 `owner: 'agent'`）。**含已退出但仍在只读保留期的会话**（`exited:true` + 退出码/信号）；**`running` 三态**（true = 在跑，别往里发命令；false = 命令已结束；**省略 = 无法判断**——非持久 SSH / fish·csh / Windows cmd 没有 shell 集成标记，**不是**「没在跑」；「未知」还包括「宿主本次启动后没见过该会话的标记」，典型是宿主重启前就停在提示符上的 tmux 会话，发一个回车或跑一条命令标记补上即变空闲）；同源 `lastExitCode` / `lastExitAt` 是上一条已完成命令的退出码与结束时刻 |
+| `tty_list` | 列出终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist`；agent 自己开的带 `owner: 'agent'`）。**含已退出但仍在只读保留期的会话**（`exited:true` + 退出码/信号）；**`running` 三态 + 未知成因**（true = 在跑，别往里发命令；false = 命令已结束；**省略 = 无法判断**，**不是**「没在跑」——成因在 `runningUnknown` 里分开：`ssh`（远端 shell 不受本插件控制，**永久**未知）/ `tmux-attach`（tmux 接回时收到的是屏重绘、不带 OSC 标启，**跑完第一条命令即恢复**）/ `no-integration`（fish·csh·cmd 等不受支持的 shell，或「shell 集成」被关掉），三者下一步动作不同，别把它们当成一句话）；同源 `lastExitCode` / `lastExitAt` 是上一条已完成命令的退出码与结束时刻 |
+| `tty_books` | 列出**连接簿条目**（`name` / `host` / `port` / `username` / 认证方式 / 是否 tmux 持久 / 是否经跳板机或有代理命令），**不含任何凭据**。`sftp_*` 的 `book`、隧道的 `bookName`、docker 目标的「连接簿」下拉都按 `name` 引用；**`book` 也接受 `host` 或 `user@host`（唯一匹配才解析，有歧义会列候选而不猜）**。名字记不准时先调它，不要去猜、更不要读配置文件 |
 | `tty_open` | **自己开一个终端会话**：本地 shell，或 `command` 直接跑一条命令（dev server / watch；**按宿主 shell 的语法整段执行**，Windows 上按 cmd / PowerShell 自己的语法；不受「命令标签单行 ≤2000」约束，D78），`persistName` 可要 tmux 持久化；当前 shell 与语法每轮都写在 systemPrompt 的终端一行里。会话**出现在用户的终端面板里**（普通标签、可见可接管），不做隐形会话 |
 | `tty_close` | 关掉由 `tty_open` 开的会话。**只允许关 agent 自己开的**（用户开的标签会被拒绝，agent 不越权结束用户正在用的终端）。对**已退出但仍只读保留着**的会话同样可用——那是它的释放入口 |
 | `tty_run` | **一次性命令**：开会话跑 `command`，等它结束，直接返回尾部输出 + 退出码（把 open → 等 → capture → close 压成一次调用）。默认**跑完即关**，`keep:true` 留在只读保留态；到 `timeoutSec`（1~600，默认 120）未结束返回 `running:true` 且**不杀会话**；**调用方取消**（`exec.signal`）立刻返回 `cancelled:true`——取消的是这次调用，**不是那条命令**。需要用户**看得见**这条命令、或它必须跑在终端会话里时用它，纯非交互命令用 bash 更直接 |
@@ -130,7 +131,7 @@ TERM / COLORTERM 对 ConPTY 没有意义，也不再注入。
 
 | 类 | 工具 | 受限档（仅可查看 / 工作区内修改）下的行为 |
 | --- | --- | --- |
-| 读 | `tty_list` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | 全档放行 |
+| 读 | `tty_list` `tty_books` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | 全档放行 |
 | 写（有界变更） | `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_remove` `tunnel_stop` | 弹授权询问（人允许这一次才执行）；无人值守（审批策略 never）确定性拒绝 |
 | 执行（无界命令面） | `tty_open` `tty_run` `tty_send` `tunnel_start` | 同上——这些工具能在本机或远程 shell 里跑任意命令、开监听端口 |
 
@@ -139,11 +140,18 @@ TERM / COLORTERM 对 ConPTY 没有意义，也不再注入。
 `tier-gate: services absent (…), per-call gate disabled`。机制（决策矩阵 / 与 `allowProxyCommand` 的
 两层关系）见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)。
 
-**受限档的会话连工具面也一并裁掉**（宿主的 `tools.restrict`）：档位是仅可查看 / 工作区内修改时，
+**只读档的会话连工具面也一并裁掉**（宿主的 `tools.restrict`）：档位是「仅可查看」时，
 插件在该会话的 **agent 作用域**上把「写」「执行」两类从工具表里摘掉——agent 看到的 tty 工具从
-19 个降到 10 个。**安全边界仍是上面那张逐调用的矩阵**：裁剪只是提前拿走按当前档位不可能成功的工具；
-名单漏了谁、或工具在会话建立之后才注册，都只影响模型看不看得见，不构成越权。完全权限 / Auto review
-档不裁。**会话中途切档会重算**（升档放回、降档摘掉，都在下一次模型请求之前生效）。
+20 个降到 11 个。**安全边界仍是上面那张逐调用的矩阵**：裁剪只是提前拿走按当前档位不可能成功的工具；
+名单漏了谁、或工具在会话建立之后才注册，都只影响模型看不看得见，不构成越权。**完全权限 / Auto review /
+工作区内修改三档都不裁**——工作区内修改档的写与执行是**逐次 ask**（人一点就能执行），工具能成功就不该
+藏（2026-11-05 修正：旧判据把默认档整批藏掉，用户要自动化只能切零询问的完全权限档）。
+**会话中途切档会重算**（升档放回、降到只读档摘掉，都在下一次模型请求之前生效）。
+
+**提示词不点名可能被裁掉的工具**（D103）：每轮 systemPrompt 的终端块只说「按 sid 操作」+「**实际可用的
+工具以你的工具表为准**」，并给出见不到时的出路（只读档请用户切「工作区内修改」档——那档可用但每次要
+确认；或改用受沙箱约束的 bash）；它不再硬写「可用 `tty_send` 操作、用 `tty_open` 开关」——那句话与
+工具表不同源，模型会照着去调一个不存在的工具。守卫：`test/tty-list-running.test.ts` 的两条反例用例。
 
 典型 agent 流程：跑完就算完的命令用 `tty_run` 一次拿回输出 + 退出码；需要**长驻**的会话用 `tty_open`
 → `tty_send` 启动 → `tty_expect` 等就绪 → `tty_capture{last:true}` 拿单条命令结果 → `tty_close`。
@@ -190,6 +198,11 @@ POSIX 上经既有的 `-c` 包装层按 shell 类型注入钩子，Windows 上�
 **回溯匹配与已读水位线（D72）**：`tty_expect` 先回看**还没被读过**的输出，回看起点抬到「未读区内
 最后一个 `B` 标记之后」——回显落在 `A` 与 `B` 之间，所以回显里的字样不会被当成命中（刻意不做文本
 比对：折行 / ANSI / 多行粘贴都会打碎它）。**没有 `B` 标记的环境**（未开集成 / Windows cmd / 远端
+- **`ZDOTDIR` 的三层解析（0.38.0）**：包装层与 tmux 内层启动器共用同一段判据——父会话传下的
+  `DSH_TTY_ORIG_ZDOTDIR` → 继承的 `ZDOTDIR`（**必须是「不是桩目录」的值**）→ `$HOME`。为什么要有
+  第二层那个排除：在 dsh 终端面板里再起一个 dsh（嵌套）时，宿主进程环境里的 `ZDOTDIR` **就是**桩目录，
+  直接用会让桩 `source` 自己 → zsh 递归（`job table full or recursion limit exceeded`）→ 整条本地
+  会话没有 OSC 133 标记。桩文件里还有一道自愈兜底（ORIG 为空/等于桩目录就退回 `$HOME`）。
 未装集成 / 用户关了 PSReadLine）改用另一条判据剔除回显（D75 / D101）：把最近 `tty_send` 提交过的
 命令行从候选文本里削掉再试，只有「削掉后不再命中」才算纯回显；超时且只命中过回显时带 `echoOnly:true`。
 
@@ -352,6 +365,13 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`（us
   环境变量（配合 dsh-env-manager 托管密钥，避免明文写进 settings）；解析不到时报错会同时点到引用名
   与「两处都没有」；
 - **端口**：默认 22，非 22 端口在 target 里显示为 `user@host:port`；
+- **名字可发现（D104）**：同一台机器常有三套名字——连接簿条目名（agent 侧 `book` / 隧道 `bookName`
+  真正认的那个）、docker 目标名、以及面板里显示给人看的 `user@host`。所以 `book` 除了条目名，也接受
+  `host` / `host:port` / `user@host`（**唯一匹配才解析**，同 host 多条目时报候选而不是猜一台），以及
+  **docker 目标名**（读 docker 命名空间里的「目标 → 它引用的条目」，只取拓扑、不碰凭据；docker 没装
+  时自动退化），于是卡片上写的 `kb-target` 可以直接当 `book` 传；记不准就用 `tty_books` 枚举（它把
+  别名表也列出来），没命中时错误文案会**列出可用条目**（`name — user@host:port`，不含凭据）而不是
+  只说「不存在」；
 - **主机密钥别名（`hostKeyAlias`，0.25.0）**：TOFU 默认按**连接地址**定位，而同一台真实主机常经不同
   地址触达（跳板机后的内网 IP、端口转发落在 `127.0.0.1:2222`），那时「同一把钥匙、不同记录」会让
   每次切换地址都判成**指纹变更**（假 MITM 告警并拒绝连接）。填同一个别名即可共用一条记录；语义与

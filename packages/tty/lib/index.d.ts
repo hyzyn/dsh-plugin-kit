@@ -621,6 +621,39 @@ interface ShellIntegrationState {
 /** 导出仅供单测（test/shell-capture.test.ts）：B/D 配对与未配对 D 的忽略语义。 */
 export declare function feedShellIntegration(session: TtySession, text: string): void;
 /**
+ * 「命令状态未知」的三种**成因**（D105）。
+ *
+ * 三态里的「未知」不是同一个未知：**下一步动作完全不同**。旧实现把三种都渲染成
+ * 「该会话没有 shell 集成标记」——SSH 会话上那句话既不成立（远端 shell 与我们的桩无关）、
+ * 也不可执行（agent 会去翻「shell 集成」开关，而那个开关管的是本机 shell）。用户现场
+ * （2026-11-04）正是这么被误导的：面板里那条 SSH 标签一直是「命令状态未知」，agent 既不能
+ * 发命令（写侧工具在受限档被裁）也拿不到「上一条命令」，排障链路就此断掉。
+ *
+ *   - `ssh`：远端 shell 由对方的 rc 决定，本插件够不着 → **永久未知**，只能看尾部输出；
+ *   - `tmux-attach`：tmux 接回（含宿主重启后重连）时，客户端收到的是 tmux 的**屏重绘**，
+ *     里面没有 shell 发的 OSC 133 标记；等下一条命令跑完（precmd 发 A、preexec 发 B）才恢复。
+ *     真机实测（2026-11-04，tmux 3.7b / zsh / `new-session -A`）：接回后一条 `true` 即恢复，
+ *     说明标记链路本身是通的，缺的只是「接回那一刻没有一次 precmd」。
+ *   - `no-integration`：本机 shell 不受支持（fish / csh / cmd）或「shell 集成」被关掉。
+ */
+export type RunningUnknownReason = 'ssh' | 'tmux-attach' | 'no-integration';
+/**
+ * 未知成因的**用户可见短句**：`tty_list` 的渲染与每轮 systemPrompt 的会话块**共用这一处**
+ * （两处各写一遍必然漂——D88 的教训就是三态在文本里糊成了两种）。
+ * 每句都带**下一步动作**：只说「不知道」等于把问题丢回给 agent。
+ */
+export declare function runningUnknownNote(reason: RunningUnknownReason): string;
+/**
+ * 没有命令边界标记时，**为什么**没有（D105）。
+ *
+ * 判据只看会话自身的事实（kind / 是不是 tmux 托管），不看配置：配置在会话建立之后热改过，
+ * 拿它解释一条早就存在的会话只会给出错误原因。
+ */
+export declare function runningUnknownReasonOf(session: {
+    kind: 'local' | 'ssh';
+    tmuxName: string | null;
+}): RunningUnknownReason;
+/**
  * 宿主 llm 服务的流式块（只声明本插件用到的字段，其余块忽略）。
  *
  * ⚠️ **finish 块的权威形状是 `{ type:'finish', reason: FinishReason }`**，而 FinishReason
@@ -890,6 +923,12 @@ export interface SessionSnapshot {
      * 拿它当「现在可以往里发命令」的许可时要按三态处理：省略 ≠ 没在跑。
      */
     running?: boolean;
+    /**
+     * `running` 省略时，**为什么**无法判断（D105）。三种成因的下一步动作不同：
+     * `ssh` = 永久未知（远端 shell 不受控）、`tmux-attach` = 等第一条命令就恢复、
+     * `no-integration` = 本机 shell 不受支持或集成被关。文案见 `runningUnknownNote`。
+     */
+    runningUnknown?: RunningUnknownReason;
     /** 上一条已完成命令的退出码（0.23.0；来自 OSC 133;D，拿不到时省略）。 */
     lastExitCode?: number;
     /** 上一条已完成命令的结束时刻（epoch ms，0.23.0；与 running/lastExitCode 同源）。 */
@@ -1268,6 +1307,56 @@ export declare class TtyServer {
 export declare function handleCredentialRefsRoute(req: ReqLike, res: ResLike): Promise<void>;
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export declare function readCredentialRefNames(): string[];
+/** 连接簿条目的**一行展示**（错误文案 / `tty_books` / 面板同一份口径）：`name — user@host:port`。 */
+export declare function bookLine(entry: SshHostEntry): string;
+/**
+ * 另一个插件里的**别名**：docker 目标名 → 它引用的连接簿条目名（D104 补）。
+ *
+ * 为什么要它：同一台机器在部署里最常用的名字不是条目名，而是 **docker 目标名**（卡片上那一栏）。
+ * agent 手上的 `kb-target` 是目标名，而 `book` 认的是条目名（`KB_APP`）——目标名与主机名、
+ * 条目名三者可以互不相同（用户现场：目标名 `kb-target`、主机名 `host-a.example`、条目名 `KB_APP`——三者互不相同）。
+ * 旧行为下这种「拿目标名当 book」的调用只能报「不存在」，模型再猜也无从推导，除非先调
+ * `docker_targets` 把 `book` 抄下来——多一次往返、且它经常不知道要这么绕。
+ *
+ * 只取**拓扑**（name / book），不读该命名空间的任何凭据字段；命名空间读不到（没装 docker /
+ * 服务未就绪）时返回空表，退化回旧行为。
+ */
+export interface BookAlias {
+    /** 别名（docker 目标名）。 */
+    target: string;
+    /** 它引用的连接簿条目名。 */
+    book: string;
+}
+/** 装配别名来源（`apply()` 与测试共用；传 `undefined` 恢复空表）。 */
+export declare function setBookAliasSource(source: (() => readonly BookAlias[]) | undefined): void;
+/**
+ * 从 docker 插件的 settings 命名空间读「目标名 → 连接簿条目名」。
+ *
+ * 只收 `kind === 'ssh'` 且 `book` 非空的目标：本机目标没有连接簿，内联 host/username 的目标
+ * 也没有可报的条目名（那种情况让它照旧报「不存在 + 可用条目」，不要把别人配置里的 host 当答案猜）。
+ */
+export declare function readDockerBookAliases(settingsCtx: Context): BookAlias[];
+/**
+ * 按「条目名 → `user@host[:port]` → `host[:port]`」解析连接簿条目（D104）。
+ *
+ * ## 为什么要别名
+ *
+ * 同一台机器在部署里通常有**三套名字**：连接簿条目名（面板里才是它）、docker 目标名、
+ * 以及面板下拉里显示给人看的 `user@host`。agent 从「我要看某容器所在主机」出发，手上
+ * 通常只有后两种；旧实现只认条目名，错误文案又只说「不存在」，于是唯一出路是让用户
+ * 手动执行、或者去解析含明文密码的配置文件。**名字必须能被发现**，否则能力等于没配。
+ *
+ * ## 判据
+ *
+ * 1. **name 精确命中永远优先**（与旧行为逐字一致，升级不改任何现有配置的语义）；
+ * 2. name 没命中才走 host / `user@host` 别名，且**必须唯一**——有歧义时列候选，绝不猜；
+ *    猜错就是登到另一台机器上执行命令；
+ * 3. 没命中就给出**可用条目清单**（name + 拓扑，不含任何凭据），把「猜」变成「照抄」。
+ */
+export declare function resolveBook(hosts: readonly SshHostEntry[], raw: unknown, aliases?: readonly BookAlias[]): {
+    entry?: SshHostEntry;
+    error?: string;
+};
 /**
  * 「连接簿条目作基底 + 内联字段逐项覆盖」的共享解析（WS ssh 帧与 SFTP 路由共用）。
  * name 指向连接簿缺失条目、或解析结果缺 host/username 时返回 error。
@@ -1275,8 +1364,11 @@ export declare function readCredentialRefNames(): string[];
  * **导出仅供单测**（`test/jump-absent.test.ts`）：这条函数是「连接簿 → 连接规格」的**唯一**
  * 入口（终端 / SFTP / 探针三条路径共用，隧道那条在 tunnels.ts 里自己拼但用同一套清洗），
  * `jump` 的「半个对象」判据挪进私有函数就等于没有测试入口——0.33.0 的连不上正是这样漏出去的。
+ *
+ * 第一参数是**连接簿数组**而不是 finder（D104）：别名解析必须能看见全部条目才能判断
+ * 「唯一匹配」，只给 finder 的话每个调用点都得自己再实现一遍歧义判据。
  */
-export declare function mergeSshSpec(findSshHost: (name: string) => SshHostEntry | undefined, name: unknown, inline: Record<string, unknown>): {
+export declare function mergeSshSpec(books: readonly SshHostEntry[], name: unknown, inline: Record<string, unknown>, aliases?: readonly BookAlias[]): {
     spec?: SshSpec;
     error?: string;
 };

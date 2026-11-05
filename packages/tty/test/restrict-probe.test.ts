@@ -158,8 +158,8 @@ describe('裁剪判据：三条「不裁」与 decideTierCall 的 allow 硬分�
     expect(shouldRestrictForTier(tier({ auto: true }))).toBe(false)
   })
 
-  it('只读 / 工作区内修改 → 裁', () => {
+  it('只读 → 裁；工作区内修改 → 不裁（ask 能成功的工具不许藏，2026-11-05 修正）', () => {
     expect(shouldRestrictForTier(tier({ mode: 'read-only' }))).toBe(true)
-    expect(shouldRestrictForTier(tier({ mode: 'workspace-write' }))).toBe(true)
+    expect(shouldRestrictForTier(tier({ mode: 'workspace-write' }))).toBe(false)
   })
 })

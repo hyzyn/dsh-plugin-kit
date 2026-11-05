@@ -18,13 +18,15 @@
  *
  * 1. 只读档（部署默认）：`docker_*` / `tty_*` / `sftp_*` / `mcp__*` 里**没有任何 write / exec**；
  * 2. **升档**：会话日志里追加一条真 `sandbox/mode` = `danger-full-access` → 工具面回来；
- * 3. **降档**：再追加 `workspace-write` → 工具面重新被裁（**这是 2026-10-25 那次改动的验收**：
+ * 3. **中间那一档不裁**：追加 `workspace-write` → 工具面**仍是全量**（2026-11-05 修正：这一档
+ *    write / exec 是 `ask`，人一点就能执行，藏起来等于替用户改档、把用户逼去零询问的完全权限档）；
+ * 4. **降档**：再追加 `read-only` → 工具面重新被裁（**这是 2026-10-25 那次改动的验收**：
  *    改动前工具面只在 `agent/created` / `tools/change` 时才对上，中途切档纹丝不动）；
- * 4. 只切**一个**会话，另一个会话的工具面不受影响；
- * 5. **per-agent 挂载的工具不受前缀裁剪**（宿主只裁继承层）：这是 `mcp` README 记着的边界，
+ * 5. 只切**一个**会话，另一个会话的工具面不受影响；
+ * 6. **per-agent 挂载的工具不受前缀裁剪**（宿主只裁继承层）：这是 `mcp` README 记着的边界，
  *    此前只有散文、没有实测。顺带钉住它的**原因**——把这类名字写进 `deny` 会整体抛
  *    `unknown global tool`，所以「按需挂载」那条路的档位执行只能是**卸载**，不能是 restrict；
- * 6. 收尾自证：真实 `~/.dsh` 的补丁逐字节未变（隔离真的生效，而不是「恰好没写」）。
+ * 7. 收尾自证：真实 `~/.dsh` 的补丁逐字节未变（隔离真的生效，而不是「恰好没写」）。
  *
  * ## 隔离（`docs/agent-real-test.md` 硬约束 ①）
  *
@@ -233,13 +235,27 @@ try {
   const forbiddenVisible = (agent) =>
     EXPECTED_RESTRICTED_ABSENT.flatMap(([, names]) => names).filter((name) => view(agent).includes(name))
 
+  /*
+   * 中间那一档：**工作区内修改不裁**（2026-11-05 修正）。
+   *
+   * 判据来自 `decideTierCall` 的矩阵——这一档 write / exec 是 `ask`，人一点就能执行，工具**能**
+   * 成功，所以藏起来就是替用户改档（旧判据把默认档整批藏掉，用户要自动化只能切零询问的完全权限
+   * 档，tty D103 的现场）。这里是**负向断言**：短等待后工具面必须仍是全量、一个都不许消失。
+   */
   sessionA.append('sandbox/mode', { mode: 'workspace-write' })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const workspaceKeepsTools = view(agentA).length === fullTierBaseline && forbiddenVisible(agentA).length === 0
+  record('工作区内修改档（workspace-write + ask）**不裁**：工具面仍是全量，审批交给逐次 ask',
+    lifted && workspaceKeepsTools,
+    `${String(view(agentA).length)} 个（注册面 ${String(fullTierBaseline)}，升档那步 ${lifted ? '成立' : '不成立'}）；缺席=${forbiddenVisible(agentA).join(',') || '(无)'}`)
+
+  sessionA.append('sandbox/mode', { mode: 'read-only' })
   const reRestricted = await waitFor(() => view(agentA).length < fullTierBaseline && forbiddenVisible(agentA).length === 0, 3000)
   /*
    * `lifted` 是这条的**前置条件**，不是冗余：没有它时，「本来就没放开过」的状态会让「降档之后
    * 仍是受限」恒真——第一版就是这么在「换回旧 lib」的变异里假绿的（升档 FAIL、降档 PASS）。
    */
-  record('降档（workspace-write）后工具面重新被裁',
+  record('降档（read-only）后工具面重新被裁',
     lifted && reRestricted,
     `${String(view(agentA).length)} 个（注册面 ${String(fullTierBaseline)}，升档那步 ${lifted ? '成立' : '不成立'}）；仍可见的 exec=${forbiddenVisible(agentA).join(',') || '(无)'}`)
 

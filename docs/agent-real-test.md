@@ -377,18 +377,19 @@ Windows 侧则是 junction，必须建成 junction（建目录符号链接要特
 pnpm --filter @hyzyn/dsh-kit run tier-smoke
 ```
 
-逐条判据（脚本是 10 条 `PASS`；**任一条 FAIL 就是宿主契约变了**，先去看 `dsh-tools` 的
+逐条判据（脚本是 11 条 `PASS`；**任一条 FAIL 就是宿主契约变了**，先去看 `dsh-tools` 的
 `restrict` / `view` 语义，别先怀疑分类表）：
 
 | # | 断言 | 通过长什么样 | 为什么这条必须在真机验 |
 |---|---|---|---|
 | 1 | 服务组合 | `PASS 真宿主服务组合起来了（tools / sessions / sandboxPolicy / agents）` | 缺 `sessionProjections` 时 `sandboxPolicy` 整个不发布，裁剪会**静默退化**成不裁 |
-| 2 | 受限档的 agent 视图 | 视图只剩分类表里 `read` 的那批，`docker_action` / `tty_open` / `sftp_write` / `mcp__probe__*` **一个都不在** | 名单对不对是我们的事，「真的消不消失」是 `restrict()` 的 scope 语义 |
+| 2 | **只读档**的 agent 视图 | 视图只剩分类表里 `read` 的那批，`docker_action` / `tty_open` / `sftp_write` / `mcp__probe__*` **一个都不在** | 名单对不对是我们的事，「真的消不消失」是 `restrict()` 的 scope 语义 |
 | 3 | **升档** | 会话日志追加 `sandbox/mode=danger-full-access` → 视图回到注册面全体 | 这条是 2026-10-25 那次改动的验收：改动前**纹丝不动** |
-| 4 | **降档** | 再追加 `workspace-write` → 视图回到 `read` 那批、exec 类全消失（**前置是第 3 条真的成立**） | 与 ③ 相反的方向，两个方向都要收 |
-| 5 | 会话隔离 | 只切 A 的档位，B 的视图**一个名字都没变** | 档位是会话级旋钮；重算越界在行为上不可见，只在 `resolve()` 次数上可见 |
-| 6 | per-agent 挂载的边界 | 挂进 agent 自己那一层的工具**仍然可见**，且把它的名字写进 `deny` 会被整体拒绝 | 宿主只裁**继承层**（own-layer 豁免）；这条此前只有散文，没有实测 |
-| 7 | 收尾自证 | 真实 `~/.dsh/cordis.patch.yml` **逐字节未变** | `docs/agent-real-test.md` § 三条硬约束 ① 的「必须自证」 |
+| 4 | **中间档不裁** | 追加 `workspace-write` → 视图**仍是注册面全体**（一个 write/exec 都不许消失） | 2026-11-05 修正的验收：这一档在矩阵里是 `ask`，工具**能**成功；藏起来等于替用户改档，还会把人逼去零询问的完全权限档（tty D103 现场） |
+| 5 | **降档** | 再追加 `read-only` → 视图回到 `read` 那批、exec 类全消失（**前置是第 3 条真的成立**） | 与 ③ 相反的方向，两个方向都要收 |
+| 6 | 会话隔离 | 只切 A 的档位，B 的视图**一个名字都没变** | 档位是会话级旋钮；重算越界在行为上不可见，只在 `resolve()` 次数上可见 |
+| 7 | per-agent 挂载的边界 | 挂进 agent 自己那一层的工具**仍然可见**，且把它的名字写进 `deny` 会被整体拒绝 | 宿主只裁**继承层**（own-layer 豁免）；这条此前只有散文，没有实测 |
+| 8 | 收尾自证 | 真实 `~/.dsh/cordis.patch.yml` **逐字节未变** | `docs/agent-real-test.md` § 三条硬约束 ① 的「必须自证」 |
 
 **这一层刻意不覆盖什么**（别把 PASS 读大）：
 

@@ -15,7 +15,7 @@ import './isolated-home.js'
 import { tmpdir } from 'node:os'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { apply } from '../src/index.js'
+import { apply, runningUnknownNote, runningUnknownReasonOf } from '../src/index.js'
 
 interface FakePty {
   kind: 'local'
@@ -207,6 +207,64 @@ describe('tty_list 的 running / lastExitCode（0.23.0）', () => {
     expect(lineOf(unknown.sid), '未知态必须与空闲长得不一样').toContain('[命令状态未知')
     expect(lineOf(unknown.sid), '未知态不能借用「空闲」的说法').not.toContain('[空闲]')
     expect(unknown.sid, '三态得是三段不同的文本').not.toBe(idle.sid)
+  })
+
+
+  /**
+   * D105：先说清「为什么不知道」。旧实现在 SSH 会话上也印「该会话没有 shell 集成标记」，
+   * 于是 agent 去掉一个**管本机 shell** 的开关；tmux 接回的会话其实是「还没跑过第一条命令」，
+   * 值得等，SSH 的那条则永远等不到。
+   */
+  it('D105：未知态带上**成因**，且两种渲染（tty_list / 每轮快照）用同一句话', async () => {
+    const mounted = mountPlugin()
+    const opened = await mounted.tools.get('tty_open')?.execute({ cwd: tmpdir() }) as { sid: string }
+    await wait(20)
+    const entry = await entryOf(mounted, opened.sid)
+    expect(entry?.runningUnknown, '本机 shell 没有标记 → no-integration').toBe('no-integration')
+
+    const note = runningUnknownNote('no-integration')
+    expect(await listText(mounted), 'tty_list 要印出成因与下一步').toContain(`[命令状态未知——${note}]`)
+    expect(mounted.prompts.at(-1)?.() ?? '', '每轮快照与 tty_list 必须逐字一致').toContain(`[命令状态未知——${note}]`)
+  })
+
+  it('D105：成因按会话事实分诊（ssh 永久未知 / tmux 接回等第一条命令 / 本机无集成）', () => {
+    expect(runningUnknownReasonOf({ kind: 'ssh', tmuxName: null })).toBe('ssh')
+    expect(runningUnknownReasonOf({ kind: 'local', tmuxName: 'dsh-abc' })).toBe('tmux-attach')
+    expect(runningUnknownReasonOf({ kind: 'local', tmuxName: null })).toBe('no-integration')
+    // 三句必须互不相同：糊成一句正是这条缺陷本身（agent 分不清「等」与「别等」）
+    const notes = new Set([
+      runningUnknownNote('ssh'),
+      runningUnknownNote('tmux-attach'),
+      runningUnknownNote('no-integration'),
+    ])
+    expect(notes.size).toBe(3)
+    // 每句都要给下一步（只说「不知道」等于把问题丢回给 agent）
+    for (const note of notes) expect(note).toContain('tty_capture')
+  })
+
+  it('D103：每轮会话块不点名可能被档位裁掉的工具（提示词不许比工具表更肯定）', async () => {
+    const mounted = mountPlugin()
+    await mounted.tools.get('tty_open')?.execute({ cwd: tmpdir() })
+    await wait(20)
+    const text = mounted.prompts.at(-1)?.() ?? ''
+    expect(text, '权威必须指向模型自己的工具表').toContain('以你的工具表为准')
+    // 写侧 / 执行类工具在「仅可查看」「工作区内修改」两档会被 attachTierRestrict 整批裁掉，
+    // 而提示词曾经硬写「可用 … tty_send 操作，用 tty_open / tty_close 开关」（用户现场照做，两轮失败）
+    expect(text).not.toContain('tty_send')
+    expect(text).not.toContain('tty_open')
+  })
+
+  it('D103：没有会话时也不硬承诺 tty_open 存在（同一句话的两个分支都要同源）', () => {
+    const mounted = mountPlugin()
+    const text = mounted.prompts.at(-1)?.() ?? ''
+    expect(text).toContain('工具表里有 tty_open')
+  })
+
+  it('D103：tty_list 自己的描述把写侧工具的可用性交给工具表', () => {
+    const mounted = mountPlugin()
+    const description = String((mounted.tools.get('tty_list') as unknown as { description?: unknown })?.description ?? '')
+    expect(description).toContain('以你的工具表为准')
+    expect(description, '旧文案硬点 tty_send').not.toContain('用 tty_send 向该会话发送按键')
   })
 
   it('systemPrompt 的每轮快照直接标出「运行中」（agent 不调 tty_list 也看得到）', async () => {

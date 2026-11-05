@@ -113,7 +113,7 @@ const policy = approval?.overrideOf(exec.agent.session) ?? 'ask'        // 服�
 
 | 类 | 工具 | 判据 |
 |---|---|---|
-| `read` | `tty_list` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` | 纯读（含等待输出） |
+| `read` | `tty_list` `tty_books` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` | 纯读（含等待输出、列连接簿） |
 | `read` | `tty_close` | 簿记：只能关 agent 自己开的会话（既有归属守卫），无新破坏面（**R2**） |
 | `write` | `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_remove` `tunnel_stop` | 有界变更：远程 ≤1MB 文本 / 目录 / 删隧道转发 |
 | `exec` | `tty_open` `tty_run` `tty_send` `tunnel_start` | 无界命令面（本机或远程 shell——`tty_send` 能往活 shell 里敲任意命令）与宿主监听面（开隧道=在本机开监听端口）（**R3**：`tunnel_start` 归 `write` 的备选） |
@@ -138,7 +138,8 @@ const policy = approval?.overrideOf(exec.agent.session) ?? 'ask'        // 服�
 **`mcp` 没有这张表，是设计而非遗漏**：`mcp__<server>__<tool>` 的名字由外部 server 决定，本仓无法逐条
 分类，也无权替别人的工具声明档位；`packages/mcp` 按 `mcp__` 前缀把整族接进 kit 的 `attachTierRestrict`，
 `classify` 恒返回 `exec`（未知风险取最坏类，2026-10-25 决议，见 [§10](#10-明确不做本方案范围外) 末条）。
-行为面由 `packages/mcp/test/agent-visibility.test.ts` 钉住（受限档下 `mcp__*` 一个都不剩），
+行为面由 `packages/mcp/test/agent-visibility.test.ts` 钉住（**只读档**下 `mcp__*` 一个都不剩；
+2026-11-05 起「工作区内修改」档不裁，见下面的修正记录），
 所以 §2.1 的三张表**不是**「全部 agent 工具」的清单——别把它们当覆盖率读。
 
 ### 2.2 决策矩阵（唯一判定处，纯函数）
@@ -392,10 +393,19 @@ approval 服务面都已验证；代价是 ask 发生在调用已展示之后（
   但「谁替别人的工具声明档位」是策略问题）；(c) 推给宿主 / MCP 侧修，本仓只留这条记录与告警。
 
   **2026-10-25 决议：走 (b)。** `packages/mcp` 把 `mcp__` 前缀接进 kit 的 `attachTierRestrict`，
-  `classify` 恒返回 `exec`——受限档（`read-only` / `workspace-write`，且非 Auto review、且宿主组合了
-  档位服务）下 agent 的工具表里一个 `mcp__*` 都没有；`danger-full-access` 不裁；宿主未组合档位服务时
-  也不裁（与 docker / tty 同口径）。为什么「一律 exec」而不是按名字猜读写：本仓无法判定任意第三方
-  MCP 工具的语义，**未知风险取最坏类**是可辩护的，按名字猜则会在命名变化时静默失效。
+  `classify` 恒返回 `exec`——**只读档**（且非 Auto review、且宿主组合了档位服务）下 agent 的工具表里
+  一个 `mcp__*` 都没有；`danger-full-access` / `workspace-write` 不裁（见 2026-11-05 修正）；宿主未组合
+  档位服务时也不裁（与 docker / tty 同口径）。为什么「一律 exec」而不是按名字猜读写：本仓无法判定任意
+  第三方 MCP 工具的语义，**未知风险取最坏类**是可辩护的，按名字猜则会在命名变化时静默失效。
+
+  **⚠️ 2026-11-05 修正（裁剪判据收窄到只读档）**：`shouldRestrictForTier` 从
+  `mode !== 'danger-full-access'` 改成 `mode === 'read-only'`。理由与用户现场见
+  `packages/kit/src/tier-restrict.ts` 的 {@link shouldRestrictForTier} 注释：工作区内修改档在
+  §2.2 矩阵里是 `ask`（人一点就能执行），工具**能成功**，藏起来等于替用户改档；而它的实际后果是把
+  用户逼到唯一另一条路——**零询问**的完全权限档（比逐次 ask 宽得多）。改动只影响「工具面可见性」，
+  **执行期闸一行未动**：`workspace-write + ask` 下 write / exec 仍然是逐次 `ask`。落点：kit
+  `tier-restrict.ts`（+ 6 条单测）、tty / docker / mcp 三包的 tier-restrict 用例、`tier-smoke`
+  （新增「中间档不裁」一条，降档那步改用 `read-only`）。
 
   **同轮评估过、明确放弃的方案**：给每个 server 一个「不给 agent」开关（需要新配置字段 + DTO +
   保存路径 + 卡片勾选 + 双语文案）。放弃理由：收益只在完全权限档（受限档已被前缀裁剪全覆盖），

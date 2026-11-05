@@ -28,16 +28,48 @@ export function tierRestrictedNames(registered, classify, prefixes = []) {
     return denied;
 }
 /**
- * 这一档要不要裁剪。三条 `false` 与 `decideTierCall` 的 allow 硬分支**一一对应**
- * （服务未组合 / auto review / 完全权限）：那三支下工具本来就能用，藏起来是另一种行为。
+ * 这一档要不要裁剪。**只有 `read-only` 裁**（2026-11-05 修正，见下）。
  *
+ * ## 判据：裁剪只允许摘掉「按当前档位**不可能成功**」的工具
+ *
+ * 这是本层存在的唯一理由（文件头那句「省的是来回而不是安全」）。所以判据不能按「档位名字听起来
+ * 危险」走，只能按 `decideTierCall` 的矩阵走：
+ *
+ * | 档位 | 写 / 执行类在矩阵里 | 裁不裁 |
+ * | --- | --- | --- |
+ * | 完全权限（danger-full-access） | `allow`（硬分支） | 不裁 |
+ * | Auto review | `allow`（硬分支，宿主预审接管） | 不裁 |
+ * | 工作区内修改（workspace-write + ask） | **`ask`** —— 人一点就能执行 | **不裁** |
+ * | 仅可查看（read-only） | `ask`（policy=ask）/ `deny`（policy=never），**两格都到不了「不需要人」** | 裁 |
+ *
+ * 服务未组合时也不裁（没有档位概念 ≠ 只读档，见文件头边界 1）。
+ *
+ * ## 为什么从「受限档 = 只读 + 工作区内修改」改成只裁只读档
+ *
+ * 旧判据是 `mode !== 'danger-full-access'`，于是**默认档**（工作区内修改）下写 / 执行类整批消失。
+ * 后果不是「更安全」，而是把用户逼上唯一另一条路：切**完全权限**档——那一档是零询问的，比逐次
+ * 审批的 `ask` 宽得多。用户现场（2026-11-04，tty D103）正是这样：想在容器宿主机上跑一条 `sed`，
+ * 默认档下 `tty_send` 根本不在工具表里，agent 只能请他手动执行；要自动化就得把整个会话放到
+ * 完全权限。**裁剪把「可审批」变成了「要么什么都做不了、要么零监督」**，中间那档被吃掉了。
+ *
+ * 矩阵里 `workspace-write + ask` 那一格本来就是 `ask`（R4 决议：维持逐次询问，不降级成 write），
+ * 工具**能**成功——藏起来等于替用户改档，与上面那条判据直接冲突。所以这里回到矩阵原义：
+ * 工作区内修改档工具可见、**每次写入/执行照旧逐次询问**；安全边界始终是 `attachTierGate`。
+ *
+ * ## 只读档照旧裁（含 read-only + ask 这个自定义组合）
+ *
+ * 矩阵里 `read-only + ask` 给的是 `ask`，按「只藏不可能成功的」严格读会被读成不裁。这里仍然裁，
+ * 三条理由：①档位菜单里「仅可查看」配的就是 `never`，`read-only + ask` 只可能是自定义档，而档位名
+ * 对用户就是「只读」——工具面上摆着 `tty_send` 这类名字与心智不符；②那一格要成功必须有人点一次
+ * 允许，等于把「只读」做成「逐次可提权」，而这正是本层的存在理由（省来回）；③判据落在一个维度上
+ * （`mode`）比跨两维拼格子更好解释、更好测。要放开就把档位切成工作区内修改——工具可见 + 逐次 ask。
  */
 export function shouldRestrictForTier(tier) {
     if (!tier.services.sandboxPolicy)
         return false;
     if (tier.auto)
         return false;
-    return tier.mode !== 'danger-full-access';
+    return tier.mode === 'read-only';
 }
 /** 取一个 context 绑定的 `tools` 服务（取不到 = 环境不支持，调用方按「不裁剪」处理）。 */
 function toolsOf(target) {

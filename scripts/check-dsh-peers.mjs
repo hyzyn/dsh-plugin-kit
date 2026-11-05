@@ -208,7 +208,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    真实影响：
  *      · `dsh-client-ui-theme` 移除了 `--dsw-specific-sidebar-nav-item-hover`（rss / search
  *        侧栏 hover 底色会整条失效、tty 退到自家 fallback）——三处已改用宿主侧栏自己在用的
- *        `--dsw-alias-interactive-bg-hover`（十二档都存在），主题令牌快照 403 → 414
+ *        `--dsw-alias-interactive-bg-hover`（已适配的每一档都存在），主题令牌快照 403 → 414
  *        （移除 1、新增 12）；`dsh-client-ui-theme` 的新增令牌本仓一个都没用。
  *      · `dsh-client-ui-user-questions` 的 CSS 自定义属性 `--question-copy` 命中了同意方案的
  *        裸 `--question` 确认框判据——核对后确认它是**页内提问卡片**（`ctx.userQuestions` +
@@ -229,8 +229,27 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    0 行 `disabling profile plugin row`**；`verify-client-ui --mode boot` **6/6 PASS**（11 个
  *    `@hyzyn` bundle 真加载、0 未捕获异常、0 失败子请求）。⇒ 这一档**不能**照抄「纯显式声明 /
  *    零差异」的写法：它改了客户端令牌，必须带着上述适配一起声明。
+ *  - **0.2.2-rc.1（第十三档基线，2026-11-05 实测）**：**纯显式声明、零差异**——`0.2.2-rc.1`
+ *    本来就被 `^0.2.2-alpha.3` 覆盖（同一个 `0.2.2` 版本元组，预发布之间不比大小），
+ *    官方判定器实测放行。逐文件比对（alpha.3 装一份完整依赖树 + 本机 rc.1，各 331 / 330 个
+ *    宿主包逐个 `lib/`）：**有差异的只有 4 个包，且差异只有版本串**——`dsh-client-modules`
+ *    （commit 哈希）与 `dsh-client-ui-settings-account` / `-settings-general` / `-sidebar`
+ *    （`0.2.2-alpha.3` → `0.2.2-rc.1`，各 2 行）；其余 **327 个逐字节相同**，其中含本仓 import
+ *    的全部 26 个宿主包、`dsh` CLI 自己的 `lib/`（20 个文件）与 `dsh-cordis-client-runner`
+ *    的槽目录（`lib/client.js` 435100 字节逐字节相同，字符串面 99 → 99、0 增 0 删 0 改名）。
+ *    `@deepseek-ai/dsh` 的依赖集合 **90 → 90**（0 增 0 删），宿主包集合不变；运行时
+ *    `cordis` 4.0.6-alpha.2 → **4.1.0**、`schemastery` 3.18.6-alpha.2 → **3.19.0**、
+ *    `cosmokit` 1.8.7-alpha.2 → 1.9.0、`cordis-plugin-loader` 1.0.7-alpha.2 → 1.1.0 ——
+ *    这四个的 `lib/` 也**逐字节相同**（预发布转正，只有版本串变），`engines.node`
+ *    仍是 `>=24.9.0`。主题令牌 **414 → 414**、`--check` 与宿主逐字一致（快照只差
+ *    `dshVersion` / `generatedAt` 两个元数据位）。⇒ 这一档对宿主行为零影响，加档只是把
+ *    「适配到哪一档就写到哪一档」落全（`RELEASING.md` 的加档规则：零差异不是显式化的定义、
+ *    只是常态）。实测证据：官方判定器（自报运行时 `0.2.2-rc.1`）**十三档 × 14 条目全放行**；
+ *    隔离 `DSH_HOME` 起真宿主后 **11/11 个可安装包全部加载、0 行 `skipping profile bundle`、
+ *    0 行 `disabling profile plugin row`**（逐条落点见 `packages/codegraph/ROADMAP.md` 的
+ *    第十三档条目）。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

@@ -2,7 +2,7 @@
  * @hyzyn/dsh-tty — 工具并发性声明的回归测试（项目级 ROADMAP 第 4 项）。
  *
  * 背景：宿主对**未声明** `isConcurrencySafe` 的工具一律按「独占」处理
- * （`dsh-tools/lib/index.js:3059` → `{ kind: 'exclusive' }`）。tty 的 19 个工具里
+ * （`dsh-tools/lib/index.js:3059` → `{ kind: 'exclusive' }`）。tty 的 20 个工具里
  * 9 个是纯读取（列会话 / 截图 / 抓输出 / 列 SFTP 目录 / 列隧道），本可以并发。
  *
  * 反向同样要钉：**变更**工具（开/关终端、发按键、写远端文件、启停隧道）多声明一次就是真事故。
@@ -15,8 +15,8 @@ import { describe, expect, it } from 'vitest'
 import { mountPlugin, sshHostEntry, tunnelSpec } from './mount-plugin.js'
 import type { FakeToolDef } from './mount-plugin.js'
 
-/** 只读工具：列 / 抓 / 截屏 / 探针，不改任何状态。 */
-const READ_ONLY = ['tty_list', 'tty_stats', 'tty_capture', 'tty_screen', 'tty_expect', 'tunnel_list', 'sftp_list', 'sftp_read', 'sftp_tree']
+/** 只读工具：列 / 抓 / 截屏 / 探针 / 列连接簿，不改任何状态。 */
+const READ_ONLY = ['tty_list', 'tty_books', 'tty_stats', 'tty_capture', 'tty_screen', 'tty_expect', 'tunnel_list', 'sftp_list', 'sftp_read', 'sftp_tree']
 
 /** 变更工具：开会话、关会话、发按键、跑一条命令、写远端 / 建目录 / 改名 / 删除、启停隧道。 */
 const MUTATING = ['tty_open', 'tty_close', 'tty_run', 'tty_send', 'sftp_write', 'sftp_mkdir', 'sftp_rename', 'sftp_remove', 'tunnel_start', 'tunnel_stop']
@@ -34,7 +34,7 @@ function minArgs(tool: FakeToolDef): Record<string, unknown> {
 
 /**
  * 挂载时把连接簿与隧道都配齐——这两组工具现在**按配置条件注册**（见 `test/tool-gating.test.ts`），
- * 不配就只有基础九件，下面两张清单会有一半「未注册」。隧道刻意 `enabled: false`：夹具不碰网络。
+ * 不配就只有基础十件，下面两张清单会有一半「未注册」。隧道刻意 `enabled: false`：夹具不碰网络。
  */
 function mountAll(): Map<string, FakeToolDef> {
   return mountPlugin({ sshHosts: [sshHostEntry()], tunnels: [tunnelSpec()] }).tools

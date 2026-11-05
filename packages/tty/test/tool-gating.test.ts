@@ -26,7 +26,7 @@ import { describe, expect, it } from 'vitest'
 import { mountPlugin, sshHostEntry, tunnelSpec } from './mount-plugin.js'
 
 /** 无条件注册的基础工具（与配置无关：本地终端永远可用）。 */
-const BASE_TOOLS = ['tty_list', 'tty_open', 'tty_close', 'tty_run', 'tty_stats', 'tty_capture', 'tty_screen', 'tty_expect', 'tty_send']
+const BASE_TOOLS = ['tty_list', 'tty_books', 'tty_open', 'tty_close', 'tty_run', 'tty_stats', 'tty_capture', 'tty_screen', 'tty_expect', 'tty_send']
 /** 有已配置隧道（`live.tunnels` 非空）才注册。 */
 const TUNNEL_TOOLS = ['tunnel_list', 'tunnel_start', 'tunnel_stop']
 /** 连接簿有条目（`live.sshHosts` 非空）才注册。 */

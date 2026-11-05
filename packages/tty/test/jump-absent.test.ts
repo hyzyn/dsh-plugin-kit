@@ -129,7 +129,7 @@ describe('mergeSshSpec：连接簿里残留的半个 jump 当「没配」', () =
   const profile = { ...ENTRY, jump: HALF_JUMP } as unknown as SshHostEntry
 
   it('半个对象 → spec 里没有 jump（旧实现会原样传下去）', () => {
-    const merged = mergeSshSpec(() => profile, ENTRY.name, {})
+    const merged = mergeSshSpec([profile], ENTRY.name, {})
     expect(merged.error).toBeUndefined()
     expect(merged.spec?.jump).toBeUndefined()
     expect(merged.spec?.host).toBe(ENTRY.host)
@@ -137,14 +137,14 @@ describe('mergeSshSpec：连接簿里残留的半个 jump 当「没配」', () =
 
   it('有效 jump 仍然一路带下去（清洗不能顺手把功能洗掉）', () => {
     const valid = { ...ENTRY, jump: { host: 'bastion.internal', port: 2222 } } as unknown as SshHostEntry
-    expect(mergeSshSpec(() => valid, ENTRY.name, {}).spec?.jump).toEqual({ host: 'bastion.internal', port: 2222 })
+    expect(mergeSshSpec([valid], ENTRY.name, {}).spec?.jump).toEqual({ host: 'bastion.internal', port: 2222 })
   })
 
   it('内联 jump 优先于连接簿；内联给了但主机为空 → 清洗成没配', () => {
     const valid = { ...ENTRY, jump: { host: 'bastion.internal', port: 2222 } } as unknown as SshHostEntry
-    expect(mergeSshSpec(() => valid, ENTRY.name, { jump: { host: 'inline.bastion' } }).spec?.jump)
+    expect(mergeSshSpec([valid], ENTRY.name, { jump: { host: 'inline.bastion' } }).spec?.jump)
       .toEqual({ host: 'inline.bastion', port: 22 })
-    expect(mergeSshSpec(() => profile, ENTRY.name, { jump: { host: '   ' } }).spec?.jump).toBeUndefined()
+    expect(mergeSshSpec([profile], ENTRY.name, { jump: { host: '   ' } }).spec?.jump).toBeUndefined()
   })
 })
 

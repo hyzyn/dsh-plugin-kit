@@ -121,16 +121,17 @@ Full boundaries, what 0.18.1 fixed and the W6–W8 coverage of `windows-smoke` a
 
 ## Agent tools
 
-The plugin injects nineteen tools into the agent (operations show up live in the user’s terminal; **every
+The plugin injects twenty tools into the agent (operations show up live in the user’s terminal; **every
 call is subject to the session permission tier**, see below):
 
-> **A zero-config install registers only 9** (conditional registration since 0.33.0): the seven `sftp_*`
+> **A zero-config install registers only 10** (conditional registration since 0.33.0): the seven `sftp_*`
 > tools need an SSH connection-book entry and the three `tunnel_*` tools need a tunnel. The table is the full
 > surface **once configured**; a restricted tier trims the write / exec ones further (see below).
 
 | Tool | Purpose |
 | --- | --- |
-| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry `persist`; agent-opened ones carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still in read-only retention** (`exited:true` + exit code/signal); **`running` has three states** (true = a command is running, do not send into it now; false = the command has finished; **omitted = cannot tell** — non-persistent SSH / fish·csh / Windows cmd sessions carry no shell-integration markers, which is *not* the same as “idle”; “unknown” also covers “the host has seen no marker for this session since this boot”, typically a tmux session already sitting at its prompt before the host restarted — send it a bare Enter or run a command and the marker arrives); the same-source `lastExitCode` / `lastExitAt` describe the previous completed command |
+| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry `persist`; agent-opened ones carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still in read-only retention** (`exited:true` + exit code/signal); **`running` has three states plus a reason for the unknown one** (true = a command is running, do not send into it now; false = the command has finished; **omitted = cannot tell**, which is *not* the same as “idle” — the cause is spelled out in `runningUnknown`: `ssh` (the remote shell is outside this plugin’s control, **permanently** unknown) / `tmux-attach` (reattaching to tmux replays a screen repaint with no OSC markers, **recovers after the first command completes**) / `no-integration` (unsupported shell such as fish·csh·cmd, or “shell integration” turned off); the three need different next steps, so do not treat them as one sentence); the same-source `lastExitCode` / `lastExitAt` describe the previous completed command |
+| `tty_books` | List **connection-book entries** (`name` / `host` / `port` / `username` / auth method / tmux persistence / jump host or proxy command), **never any credential**. The `book` of `sftp_*`, the `bookName` of tunnels and the docker target’s “connection book” dropdown all reference `name`; **`book` also accepts `host` or `user@host`** (resolved only on a unique match — ambiguity lists the candidates instead of guessing). When the name is uncertain, call this instead of guessing or reading config files |
 | `tty_open` | **Open a terminal session yourself**: a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of code in the host shell’s syntax**, Windows cmd / PowerShell use their own syntax; *not* subject to the “single line ≤2000” client rule, D78), with optional tmux persistence via `persistName`; the current shell and syntax are restated every turn in the systemPrompt terminal line. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
 | `tty_close` | Close a session opened by `tty_open`. **Only the agent’s own sessions may be closed** (a user-opened tab is refused, so the agent never ends a terminal the user is working in). It also works on an **exited session still in read-only retention** — that is its release entry point |
 | `tty_run` | **One-shot command**: open a session, run `command`, wait for it to finish and return the tail output + exit code directly (collapsing open → wait → capture → close into one call). It **closes the session once the command finishes** by default; `keep:true` leaves it in read-only retention. If it is still running at `timeoutSec` (1~600, default 120) it returns `running:true` and **does not kill the session**; when the caller cancels (`exec.signal`) it returns `cancelled:true` immediately — that cancels this call, **not the command**. Use it when the user should **see** the command or when it must run inside a terminal session; for purely non-interactive commands bash is more direct |
@@ -157,7 +158,7 @@ switched by the user in the session, and the very next call follows the new tier
 
 | Class | Tools | Behaviour under a confined tier (Read Only / Workspace Write) |
 | --- | --- | --- |
-| Read | `tty_list` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | Allowed on every tier |
+| Read | `tty_list` `tty_books` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | Allowed on every tier |
 | Write (bounded mutation) | `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_remove` `tunnel_stop` | Approval prompt (runs only if the user allows this one call); deterministically denied when unattended (approval policy `never`) |
 | Execute (unbounded command surface) | `tty_open` `tty_run` `tty_send` `tunnel_start` | Same — these tools can run arbitrary commands on a local or remote shell and open listening ports |
 
@@ -168,13 +169,23 @@ services the gate is **off**, and the startup log says
 relationship with `allowProxyCommand`) lives in
 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
 
-**A confined session does not even see the tools it cannot use** (`tools.restrict`): when the tier is Read
-Only / Workspace Write, the plugin drops the Write and Execute classes from that session’s **agent-scoped**
-tool table — the agent sees 10 tty tools instead of 19. **The per-call matrix above is still the security
-boundary**: trimming merely removes, up front, the tools that cannot succeed under the current tier; a
-missing name, or a tool registered after the session started, only affects what the model can see, not what
-it may do. **Full access / Auto review** are not trimmed. **A mid-session tier switch does recompute**
-(upgrades put the tools back, downgrades drop them again, both before the next model request).
+**A Read Only session does not even see the tools it cannot use** (`tools.restrict`): when the tier is Read
+Only, the plugin drops the Write and Execute classes from that session’s **agent-scoped** tool table — the
+agent sees 11 tty tools instead of 20. **The per-call matrix above is still the security boundary**: trimming
+merely removes, up front, the tools that cannot succeed under the current tier; a missing name, or a tool
+registered after the session started, only affects what the model can see, not what it may do. **Full access,
+Auto review and Workspace Write are not trimmed** — Workspace Write runs Write / Execute through a per-call
+`ask` (one click and it runs), so tools that *can* succeed must not be hidden (2026-11-05 correction: the
+old rule hid the whole default tier, pushing users to the prompt-free Full access tier just to get work
+done). **A mid-session tier switch does recompute** (upgrades put the tools back, a drop to Read Only removes
+them again, both before the next model request).
+
+**The prompt never names a tool that may have been trimmed** (D103): the per-turn systemPrompt terminal block
+only says “operate by sid” plus “**available tools are whatever is in your tool table**”, and gives the way out
+when they are missing (under Read Only, ask the user to switch to Workspace Write — usable, but every call
+asks — or use the sandboxed bash tool). It no longer claims “use `tty_send` … open/close with `tty_open`” —
+that wording was not same-source with the tool table, so the model kept calling tools that were not there.
+Guards: two counter-example cases in `test/tty-list-running.test.ts`.
 
 Typical agent flow: for a command that simply runs to completion, use `tty_run` to get its output + exit code
 in one call; for a **long-lived** session use `tty_open` → `tty_send` starts the command → `tty_expect` waits
@@ -237,6 +248,12 @@ been read yet**, with the lower bound raised to “just after the last `B` marke
 the echo sits between `A` and `B`, so text in the echo never counts as a hit (deliberately no text comparison
 here: line wrapping / ANSI / multi-line paste would break it). **Environments without `B` markers**
 (integration off / Windows cmd / a remote host without the hooks / PSReadLine turned off by the user) exclude
+- **Three-layer `ZDOTDIR` resolution (0.38.0)**: the wrapper and the tmux inner launcher share one rule — the
+  `DSH_TTY_ORIG_ZDOTDIR` inherited from a parent session → the inherited `ZDOTDIR` (**only when it is not the
+  stub directory**) → `$HOME`. The second layer's exclusion matters: when one dsh is started from another
+  dsh's terminal panel, the host process env already carries the stub as `ZDOTDIR`, and using it makes the
+  stub `source` itself → zsh recursion (`job table full or recursion limit exceeded`) → the local session
+  gets no OSC 133 markers at all. The stub files carry a self-healing fallback on top of that.
 the echo by a different test (D75 / D101): the command lines that the most recent `tty_send` submitted are
 stripped out of the candidate text and the pattern is retried — only “no longer matches after stripping”
 counts as a pure echo; a timed-out wait that only ever matched the echo carries `echoOnly:true`.
@@ -449,6 +466,14 @@ agent tools all reuse the same scheduling.
   credential provider first, falling back to the host process environment (pair it with dsh-env-manager to
   keep secrets out of the settings file); a resolution failure names the reference and both missing sources;
 - **Port**: default 22; a non-default port shows as `user@host:port` in the target;
+- **Discoverable names (D104)**: the same machine usually carries three names — the connection-book entry
+  name (what `book` / `bookName` really takes), the docker target name, and the `user@host` shown in the panel.
+  So `book` accepts `host` / `host:port` / `user@host` in addition to the entry name (**resolved only on a
+  unique match**; several entries on one host list the candidates instead of guessing), plus the **docker
+  target name** (read from the docker namespace as “target → the entry it references”, topology only, never a
+  credential; degrades when docker is absent) — so the `kb-target` shown on the card can be passed as `book`
+  directly. When unsure, enumerate with `tty_books` (it lists the alias table too); a miss lists the
+  **available entries** (`name — user@host:port`, no credentials) instead of just saying “not found”;
 - **Host-key alias (`hostKeyAlias`, 0.25.0)**: TOFU locates records by **connect address** by default, while
   the same real host is often reached through different addresses (an internal IP behind a bastion, or
   `127.0.0.1:2222` through a tunnel) — “same key, different record” then flags **a key change** on every

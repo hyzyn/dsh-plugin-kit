@@ -249,16 +249,26 @@ function ensureZshStubDir() {
         // 固化为用户原 ZDOTDIR（无则 $HOME），保证用户 rc 链路不变。
         // .zlogout 也要链（0.19.0）：ZDOTDIR 指到桩目录后，登录 shell 退出时只读
         // ZDOTDIR 下的 .zlogout——缺了它用户的退出钩子被静默吞掉
+        /*
+         * 桩里的**自愈兜底**（D106）：包装层已经把 ORIG 解析对了，但桩可能来自旧版本
+         * （write-if-changed 只在内容变化时重写，而 tmux pane 用的是落盘那份），或者外层
+         * wrapper 被第三方改过。ORIG 一旦等于桩目录，`source` 自己就是无穷递归——所以在
+         * 每个桩文件里再判一次，等于桩目录就退回 `$HOME`，并 export 让后续桩文件也用修正值。
+         */
+        const origGuard = (name) => [
+            `if [ -z "\${DSH_TTY_ORIG_ZDOTDIR:-}" ] || [ "\${DSH_TTY_ORIG_ZDOTDIR}" = ${shSingleQuote(dir)} ]; then export DSH_TTY_ORIG_ZDOTDIR="$HOME"; fi`,
+            `if [ -f "$DSH_TTY_ORIG_ZDOTDIR/${name}" ]; then source "$DSH_TTY_ORIG_ZDOTDIR/${name}"; fi`,
+        ];
         for (const name of ['.zshenv', '.zprofile', '.zlogin', '.zlogout']) {
             writeIfChanged(join(dir, name), [
                 '# dsh-tty shell integration stub (chain to user file)',
-                '[ -f "$DSH_TTY_ORIG_ZDOTDIR/' + name + '" ] && source "$DSH_TTY_ORIG_ZDOTDIR/' + name + '"',
+                ...origGuard(name),
                 '',
             ].join('\n'));
         }
         writeIfChanged(join(dir, '.zshrc'), [
             '# dsh-tty shell integration stub (chain to user file, then add hooks)',
-            '[ -f "$DSH_TTY_ORIG_ZDOTDIR/.zshrc" ] && source "$DSH_TTY_ORIG_ZDOTDIR/.zshrc"',
+            ...origGuard('.zshrc'),
             ...zshHooks(tmuxSocketName()),
         ].join('\n'));
         stubDirs.set(stubKey('zsh'), dir);
@@ -623,6 +633,40 @@ function buildWindowsCommandSpawn(shell, command) {
     }
     return { argv: [shell, '/c', command], env: {} };
 }
+/**
+ * zsh 集成里 `DSH_TTY_ORIG_ZDOTDIR`（用户真正的 ZDOTDIR）的解析片段（POSIX sh 单行）。
+ *
+ * ## 为什么不能直接写 `${ZDOTDIR:-$HOME}`
+ *
+ * 宿主的**进程环境**里 `ZDOTDIR` 可能**已经是桩目录**——最典型的场景：在 dsh 的终端面板里
+ * 再起一个 dsh（嵌套），子宿主的 env 就带着父会话导出的 `ZDOTDIR=<桩目录>/shell/zsh`。
+ * 旧实现把继承值当 ORIG，于是桩 `.zshenv` 的 `source "$DSH_TTY_ORIG_ZDOTDIR/.zshenv"`
+ * 指回**自己** → 递归 → zsh 打满 job table：
+ *
+ * ```
+ * /Users/<u>/.dsh/tty/shell/zsh/.zshenv:2: job table full or recursion limit exceeded
+ * ```
+ *
+ * 结果是这条本地会话**一个 OSC 133 标记都没有**（`tty_list` 恒「命令状态未知」、
+ * `tty_capture{last}` 报「暂无上一条命令」）。tmux 持久会话反而正常——pane 的启动器由
+ * tmux server 执行，环境里没有桩值，这条差别正是 2026-11-05 真机复测抓到它的位置。
+ *
+ * ## 判据（三层，从最可信往下）
+ *
+ * 1. 已有 `DSH_TTY_ORIG_ZDOTDIR` 且**不是**桩目录 → 保留（嵌套 dsh：父会话已把真值传下来）；
+ * 2. 否则用继承的 `ZDOTDIR`，但**必须不是桩目录**；
+ * 3. 否则 `$HOME`。
+ *
+ * 片段自己会 `export`，调用方后接 `export ZDOTDIR=<桩目录>` 即可（顺序不能反）。
+ */
+export function zshOrigResolveSnippet(stubDir) {
+    const stub = shSingleQuote(stubDir);
+    return [
+        `if [ -z "\${DSH_TTY_ORIG_ZDOTDIR:-}" ] || [ "\${DSH_TTY_ORIG_ZDOTDIR}" = ${stub} ]; then`,
+        `if [ -n "\${ZDOTDIR:-}" ] && [ "\${ZDOTDIR}" != ${stub} ]; then export DSH_TTY_ORIG_ZDOTDIR="$ZDOTDIR";`,
+        'else export DSH_TTY_ORIG_ZDOTDIR="$HOME"; fi; fi',
+    ].join(' ');
+}
 export function buildShellSpawn(shell, term, colorTerm, integration, platform = process.platform) {
     if (platform === 'win32')
         return buildWindowsShellSpawn(shell, integration);
@@ -634,7 +678,7 @@ export function buildShellSpawn(shell, term, colorTerm, integration, platform = 
             const stubDir = ensureZshStubDir();
             if (stubDir !== undefined) {
                 return {
-                    argv: [shell, '-c', `${pre} export DSH_TTY_ORIG_ZDOTDIR="\${ZDOTDIR:-${homedir()}}"; export ZDOTDIR='${stubDir}'; ${exec}`],
+                    argv: [shell, '-c', `${pre} ${zshOrigResolveSnippet(stubDir)}; export ZDOTDIR='${stubDir}'; ${exec}`],
                     env: {},
                 };
             }
@@ -675,7 +719,7 @@ export function buildTmuxInnerLauncher(shell, colorTerm, integration) {
         if (kind === 'zsh') {
             const stubDir = ensureZshStubDir();
             if (stubDir !== undefined) {
-                lines.push(`export DSH_TTY_ORIG_ZDOTDIR="\${ZDOTDIR:-$HOME}"`, `export ZDOTDIR=${shSingleQuote(stubDir)}`, `exec ${shSingleQuote(shell)}`);
+                lines.push(zshOrigResolveSnippet(stubDir), `export ZDOTDIR=${shSingleQuote(stubDir)}`, `exec ${shSingleQuote(shell)}`);
                 return lines.join('\n') + '\n';
             }
         }

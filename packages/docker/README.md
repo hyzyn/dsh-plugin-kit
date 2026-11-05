@@ -503,7 +503,7 @@ HTTP `POST /api/dsh-docker/config` 是卡片的写入通道，只接受下表这
 
 | 工具 | 注册条件 | 参数 | 作用 / 典型用法 |
 | --- | --- | --- | --- |
-| `docker_targets` | 恒注册 | `probe?: boolean` | 列出目标（name / kind / label）；`probe:true` 逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）。其他工具的 `target` 取自这里 |
+| `docker_targets` | 恒注册 | `probe?: boolean` | 列出目标（name / kind / label），**SSH 目标还会带出它引用的 tty 连接簿条目名 `book`**（内联 host/username 的目标没有这个字段；用它去终端面板 / `sftp_*` 的 `book`，名字对不上时只能靠它）；`probe:true` 逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）。其他工具的 `target` 取自这里 |
 | `docker_connect_local` | 恒注册 | —（无参数） | **连接本机**：确保存在一条 `kind=local` 目标并选中它（已存在则复用，不重复创建；SSH / 自定义目标原样保留），随后只读探测 daemon：返回 `{name, kind, created, saved, reachable, serverVersion?}`。没有任何目标时其余工具不注册（见下方「零目标」那条），用它一步补上。**不需要任何能力授权**；不会安装 Docker / 启动 daemon / 切 context / 改环境变量。daemon 不可达时说清成因（CLI 缺失 / 探测超时 / daemon 未启动 / socket 无权），不是只报空列表 |
 | `docker_ps` | 有目标即注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean`、`limit?`（1~500，默认 100）、`offset?`（默认 0） | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
 | `docker_attention` | 有目标即注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`。排障入口：不确定从哪台/哪个容器看起时先调它 |

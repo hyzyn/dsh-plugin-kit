@@ -6,10 +6,11 @@
  *
  * | 会话档位 | tty 工具表 | 为什么 |
  * | --- | --- | --- |
- * | 仅可查看 / 工作区内修改 | 10（只剩 read 类） | write / exec 这一档本来就调不动（闸会拒 / 问） |
- * | 完全权限 | 19（全在） | 工具本来就能用，藏起来等于替用户改档 |
- * | 档位服务未组合 | 19（全在） | 与闸同一口径：宿主没有档位概念时不许自作聪明 |
- * | agent 销毁 | 回到 19 | 限制是**跟随 scope 生命周期**的一层，不是一个开关 |
+ * | 仅可查看 | 11（只剩 read 类） | 这一档 write / exec 不可能成功（闸会拒 / 问） |
+ * | 工作区内修改 | 20（全在） | 这一档是逐次 ask：人一点就能执行，藏起来等于替用户改档（2026-11-05 修正） |
+ * | 完全权限 | 20（全在） | 工具本来就能用，藏起来等于替用户改档 |
+ * | 档位服务未组合 | 20（全在） | 与闸同一口径：宿主没有档位概念时不许自作聪明 |
+ * | agent 销毁 | 回到 20 | 限制是**跟随 scope 生命周期**的一层，不是一个开关 |
  *
  * 另外钉住三条容易在重构里悄悄失效的性质：
  *
@@ -27,7 +28,7 @@ import { mountPlugin, sshHostEntry, tunnelSpec } from './mount-plugin.js'
 import { TTY_TIER_CLASS } from '../src/index.js'
 
 /** 无条件注册的基础工具（与配置无关：本地终端永远可用）。 */
-const BASE_TOOLS = ['tty_list', 'tty_open', 'tty_close', 'tty_run', 'tty_stats', 'tty_capture', 'tty_screen', 'tty_expect', 'tty_send']
+const BASE_TOOLS = ['tty_list', 'tty_books', 'tty_open', 'tty_close', 'tty_run', 'tty_stats', 'tty_capture', 'tty_screen', 'tty_expect', 'tty_send']
 /** 能力全集（连接簿 + 隧道都配齐；顺序 = 注册顺序 = 宿主 `schemas()` 的顺序）。 */
 const CAPABILITY = [
   ...BASE_TOOLS,
@@ -50,43 +51,43 @@ const FULL_ACCESS = { mode: 'danger-full-access', policy: 'never' } as const
 /** 让 `tools/change` 的合并重算（microtask）跑完——工具表是在下一次请求构建时才投影的。 */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-describe('按档位裁 write / exec（能力全集 19 件）', () => {
-  it('仅可查看：19 → 10（只剩 read 类，write / exec 一个不剩）', () => {
+describe('按档位裁 write / exec（能力全集 20 件）', () => {
+  it('仅可查看：20 → 11（只剩 read 类，write / exec 一个不剩）', () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: READ_ONLY })
     const agent = mounted.createAgent()
     const names = mounted.schemas(agent)
 
     expect(names).toEqual(READ_VISIBLE)
-    expect(names).toHaveLength(10)
+    expect(names).toHaveLength(11)
     for (const name of MUTATING_NAMES) expect(names, `${name} 应被裁掉`).not.toContain(name)
   })
 
-  it('工作区内修改：同样 19 → 10（这一档的 write / exec 要逐次询问，先别让模型看见）', () => {
+  it('工作区内修改：**不裁**，20 件全在（这一档 write / exec 是逐次 ask，工具能成功就不该藏）', () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: WORKSPACE_WRITE })
     const agent = mounted.createAgent()
 
-    expect(mounted.schemas(agent)).toEqual(READ_VISIBLE)
-    for (const name of ['tty_open', 'tty_run', 'tty_send', 'tunnel_start', 'sftp_write', 'sftp_mkdir', 'sftp_rename', 'sftp_remove', 'tunnel_stop']) {
-      expect(mounted.schemas(agent), `${name} 应被裁掉`).not.toContain(name)
+    expect(mounted.schemas(agent)).toEqual(CAPABILITY)
+    for (const name of MUTATING_NAMES) {
+      expect(mounted.schemas(agent), `${name} 在「工作区内修改」档必须看得见（每次 ask 审批）`).toContain(name)
     }
   })
 
-  it('完全权限：19 件全在（不裁）', () => {
+  it('完全权限：20 件全在（不裁）', () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: FULL_ACCESS })
     const agent = mounted.createAgent()
 
     expect(mounted.schemas(agent)).toEqual(CAPABILITY)
-    expect(mounted.schemas(agent)).toHaveLength(19)
+    expect(mounted.schemas(agent)).toHaveLength(20)
   })
 
-  it('auto review 档：19 件全在（宿主预审接管，工具是能用的）', () => {
+  it('auto review 档：20 件全在（宿主预审接管，工具是能用的）', () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: { ...FULL_ACCESS, auto: true } })
     const agent = mounted.createAgent()
 
     expect(mounted.schemas(agent)).toEqual(CAPABILITY)
   })
 
-  it('档位服务未组合（宿主没有档位概念）：19 件全在，且不报错', () => {
+  it('档位服务未组合（宿主没有档位概念）：20 件全在，且不报错', () => {
     const mounted = mountPlugin(FULL_CONFIG)
     const agent = mounted.createAgent()
 
@@ -96,11 +97,11 @@ describe('按档位裁 write / exec（能力全集 19 件）', () => {
 })
 
 describe('作用域边界：裁的是 agent 的视图，不是全局注册集', () => {
-  it('全局注册集仍是 19（面板 / 其它会话不受影响）', () => {
+  it('全局注册集仍是 20（面板 / 其它会话不受影响）', () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: READ_ONLY })
     const agent = mounted.createAgent()
 
-    expect(mounted.schemas(agent)).toHaveLength(10)
+    expect(mounted.schemas(agent)).toHaveLength(11)
     expect(mounted.names()).toEqual(CAPABILITY) // 注册集原样
     expect(mounted.schemas()).toEqual(CAPABILITY) // 全局视图（`schemas()` 不传 agent）原样
   })
@@ -117,7 +118,7 @@ describe('作用域边界：裁的是 agent 的视图，不是全局注册集', 
 })
 
 describe('条件注册集：deny 名单必须与 schemas() 求交', () => {
-  it('只配基础九件时不炸，且只裁基础工具里的 write / exec', () => {
+  it('只配基础十件时不炸，且只裁基础工具里的 write / exec', () => {
     const mounted = mountPlugin({}, { tier: READ_ONLY })
     const agent = mounted.createAgent()
 
@@ -135,8 +136,8 @@ describe('条件注册集：deny 名单必须与 schemas() 求交', () => {
     mounted.applySettings({ sshHosts: [sshHostEntry()] })
     await settle()
 
-    // 注册集扩到 16（基础九件 + 七个 sftp），裁剪跟着重算：读的留下、写的裁掉
-    expect(mounted.names()).toHaveLength(16)
+    // 注册集扩到 17（基础十件 + 七个 sftp），裁剪跟着重算：读的留下、写的裁掉
+    expect(mounted.names()).toHaveLength(17)
     expect(mounted.schemas(agent)).toContain('sftp_read')
     expect(mounted.schemas(agent)).not.toContain('sftp_write')
     expect(mounted.schemas(agent)).not.toContain('sftp_mkdir')
@@ -160,10 +161,10 @@ describe('条件注册集：deny 名单必须与 schemas() 求交', () => {
 })
 
 describe('撤销：限制跟随 scope 生命周期', () => {
-  it('agent 销毁 → 该 agent 的视图回到 19（scope 回收，disposer 也照样能跑）', () => {
+  it('agent 销毁 → 该 agent 的视图回到 20（scope 回收，disposer 也照样能跑）', () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: READ_ONLY })
     const agent = mounted.createAgent()
-    expect(mounted.schemas(agent)).toHaveLength(10)
+    expect(mounted.schemas(agent)).toHaveLength(11)
 
     mounted.disposeAgent(agent)
     expect(mounted.schemas(agent)).toEqual(CAPABILITY)
@@ -185,7 +186,7 @@ describe('撤销：限制跟随 scope 生命周期', () => {
   it('热重注册不撤已有 agent 的裁剪（先撤后挂全部工具，限制层留在 scope 上）', async () => {
     const mounted = mountPlugin(FULL_CONFIG, { tier: READ_ONLY })
     const agent = mounted.createAgent()
-    expect(mounted.schemas(agent)).toHaveLength(10)
+    expect(mounted.schemas(agent)).toHaveLength(11)
 
     // 宿主顺序：落盘 → volatile-update → applyPatch → refreshToolsHook（= registerAll 先撤后挂）
     mounted.applySettings({ pollIntervalSec: 3 })

@@ -88,7 +88,7 @@ const READ_TOOLS = [
   'docker_disk_usage',
 ]
 
-/** 写 / 执行工具（5 个）：只读 / 工作区内修改档下必须看不见；能力开关关闭时压根没注册。 */
+/** 写 / 执行工具（5 个）：只读档下必须看不见；能力开关关闭时压根没注册。 */
 const WRITE_EXEC_TOOLS = ['docker_action', 'docker_image_remove', 'docker_image_prune', 'docker_image_pull', 'docker_exec']
 
 /* ------------------------------------------------------------------ *
@@ -391,16 +391,19 @@ describe('只读档：写 / 执行工具从该 agent 的工具表里消失，rea
     mounted.unmount()
   })
 
-  it('工作区内修改档同样裁（与 shouldRestrictForTier 的 true 分支一致）', async () => {
+  it('工作区内修改档**不裁**（2026-11-05 修正：这一档是逐次 ask，工具能成功就不该藏）', async () => {
     const mounted = mountPlugin({ allowMutations: true, allowExec: true, tier: { mode: 'workspace-write', policy: 'ask' } })
     const agent = mounted.createAgent('agent-workspace')
     await flush()
-    expect(mounted.host.namesFor(agent)).toHaveLength(17)
+    for (const name of WRITE_EXEC_TOOLS) {
+      expect(mounted.host.namesFor(agent), `${name} 在「工作区内修改」档必须看得见（每次 ask 审批）`).toContain(name)
+    }
+    expect(mounted.host.restrictionCount(agent)).toBe(0)
     mounted.unmount()
   })
 })
 
-describe('不裁的三档（与 shouldRestrictForTier 的三条 false 一一对应）', () => {
+describe('不裁的四档（与 shouldRestrictForTier 的四条 false 一一对应）', () => {
   it('完全权限：22 个全在（含 5 个写 / 执行）', async () => {
     const mounted = mountPlugin({ allowMutations: true, allowExec: true, tier: { mode: 'danger-full-access', policy: 'never' } })
     const agent = mounted.createAgent('agent-full')

@@ -15,7 +15,9 @@
  * 3. **`agents` 服务缺失**：静默退化（只依赖 `agent/created`），不抛、不把插件带下去；
  * 4. **卸载**：补算下来的限制一并撤掉，重复调用安全；
  * 5. **会话中途切档**（2026-10-25）：订阅 `session/event` 的三个旋钮事件，按会话 id 重算——
- *    **升档放回、降档摘掉**，一次切档的多条事件合并成一次重算，别的会话不受影响。
+ *    **升档放回、降到只读档摘掉**，一次切档的多条事件合并成一次重算，别的会话不受影响；
+ * 6. **只有只读档裁**（2026-11-05 修正）：工作区内修改档在 `decideTierCall` 里是 `ask`，
+ *    工具能成功就不该藏——旧判据把默认档整批藏掉，等于把用户逼去零询问的完全权限档。
  *
  * 第 5 条的事件一律按**真实信封** `(session, { type, seq, time, data })` 派发。这条不是形式：
  * codegraph `CG66` 就是顶层读 `event.name` 让采集器静默归零了几个月，而单测当时用的是**扁平假事件**，
@@ -455,20 +457,48 @@ describe('会话中途切档：降档把工具摘掉', () => {
     mounted.unmount()
   })
 
-  it('只读 ↔ 工作区内修改是同一档：来回切不重复下发', async () => {
+  /*
+   * 2026-11-05 修正：**只有只读档裁**。工作区内修改档在矩阵里是 `ask`（人一点就能执行），
+   * 工具能成功就不该藏——旧判据（`mode !== 'danger-full-access'`）把默认档整批藏掉，
+   * 用户要自动化只能切零询问的完全权限档（tty D103 的现场）。下面三条钉住新判据的三个出口。
+   */
+  it('工作区内修改档**不裁**：write / exec 都在，且一次 restrict 都不下发', async () => {
+    const mounted = mount({ tier: { mode: 'workspace-write', policy: 'ask' } })
+    const agent = mounted.createAgent('agent-workspace')
+    await flush()
+
+    expect(mounted.host.namesFor(agent)).toEqual(TOOLS)
+    expect(mounted.host.restrictCalls.length, '不裁就不该下发空名单').toBe(0)
+    mounted.unmount()
+  })
+
+  it('只读 → 工作区内修改：把这层限制**撤回来**（工具面回到全量）', async () => {
     const mounted = mount({ tier: { mode: 'read-only', policy: 'ask' } })
-    const agent = mounted.createAgent('agent-same-tier')
+    const agent = mounted.createAgent('agent-lift')
     // 先清掉创建时 `restrict()` 触发的那个 pending 重算：否则下面切档测的是它、不是事件。
     await flush()
-    const before = mounted.host.restrictCalls.length
+    expect(mounted.host.namesFor(agent)).toEqual(['demo_read'])
 
-    mounted.setMode('workspace-write', 'agent-same-tier')
-    mounted.sessionEvent('agent-same-tier', 'sandbox/mode', { mode: 'workspace-write' })
+    mounted.setMode('workspace-write', 'agent-lift')
+    mounted.sessionEvent('agent-lift', 'sandbox/mode', { mode: 'workspace-write' })
+    await flush()
+
+    expect(mounted.host.namesFor(agent), '升到可审批的档位后还面对旧工具面 = 看着像「授权没生效」').toEqual(TOOLS)
+    mounted.unmount()
+  })
+
+  it('工作区内修改 → 只读：真降档要摘掉（这一档不可能成功）', async () => {
+    const mounted = mount({ tier: { mode: 'workspace-write', policy: 'ask' } })
+    const agent = mounted.createAgent('agent-drop')
+    await flush()
+    expect(mounted.host.namesFor(agent)).toEqual(TOOLS)
+
+    mounted.setMode('read-only', 'agent-drop')
+    mounted.sessionEvent('agent-drop', 'sandbox/mode', { mode: 'read-only' })
     await flush()
 
     expect(mounted.host.namesFor(agent)).toEqual(['demo_read'])
-    // 名单没变 → 一次都不该重下发（`applyTo` 的 sameNames 早退）。
-    expect(mounted.host.restrictCalls.length).toBe(before)
+    expect(mounted.logs().some((line) => line.includes('mode=read-only'))).toBe(true)
     mounted.unmount()
   })
 })

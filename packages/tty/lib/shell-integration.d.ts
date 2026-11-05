@@ -95,6 +95,33 @@ export declare function isPowerShellShell(shell: string): boolean;
  * cmd 没有命令开始/结束钩子，注入无从谈起。
  */
 export declare function shellIntegrationSupported(shell: string, platform?: NodeJS.Platform): boolean;
+/**
+ * zsh 集成里 `DSH_TTY_ORIG_ZDOTDIR`（用户真正的 ZDOTDIR）的解析片段（POSIX sh 单行）。
+ *
+ * ## 为什么不能直接写 `${ZDOTDIR:-$HOME}`
+ *
+ * 宿主的**进程环境**里 `ZDOTDIR` 可能**已经是桩目录**——最典型的场景：在 dsh 的终端面板里
+ * 再起一个 dsh（嵌套），子宿主的 env 就带着父会话导出的 `ZDOTDIR=<桩目录>/shell/zsh`。
+ * 旧实现把继承值当 ORIG，于是桩 `.zshenv` 的 `source "$DSH_TTY_ORIG_ZDOTDIR/.zshenv"`
+ * 指回**自己** → 递归 → zsh 打满 job table：
+ *
+ * ```
+ * /Users/<u>/.dsh/tty/shell/zsh/.zshenv:2: job table full or recursion limit exceeded
+ * ```
+ *
+ * 结果是这条本地会话**一个 OSC 133 标记都没有**（`tty_list` 恒「命令状态未知」、
+ * `tty_capture{last}` 报「暂无上一条命令」）。tmux 持久会话反而正常——pane 的启动器由
+ * tmux server 执行，环境里没有桩值，这条差别正是 2026-11-05 真机复测抓到它的位置。
+ *
+ * ## 判据（三层，从最可信往下）
+ *
+ * 1. 已有 `DSH_TTY_ORIG_ZDOTDIR` 且**不是**桩目录 → 保留（嵌套 dsh：父会话已把真值传下来）；
+ * 2. 否则用继承的 `ZDOTDIR`，但**必须不是桩目录**；
+ * 3. 否则 `$HOME`。
+ *
+ * 片段自己会 `export`，调用方后接 `export ZDOTDIR=<桩目录>` 即可（顺序不能反）。
+ */
+export declare function zshOrigResolveSnippet(stubDir: string): string;
 export declare function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform?: NodeJS.Platform): ShellSpawnPlan;
 /** POSIX 单引号安全包裹（路径/值进 inner.sh 与 -c 包装层用）。 */
 export declare function shSingleQuote(value: string): string;

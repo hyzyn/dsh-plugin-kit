@@ -275,11 +275,11 @@ describe('A 受限档：agent 的工具表里没有任何 mcp__*', () => {
     mounted.unmount()
   })
 
-  it('工作区内修改档同样裁（与 shouldRestrictForTier 的 true 分支一致）', () => {
+  it('工作区内修改档**不裁**（2026-11-05 修正：这一档是逐次 ask，工具能成功就不该藏）', () => {
     writeManagedRows([row('mcp-jenkins', 'jenkins')])
     const mounted = mount({ config: {}, tier: { mode: 'workspace-write', policy: 'ask' } })
     const agent = mounted.createAgent('agent-workspace')
-    expect(mounted.host.namesFor(agent)).toEqual(NATIVE_TOOLS)
+    expect(mounted.host.namesFor(agent)).toEqual([...NATIVE_TOOLS, ...ALL_MCP_TOOLS])
     mounted.unmount()
   })
 })

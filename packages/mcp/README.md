@@ -21,12 +21,13 @@
 
 可见性规则只有一条，作用在 **agent 的工具面**上：会话档位回答「这一档能不能看见」。
 
-- **受限档裁掉全部 `mcp__*`**：本插件在 `apply` 里经 `ctx.inject(['tools'])` 把 `mcp__` 前缀接进
-  与 `docker` / `tty` 同一套裁剪（kit 的 `attachTierRestrict`）。`read-only` / `workspace-write`
+- **只读档裁掉全部 `mcp__*`**：本插件在 `apply` 里经 `ctx.inject(['tools'])` 把 `mcp__` 前缀接进
+  与 `docker` / `tty` 同一套裁剪（kit 的 `attachTierRestrict`）。`read-only`
   （且非 Auto review、且宿主组合了档位服务）下，agent 的工具表里**一个 `mcp__*` 都没有**；
-  `danger-full-access` 不裁；宿主未组合档位服务时也不裁（与 `docker` / `tty` 同口径）。
+  `danger-full-access` / `workspace-write` 不裁（2026-11-05 修正：工作区内修改档在矩阵里是逐次
+  `ask`，工具能成功就不该藏）；宿主未组合档位服务时也不裁（与 `docker` / `tty` 同口径）。
 - **一律按 `exec`（最坏类）处理**：某个 MCP 工具到底读还是写，本仓判不了（那是各 server 自己的
-  语义），所以宁严勿松——只要这一档要裁，`mcp__*` 全部进裁剪名单。裁的是**工具面**（受限档的会话
+  语义），所以宁严勿松——只要这一档要裁，`mcp__*` 全部进裁剪名单。裁的是**工具面**（只读档的会话
   根本看不见它们，不是调用时才拒），本插件不接逐调用闸（`attachTierGate`）；工具面在**建会话 /
   工具集变化**以及**会话中途的档位切换时重算（后者由 kit 订阅 `session/event` 的三个旋钮事件完成，
   2026-10-25 起；升档把 `mcp__*` 放回来、降档再摘掉）。

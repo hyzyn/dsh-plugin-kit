@@ -10,17 +10,20 @@
  * 平台用**参数注入**（默认 process.platform），所以两个分支都能在 macOS/Linux 上断言，
  * 不必等 Windows runner —— 而 Windows runner 上跑同一份用例同样成立。
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   buildCommandSpawn,
   buildShellSpawn,
+  buildTmuxInnerLauncher,
   commandShellHint,
   defaultShellPath,
   isPowerShellShell,
   shellIntegrationSupported,
+  zshOrigResolveSnippet,
 } from '../src/shell-integration.js'
 
 /*
@@ -321,5 +324,87 @@ describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () 
     expect(rc).not.toContain('if [ "$__DSH_TTY_IN_CMD" = "1" ]; then')
     // <4.4 的 DEBUG trap 仍要设这个 flag（3.2 上它是 B 的唯一来源）
     expect(rc).toContain('__DSH_TTY_IN_CMD=1')
+  })
+})
+
+/*
+ * D106：`DSH_TTY_ORIG_ZDOTDIR` 不许把**桩目录**当成用户的 ZDOTDIR。
+ *
+ * 用户现场（2026-11-05 真机复测）：普通本地会话里 shell 集成整条失效——
+ *
+ *   ~/.dsh/tty/shell/zsh/.zshenv:2: job table full or recursion limit exceeded
+ *   ~/.dsh/tty/shell/zsh/.zshrc:2:  job table full or recursion limit exceeded
+ *
+ * 根因：宿主的进程环境里 `ZDOTDIR` **已经是桩目录**（在 dsh 终端面板里再起一个 dsh 就会这样），
+ * 而旧包装层把它原样当 ORIG → 桩 `source "$ORIG/.zshenv"` 指回自己 → 递归 → 一个 OSC 133
+ * 标记都不来。tmux 持久会话正常（pane 启动器由 tmux server 执行，环境里没有桩值）——这条差别
+ * 正是抓到它的位置。
+ */
+describe('D106：ORIG 解析不许递归（桩目录 ≠ 用户的 ZDOTDIR）', () => {
+  const STUB = '/tmp/dsh-tty-d106-stub'
+  const HOME = '/tmp/dsh-tty-d106-home'
+  /** 用真的 POSIX shell 跑片段，返回解析出来的 ORIG（不在 Windows 上跑：没有 /bin/sh）。 */
+  const resolveOrig = (snippet: string, env: Record<string, string>): string =>
+    execFileSync('/bin/sh', ['-c', `${snippet}; printf '%s' "\${DSH_TTY_ORIG_ZDOTDIR}"`], {
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME, ...env },
+      encoding: 'utf8',
+    })
+
+  it.skipIf(process.platform === 'win32')('继承的 ZDOTDIR 就是桩目录 → 退回 $HOME（不再递归）', () => {
+    expect(resolveOrig(zshOrigResolveSnippet(STUB), { ZDOTDIR: STUB })).toBe(HOME)
+  })
+
+  it.skipIf(process.platform === 'win32')('继承了自定义 ZDOTDIR → 照旧用它（不改用户既有语义）', () => {
+    const custom = '/Users/demo/.config/zsh'
+    expect(resolveOrig(zshOrigResolveSnippet(STUB), { ZDOTDIR: custom })).toBe(custom)
+  })
+
+  it.skipIf(process.platform === 'win32')('没有 ZDOTDIR → $HOME', () => {
+    expect(resolveOrig(zshOrigResolveSnippet(STUB), {})).toBe(HOME)
+  })
+
+  it.skipIf(process.platform === 'win32')('嵌套 dsh：父会话已传下真 ORIG → 优先保留它', () => {
+    expect(resolveOrig(zshOrigResolveSnippet(STUB), { DSH_TTY_ORIG_ZDOTDIR: HOME, ZDOTDIR: STUB })).toBe(HOME)
+  })
+
+  it.skipIf(process.platform === 'win32')('连被污染的 ORIG（= 桩目录）也自愈回 $HOME', () => {
+    expect(resolveOrig(zshOrigResolveSnippet(STUB), { DSH_TTY_ORIG_ZDOTDIR: STUB })).toBe(HOME)
+  })
+
+  it('包装层与 tmux 内层启动器共用同一片段（旧的 ${ZDOTDIR:-…} 写法不许回来）', () => {
+    const wrapper = String(buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true, 'darwin').argv[2])
+    expect(wrapper).not.toContain('DSH_TTY_ORIG_ZDOTDIR="${ZDOTDIR:-')
+    const inner = buildTmuxInnerLauncher('/bin/zsh', 'truecolor', true)
+    expect(inner).not.toContain('DSH_TTY_ORIG_ZDOTDIR="${ZDOTDIR:-$HOME}"')
+    const stubDir = String(wrapper.match(/ZDOTDIR='([^']+)'/)?.[1])
+    expect(stubDir, '包装层得能取出桩目录').not.toBe('undefined')
+    expect(wrapper).toContain(zshOrigResolveSnippet(stubDir))
+    expect(inner).toContain(zshOrigResolveSnippet(stubDir))
+  })
+
+  it.skipIf(process.platform === 'win32')('桩文件自身也兜底：ORIG 等于桩目录时 source 到 $HOME，不 source 自己', () => {
+    const plan = buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true, 'darwin')
+    const stubDir = String(plan.argv[2]).match(/ZDOTDIR='([^']+)'/)?.[1] as string
+    // 造「用户目录」：HOME 下按文件名各放一个回声文件，用它们区分到底 source 了谁
+    const home = mkdtempSync(join(tmpdir(), 'dsh-tty-d106-home-'))
+    writeFileSync(join(home, '.zshenv'), 'echo FROM_HOME_ZSHENV\n')
+    writeFileSync(join(home, '.zshrc'), 'echo FROM_HOME_ZSHRC\n')
+    try {
+      for (const name of ['.zshenv', '.zshrc'] as const) {
+        const stub = readFileSync(join(stubDir, name), 'utf8')
+        // 只取兜底那两行（其余是钩子，跑起来要 tmux / 交互式）
+        const guard = stub.split('\n').filter((line) => line.includes('DSH_TTY_ORIG_ZDOTDIR')).join('\n')
+        expect(guard, `${name} 缺兜底行`).toContain('export DSH_TTY_ORIG_ZDOTDIR="$HOME"')
+        const out = execFileSync('/bin/sh', ['-c', `export DSH_TTY_ORIG_ZDOTDIR=${JSON.stringify(stubDir)}\n${guard}`], {
+          env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home },
+          encoding: 'utf8',
+        })
+        const marker = name === '.zshenv' ? 'FROM_HOME_ZSHENV' : 'FROM_HOME_ZSHRC'
+        expect(out, `${name} 的兜底没生效（会 source 桩自己）`).toContain(marker)
+        expect(out, `${name} 直接 source 了桩目录（递归的起点）`).not.toContain('shell integration stub')
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

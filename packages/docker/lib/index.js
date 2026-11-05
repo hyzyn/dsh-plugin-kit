@@ -1939,7 +1939,9 @@ const plugin = definePlugin({
             return 'Docker 目标：' + rows.map((row) => {
                 const state = row.ok === undefined ? '' : row.ok ? ' [可达]' : ` [不可用：${row.error ?? '未知'}]`;
                 const version = row.serverVersion === undefined ? '' : ` docker ${row.serverVersion}`;
-                return `\n- ${row.name} (${row.kind}) ${row.label}${version}${state}`;
+                // 连接簿条目名紧跟在 `user@host` 之后：它就是「同一台主机在 tty 那边叫什么」（D170）
+                const book = row.book === undefined ? '' : `（连接簿 ${row.book}）`;
+                return `\n- ${row.name} (${row.kind}) ${row.label}${book}${version}${state}`;
             }).join('');
         };
         /**
@@ -2267,7 +2269,7 @@ const plugin = definePlugin({
                 name: 'docker_targets',
                 // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                 isConcurrencySafe: () => true,
-                description: '列出已配置的 Docker 目标（本机 / SSH 主机），可选探测每个目标的 docker daemon 是否可达。其他 docker_* 工具的 target 参数取自这里。',
+                description: '列出已配置的 Docker 目标（本机 / SSH 主机），可选探测每个目标的 docker daemon 是否可达；SSH 目标会带出它引用的 tty 连接簿条目名（book，可直接用于 sftp_* 的 book）。其他 docker_* 工具的 target 参数取自这里。',
                 parameters: { probe: { type: 'boolean', description: 'true 时逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）' } },
                 output: {
                     schema: {
@@ -2284,6 +2286,8 @@ const plugin = definePlugin({
                                         name: { type: 'string', required: true },
                                         kind: { type: 'string', required: true },
                                         label: { type: 'string', required: true },
+                                        // D170：目标引用的 tty 连接簿条目名（内联 host/username 的目标没有这个字段）
+                                        book: { type: 'string' },
                                         ok: { type: 'boolean' },
                                         error: { type: 'string' },
                                         serverVersion: { type: 'string' },
@@ -2302,19 +2306,27 @@ const plugin = definePlugin({
                     const books = readTtyBooks(settingsApi);
                     const rows = [];
                     for (const target of targetsNow()) {
+                        /*
+                         * `book` 只在目标**真的引用了连接簿条目**时带出（D170）：`resolveTarget` 内部靠它
+                         * 查表，但工具输出里从来没有它——于是模型手里只剩 `user@host`，而 tty / sftp_* 认的
+                         * 是**条目名**。两边不同名时（目标名 `host-a`、条目名 `KB_JUMP_01` 这种）猜不出来，
+                         * 只能赌一次，赌错就是「连接簿中不存在」。本机目标与内联字段目标一律不带。
+                         */
+                        const book = target.book ?? '';
+                        const bookField = target.kind === 'ssh' && book !== '' ? { book } : {};
                         const { resolved, error } = resolveTarget(target, books);
                         if (resolved === undefined) {
-                            rows.push({ name: target.name, kind: target.kind, label: '解析失败', ok: false, error: error ?? '未知错误' });
+                            rows.push({ name: target.name, kind: target.kind, label: '解析失败', ...bookField, ok: false, error: error ?? '未知错误' });
                             continue;
                         }
                         const label = resolved.kind === 'local' ? '本机' : sshTarget(resolved.spec);
                         if (input.probe !== true) {
-                            rows.push({ name: target.name, kind: target.kind, label });
+                            rows.push({ name: target.name, kind: target.kind, label, ...bookField });
                             continue;
                         }
                         const { api } = apiFor(target.name);
                         if (api === undefined) {
-                            rows.push({ name: target.name, kind: target.kind, label, ok: false, error: '无法构造执行通道' });
+                            rows.push({ name: target.name, kind: target.kind, label, ...bookField, ok: false, error: '无法构造执行通道' });
                             continue;
                         }
                         const probe = await api.probe();
@@ -2324,6 +2336,7 @@ const plugin = definePlugin({
                             name: target.name,
                             kind: target.kind,
                             label,
+                            ...bookField,
                             ok: probe.ok,
                             ...(probe.ok ? { ...(probe.serverVersion === null ? {} : { serverVersion: probe.serverVersion }) } : { error: probe.error ?? '未知错误' }),
                         });

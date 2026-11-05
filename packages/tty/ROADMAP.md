@@ -380,7 +380,7 @@ npm 包整包替换 —— 改动静默丢失。
 
 ### 2026-10-26（0.33.1）：连接簿条目全挂（→ [D102](./DEFECTS.md)）——**schema 会填默认值，不只是校验**
 
-**为什么做**：用户截图上报——终端面板里点连接簿条目 `CDC_TEST_KB`，标签立刻转红，浮层只有
+**为什么做**：用户截图上报——终端面板里点连接簿条目 `KB_APP`，标签立刻转红，浮层只有
 「连接出错 / Cannot read properties of undefined (reading 'trim')」；旁边那条同样是书的 `cdc-test-161` 也红，
 而**本地终端照常**。也就是说 0.33.0 上**每一条**连接簿条目都连不上（终端 / SFTP / 探针 / 隧道四个连接点全挂），
 报错还完全指不到原因。
@@ -404,7 +404,7 @@ npm 包整包替换 —— 改动静默丢失。
 `mergeSshSpec` 丢弃半个对象 + 保留有效 jump + 内联覆盖 / `usableJump` 与 `jumpTargetLabel` 不抛 /
 `dialJump` 给点名的错且不建连接 / `spawnSsh` 半个对象 → 直连目标并 warn）+ `test/tunnels.test.ts` 一条隧道出口
 + `test/jump-spec.test.ts` 的清洗新格。**真机验收**（复制 web profile 起真宿主 + 真浏览器，用出事的同一份连接簿）：
-无 jump 的 `CDC_TEST_KB` **真连上**（tmux 持久标签 + 状态条有远端 CPU/内存 + SFTP 列出 `/root`，探针
+无 jump 的 `KB_APP` **真连上**（tmux 持久标签 + 状态条有远端 CPU/内存 + SFTP 列出 `/root`，探针
 tcp 17ms / hostkey matched / auth 250ms）；临时加一条带 jump 的条目 → 明确报「跳板机连接失败（root@bastion.invalid）：
 DNS 解析失败」，不静默直连；`GET /config` 的无 jump 条目不再带 `jump`，显式空 host 的 jump 仍 400 拒。
 
@@ -1942,3 +1942,72 @@ Swap 是「已用/总量」，两者都按 `seenItems` 的「这台机器报过�
 
 **门槛**：`pnpm --filter @hyzyn/dsh-tty run integration` 本地全绿（B30b / B30d / B31b / B31c /
 B33 五条原先红的现在都过），单测 3847 条不变、0.37.1 的 CI 全绿。
+
+### 2026-11-04（收口七）：用户报告的三条 —— 提示词与工具集不同源、连接簿名字不可发现、「命令状态未知」
+
+**来源**：用户反馈 `/private/tmp/dsh-tty-issues-20261104.md`（DSH Web GUI，让 agent 读某容器的
+nginx 配置 → 「容器 → 宿主机 SSH → 读文件」两条路都断）。拆成 tty D103 / D104 / D105 三条，
+外加 docker D170（`docker_targets` 带出目标引用的连接簿条目，见那个包的台账）。
+
+**三条的共同形状**：能力其实都在，**可发现性**不在——模型的下一步动作全被「它看不到/猜不到/分不清」
+挡住了。
+
+1. **D103 提示词与工具集不同源**：受限档（默认的「工作区内修改」也算）下 `attachTierRestrict` 会把
+   写 / 执行类工具整批从工具表摘掉，而每轮会话块的抬头硬写着「可用 … `tty_send` 操作，用 `tty_open`
+   开关」→ agent 连试两轮 `unknown tool`。改法只动**申明侧**：抬头改成「按 sid 操作」+「实际可用的
+   工具以你的工具表为准」+ 受限档的出路（切「完全权限」档 / 用 bash），空列表分支与已退出汇总行一并
+   去掉硬点名。**裁剪语义一字未动**（2026-10-25 决议与 `verify-tier-restrict.mjs` 的契约不在这一刀里）。
+2. **D104 名字不可发现**：同一台机器三套名字（面板 `user@host` / docker 目标名 / 连接簿条目名），
+   `book` 只认第三套、报错还只说「不存在」→ 唯一出路是读**含明文密码**的配置文件。改法三条一起上：
+   一个解析入口 `resolveBook`（条目名精确优先 → `host[:port]` / `user@host`，**唯一才解析**，歧义列
+   候选）、错误文案即文档（没命中就列可用条目，不含凭据）、新增只读工具 `tty_books`（空态也是答案）。
+   `mergeSshSpec` 的第一参数由 finder 换成连接簿数组——别名解析要能看见全部条目才判得了歧义。
+3. **D105「未知」有三种成因**：旧文案一律印「该会话没有 shell 集成标记」。**真机实测**（macOS /
+   tmux 3.7b / zsh / `new-session -A`）证明本地 tmux 会话只是「接回时没有一次 precmd」——发一条
+   `true` 后 `running` 立刻从「未知」变 `false`。于是加 `runningUnknown`（`ssh` / `tmux-attach` /
+   `no-integration`）+ 一处文案 `runningUnknownNote`（`tty_list` 与每轮 prompt 逐字共用，每句都带
+   下一步「先 `tty_capture` 看提示符」）。**刻意不做**：猜前台进程、注入 `Ctrl-L`/`Enter` 触发
+   precmd——两者都能把「正在跑」报成「空闲」，正是三态要防的静默事故。
+
+**门槛**：`test/book-resolve.test.ts`（15 条，出口矩阵：命中 / 四个别名格 / 歧义 / 没命中 / 空连接簿 /
+同源 / 凭据不外泄）+ `test/tty-list-running.test.ts` 的三条反例（提示词不点被裁掉的工具、空列表分支
+同源、`tty_list` 描述不硬点 `tty_send`）+ unknown 成因与分诊两条；`pnpm -r typecheck` / `pnpm test`
+全绿；tty 单测 953 条。
+
+**发布口径**：新增了一个工具 → 这一刀是**功能**（不是补丁），发版时按 minor 走（0.37.3 → 0.38.0）。
+
+**同日追加（2026-11-04 晚）：docker 目标名也能当 `book`**。用户截图指出卡片上写的是 `kb-target`、而连接簿条目名是 `KB_APP`——「报错列条目」只救一次，救不了「它以为目标名就是条目名」这个前提。于是 `resolveBook` 增加别名入参，来源读 docker 命名空间（只取 `name` / `book` 两个拓扑字段，docker 没装则为空表），`tty_books` 顺带把别名表列出来。**刻意不做的**：内联 host/username 的 docker 目标不进别名（那会把别人配置里的 host 当答案猜），本机目标更不进。
+
+**同日追加（2026-11-05）：裁剪判据收窄到只读档**。上面第 1 条写的是「只让申明侧同源、裁剪语义一字未动」——
+那是对**当时**的选择（方案 A）的准确记录。用户随后选了另一条：既然 `workspace-write + ask` 在矩阵里是
+`ask`（人一点就能执行），工具就不该整批消失。于是 kit 的 `shouldRestrictForTier` 从
+`mode !== 'danger-full-access'` 改成 `mode === 'read-only'`：工作区内修改档 **工具可见、每次调用逐次
+ask**，完全权限 / Auto review 不裁，只读档照旧整批裁。tty 侧只跟着改文案与用例（分类表没动，
+`tty_send` / `tty_open` 仍是 `exec` 类——远程主机与容器不受本机沙箱约束，不许降级成 `write`，
+理由见 `docs/permission-tier-plan.md` R4）。**执行期闸一行未动**：安全边界始终是 `attachTierGate`。
+
+### 2026-11-05（收口八）：普通本地会话的 shell 集成整条失效 —— `ZDOTDIR` 自递归
+
+**来源**：0.38.0 候选版真机复测（DSH 0.2.2-rc.1）。`tmux 持久` 会话正常，**普通本地会话**恒为
+`[命令状态未知]`、`tty_capture{last:true}` 报「暂无『上一条命令』记录」，原始输出里一条 OSC 133
+都没有；同时 zsh 自己打满：
+
+```
+~/.dsh/tty/shell/zsh/.zshenv:2: job table full or recursion limit exceeded
+~/.dsh/tty/shell/zsh/.zshrc:2:  job table full or recursion limit exceeded
+```
+
+**根因**：包装层用 `${ZDOTDIR:-$HOME}` 当用户的原 ZDOTDIR。而**宿主的进程环境里 `ZDOTDIR` 可能
+已经是桩目录**——在 dsh 终端面板里再起一个 dsh（嵌套）就会这样，那一层的 `ZDOTDIR` 是父会话导出
+的桩路径。于是桩 `.zshenv` 的 `source "$DSH_TTY_ORIG_ZDOTDIR/.zshenv"` 指回**自己** → 递归。
+tmux 持久会话没事：pane 的启动器由 tmux server 执行，环境里没有桩值——这条差别正是抓到它的位置。
+
+**改法**：新增 `zshOrigResolveSnippet()`，包装层与 tmux 内层启动器**共用**同一段解析（ORIG 三层：
+父会话传下的真值 → 继承的 `ZDOTDIR`（**且不等于桩目录**）→ `$HOME`）；桩文件自身再加一道自愈
+（ORIG 为空或等于桩目录就退回 `$HOME` 并 export，让后续桩文件也用修正值）——防的是「落盘的旧桩 /
+被第三方改过的包装层」这类残留。
+
+**门槛**：`test/shell-spawn.test.ts` 新增 6 条（五格用真 `/bin/sh` 跑片段断言解析结果，含嵌套 dsh
+与「连 ORIG 都被污染」两格；一条钉桩文件的自愈：用真 zsh 跑，旧桩复现 `job table full`、新桩输出
+`FROM_HOME_ZSHENV` 且不再递归）。本地实测：旧桩 + 污染 ORIG → 精确复现报错；新包装层下同一条件 →
+`ORIG=$HOME`；嵌套场景 → 保留父会话的真值。

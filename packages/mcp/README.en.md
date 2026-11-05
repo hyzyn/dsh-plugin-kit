@@ -25,13 +25,14 @@ tier see it”.
 
 - **Restricted tiers cut every `mcp__*`**: in `apply` the plugin hooks the `mcp__` prefix into the same
   tool-surface cut that `docker` / `tty` use (the kit’s `attachTierRestrict`, via
-  `ctx.inject(['tools'])`). Under `read-only` / `workspace-write` (not Auto review, and with the tier
+  `ctx.inject(['tools'])`). Under `read-only` (not Auto review, and with the tier
   service composed by the host) the agent’s tool table contains **no `mcp__*` at all**;
-  `danger-full-access` is not cut; a host that has not composed the tier service cuts nothing either
-  (same rule as `docker` / `tty`).
+  `danger-full-access` / `workspace-write` are not cut (2026-11-05 correction: Workspace Write is a
+  per-call `ask` tier, and hiding tools that *can* succeed is changing the user's tier for them);
+  a host that has not composed the tier service cuts nothing either (same rule as `docker` / `tty`).
 - **Everything is classified `exec` (the worst class)**: whether a given MCP tool reads or writes cannot
   be decided by this repo (that is each server’s own semantics), so it errs strict — whenever a tier
-  cuts, every `mcp__*` goes on the deny list. What gets cut is the **tool surface** (a restricted
+  cuts, every `mcp__*` goes on the deny list. What gets cut is the **tool surface** (a Read Only
   session simply does not see them; it is not a per-call refusal) and this plugin does not attach the
   per-call gate (`attachTierGate`); the surface is recomputed on **agent creation / tool-set changes**
   **and** on a mid-session tier switch (since 2026-10-25 kit subscribes to the three knob events on
@@ -86,9 +87,9 @@ Four boundaries:
 - **A new server stays “unloaded” by default**: a server that connects later, or a `tools/change`
   caused by a plugin hot reload, recomputes `deny` from the new registered set, so tools that appear
   later on an already-loaded server become visible with it.
-- **The tier rule is unchanged**: a restricted tier still has every `mcp__*` cut by
+- **The tier rule is unchanged**: a Read Only tier still has every `mcp__*` cut by
   `attachTierRestrict`, and the two restrictions **intersect** — `on-demand` opens no back door, and a
-  restricted tier does not pass just because something was “loaded”.
+  Read Only tier does not pass just because something was “loaded”.
 - **Clean teardown**: `agent/disposed` and plugin unload remove that agent's restriction and clear the
   ledger.
 

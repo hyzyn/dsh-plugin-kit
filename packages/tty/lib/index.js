@@ -12,7 +12,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 // found），必须默认导入后取 Terminal；类型用 InstanceType 别名保持同名可用
 import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
-import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
+import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, readSettingsEntry, registerLiteralSection, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
 import { sharedGrantStore, auditLoadedGrants, attachTierGate, attachTierRestrict, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
@@ -200,6 +200,10 @@ export const EXITED_RETAIN_MS = Number.POSITIVE_INFINITY;
  */
 export const TTY_TIER_CLASS = {
     tty_list: 'read',
+    // 只回 name / host / port / username / auth（拓扑与认证**方式**）：一个凭据值都不出来。
+    // 必须是 read 类——只读档（唯一会裁工具面的那一档，2026-11-05 起）里它是 agent 唯一能把
+    // `book` 参数猜对的入口；被裁掉就等于把 agent 推回「翻含明文密码的配置文件」那条路（D104）。
+    tty_books: 'read',
     tty_capture: 'read',
     tty_screen: 'read',
     tty_expect: 'read',
@@ -976,6 +980,34 @@ export function feedShellIntegration(session, text) {
     }
 }
 /**
+ * 未知成因的**用户可见短句**：`tty_list` 的渲染与每轮 systemPrompt 的会话块**共用这一处**
+ * （两处各写一遍必然漂——D88 的教训就是三态在文本里糊成了两种）。
+ * 每句都带**下一步动作**：只说「不知道」等于把问题丢回给 agent。
+ */
+export function runningUnknownNote(reason) {
+    switch (reason) {
+        case 'ssh':
+            return 'SSH 会话没有命令边界标记（远端 shell 不受本插件控制），发命令前先 tty_capture 看提示符';
+        case 'tmux-attach':
+            return 'tmux 接回的会话还没跑过命令（接回重绘不带标记），发命令前先 tty_capture 看提示符；跑完一条命令即恢复';
+        case 'no-integration':
+            return 'shell 没注入命令边界标记（不受支持的 shell 或「shell 集成」被关掉），发命令前先 tty_capture 看提示符';
+    }
+}
+/**
+ * 没有命令边界标记时，**为什么**没有（D105）。
+ *
+ * 判据只看会话自身的事实（kind / 是不是 tmux 托管），不看配置：配置在会话建立之后热改过，
+ * 拿它解释一条早就存在的会话只会给出错误原因。
+ */
+export function runningUnknownReasonOf(session) {
+    if (session.kind === 'ssh')
+        return 'ssh';
+    if (session.tmuxName !== null)
+        return 'tmux-attach';
+    return 'no-integration';
+}
+/**
  * 「这个会话有没有命令在跑」的判据（0.23.0，tty_list 的 `running`）。
  *
  * 三态是刻意的：`running` **省略**表示这个会话根本没有可信的命令边界（没见过
@@ -988,6 +1020,9 @@ export function feedShellIntegration(session, text) {
  *   - **命令型会话**（`tty_open command=` / `tty_run` / SSH 的 exec 标签）的进程
  *     **就是**那条命令 → 活着就等于在跑（true）。这里刻意不看 inCommand：命令型
  *     会话不注入 shell 集成钩子，D 标记永远不会来。
+ *
+ * 未知态额外带出**成因**（D105）：同一句「未知」在 SSH 会话上是永久事实、在 tmux 接回的
+ * 会话上只是「还没跑过第一条命令」，前者别让 agent 等、后者值得等。
  */
 function runningOf(session) {
     const state = session.shellState;
@@ -1005,7 +1040,7 @@ function runningOf(session) {
     if (session.commandSession)
         return { running: true, ...lastInfo };
     if (!state.sawMark)
-        return {};
+        return { runningUnknown: runningUnknownReasonOf(session), ...lastInfo };
     return { running: state.inCommand, ...lastInfo };
 }
 /**
@@ -2106,6 +2141,7 @@ export class SessionManager {
         const runInfo = runningOf(session);
         const runFields = {
             ...(runInfo.running === undefined ? {} : { running: runInfo.running }),
+            ...(runInfo.runningUnknown === undefined ? {} : { runningUnknown: runInfo.runningUnknown }),
             ...(runInfo.lastExitCode === undefined ? {} : { lastExitCode: runInfo.lastExitCode }),
             ...(runInfo.lastExitAt === undefined ? {} : { lastExitAt: runInfo.lastExitAt }),
         };
@@ -3254,7 +3290,7 @@ export class TtyServer {
                     return;
                 }
                 // name 引用连接簿条目作基底，内联字段可逐项覆盖（与 SFTP 路由共用 mergeSshSpec）
-                const merged = mergeSshSpec((name) => this.options.findSshHost(name), msg.name, msg);
+                const merged = mergeSshSpec(this.options.sshHosts, msg.name, msg, currentBookAliases());
                 if (merged.error !== undefined || merged.spec === undefined) {
                     send(ws, { t: 'error', sid, m: merged.error ?? 'SSH 连接参数缺失' });
                     return;
@@ -3871,6 +3907,125 @@ function listCandidateShells() {
     usable.sort((a, b) => (a === fallback ? -1 : b === fallback ? 1 : a.localeCompare(b)));
     return usable;
 }
+/** 连接簿条目的**一行展示**（错误文案 / `tty_books` / 面板同一份口径）：`name — user@host:port`。 */
+export function bookLine(entry) {
+    return `${entry.name} — ${entry.username}@${entry.host}:${String(entry.port ?? 22)}`;
+}
+/** 错误文案里最多列几条可用条目；超出的只报条数并指路 `tty_books`。 */
+const BOOK_HINT_LIMIT = 8;
+/**
+ * 当前生效的别名来源（`apply()` 里装配，settings 卸载时清空）。
+ *
+ * 用模块级缝而不是层层传参：`sftpBookSpec` / WS ssh 帧 / 探针三条路都要用同一个来源，
+ * 逐处传参会变成「谁忘了传谁就不认别名」——与本仓 `setProxyCommandPolicy` 同一种取舍。
+ */
+let bookAliasSource = () => [];
+/** 装配别名来源（`apply()` 与测试共用；传 `undefined` 恢复空表）。 */
+export function setBookAliasSource(source) {
+    bookAliasSource = source ?? (() => []);
+}
+/** 当前别名表（内部读一次副本，调用方不必关心来源是否可变）。 */
+function currentBookAliases() {
+    try {
+        return bookAliasSource();
+    }
+    catch {
+        return []; // 来源坏了 = 没有别名，不许把连接路径带下去
+    }
+}
+/**
+ * 从 docker 插件的 settings 命名空间读「目标名 → 连接簿条目名」。
+ *
+ * 只收 `kind === 'ssh'` 且 `book` 非空的目标：本机目标没有连接簿，内联 host/username 的目标
+ * 也没有可报的条目名（那种情况让它照旧报「不存在 + 可用条目」，不要把别人配置里的 host 当答案猜）。
+ */
+export function readDockerBookAliases(settingsCtx) {
+    let raw;
+    try {
+        raw = readSettingsEntry(settingsCtx, 'docker');
+    }
+    catch {
+        return [];
+    }
+    const targets = raw?.targets;
+    if (!Array.isArray(targets))
+        return [];
+    const aliases = [];
+    for (const item of targets) {
+        if (typeof item !== 'object' || item === null)
+            continue;
+        const target = item;
+        const name = typeof target.name === 'string' ? target.name.trim() : '';
+        if (name === '' || target.kind !== 'ssh')
+            continue;
+        const book = typeof target.book === 'string' ? target.book.trim() : '';
+        if (book === '')
+            continue;
+        aliases.push({ target: name, book });
+    }
+    return aliases;
+}
+/**
+ * 按「条目名 → `user@host[:port]` → `host[:port]`」解析连接簿条目（D104）。
+ *
+ * ## 为什么要别名
+ *
+ * 同一台机器在部署里通常有**三套名字**：连接簿条目名（面板里才是它）、docker 目标名、
+ * 以及面板下拉里显示给人看的 `user@host`。agent 从「我要看某容器所在主机」出发，手上
+ * 通常只有后两种；旧实现只认条目名，错误文案又只说「不存在」，于是唯一出路是让用户
+ * 手动执行、或者去解析含明文密码的配置文件。**名字必须能被发现**，否则能力等于没配。
+ *
+ * ## 判据
+ *
+ * 1. **name 精确命中永远优先**（与旧行为逐字一致，升级不改任何现有配置的语义）；
+ * 2. name 没命中才走 host / `user@host` 别名，且**必须唯一**——有歧义时列候选，绝不猜；
+ *    猜错就是登到另一台机器上执行命令；
+ * 3. 没命中就给出**可用条目清单**（name + 拓扑，不含任何凭据），把「猜」变成「照抄」。
+ */
+export function resolveBook(hosts, raw, aliases = []) {
+    const wanted = typeof raw === 'string' ? raw.trim() : '';
+    if (wanted === '')
+        return { error: 'book 必须是 SSH 连接簿条目名' };
+    const byName = hosts.find((entry) => entry.name === wanted);
+    if (byName !== undefined)
+        return { entry: byName };
+    // 别名（docker 目标名）：命中就按它引用的条目解析——「拿目标名当 book」是现场最常见的走法
+    const alias = aliases.find((item) => item.target === wanted);
+    if (alias !== undefined) {
+        const viaAlias = hosts.find((entry) => entry.name === alias.book);
+        if (viaAlias !== undefined)
+            return { entry: viaAlias };
+        return {
+            error: `docker 目标「${alias.target}」引用的连接簿条目不存在: ${alias.book}（在 docker 卡片那条目标的「连接簿」下拉里改选一个已有条目，或在 tty 终端面板的连接簿里补一条同名条目）`,
+        };
+    }
+    // `user@host` 与 `host[:port]`：面板下拉显示的正是 `user@host`，而 docker 目标名常与 host 同名
+    const at = wanted.lastIndexOf('@');
+    const userPart = at === -1 ? undefined : wanted.slice(0, at);
+    const hostPart = at === -1 ? wanted : wanted.slice(at + 1);
+    const matches = hosts.filter((entry) => {
+        if (userPart !== undefined && entry.username !== userPart)
+            return false;
+        return entry.host === hostPart || `${entry.host}:${String(entry.port)}` === hostPart;
+    });
+    if (matches.length === 1)
+        return { entry: matches[0] };
+    if (matches.length > 1) {
+        return {
+            error: `连接簿里有多条条目匹配「${wanted}」，不能替你猜一台：${matches.map(bookLine).join('、')}——请改用条目名（tty_books 看全部）`,
+        };
+    }
+    if (hosts.length === 0) {
+        return {
+            error: `连接簿中不存在: ${wanted}——当前**一条连接簿条目都没有**（在 设置 → 插件配置 → 终端面板 的 SSH 连接簿里添加；docker 目标的「连接簿」下拉也取这里）`,
+        };
+    }
+    const list = hosts.slice(0, BOOK_HINT_LIMIT).map(bookLine).join('、');
+    const more = hosts.length > BOOK_HINT_LIMIT ? `…另有 ${String(hosts.length - BOOK_HINT_LIMIT)} 条（tty_books 看全部）` : '';
+    return {
+        error: `连接簿中不存在: ${wanted}。可用条目（name — user@host:port）：${list}${more}；book 也可以直接写 host 或 user@host。若你手上这个是 **docker 目标名**，可用 docker_targets 看它引用的 \`book\`（目标名与条目名不必相同）；已配置的别名会直接解析`,
+    };
+}
 /**
  * 「连接簿条目作基底 + 内联字段逐项覆盖」的共享解析（WS ssh 帧与 SFTP 路由共用）。
  * name 指向连接簿缺失条目、或解析结果缺 host/username 时返回 error。
@@ -3878,11 +4033,16 @@ function listCandidateShells() {
  * **导出仅供单测**（`test/jump-absent.test.ts`）：这条函数是「连接簿 → 连接规格」的**唯一**
  * 入口（终端 / SFTP / 探针三条路径共用，隧道那条在 tunnels.ts 里自己拼但用同一套清洗），
  * `jump` 的「半个对象」判据挪进私有函数就等于没有测试入口——0.33.0 的连不上正是这样漏出去的。
+ *
+ * 第一参数是**连接簿数组**而不是 finder（D104）：别名解析必须能看见全部条目才能判断
+ * 「唯一匹配」，只给 finder 的话每个调用点都得自己再实现一遍歧义判据。
  */
-export function mergeSshSpec(findSshHost, name, inline) {
-    const profile = typeof name === 'string' && name !== '' ? findSshHost(name) : undefined;
-    if (typeof name === 'string' && name !== '' && profile === undefined)
-        return { error: `连接簿中不存在: ${name}` };
+export function mergeSshSpec(books, name, inline, aliases = []) {
+    const named = typeof name === 'string' && name.trim() !== '';
+    const resolved = named ? resolveBook(books, name, aliases) : {};
+    const profile = resolved.entry;
+    if (named && profile === undefined)
+        return { error: resolved.error ?? `连接簿中不存在: ${String(name)}` };
     const spec = {
         host: typeof inline.host === 'string' && inline.host.trim() !== '' ? inline.host.trim() : profile?.host ?? '',
         port: Number(inline.port) || profile?.port || 22,
@@ -5023,7 +5183,7 @@ const plugin = definePlugin({
                                 writeJson(res, 400, { error: 'invalid JSON body' });
                                 return;
                             }
-                            const parsed = mergeSshSpec((name) => live.findSshHost(name), body.name, body);
+                            const parsed = mergeSshSpec(live.sshHosts, body.name, body, currentBookAliases());
                             if (parsed.spec === undefined) {
                                 writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' });
                                 return;
@@ -5146,7 +5306,7 @@ const plugin = definePlugin({
                                 writeJson(res, 400, { error: 'meta.path 必填' });
                                 return;
                             }
-                            const parsed = mergeSshSpec((name) => live.findSshHost(name), meta.name, meta);
+                            const parsed = mergeSshSpec(live.sshHosts, meta.name, meta, currentBookAliases());
                             if (parsed.spec === undefined) {
                                 writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' });
                                 return;
@@ -5284,7 +5444,7 @@ const plugin = definePlugin({
                                     throw new Error('localPath/remotePath 必填');
                                 if (direction !== 'up' && direction !== 'down')
                                     throw new Error('direction 必须是 up 或 down');
-                                const parsed = mergeSshSpec((name) => live.findSshHost(name), body.name, body);
+                                const parsed = mergeSshSpec(live.sshHosts, body.name, body, currentBookAliases());
                                 if (parsed.spec === undefined) {
                                     writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' });
                                     return;
@@ -5367,11 +5527,22 @@ const plugin = definePlugin({
                     startup.tunnels = storedTunnels;
                 if (Object.keys(startup).length > 0)
                     applyPatch(startup);
+                /*
+                 * 连接簿名字的**别名来源**（D104 补）：docker 卡片上显示给用户的是「目标名」，
+                 * 而 `book` 认的是连接簿条目名——两者常常完全不同（现场：`kb-target` / `KB_APP`）。
+                 * 这里把 docker 命名空间里的「目标名 → 它引用的条目名」读一份当别名，于是
+                 * `book=kb-target` 直接解析到 `KB_APP`，agent 不必先绕一次 docker_targets。
+                 *
+                 * 只在设置服务就绪时装配；本命名空间外的读取**只取拓扑**（name / book），
+                 * 不碰任何凭据字段。docker 没装 / 未配置时读到空表，退化回「只有条目名」的旧行为。
+                 */
+                setBookAliasSource(() => readDockerBookAliases(settingsCtx));
                 const off = scope.onChanged(() => applyPatch(scope.get()));
                 return () => {
                     off();
                     offAutoPage();
                     settingsScope = undefined;
+                    setBookAliasSource(undefined);
                 };
             }, 'dsh-tty: settings');
         });
@@ -5421,7 +5592,7 @@ const plugin = definePlugin({
                         name: 'tty_list',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**——该会话没有 shell 集成标记，例如非持久 SSH / fish·csh / Windows 的 cmd / 集成被关，**不是**「没在跑」）；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
+                        description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**，**不是**「没在跑」——此时看 `runningUnknown`：ssh（远端 shell 不受控，永久未知）/ tmux-attach（接回后还没跑过命令，跑完一条即恢复）/ no-integration（fish·csh·cmd 等不受支持的 shell，或「shell 集成」被关））；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读某个 sid 的输出。**写侧（发按键 / 开新会话）工具是否可用以你的工具表为准**——「仅可查看」档会把它们整批裁掉（请让用户切「工作区内修改」档，那档可用但**每次调用要用户确认**），「工作区内修改」及以上的档位里它们都在。已退出的会话只能读（写会报错），要接着操作请新开一条。',
                         parameters: {},
                         output: {
                             schema: {
@@ -5449,6 +5620,7 @@ const plugin = definePlugin({
                                                 signal: { type: 'string' },
                                                 retainMs: { type: 'number', description: '只读保留的剩余毫秒；省略 = 不按时间释放' },
                                                 running: { type: 'boolean', description: '有命令正在执行；**省略 = 无法判断**（该会话没有 shell 集成标记），不等于「没在跑」' },
+                                                runningUnknown: { type: 'string', description: 'running 省略时的成因：ssh（远端 shell 不受控，永久未知）/ tmux-attach（接回后还没跑过命令，跑完一条即恢复）/ no-integration（shell 不受支持或集成被关）' },
                                                 lastExitCode: { type: 'number', description: '上一条已完成命令的退出码' },
                                                 lastExitAt: { type: 'number', description: '上一条已完成命令的结束时刻（epoch ms）' },
                                             },
@@ -5465,7 +5637,7 @@ const plugin = definePlugin({
                                 // 只报条数；文案与每轮 prompt 块**共用** hiddenSessionsNote（一处口径）。
                                 const hiddenNote = hiddenSessionsNote(sessions.hiddenCount());
                                 const text = list.length === 0
-                                    ? '当前没有可用的终端面板会话（可用 tty_open 自己开一个，或引导用户打开终端面板）。'
+                                    ? '当前没有可用的终端面板会话（若工具表里有 tty_open 可自己开一个，否则引导用户打开终端面板）。'
                                     : '终端面板会话：' + list.map((s) => {
                                         const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`;
                                         const persist = s.persist === true ? ' [tmux 持久]' : '';
@@ -5480,7 +5652,7 @@ const plugin = definePlugin({
                                                 ? ' [运行中——现在别往里发命令]'
                                                 : s.running === false
                                                     ? ' [空闲]'
-                                                    : ' [命令状态未知——该会话没有 shell 集成标记，发命令前先自己确认]';
+                                                    : ` [命令状态未知——${runningUnknownNote(s.runningUnknown ?? 'no-integration')}]`;
                                         // 已退出会话的退出码由 gone 那条统管，这里只标活会话的「上一条」
                                         const lastExit = s.exited === true || s.lastExitCode === undefined ? '' : ` [上一条命令 exitCode=${String(s.lastExitCode)}]`;
                                         // D77：只读保留态必须显眼——否则 AI 会对着一个已经死掉的会话发命令
@@ -5501,6 +5673,98 @@ const plugin = definePlugin({
                             // 正好让那一段留在隐藏期之内。
                             sessions.forEach((session) => { ensureReadMark(session); });
                             return { sessions: sessions.listForAgent() };
+                        },
+                    })));
+                    /*
+                     * 连接簿枚举（D104）：`book` 参数**不可猜**——sftp_* / 隧道 / docker 目标都按连接簿
+                     * 条目名引用，而条目名与 docker 目标名、面板里显示的 `user@host` 是三套名字。没有这条
+                     * 工具时 agent 只有两条路：猜（错两次很常见）或去读含明文密码的配置文件（更糟）。
+                     *
+                     * **无条件注册**（不进 `live.sshHosts.length > 0` 那组）：连接簿为空本身就是一条要
+                     * 告诉 agent 的事实（它据此引导用户去配，而不是继续猜）——与 sftp_* 那种「挂上必然
+                     * 报错」的条件注册不同，这条工具的空态也是有效答案。
+                     */
+                    activeDisposers.push(registerTool(defineTool({
+                        name: 'tty_books',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
+                        description: '列出 tty 的 SSH 连接簿条目（name / host / port / username / 认证方式 / 是否 tmux 持久 / 是否经跳板机或代理命令），**不含任何凭据**。`sftp_*` 的 `book`、隧道的 `bookName`、docker 目标的「连接簿」下拉都取这里的 `name`；book 也接受 `host` / `user@host`（唯一匹配才解析）与 **docker 目标名**（按其引用的条目解析，见返回里的 `dockerTargets`）。名字记不准时先调它，不要去猜、也不要读配置文件。',
+                        parameters: {},
+                        output: {
+                            schema: {
+                                type: 'object',
+                                additionalProperties: false,
+                                properties: {
+                                    count: { type: 'number', required: true },
+                                    books: {
+                                        type: 'array',
+                                        required: true,
+                                        items: {
+                                            type: 'object',
+                                            additionalProperties: false,
+                                            properties: {
+                                                name: { type: 'string', required: true },
+                                                host: { type: 'string', required: true },
+                                                port: { type: 'number', required: true },
+                                                username: { type: 'string', required: true },
+                                                auth: { type: 'string', required: true },
+                                                persist: { type: 'boolean' },
+                                                jumpHost: { type: 'string' },
+                                                proxyCommand: { type: 'boolean' },
+                                            },
+                                        },
+                                    },
+                                    // D104 补：docker 目标名也是「别人嘴里的名字」——列出来，agent 不必自己推
+                                    dockerTargets: {
+                                        type: 'array',
+                                        required: true,
+                                        items: {
+                                            type: 'object',
+                                            additionalProperties: false,
+                                            properties: {
+                                                target: { type: 'string', required: true },
+                                                book: { type: 'string', required: true },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                            render: (_args, value) => {
+                                const v = value;
+                                const books = v.books ?? [];
+                                if (books.length === 0) {
+                                    return [{ type: 'text', text: '连接簿是空的：`sftp_*` / 隧道 / docker 目标的「连接簿」都按这里的条目名引用。请用户在 设置 → 插件配置 → 终端面板 的 SSH 连接簿里添加条目（也可以在终端面板里从 ~/.ssh/config 导入）。' }];
+                                }
+                                const text = `连接簿条目（${String(books.length)} 条；book / bookName / docker 目标的连接簿都按 name 引用，也可用 host 或 user@host）：` + books.map((b) => {
+                                    const persist = b.persist === true ? '，tmux 持久' : '';
+                                    const jump = b.jumpHost === undefined ? '' : `，经跳板机 ${b.jumpHost}`;
+                                    const proxy = b.proxyCommand === true ? '，有代理命令' : '';
+                                    return `\n- ${b.name} — ${b.username}@${b.host}:${String(b.port)}（${b.auth}${persist}${jump}${proxy}）`;
+                                }).join('');
+                                // 别名一栏：docker 目标名可以直接当 book 传（见 resolveBook），但先告诉它两套名字的对应
+                                const targets = v.dockerTargets ?? [];
+                                const aliasNote = targets.length === 0
+                                    ? ''
+                                    : `\n\ndocker 目标别名（目标名可以直接当 book 传，等价于它引用的条目）：` + targets.map((t) => `\n- ${t.target} → ${t.book}`).join('');
+                                return [{ type: 'text', text: text + aliasNote }];
+                            },
+                        },
+                        async execute() {
+                            // 只投影拓扑与认证**方式**：password / passphrase / keyPath 一个都不进 agent 上下文
+                            const books = live.sshHosts.map((entry) => {
+                                const jump = sanitizeJumpSpec(entry.jump);
+                                return {
+                                    name: entry.name,
+                                    host: entry.host,
+                                    port: entry.port ?? 22,
+                                    username: entry.username,
+                                    auth: entry.auth ?? 'agent',
+                                    ...(entry.persist === true ? { persist: true } : {}),
+                                    ...(jump === undefined ? {} : { jumpHost: `${jump.host}:${String(jump.port)}` }),
+                                    ...(typeof entry.proxyCommand === 'string' && entry.proxyCommand.trim() !== '' ? { proxyCommand: true } : {}),
+                                };
+                            });
+                            return { count: books.length, books, dockerTargets: [...currentBookAliases()] };
                         },
                     })));
                     activeDisposers.push(registerTool(defineTool({
@@ -5768,7 +6032,7 @@ const plugin = definePlugin({
                         name: 'tty_capture',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。**进程已退出的会话也能读**（结果带 exited:true + 退出码/信号）：输出在只读保留期里一直都在（保留到显式关闭或宿主重启，`tty_open command=...` 跑完一条命令后就这么用）；这类会话不能再写，要接着操作请 tty_open 新开一条。**命令型会话（`tty_open command=` / `tty_run`）没有「上一条命令」**（它们不注入 shell 集成钩子），对它们用 last:true 会明确报错——改用默认的 lines 读尾部。',
+                        description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。**进程已退出的会话也能读**（结果带 exited:true + 退出码/信号）：输出在只读保留期里一直都在（保留到显式关闭或宿主重启，`tty_open command=...` 跑完一条命令后就这么用）；这类会话不能再写，要接着操作请新开一条。**命令型会话（`tty_open command=` / `tty_run`）没有「上一条命令」**（它们不注入 shell 集成钩子），对它们用 last:true 会明确报错——改用默认的 lines 读尾部。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
                             lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
@@ -5920,7 +6184,7 @@ const plugin = definePlugin({
                         name: 'tty_expect',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '在某个终端面板会话（tty_list 提供 sid）等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出），再等后续输出——所以命令瞬间跑完也不会白等；匹配到立即返回 matched:true（matchedFrom 说明匹配来自哪里：live=本次等待期间新产生 / last=上一条命令的输出 / buffered=此前已到达的缓冲输出）与周边输出。**刚发进去的命令回显不算命中**（命令还没执行时回显先到，命中它等于谎报）；若等满超时且 pattern 只命中过回显，结果带 echoOnly:true——那说明命中的只是回显、不是输出（命令可能没被执行），先复核它到底跑没跑。超时不抛错，返回 matched:false + 尾部输出；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。注意：只对「还没读过的输出」负责——要回看更早的内容用 tty_capture。',
+                        description: '在某个终端面板会话（tty_list 提供 sid）等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出），再等后续输出——所以命令瞬间跑完也不会白等；匹配到立即返回 matched:true（matchedFrom 说明匹配来自哪里：live=本次等待期间新产生 / last=上一条命令的输出 / buffered=此前已到达的缓冲输出）与周边输出。**刚发进去的命令回显不算命中**（命令还没执行时回显先到，命中它等于谎报）；若等满超时且 pattern 只命中过回显，结果带 echoOnly:true——那说明命中的只是回显、不是输出（命令可能没被执行），先复核它到底跑没跑。超时不抛错，返回 matched:false + 尾部输出；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先发一条命令启动长任务、再 tty_expect 等就绪信号的流程。注意：只对「还没读过的输出」负责——要回看更早的内容用 tty_capture。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
                             pattern: { type: 'string', required: true, description: '等待匹配的正则表达式（JavaScript RegExp 语法）' },
@@ -5960,7 +6224,7 @@ const plugin = definePlugin({
                                 }
                                 if (v.exited === true) {
                                     // D77：会话的进程已经退出（只读保留）——不会再有任何新输出，别让它以为还能等
-                                    return [{ type: 'text', text: `会话的进程已退出（只读保留中），不会再有新输出：这一轮按现存输出结算，没有匹配到 pattern。要看它最后的输出用 tty_capture（默认读尾部）/ tty_screen（退出那一刻的屏）；要接着跑命令请 tty_open 新开一条会话。尾部输出：\n\n${v.text ?? ''}` }];
+                                    return [{ type: 'text', text: `会话的进程已退出（只读保留中），不会再有新输出：这一轮按现存输出结算，没有匹配到 pattern。要看它最后的输出用 tty_capture（默认读尾部）/ tty_screen（退出那一刻的屏）；要接着跑命令请新开一条会话。尾部输出：\n\n${v.text ?? ''}` }];
                                 }
                                 if (v.timedOut === true && (v.text ?? '').trim() === '') {
                                     // D72：这段空白此前被当成「命令没执行」——命令若是瞬间完成的，它早就跑完了
@@ -6319,13 +6583,13 @@ const plugin = definePlugin({
                         // —— SFTP 文件传输工具（0.7.0）——
                         // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
                         // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
+                        // 解析走 `resolveBook`（D104）：与 mergeSshSpec 同一份判据，别名 / 歧义 / 「可用条目」
+                        // 文案只有一处，否则 tty_open 与 sftp_* 对同一个名字会给两种结论。
                         const sftpBookSpec = (book) => {
-                            if (typeof book !== 'string' || book.trim() === '')
-                                throw new Error('book 必须是 SSH 连接簿条目名');
-                            const entry = live.findSshHost(book.trim());
-                            if (entry === undefined)
-                                throw new Error(`连接簿中不存在: ${book.trim()}`);
-                            return entry;
+                            const resolved = resolveBook(live.sshHosts, book, currentBookAliases());
+                            if (resolved.entry === undefined)
+                                throw new Error(resolved.error ?? 'book 必须是 SSH 连接簿条目名');
+                            return resolved.entry;
                         };
                         activeDisposers.push(registerTool(defineTool({
                             name: 'sftp_list',
@@ -6676,7 +6940,7 @@ const plugin = definePlugin({
                     stateRef.toolsRegistered = true;
                     // 这行是**能力全集**（所有可能注册的工具名，档位闸的分类对账从它取数），不是本次真注册集——
                     // 运行期真注册集取决于 live.sshHosts / live.tunnels（见上面两处条件注册），下一行才是实况。
-                    console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, tunnel_start, tunnel_stop, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
+                    console.log('[dsh-tty] agent tools registered (tty_list, tty_books, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, tunnel_start, tunnel_stop, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
                     console.log(`[dsh-tty] agent tools active (${registeredNames.join(', ')})`);
                 };
                 refreshToolsHook = registerAll;
@@ -6752,7 +7016,7 @@ const plugin = definePlugin({
                             // 「当前没有终端面板会话」——而用户正盯着自己的标签（见 hiddenCount）。
                             const hiddenNote = hiddenSessionsNote(sessions.hiddenCount());
                             if (list.length === 0)
-                                return `当前没有可用的终端面板会话（可用 tty_open 自己开一个，或引导用户打开「终端」面板）。${hiddenNote}\n${shellLine}`;
+                                return `当前没有可用的终端面板会话（若本会话的工具表里有 tty_open 可自己开一个，否则引导用户打开「终端」面板）。${hiddenNote}\n${shellLine}`;
                             // D77：只读保留态（进程已退出）**不能冒充活会话**——模型会以为那个长驻
                             // 任务还在跑、或者对它发命令。这里把两者分开：活会话逐条列，保留态压成
                             // 一行汇总（每轮 prompt 的增量是常数，不随条数线性膨胀）。
@@ -6760,7 +7024,16 @@ const plugin = definePlugin({
                             const gone = list.filter((s) => s.exited === true);
                             const head = alive.length === 0
                                 ? '当前没有活着的终端面板会话。'
-                                : '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，用 tty_open / tty_close 开关，sid 如下）：\n' + alive.map((s) => {
+                                /*
+                                 * 抬头**不点名**任何工具（D103）。为什么：写 / 执行类工具会被会话权限档位从
+                                 * 工具表里裁掉（kit 的 attachTierRestrict：**只读档**下 write/exec 类整批消失；
+                                 * 「工作区内修改」档工具在、每次调用由档位闸逐次 ask），而提示词曾经硬写「可用 tty_capture / tty_screen /
+                                 * tty_expect / **tty_send** 操作，用 **tty_open** / tty_close 开关」——模型照着
+                                 * 这句去调一个不存在的工具，连试两轮都失败（用户现场 2026-11-04）。
+                                 * 判据：**提示词不许比工具表更肯定**。这里只给「怎么用」与「见不到时怎么办」，
+                                 * 唯一权威是模型自己的工具表。
+                                 */
+                                : '当前活跃的终端面板会话（按 sid 操作：读输出 / 等输出 / 发按键 / 开关会话；**实际可用的工具以你的工具表为准**——只有「仅可查看」档会裁掉写与执行类（那时请用户切「工作区内修改」档，可用但每次要确认）；sid 如下）：\n' + alive.map((s) => {
                                     const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`;
                                     const owner = s.owner === 'agent' ? ' [agent 开的]' : '';
                                     // D88：这里只给**非空闲**的两种态打标（「没有标记」= 空闲且可信）——
@@ -6772,12 +7045,12 @@ const plugin = definePlugin({
                                         ? ' [运行中——现在别往里发命令]'
                                         : s.running === false
                                             ? ''
-                                            : ' [命令状态未知]';
+                                            : ` [命令状态未知——${runningUnknownNote(s.runningUnknown ?? 'no-integration')}]`;
                                     return `- sid=${s.sid} [${s.kind}]${owner}${s.persist === true ? ' [tmux 持久]' : ''}${busy} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`;
                                 }).join('\n');
                             const tail = gone.length === 0
                                 ? ''
-                                : `\n另有 ${String(gone.length)} 条已退出但输出仍可读的会话（只读：tty_send 会报错，要用 tty_capture / tty_screen 读）：` + gone.map((s) => {
+                                : `\n另有 ${String(gone.length)} 条已退出但输出仍可读的会话（只读：往里发命令会报错，要用 tty_capture / tty_screen 读）：` + gone.map((s) => {
                                     const how = s.signal !== undefined ? `signal=${s.signal}` : s.exitCode === undefined ? '退出码未知' : `exitCode=${String(s.exitCode)}`;
                                     return `sid=${s.sid} (${how})`;
                                 }).join('、');

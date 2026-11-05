@@ -303,6 +303,15 @@ bash / fs 工具；插件工具完全不受档位约束——`tty_run` / `tty_se
 （[scripts/verify-tier-restrict.mjs](./scripts/verify-tier-restrict.mjs)，真 cordis 根 + 真
 `tools`/`sessions`/`sandboxPolicy` 服务 + **三个包的真实分档表**，10/10 通过——受限档 23 个工具里
 一个 write/exec 与 `mcp__*` 都没有、升档回到 39、降档再回 23、另一个会话一个名字都没变）。
+
+**2026-11-05 修正（裁剪面收窄到只读档）**：`shouldRestrictForTier` 的旧判据是
+`mode !== 'danger-full-access'`——于是**默认档**（工作区内修改）下写 / 执行类工具整批消失。这不是「更安全」：
+`workspace-write + ask` 那一格在矩阵里是 `ask`（人一点就能执行），工具**能**成功，藏起来等于替用户改档；
+而且它把用户逼到唯一另一条路——**零询问**的完全权限档（比逐次 ask 宽得多）。用户现场（tty D103）就是
+「想在容器宿主机上跑一条 `sed`，默认档下 `tty_send` 根本不在工具表里」。现判据改成 `mode === 'read-only'`，
+工作区内修改档**工具可见、每次调用照旧逐次 ask**；执行期闸一行未动。落点：kit `tier-restrict.ts`
+（+ 6 条单测）、tty / docker / mcp 三包的裁剪用例、`tier-smoke` 新增「中间档不裁」一条并把降档改用
+`read-only`。理由与取舍见 [docs/permission-tier-plan.md](./docs/permission-tier-plan.md) §10 的修正记录。
 同轮实测了此前只有散文的一条边界：**per-agent 挂载进 agent 自己那一层的工具不受前缀裁剪**
 （宿主只裁继承层），且把这类名字写进 `deny` 会被整体拒绝（`unknown global tool`）——所以未来
 「MCP 按需挂载」的档位执行只能是**卸载**，不能是 `restrict`。
@@ -480,7 +489,7 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 ### 4. ✅ `isConcurrencySafe` 未声明
 
 **落点**：`docker` 的 11 个只读工具（`docker_targets` … `docker_volumes`）与 `tty` 的 9 个
-只读工具（`tty_list` / `tty_stats` / `tty_capture` / `tty_screen` / `tty_expect` /
+只读工具（`tty_list` / `tty_books` / `tty_stats` / `tty_capture` / `tty_screen` / `tty_expect` /
 `tunnel_list` / `sftp_list` / `sftp_read` / `sftp_tree`）声明 `isConcurrencySafe: () => true`；
 五个 docker 变更工具与八个 tty 变更工具**刻意不声明**（宿主按独占处理，多声明一次就是
 两个 `docker_action` 并发跑）。**2026-10-01 补**：`tty_run`（一次性命令）加入后 tty 的变更工具

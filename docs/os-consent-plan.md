@@ -6,12 +6,12 @@
 > 它是纯 UX 改进、不改变安全等级（§5 末：不做也完全成立），要不要做是独立的价值判断。
 > §0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
-> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.2-alpha.3`** 现算的
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.2-rc.1`** 现算的
 > （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 复核于 `0.2.1-alpha.2`，
 > 2026-10-16 复核于 `0.2.1-alpha.5`，2026-10-17 复核于 `0.2.1-rc.1`，
 > 2026-10-19 复核于 `0.2.1-rc.2`，2026-10-24 复核于 `0.2.1-rc.3`，
 > 2026-10-27 复核于 `0.2.1-rc.4`，2026-10-30 复核于 `0.2.1-rc.5`，
-> 2026-11-04 复核于 `0.2.2-alpha.3`，见 §2.1 末「升级复核」）。
+> 2026-11-04 复核于 `0.2.2-alpha.3`，2026-11-05 复核于 `0.2.2-rc.1`，见 §2.1 末「升级复核」）。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
@@ -90,7 +90,7 @@
 
 ## 2. 现算事实与那条实现约束
 
-### 2.1 三条实测事实（DSH `0.2.2-alpha.3`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 / 10-19 / 10-24 / 10-27 / 10-30 / 11-04 复核）
+### 2.1 三条实测事实（DSH `0.2.2-rc.1`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 / 10-19 / 10-24 / 10-27 / 10-30 / 11-04 / 11-05 复核）
 
 **事实 1：审批瀑布的答案今天由「页面」给出。**
 
@@ -315,6 +315,24 @@ Linux 的 zenity / kdialog 仍是 `errorCode(error) === 1`。事实 3 的正文�
 nvm 并存时不再取目录序第一个），否则装了新 cohort 后仍会拿旧宿主比对。
 `scripts/test/os-consent-scope.test.ts` 本轮 **27/27 绿**（基准更新后；含新增的三条边界用例）。
 本节基准随之更新到 `0.2.2-alpha.3`。
+
+**升级复核（2026-11-05，宿主 `0.2.2-alpha.3` → `0.2.2-rc.1`）**：这一档**三条事实仍然成立**，
+且判据侧没有出现新的误报形状——`checkHostWorld()` 返回空数组，红的只有「基准版本对不上」这条
+绊线（按设计）。独立抽查三条事实的锚点也都对上：`dsh-user-approval` 的
+`ApprovalService.request()` 仍是那条 `ctx.waterfall(scopeTarget(...), "approval/request", req,
+() => Promise.resolve("unavailable"))`（文件 2922 → 8979 B 的增量是校验与日志细节，形状未变）；
+`dsh-client-ui-approval/lib/client.js` 里 `answerApproval` 仍在（答案走页面，事实 1 的有效路径未变）；
+`dsh-client-modules/lib/client.js` 里 `type="module"` **零命中**（同 realm classic script 未变）；
+全宿主树里 `zenity` / `display dialog` / `polkit` 的命中仍**只在**
+`dsh-host-directory-picker-{native,auto}`（唯一的原生接缝，事实 3 未变）。
+
+五处载体文件这一档的字节数（`0.2.2-rc.1`，作为下一次比对的锚点）：
+`dsh-user-approval/lib/index.js` 8979 B、`dsh-client-ui-approval/lib/client.js` 19258 B、
+`dsh-client-modules/lib/client.js` 46569 B、`dsh-api-remotes/lib/types/remote-events.js` 2836 B、
+`dsh-host-directory-picker-native/lib/index.js` 13011 B（上一档 rc.5 分别是
+8478 / 14389 / 46292 / 2725 / 12818 B——五处都有改动，逐条核对后判据全绿）。
+`scripts/test/os-consent-scope.test.ts` 本轮 **27/27 绿**（基准更新后）。本节基准随之更新到
+`0.2.2-rc.1`。
 
 > 一条容易误判的观察：rc.2 里 `srcdoc` 有命中，但那是
 > `dsh-client-ui-sidebar-documentpreview` 的**恶意 HTML 检测规则表**（`html-srcdoc` 那条正则），
