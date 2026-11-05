@@ -207,7 +207,9 @@ git push origin main --tags
 tag 推上去后 Release workflow 接管：校验 tag 与 `@hyzyn/dsh-all` 版本一致 →
 build + typecheck + 聚合检查 → 按依赖序发布全部包（**先对 registry 上已存在的「包名@版本」做
 内容预检，内容与本仓不一致即整体中止；一致的跳过，未 bump 的包不拦路**）→ 逐包回查 registry
-核实 → 建 GitHub Release（Highlights 自动过滤 chore 提交，并附全部 workspace 包的版本清单）。
+核实 → **把全部包的 `next` dist-tag 逐包同步到本仓版本再核实**（稳定版只更新 `latest`，
+不补这一步 `next` 会一直停在很久以前的 rc 上，见 § 高危改动走 prerelease）→ 建 GitHub Release
+（Highlights 自动过滤 chore 提交，并附全部 workspace 包的版本清单）。
 
 发布中途失败：修复后删除并重打同一个 tag 再推即可，已发出的包重跑时自动跳过（幂等）。
 兜底的手动发布：`node scripts/release-publish-all.mjs [6位OTP] [only=]包目录,...`
@@ -219,6 +221,7 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（**先对 regi
 | --- | --- |
 | 用户报 `The requested module '@hyzyn/dsh-kit' does not provide an export named …`（或整条 entry 报 `failed to import`） | **kit 的内容变了但版本号没 bump**：发布流按「版本已在 registry」跳过，消费者钉到的还是旧 kit 内容（2026-10-17 事故，外部 issue #12：codegraph 0.6.9 / env 0.3.9 / mcp 0.3.5 / prompt 0.2.8 四个包中招）。修法：bump kit → 全仓消费者钉子跟齐 → `pnpm aggregate` → 发新版；旧包只能靠回滚（codegraph 0.6.8 / env 0.3.8 / mcp 0.3.4 / prompt 0.2.7）。`pnpm release:preflight` 现在会在发布前拦下这一类（发布门槛第 6 条） |
 | workflow 绿了、但日志里有 `::warning::` 说「窗口内未核实 / 无法判定」 | publish 命令已退出 0（真失败会在发布那一步直接红），只是回查没在窗口内读到目标版本。**先别删 tag 重打**：`curl -s https://registry.npmjs.org/<包名>/<版本>` 直查，在就无需处理；确实不在才重跑（幂等）。回查用单版本小端点 + 随机 `?cb=`（详见 `scripts/release-publish-tag.mjs` 顶部注释），只有当权威文档**已刷新到本次发布之后**却仍没有该版本时才判红 |
+| 用户装 `@next` 拿到的是半年前的 rc，或 `npm view <包名> dist-tags` 里连 `next` 都没有 | **`next` 漂了**：稳定版只更新 `latest`，预发布才写 `next`，中间没人补就一直是老值（2026-11-05 实测 `dsh-tty` 停在 `0.22.0-rc.2`、`dsh-loglens` 干脆没有这个 tag，最少落后 15 个版本，而**没有任何东西会红**）。发布脚本收尾现在会逐包 `dist-tag add` 再核实（判据见 `scripts/lib/dist-tags.mjs`，单测 `scripts/test/dist-tags.test.ts`）；手工补：`npm dist-tag add <包名>@<版本> next --registry https://registry.npmjs.org` |
 | `ERR_PNPM_OUTDATED_LOCKFILE ... specifiers in the lockfile don't match` | lockfile 与 package.json 脱节：aggregate 晚于 `install --lockfile-only`，聚合层重钉的 specifier 没进 lockfile（v0.1.24）。按「bump → aggregate → install --lockfile-only」顺序重跑；已发包的修复直接追加 lockfile 提交、删 tag 重打（幂等） |
 | `403 ... Two-factor authentication or granular access token with bypass 2fa` | 缺动态码或 token 不是 bypass-2FA：换 bypass granular token |
 | `404 Not found - PUT <包名>` / `404 ... install from a tarball` | token 对该包无发布权（npm 故意 404 隐藏存在性）：检查 granular token 的 Packages and scopes 是否勾到该包、权限是否 Read and write |
@@ -241,3 +244,11 @@ GitHub Release 标记为 prerelease：
 - `next` dist-tag 不进用户的每日版本检查（检查只读 npm `latest`），正式用户无感。
 - 自测：`dsh plugin --profile <name> add @hyzyn/dsh-tty@next`，真实环境跑一天；
   稳定后去掉 `-rc.n` 发 latest。
+- **稳定版发完要把 `next` 也指过去**。稳定版只更新 `latest`，而 `next` 只在上一次预发布时被写过
+  ——不补这一步它会一直停在很久以前的 rc 上（2026-11-05 实测：`dsh-tty` 指着 `0.22.0-rc.2`、
+  `dsh-kit` 指着 `0.5.0-rc.1`、`dsh-loglens` 干脆没有这个 tag）。发布脚本的收尾现在会**逐包
+  同步再核实**（判据 `scripts/lib/dist-tags.mjs` 是纯函数，由 `scripts/test/dist-tags.test.ts`
+  钉住；不一致会让 workflow 红并打印逐条修法），手工补一条就是
+  `npm dist-tag add <包名>@<版本> next --registry https://registry.npmjs.org`。
+  **判据是「相等」不是「不落后」**：`next` 指向一个未来版本同样是错的（有人在仓库外发过包，
+  或上次发布只回滚了一半），而那类错用 semver 比较会静默通过。

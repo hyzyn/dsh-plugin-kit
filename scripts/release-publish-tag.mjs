@@ -20,6 +20,7 @@ import {
   verifyPublishedContent,
 } from './lib/published-content.mjs'
 import { judgeAfterWindow } from './release-verify.mjs'
+import { describeDistTagFix, judgeNextTag, NEXT_TAG } from './lib/dist-tags.mjs'
 
 function lastErrorLine(error) {
   const raw = String(error.stderr ?? error.message ?? error)
@@ -28,6 +29,74 @@ function lastErrorLine(error) {
 
 // ⚠️ 预检放在任何 publish 之前、整体跑完再决定：kit 排 targets 第一位，本仓的依赖方向保证
 // 「kit 漂了 → 这里先红」，不会出现「消费者发出去一半才发现 kit 是旧内容」。
+/**
+ * 把全部可发布包的 `next` dist-tag 指到**本仓版本**。
+ *
+ * 为什么是「全部 targets」而不是「这次发布的那些」：跳过（内容一致）的包同样会被漏——
+ * 2026-11-05 那次 `@hyzyn/dsh-kit-settings` 就是本轮没发、`next` 还停在 0.2.0-rc.1。
+ * 稳定版只会更新 `latest`，不补这一步 `next` 会一直停在很久以前的 rc 上，而没有任何东西会红。
+ *
+ * 失败即红：`npm dist-tag add` 是幂等的，重跑 workflow 就能补上，留一条绿会让漂移继续。
+ */
+function syncNextTags() {
+  console.log(`\n===== 同步 ${NEXT_TAG} dist-tag（必须指向本仓版本）=====`)
+  for (const [dir, name] of targets) {
+    const version = pkgVersion(dir)
+    try {
+      execSync(`npm dist-tag add ${name}@${version} ${NEXT_TAG}`, { stdio: ['ignore', 'pipe', 'inherit'] })
+      console.log(`✔ ${name}@${version} → ${NEXT_TAG}`)
+    } catch (error) {
+      console.error(`✘ ${name}@${version} 的 ${NEXT_TAG} 同步失败：${lastErrorLine(error)}`)
+      console.error(`   修法：${describeDistTagFix({ name, version })}`)
+      process.exit(1)
+    }
+  }
+}
+
+/**
+ * 核实 `next` 真的指过去了（带重试：registry 的 tag 端点和 manifest 一样有传播延迟）。
+ *
+ * 判据在 [`./lib/dist-tags.mjs`](./lib/dist-tags.mjs) 里，是纯函数、由单测钉住；这里只负责
+ * 「重试 + 判红」。**相等**而不是「不落后」——指向一个未来版本同样是错的。
+ */
+function verifyNextTags() {
+  console.log(`\n===== 核实 ${NEXT_TAG} dist-tag =====`)
+  const violations = []
+  for (const [dir, name] of targets) {
+    const version = pkgVersion(dir)
+    let current = []
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      let tags
+      try {
+        tags = fetchPackument(name)['dist-tags']
+      } catch {
+        tags = undefined
+      }
+      current = judgeNextTag({ name, version, tags })
+      if (current.length === 0) break
+      if (attempt < 6) execSync('sleep 5')
+    }
+    if (current.length === 0) {
+      console.log(`✔ ${name} 的 ${NEXT_TAG} 指向 ${version}`)
+    } else {
+      violations.push(...current)
+    }
+  }
+  if (violations.length > 0) {
+    console.error(`\n✘ ${String(violations.length)} 处 ${NEXT_TAG} dist-tag 与实际发布不一致：`)
+    for (const line of violations) console.error(`   · ${line}`)
+    console.error('   修法（逐条可粘）：')
+    for (const [dir, name] of targets) {
+      const version = pkgVersion(dir)
+      if (violations.some((line) => line.startsWith(`${name} `))) {
+        console.error(`     ${describeDistTagFix({ name, version })}`)
+      }
+    }
+    process.exit(1)
+  }
+  console.log(`✔ ${String(targets.length)} 个包的 ${NEXT_TAG} 都指向本仓版本`)
+}
+
 console.log('===== 预检：registry 上已存在的同版本内容必须与本仓一致 =====')
 let preflight
 try {
@@ -89,6 +158,9 @@ for (const { dir, name, version } of toPublish) {
 
 if (published.length === 0) {
   console.log('\n没有新版本需要发布（全部已在 registry）✔')
+  // 「本轮没发版」不等于「next 不用跟」——它正是漂移最长的那种情况（跳过 ≠ 不变）
+  syncNextTags()
+  verifyNextTags()
   process.exit(0)
 }
 
@@ -160,4 +232,6 @@ if (unconfirmed.length > 0) {
   console.warn(`\n::warning::以下包 publish 命令成功、但回查未能确认，需人工核实：${unconfirmed.join(', ')}`)
   console.warn('   （重跑 workflow 会自动跳过已发布的版本，是幂等的）')
 }
+syncNextTags()
+verifyNextTags()
 console.log(`\n全部完成 ✔（发布 ${verified + unconfirmed.length} 个包：${verified} 个经 registry 核实，${unconfirmed.length} 个待人工核实）`)

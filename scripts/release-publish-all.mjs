@@ -14,6 +14,7 @@
 import { execSync } from 'node:child_process'
 import { targets } from './publish-targets.mjs'
 import { fetchManifest } from './lib/registry.mjs'
+import { NEXT_TAG } from './lib/dist-tags.mjs'
 import {
   describeDrift,
   pkgVersion,
@@ -83,6 +84,23 @@ for (const { dir, name } of toPublish) {
     console.log(`✔ ${name} 已发布`)
   } catch {
     console.error(`✘ ${name} 发布失败，已停止（后续包未发布）`)
+    process.exit(1)
+  }
+}
+/*
+ * 稳定版只更新 `latest`，`next` 只在预发布时被写过——不补这一步它会一直停在很久以前的
+ * rc 上（2026-11-05 实测：`dsh-tty` 指着 `0.22.0-rc.2`、`dsh-loglens` 没有这个 tag）。
+ * CI 流（`release-publish-tag.mjs`）在收尾里同步 **并核实**；手动兜底这条路径只做同步，
+ * 核实用 `npm view <包名> dist-tags` 或下面那行命令自查。
+ */
+console.log(`\n===== 同步 ${NEXT_TAG} dist-tag =====`)
+for (const [dir, name] of targets) {
+  const version = pkgVersion(dir)
+  try {
+    execSync(`npm dist-tag add ${name}@${version} ${NEXT_TAG}`, { stdio: ['ignore', 'pipe', 'inherit'] })
+    console.log(`✔ ${name}@${version} → ${NEXT_TAG}`)
+  } catch {
+    console.error(`✘ ${name}@${version} 的 ${NEXT_TAG} 同步失败：npm dist-tag add ${name}@${version} ${NEXT_TAG} --registry https://registry.npmjs.org`)
     process.exit(1)
   }
 }
