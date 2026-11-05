@@ -392,10 +392,27 @@ describe('D106：ORIG 解析不许递归（桩目录 ≠ 用户的 ZDOTDIR）', 
     try {
       for (const name of ['.zshenv', '.zshrc'] as const) {
         const stub = readFileSync(join(stubDir, name), 'utf8')
-        // 只取兜底那两行（其余是钩子，跑起来要 tmux / 交互式）
-        const guard = stub.split('\n').filter((line) => line.includes('DSH_TTY_ORIG_ZDOTDIR')).join('\n')
-        expect(guard, `${name} 缺兜底行`).toContain('export DSH_TTY_ORIG_ZDOTDIR="$HOME"')
-        const out = execFileSync('/bin/sh', ['-c', `export DSH_TTY_ORIG_ZDOTDIR=${JSON.stringify(stubDir)}\n${guard}`], {
+        // 兜底那两行：① 解析 ORIG（纯 POSIX，可直接跑）；② source 用户文件（zsh 的 `source`）。
+        const guardLines = stub.split('\n').filter((line) => line.includes('DSH_TTY_ORIG_ZDOTDIR'))
+        const guard = guardLines.find((line) => line.includes('export DSH_TTY_ORIG_ZDOTDIR="$HOME"'))
+        expect(guard, `${name} 缺兜底行`).toBeDefined()
+        // 桩文件本体必须是 zsh 的正规写法（消费者是 zsh），这一句按字符串核对就够。
+        expect(guardLines.join('\n'), `${name} 兜底后要 source 用户文件而不是自己`).toContain(
+          `source "$DSH_TTY_ORIG_ZDOTDIR/${name}"`,
+        )
+        /*
+         * 只把**解析那一行**原样交给 `/bin/sh` 跑，再用 POSIX 的 `.` 去 source。
+         *
+         * 为什么不能整段丢给 `/bin/sh`：桩是给 zsh 的，`source` 是 zsh / bash 的内建，
+         * 而 Ubuntu 的 `/bin/sh` 是 dash（只有 `.`）——2026-11-05 的发布闸就是这么红的
+         * （macOS 的 `/bin/sh` 是 bash，本地全绿、CI 直接 `source: not found`）。这里要验的
+         * 是**判据**（ORIG 被拉回 `$HOME`、于是 source 到用户文件而不是桩自己），不是 zsh 关键字。
+         */
+        const out = execFileSync('/bin/sh', ['-c', [
+          `export DSH_TTY_ORIG_ZDOTDIR=${JSON.stringify(stubDir)}`,
+          guard,
+          `. "$DSH_TTY_ORIG_ZDOTDIR/${name}"`,
+        ].join('\n')], {
           env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home },
           encoding: 'utf8',
         })
