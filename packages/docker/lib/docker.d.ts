@@ -22,6 +22,32 @@ export declare function assertBin(value: unknown): string;
 export declare function assertImageRef(value: unknown, field: string): string;
 /** 校验一个 docker 网络 / 卷名（也是 inspect / rm 的引用）。 */
 export declare function assertName(value: unknown, field: string): string;
+/**
+ * 容器名过滤（`docker ps --filter name=<值>`）的校验。
+ *
+ * 与 `assertRef` 分开：那里是**引用**（要能在 argv 里寻址一个对象，宽松了就可能
+ * 被当成 flag），这里是**过滤词**（含空串 = 不过滤，交给调用方决定）。它同样进
+ * argv，所以仍拒绝空串以外的注入面（空白 / 换行 / 引号 / shell 元字符）。
+ *
+ * 为什么允许 `.` `_` `-`：compose 生成的容器名常是 `proj-web-1` / `proj_db_1`，
+ * 名字过滤的主要用途正是「在一台跑了几十个容器的机器上找出一个 compose 项目」。
+ */
+export declare function assertPsName(value: unknown): string | undefined;
+/** `docker exec` 精确参数数组的上限（与命令串的 8000 字符上限是两套口径）。 */
+export declare const EXEC_ARGV_MAX_ITEMS = 128;
+export declare const EXEC_ARGV_MAX_CHARS = 32768;
+/**
+ * 校验 `docker exec` 的**精确参数数组**（argv 模式）。
+ *
+ * 与 `command` 字符串模式的差别就是这里存在的理由：字符串交给容器内 `sh -c`，
+ * 空格、引号、空参数都要经过一层 shell 解析；argv 模式一个 token 一个参数，
+ * 宿主与容器都不做展开。代价是**不能再依赖 shell**（管道 / 变量要自己显式写
+ * `["sh", "-c", "..."]`），所以这是一条可选的第二条通道，不是替换。
+ *
+ * 逐项保留原样（不 trim）：空参数 `""` 是合法且**有意义**的（`printf '%s' ""`）。
+ * 只拒绝会让 docker CLI 无法安全传参的形状：非字符串、NUL、首项为空、总量过大。
+ */
+export declare function assertExecArgv(value: unknown): string[];
 /** 逐行 JSON 解析：兼容 `{{json .}}`（每行一个对象）与整体 JSON 数组。 */
 export declare function parseJsonLines(text: string): Record<string, unknown>[];
 /** `12.3MiB` / `1.2kB` / `0B` → 字节数（解析失败返回 null）。 */
@@ -33,6 +59,18 @@ export declare function parseIOPair(text: string): {
     rx: number | null;
     tx: number | null;
 };
+/**
+ * 把 docker 的原始 stderr 映射成一句**可执行的下一步**（没有命中返回 null）。
+ *
+ * 为什么不是「把所有失败都包一层」（D105 的口径）：agent 能做的下一步与它执行过
+ * 哪条命令无关，只与**失败类型**有关——daemon 没起、权限不足、CLI 不在 PATH、
+ * 容器名写错、端口冲突、超时，修法各自不同。此前这些都只回一句 docker 的英文原话，
+ * 模型只能原样重试；加上这一层之后，同一段原文后面直接跟「该去做什么」。
+ *
+ * 判据刻意保守：只认**docker / 我们自己的 SSH 层真的会打出来**的片段。猜测式的
+ * 匹配（比如任何包含 error 的行）会把真正的业务报错也改写成运维建议，那比不提示更糟。
+ */
+export declare function dockerErrorHint(text: string): string | null;
 /**
  * `--since` 的统一口径（D45）：时长（docker 的 Go duration 语法，允许复合如
  * `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
@@ -685,7 +723,13 @@ export declare class DockerApi {
      * 不抛错的路径（imageInspect 的 history，D104）复用同一句话，保持口径一致。
      */
     private truncationHint;
-    listContainers(all: boolean): Promise<ContainerSummary[]>;
+    /**
+     * 容器列表。`name` 是**服务端过滤**（`docker ps --filter name=`），不是本地筛：
+     * 本插件对列表做 limit/offset 分页，先取全量再在内存里筛的话，「第 2 页」会随
+     * 过滤词变化而变化，分页语义就与总数对不上了。docker 的 name 过滤是**子串**
+     * 匹配（不是精确匹配），对「在一台跑了几十个容器的机器上找 compose 项目」够用。
+     */
+    listContainers(all: boolean, name?: string): Promise<ContainerSummary[]>;
     inspect(ids: readonly string[]): Promise<ContainerDetail[]>;
     /**
      * 「需要关注」的容器（0.15.0）：先按摘要筛候选（不健康 / 重启中 / 僵死 /
@@ -913,6 +957,27 @@ export declare class DockerApi {
     /** 一次性 exec（无 TTY）：`docker exec <id> sh -c <command>`。 */
     exec(id: string, command: string, timeoutMs?: number): Promise<{
         id: string;
+        command: string;
+        code: number | null;
+        stdout: string;
+        stderr: string;
+        truncated: boolean;
+        durationMs: number;
+    }>;
+    /**
+     * 一次性 exec 的 **argv 模式**：`docker exec <id> <argv…>`，不经容器内 shell。
+     *
+     * 与上面 command 模式互补，不是替代：
+     *   - 字符串模式把整条命令交给容器内 `sh -c`，管道 / 变量 / 重定向都能用，代价是
+     *     空格与引号要再过一层 shell 解析（空参数、相邻引号、反斜杠都容易被改写）；
+     *   - argv 模式一个 token 一个参数，宿主与容器都不做展开，`["printf","%s","a b"]`
+     *     里的 `a b` 就是**一个**参数。需要 shell 语义时显式写 `["sh","-c","…"]`。
+     * 两条通道都受同一个 `allowExec` 静态闸与档位闸约束（工具层负责），这里只保证
+     * 参数形状合法、不会以字符串拼接的方式进入 argv。
+     */
+    execArgv(id: string, argv: unknown, timeoutMs?: number): Promise<{
+        id: string;
+        argv: string[];
         command: string;
         code: number | null;
         stdout: string;

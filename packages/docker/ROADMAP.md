@@ -131,6 +131,31 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 
 ## 已完成（落点 + 门槛）
 
+### ✅ agent 侧补三处缺口：错误下一步 / argv exec / name 过滤（2026-11-06 完成）
+
+**动机**：使用中反复遇到的三处不便：① 单条命令失败只回 docker 英文原话，模型只能原样重试；
+② `docker exec` 只有 `sh -c` 字符串通道，空参数 / 相邻引号 / 反斜杠会被容器内 shell 改写；
+③ `docker ps` 没有名字过滤，容器多时只能整页翻。
+
+**落点**
+
+- `src/docker.ts`：`dockerErrorHint()` 把 daemon / 权限 / CLI 缺失 / 容器不存在 / 镜像不存在 / 超时 /
+  端口冲突 / 名字冲突 / SSH 通道耗尽映射成下一步，由 `assertOk` 统一追加（20+ 个调用点一处不漏）；
+  **假阳性防线**：`Permission denied (publickey)` 不会被说成 docker 权限问题（有反例用例）。
+  `assertPsName` + `listContainers(all, name?)` 走服务端 `--filter name=`（过滤先于分页，翻页总数不漂）；
+  `assertExecArgv` / `execArgv()`（1–128 项、首项非空、总长 ≤ 32768、拒绝 NUL，不插 `sh -c`）。
+- `src/index.ts`：`docker_ps` 加 `name?`；`docker_exec` 加 `argv?` 与 `command` 二选一（审计行记 `argv=…`，
+  旧的 `sh -c` 路径原样保留）。
+- 文档：README 中英双语工具表（`docker_ps` / `docker_exec` 两行）。
+
+**门槛**：新增 `test/docker-cli-args.test.ts`（28 例：错误映射矩阵 / name 过滤 argv / argv 校验矩阵 /
+`sh -c` 旧路径回归）；同步 `tool-registration`、`tool-concurrency`、`tier-restrict`、`connect-local`、
+`scripts/route-smoke.mjs` 的工具名单。`route-smoke` 与全仓 `pnpm -r typecheck` / `pnpm build` /
+`pnpm test` / `pnpm aggregate` / 四道文档闸门全绿。
+
+**判别性已实测**：`assertOk` 不追加 hint → `docker-cli-args` 红；`execArgv` 退回 `['sh','-c',…]` →
+`docker-cli-args` 红。
+
 ### ✅ 诊断历史：把「一次诊断」变成「趋势判断」（2026-11-03 完成）
 
 **动机**：单次诊断只回答「现在怎么样」。**缓慢变坏**（内存一点点涨、重启越来越频繁、报错逐渐变多）

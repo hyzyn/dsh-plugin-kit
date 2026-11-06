@@ -2968,10 +2968,11 @@ const plugin = definePlugin<Config>({
         name: 'docker_ps',
         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
         isConcurrencySafe: () => true,
-        description: '列出容器（默认只列运行中的；all:true 含已停止）。**target 传 `*` = 一次列出所有目标**（跨主机，按目标分组返回，单个目标不可达不影响其他目标）。排障第一步。注意：`ports` 为空**不等于**「没暴露端口」——host 网络容器的端口就是宿主机端口、ps 里没有映射，这种情况会给 `net` 字段（如 `net:"host"`），别为此再逐个 docker_inspect。',
+        description: '列出容器（默认只列运行中的；all:true 含已停止）。**target 传 `*` = 一次列出所有目标**（跨主机，按目标分组返回，单个目标不可达不影响其他目标）。`name` 是服务端子串过滤（`docker ps --filter name=`），适合一台机器上容器很多时找 compose 项目。排障第一步。注意：`ports` 为空**不等于**「没暴露端口」——host 网络容器的端口就是宿主机端口、ps 里没有映射，这种情况会给 `net` 字段（如 `net:"host"`），别为此再逐个 docker_inspect。',
         parameters: {
           target: { type: 'string', description: '目标名；传 `*` 或省略（仅一个目标时）表示当前目标/全部目标（docker_targets 列出）' },
           all: { type: 'boolean', description: 'true 时包含已停止容器（默认 false）' },
+          name: { type: 'string', description: '按容器名子串过滤（可选；docker 的 name 过滤是子串匹配，不是精确匹配）' },
           limit: pageParams.limit,
           offset: pageParams.offset,
         },
@@ -3058,8 +3059,13 @@ const plugin = definePlugin<Config>({
           truncated?: boolean
           groups?: Array<{ target: string; label: string; ok: boolean; error?: string; containers?: ToolPsRow[]; total?: number; truncated?: boolean }>
         }> {
-          const input = (args ?? {}) as { target?: unknown; all?: unknown; limit?: unknown; offset?: unknown }
+          const input = (args ?? {}) as { target?: unknown; all?: unknown; name?: unknown; limit?: unknown; offset?: unknown }
           const window = pageWindow(input)
+          // name 先做类型判定（非字符串直接报错，别把对象塞进 argv；空串 = 不过滤）
+          if (input.name !== undefined && input.name !== null && typeof input.name !== 'string') {
+            throw new Error('name 必须是字符串（按容器名子串过滤）')
+          }
+          const filter = typeof input.name === 'string' ? input.name : undefined
           const isAll = typeof input.target === 'string' && input.target.trim() === '*'
           const toRow = (row: ContainerSummary): ToolPsRow => ({
             // 短 ID（D47）：docker_attention 已是 shortId，同一字段跨工具宽度要一致
@@ -3079,7 +3085,7 @@ const plugin = definePlugin<Config>({
           })
           if (isAll || (input.target === undefined && targetsNow().length > 1)) {
             const names = targetsFor('*')
-            const collected = await aggregateAcrossTargets(names, (targetApi) => targetApi.listContainers(input.all === true))
+            const collected = await aggregateAcrossTargets(names, (targetApi) => targetApi.listContainers(input.all === true, filter))
             // 跨目标分页在**组内**切（T1）：组数与「哪些目标不可达」都保持不变，
             // 每组带自己的 total / truncated —— 否则一个目标 150 个容器会把别组挤没
             return {
@@ -3103,7 +3109,7 @@ const plugin = definePlugin<Config>({
           if (picked.name === undefined) throw new Error(picked.error ?? '无效的 target')
           const { api } = apiFor(picked.name)
           if (api === undefined) throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道')
-          const containers = await api.listContainers(input.all === true)
+          const containers = await api.listContainers(input.all === true, filter)
           const paged = paginate(containers, window)
           return { target: picked.name, containers: paged.rows.map(toRow), total: paged.total, truncated: paged.truncated }
         },
@@ -4478,11 +4484,12 @@ const plugin = definePlugin<Config>({
       if (live.allowExec) {
         add('docker_exec', defineTool({
           name: 'docker_exec',
-          description: '在容器内执行一条一次性命令（docker exec，无 TTY）：如 `ls -la /app`、`cat /etc/nginx/nginx.conf`、`env`。仅当用户在设置里打开「允许 exec」时可用；不要在容器里做破坏性操作，交互式排障请让用户到终端面板执行 `docker exec -it <容器> sh`。',
+          description: '在容器内执行一条一次性命令（docker exec，无 TTY）：如 `ls -la /app`、`cat /etc/nginx/nginx.conf`、`env`。`command` 经容器内 `sh -c` 执行（可用管道 / 变量）；需要**精确参数**时改用 `argv`（如 ["printf","%s","a b"]，宿主与容器都不做 shell 展开，能保留空格、引号与空参数）。两者必须且只能提供一个。仅当用户在设置里打开「允许 exec」时可用；不要在容器里做破坏性操作，交互式排障请让用户到终端面板执行 `docker exec -it <容器> sh`。',
           parameters: {
             target: targetParam,
             id: { type: 'string', required: true, description: '容器名或 ID' },
-            command: { type: 'string', required: true, description: '要执行的命令（经容器内 sh -c 执行）' },
+            command: { type: 'string', description: '要执行的命令（经容器内 sh -c 执行）；与 argv 二选一' },
+            argv: { type: 'array', items: { type: 'string' }, description: '精确参数数组（不做 shell 展开），如 ["sh","-c","cat /etc/hosts"]；与 command 二选一，最多 128 项' },
             timeoutSec: { type: 'number', description: '超时秒数（1~120，默认取插件配置 execTimeoutSec；越界值会被静默夹紧）' },
           },
           output: {
@@ -4509,17 +4516,39 @@ const plugin = definePlugin<Config>({
           },
           async execute(args: unknown): Promise<ToolExecRow> {
             if (!live.allowExec) throw new Error(execOffMessage())
-            const input = (args ?? {}) as { target?: unknown; id?: unknown; command?: unknown; timeoutSec?: unknown }
+            const input = (args ?? {}) as { target?: unknown; id?: unknown; command?: unknown; argv?: unknown; timeoutSec?: unknown }
             const picked = pickTarget(input.target)
             if (picked.name === undefined) throw new Error(picked.error ?? '无效的 target')
             if (typeof input.id !== 'string') throw new Error('id 必填')
-            if (typeof input.command !== 'string' || input.command.trim() === '') throw new Error('command 必填')
+            /*
+             * 两条通道**必须且只能**给一个：
+             *   - command：容器内 `sh -c`，管道 / 变量 / 重定向都能用；
+             *   - argv：一个 token 一个参数，宿主与容器都不展开，空参数与相邻引号原样到达。
+             * 同时给两个时无法猜测意图（合并会改变语义），两个都不给则没有命令可跑。
+             */
+            const givenCommand = typeof input.command === 'string' && input.command.trim() !== ''
+            const givenArgv = input.argv !== undefined && input.argv !== null
+            if (givenCommand && givenArgv) {
+              throw new Error('command 与 argv 只能提供一个：要精确参数请改用 argv（如 ["sh","-c","cat /etc/hosts"]）；简单命令用 command')
+            }
+            if (!givenCommand && !givenArgv) {
+              throw new Error('command 或 argv 必须提供一个：简单命令用 command；需要精确保留空格 / 引号 / 空参数时用 argv')
+            }
             const id = input.id
-            const command = input.command
             const timeoutSec = typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) ? input.timeoutSec : live.execTimeoutSec
             const { api } = apiFor(picked.name)
             if (api === undefined) throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道')
-            const result = await audited({ capability: 'allowExec', source: 'tool', action: 'exec', target: picked.name, ref: id }, () => api.exec(id, command, timeoutSec * 1000), (row) => `code=${String(row.code)} cmd=${row.command}`)
+            const result = givenArgv
+              ? await audited(
+                { capability: 'allowExec', source: 'tool', action: 'exec', target: picked.name, ref: id },
+                () => api.execArgv(id, input.argv, timeoutSec * 1000),
+                (row) => `code=${String(row.code)} argv=${JSON.stringify(row.argv)}`,
+              )
+              : await audited(
+                { capability: 'allowExec', source: 'tool', action: 'exec', target: picked.name, ref: id },
+                () => api.exec(id, input.command as string, timeoutSec * 1000),
+                (row) => `code=${String(row.code)} cmd=${row.command}`,
+              )
             return {
               target: picked.name,
               id: result.id,

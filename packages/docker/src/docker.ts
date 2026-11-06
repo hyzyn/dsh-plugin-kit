@@ -92,6 +92,56 @@ export function assertName(value: unknown, field: string): string {
   return trimmed
 }
 
+/**
+ * 容器名过滤（`docker ps --filter name=<值>`）的校验。
+ *
+ * 与 `assertRef` 分开：那里是**引用**（要能在 argv 里寻址一个对象，宽松了就可能
+ * 被当成 flag），这里是**过滤词**（含空串 = 不过滤，交给调用方决定）。它同样进
+ * argv，所以仍拒绝空串以外的注入面（空白 / 换行 / 引号 / shell 元字符）。
+ *
+ * 为什么允许 `.` `_` `-`：compose 生成的容器名常是 `proj-web-1` / `proj_db_1`，
+ * 名字过滤的主要用途正是「在一台跑了几十个容器的机器上找出一个 compose 项目」。
+ */
+export function assertPsName(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new Error('name 必须是字符串（按容器名子串过滤）')
+  const trimmed = value.trim()
+  if (trimmed === '') return undefined
+  if (trimmed.length > 128) throw new Error('name 过长（≤128 字符）')
+  if (!NAME_RE.test(trimmed)) throw new Error(`name 含非法字符（仅允许字母、数字与 _ . -）：${trimmed}`)
+  return trimmed
+}
+
+/** `docker exec` 精确参数数组的上限（与命令串的 8000 字符上限是两套口径）。 */
+export const EXEC_ARGV_MAX_ITEMS = 128
+export const EXEC_ARGV_MAX_CHARS = 32_768
+
+/**
+ * 校验 `docker exec` 的**精确参数数组**（argv 模式）。
+ *
+ * 与 `command` 字符串模式的差别就是这里存在的理由：字符串交给容器内 `sh -c`，
+ * 空格、引号、空参数都要经过一层 shell 解析；argv 模式一个 token 一个参数，
+ * 宿主与容器都不做展开。代价是**不能再依赖 shell**（管道 / 变量要自己显式写
+ * `["sh", "-c", "..."]`），所以这是一条可选的第二条通道，不是替换。
+ *
+ * 逐项保留原样（不 trim）：空参数 `""` 是合法且**有意义**的（`printf '%s' ""`）。
+ * 只拒绝会让 docker CLI 无法安全传参的形状：非字符串、NUL、首项为空、总量过大。
+ */
+export function assertExecArgv(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error('argv 必须是字符串数组')
+  if (value.length === 0) throw new Error('argv 不能为空（至少一个参数）')
+  if (value.length > EXEC_ARGV_MAX_ITEMS) throw new Error(`argv 最多 ${String(EXEC_ARGV_MAX_ITEMS)} 项（当前 ${String(value.length)}）`)
+  let total = 0
+  for (const item of value) {
+    if (typeof item !== 'string') throw new Error('argv 的每一项都必须是字符串')
+    if (item.includes('\0')) throw new Error('argv 不能包含 NUL 字符')
+    total += item.length
+  }
+  if (total > EXEC_ARGV_MAX_CHARS) throw new Error(`argv 总长超过 ${String(EXEC_ARGV_MAX_CHARS)} 字符（当前 ${String(total)}）`)
+  if ((value[0] ?? '').trim() === '') throw new Error('argv 的第一项不能为空（它是容器内要执行的命令）')
+  return [...value]
+}
+
 /** 逐行 JSON 解析：兼容 `{{json .}}`（每行一个对象）与整体 JSON 数组。 */
 export function parseJsonLines(text: string): Record<string, unknown>[] {
   const trimmed = text.trim()
@@ -172,6 +222,48 @@ export function parseIOPair(text: string): { rx: number | null; tx: number | nul
 /** docker 失败时的单行摘要：优先 stderr，其次 stdout，最后退出码。 */
 function firstLine(stderr: string, stdout: string, code: number | null): string {
   return (stderr.trim() || stdout.trim() || `退出码 ${String(code)}`).split('\n')[0] ?? `退出码 ${String(code)}`
+}
+
+/**
+ * 把 docker 的原始 stderr 映射成一句**可执行的下一步**（没有命中返回 null）。
+ *
+ * 为什么不是「把所有失败都包一层」（D105 的口径）：agent 能做的下一步与它执行过
+ * 哪条命令无关，只与**失败类型**有关——daemon 没起、权限不足、CLI 不在 PATH、
+ * 容器名写错、端口冲突、超时，修法各自不同。此前这些都只回一句 docker 的英文原话，
+ * 模型只能原样重试；加上这一层之后，同一段原文后面直接跟「该去做什么」。
+ *
+ * 判据刻意保守：只认**docker / 我们自己的 SSH 层真的会打出来**的片段。猜测式的
+ * 匹配（比如任何包含 error 的行）会把真正的业务报错也改写成运维建议，那比不提示更糟。
+ */
+export function dockerErrorHint(text: string): string | null {
+  if (/Cannot connect to the Docker daemon|Is the docker daemon running|docker\.sock: connect|open .*docker\.sock/i.test(text)) {
+    return 'daemon 不可达：启动 Docker Desktop / dockerd（Windows 需 WSL2 或 Hyper-V 后端），再用 `docker_targets`（probe:true）复查'
+  }
+  if (/permission denied while trying to connect|Got permission denied|permission denied.*docker\.sock/i.test(text)) {
+    return '权限不足：把当前用户加入 docker 组并重新登录（SSH 目标要求免 sudo 的 docker）；本机仍失败时确认 dockerBin 指向的 CLI 有执行权限'
+  }
+  if (/command not found|not recognized as the name|ENOENT|no such file or directory/i.test(text)) {
+    return '找不到 docker CLI：PATH 里没有它，把插件配置的 dockerBin 填成绝对路径后重试'
+  }
+  if (/[Nn]o such container/i.test(text)) {
+    return '容器不存在：用 `docker_ps`（all:true 含已停止）确认真实容器名；SSH 目标还要确认 target 选的是那台主机'
+  }
+  if (/[Nn]o such image/i.test(text)) {
+    return '镜像不存在：本地没有就先用 `docker_image_pull` 拉取，`docker_images` 可确认已有哪些'
+  }
+  if (/context deadline exceeded|i\/o timeout|timed out|timeout/i.test(text)) {
+    return '命令超时：目标可能繁忙或网络慢；确认目标与容器状态，必要时调大 timeoutSec（或插件配置里的 execTimeoutSec）后重试'
+  }
+  if (/port is already allocated|address already in use/i.test(text)) {
+    return '端口已被占用：用 `docker_ps` 找到占用该端口的容器，或改用其它端口'
+  }
+  if (/Conflict\. The container name/i.test(text)) {
+    return '容器名冲突：已有同名容器，先用 `docker_ps` 找到它并处理，或改用其它名字'
+  }
+  if (/no more sessions|Channel open failure|open failed/i.test(text)) {
+    return 'SSH 通道额度用尽：先在面板折叠长流（把通道还回去）再重试；根治办法是调大远端 sshd 的 MaxSessions'
+  }
+  return null
 }
 
 /**
@@ -1724,8 +1816,20 @@ export class DockerApi {
     return `因超过上限被截断（目标 ${this.runner.label}，当前上限 ${limitKb} KB）：结果不完整。请${suggest}后重试`
   }
 
-  async listContainers(all: boolean): Promise<ContainerSummary[]> {
-    const argv = [this.bin, 'ps', ...(all ? ['-a'] : []), '--no-trunc', '--format', '{{json .}}']
+  /**
+   * 容器列表。`name` 是**服务端过滤**（`docker ps --filter name=`），不是本地筛：
+   * 本插件对列表做 limit/offset 分页，先取全量再在内存里筛的话，「第 2 页」会随
+   * 过滤词变化而变化，分页语义就与总数对不上了。docker 的 name 过滤是**子串**
+   * 匹配（不是精确匹配），对「在一台跑了几十个容器的机器上找 compose 项目」够用。
+   */
+  async listContainers(all: boolean, name?: string): Promise<ContainerSummary[]> {
+    const filter = assertPsName(name)
+    const argv = [
+      this.bin, 'ps',
+      ...(all ? ['-a'] : []),
+      ...(filter === undefined ? [] : ['--filter', `name=${filter}`]),
+      '--no-trunc', '--format', '{{json .}}',
+    ]
     const result = await this.runner.run(argv, { timeoutMs: this.limits.timeoutMs, maxBytes: this.limits.maxBytes })
     this.assertComplete(result, '列出容器', '改传 all=false（默认只看运行中的容器）')
     return parsePsJson(result.stdout)
@@ -2472,6 +2576,38 @@ export class DockerApi {
     }
   }
 
+  /**
+   * 一次性 exec 的 **argv 模式**：`docker exec <id> <argv…>`，不经容器内 shell。
+   *
+   * 与上面 command 模式互补，不是替代：
+   *   - 字符串模式把整条命令交给容器内 `sh -c`，管道 / 变量 / 重定向都能用，代价是
+   *     空格与引号要再过一层 shell 解析（空参数、相邻引号、反斜杠都容易被改写）；
+   *   - argv 模式一个 token 一个参数，宿主与容器都不做展开，`["printf","%s","a b"]`
+   *     里的 `a b` 就是**一个**参数。需要 shell 语义时显式写 `["sh","-c","…"]`。
+   * 两条通道都受同一个 `allowExec` 静态闸与档位闸约束（工具层负责），这里只保证
+   * 参数形状合法、不会以字符串拼接的方式进入 argv。
+   */
+  async execArgv(id: string, argv: unknown, timeoutMs?: number): Promise<{ id: string; argv: string[]; command: string; code: number | null; stdout: string; stderr: string; truncated: boolean; durationMs: number }> {
+    const safe = assertRef(id, 'container')
+    const safeArgv = assertExecArgv(argv)
+    const result = await this.runner.run([this.bin, 'exec', safe, ...safeArgv], {
+      timeoutMs: Math.min(Math.max(timeoutMs ?? 30_000, 1_000), 120_000),
+      maxBytes: this.limits.maxBytes,
+    })
+    if (result.timedOut) throw new Error(`exec 超时（${String(Math.round(result.durationMs / 1000))}s）：${safe}`)
+    return {
+      id: safe,
+      argv: safeArgv,
+      // 仅用于审计行与错误文案：argv 的『可读形态』，**不回传成可再执行的命令串**。
+      command: safeArgv.join(' '),
+      code: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      truncated: result.truncated,
+      durationMs: result.durationMs,
+    }
+  }
+
   /* ---------------------------------------------------------------- *
    * 诊断（批一）：进程快照 + 「为什么不行」的结构化结论
    * ---------------------------------------------------------------- */
@@ -2598,7 +2734,16 @@ export class DockerApi {
 
   private assertOk(result: ExecResult, what: string): void {
     if (result.code === 0) return
-    throw new Error(`${what}失败（${this.runner.label}）：${firstLine(result.stderr, result.stdout, result.code)}`)
+    /*
+     * 原文照旧放第一行（用户搜得到的还是 docker 那句话），下一行才是我们给的下一步。
+     * 分开看 stderr / stdout：docker 的错误几乎都在 stderr，但个别版本（例如
+     * `docker context` 配错时的提示）会走 stdout。
+     */
+    const hint = dockerErrorHint(result.stderr) ?? dockerErrorHint(result.stdout)
+    throw new Error(
+      `${what}失败（${this.runner.label}）：${firstLine(result.stderr, result.stdout, result.code)}`
+      + (hint === null ? '' : `\n下一步：${hint}`),
+    )
   }
 }
 
