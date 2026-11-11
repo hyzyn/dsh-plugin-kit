@@ -112,11 +112,12 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 系统要求
 
-- 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配十三档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
-  `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`、`0.2.2-alpha.3` 与 `0.2.2-rc.1`**；
-  `0.1.6-alpha.2` 及更早不再支持（最新八档都是显式声明，但**不都是零差异**：`0.2.2-alpha.3` 移除了一个
+- 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配十四档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
+  `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`、`0.2.2-alpha.3`、`0.2.2-rc.1` 与 `0.2.2-rc.2`**；
+  `0.1.6-alpha.2` 及更早不再支持（最新九档都是显式声明，但**不都是零差异**：`0.2.2-alpha.3` 移除了一个
   主题令牌，rss / search 的侧栏 hover 已随档适配；`0.2.1-alpha.5` 带着判定器、`engines.dsh`、凭据与
-  macOS picker 的真实行为变化；其余六档对宿主零差异——本轮新增的 `0.2.2-rc.1` 逐文件比对
+  macOS picker 的真实行为变化；`0.2.2-rc.2` 的宿主 API 面零改动，但主题令牌表扩了 36 个
+  （414 → 450，只增不删），快照已随档重建；其余六档对宿主零差异——`0.2.2-rc.1` 逐文件比对
   只有 4 个客户端的版本串变了。逐条证据见
   [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs) 头部的 cohort 说明）。
 - 兼容性由每个可安装插件在 `peerDependencies` 里声明的 `@deepseek-ai/dsh` 范围保证，DSH 在**安装前**

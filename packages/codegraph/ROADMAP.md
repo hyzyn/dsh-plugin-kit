@@ -315,7 +315,7 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
   引起的**（HEAD 版同样失败）：隔离宿主没有 API key → `MISSING_CREDENTIAL`（比失败早 15ms）→ agent 被
   回收，connection 在 pending 中途被 dispose。塞一个占位 `DEEPSEEK_API_KEY` 后挂载即成功。
 
-### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.2-rc.1）
+### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.2-rc.2）
 
 > 从 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli) 搬入（2026-10-23）：README 只留「支持哪些档 + 为什么这么声明」，
 > 逐轮实测的落点 / 门槛 / 「未跑」清单归这里。原文保留，只把「见上条」补成明确指向。
@@ -348,6 +348,52 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
   - **`0.2.2-rc.1`（第十三档基线，2026-11-05 实测）**：**纯显式声明、零差异**（`pnpm -r build` 之后 `lib/` 与 `client.js` 产物零 diff）。`0.2.2-rc.1` 本来就被 `^0.2.2-alpha.3` 覆盖（同一个 `0.2.2` 版本元组，预发布之间不比大小），官方判定器实测放行。逐文件比对（alpha.3 装一份完整依赖树 + 本机 rc.1，各 331 / 330 个宿主包逐个 `lib/`）：**有差异的只有 4 个包、且差异只有版本串**——`dsh-client-modules`（commit 哈希）与 `dsh-client-ui-settings-account` / `-settings-general` / `-sidebar`（`0.2.2-alpha.3` → `0.2.2-rc.1`，各 2 行）；其余 **327 个逐字节相同**，含本仓 import 的全部 26 个宿主包、`dsh` CLI 自己的 `lib/` 与 `dsh-cordis-client-runner/lib/client.js`（435100 字节逐字节相同，槽目录字符串面 99 → 99、0 增 0 删 0 改名，本仓注册的槽全在）。`@deepseek-ai/dsh` 的依赖集合 **90 → 90（0 增 0 删）**，宿主包集合不变；运行时 `cordis` 4.0.6-alpha.2 → **4.1.0**、`schemastery` 3.18.6-alpha.2 → **3.19.0**、`cosmokit` 1.8.7-alpha.2 → 1.9.0、`cordis-plugin-loader` 1.0.7-alpha.2 → 1.1.0——这四个的 `lib/` 也**逐字节相同**（预发布转正），`engines.node` 仍是 `>=24.9.0`。证据：① `node scripts/check-dsh-peers.mjs --app-boot <rc.1 的 dsh-app-boot>` —— **十三档 × 14 条目全部放行**（判定器自报运行时 `0.2.2-rc.1`）。② **真宿主加载**（隔离 `DSH_HOME`、node24 的 rc.1）：从自带 `web` 模板新建 profile、`dsh plugin add link:<11 个可安装包>` **无需任何豁免、无 `incompatible-version`**；启动后 **11/11 个可安装包全部加载（10 行 `mounted` + `dsh-tty` 的 `agent tools registered`）、0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**，`GET /` **200（42208 B）**、`GET /api/dsh-docker/targets` **200**，且 `tty_books` 出现在 `dsh-tty` 注册的工具清单里（D104 的新工具在 rc.1 上可见）。③ 主题令牌快照用 rc.1 宿主重新生成：**414 个令牌与快照逐字一致**（只有 `dshVersion` / `generatedAt` 两个元数据位变化）。④ **全面测试（2026-11-05，发版前）**：`pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox --dsh <rc.1>` **23/23 PASS**（18 条 HTTP + 5 条真浏览器）；`verify-client-ui --mode full` **17 PASS / 1 WARN / 0 FAIL**、`verify-rss-opml` **9/9**、`verify-mcp-http` **7 PASS / 0 FAIL**、`verify-mcp-tools` **7 PASS / 1 WARN / 0 FAIL**、`verify-codegraph-host-contract` **42/42**、`verify-issue-13-14 --from test` **15 PASS / 2 WARN / 0 FAIL**；五个进程内真机脚本（kit `tier-smoke` **11/11**、codegraph `agent-scope` **10/10** / `agent-integration` **9/9** / `cg69-real-cordis` **3/3**、mcp `on-demand` **10/10**）也全绿。两条 WARN 都是环境或覆盖缺口（沙箱 `posix_openpt` 被拒、模板 profile 没装 loglens），不是回归。
     - ⚠️ **补正：这一轮才发现「零差异」只对宿主**包**成立，对宿主的**使用面**不成立。** 五个进程内脚本从 0.2.2 线起在真宿主上就是红的，当时被当成「环境漂移」记下没再追（2026-11-04 的记录里就写着 `$.mode expected nullable but got native`）。逐条查清后是三处宿主 API 变化：① `dsh-tools` 的 `ToolRuntime` 配置项 `mode` 被删成 `z.never()`，要原生执行得**单独 mount** `@deepseek-ai/dsh-tool-executor-native`；② `tools.execute()` 从「单条调用」改成**批**（`{ calls, agent, signal }` → `{ results, additionalContexts, concluded }`，`calls[].arguments` 是模型产物的**原始 JSON 字符串**）；③ `AgentRegistry` 新增 `static inject = ["sessionProjections"]`，不提供这个服务 `agents` 整个不发布。
       连带修掉的四处夹具缺陷（都不是产品行为）：`tier-smoke` 的「workspace-write 不裁」判据自相矛盾（负向断言里仍要求 exec 类不可见，改完只断言工具面数量）；`verify-client-ui` / `verify-rss-opml` 按**第一代**「点设置」入口找控件（0.2.1 起设置搬进账号菜单），且首启弹窗这一代只有「添加 API Key / 登录」两个动作 + 右上角 ✕（`aria-label=关闭`），按旧文案「继续 / 稍后配置」永远找不到；`verify-issue-13-14` 的 13E 段对着已经 `stopHost` 掉的主宿主发请求（`FATAL: fetch failed`），改成自起一个。**判据**：真机脚本红在「宿主 API 变了」与「夹具假设过期」之间必须先分诊——这次两条都占了。
+
+  - **`0.2.2-rc.2`（第十四档基线，2026-11-11 实测）**：**显式声明，但不是零差异**。`0.2.2-rc.2` 本来就被
+    `^0.2.2-rc.1` 覆盖（`>=0.2.2-rc.1 <0.3.0-0`，plain 与 `includePrerelease` 下 `semver.satisfies` 都为真），
+    所以加档不改任何插件运行代码。**取证口径要特别说明**：这一档发布时 **npm 上还没有 `0.2.2-rc.2`**
+    （`latest` 与 `next` 都仍是 `0.2.2-rc.1`，GitHub release 也没有附件），逐字节比对与真机验收都无法靠
+    「装两份 npm 包」完成，于是改为**从 tag 源码自建宿主**：`git checkout dsh-v0.2.2-rc.2` →
+    `pnpm install --frozen-lockfile`（pnpm 11.28.5，经 `COREPACK_HOME` 重定向）→ `pnpm build:lib` +
+    `pnpm build:web`，再用 `--app-boot` / `--store` / `--dsh` 三个入口把自建产物喂给本仓脚本。
+    证据：① **宿主 API 面逐处取证**（源码级 diff，两 tag 线性、rc.1 是 rc.2 的祖先）：判定器
+    `packages/boot/app-boot/src/plugin-compatibility.ts`、`dsh-tools` 的 `src/schema.ts`（`defineTool`
+    签名与 `DefineToolOptions`）、`dsh-host-webserver` 的整个 `src/` —— **三处 diff 均为空**；
+    `defineTool` 仍是 `defineTool<const S, const O>(options): ToolDefinition`，本仓 48 个调用点零适配；
+    工具错误分类是**纯增量**（新增 `ToolContextUnavailableError`、审批拒绝的 `ApprovalError` 三元码
+    `APPROVAL_REJECTED` / `APPROVAL_CANCELLED` / `APPROVAL_UNAVAILABLE`、取消后的 `AbortError` 归类；
+    `errorInfo()` 与 `toolErrorResult()` 的判据一字未动，旧 `throw new Error` 照旧被接受），本仓 107 处
+    `throw new Error`、0 处自定义错误类、0 处解析宿主错误分类 ⇒ 行为不变。② **「浮层定位改接口」不命中**：
+    上游移除的是 `@deepseek-ai/dsh-client-ui-primitives` 的 `useAnchoredPosition` / `AnchoredPositionOptions`
+    与 `Menu.getAnchorRect`（改 `anchorRef` / `anchorPoint` + CSS Anchor Positioning）；本仓 4 个客户端
+    bundle 的 `require()` 全量只有 react 三兄弟、零宿主包 import，`useAnchoredPosition` / `getAnchorRect` /
+    `anchor-name` / `position-anchor` / `anchorPoint` 在 `client-src` **零命中**（15 处浮层全部自绘定位：
+    tty `placePopoverAt`、docker `placeFloating`、loglens `panelPlacement` 三个共用算法 + 12 处就地坐标）。
+    ③ **主题令牌 414 → 450**（+36 / 0 删除 / 0 改名；新增的是 `alias-card-*`、`alias-chart-*`、
+    `alias-hovercard-bg`、`alias-border-selected` 这类通知/卡片/图表色板），本仓在用的 **45 个 `--dsw-*`
+    （587 次引用）全部存活**；快照用 rc.2 宿主重新生成，`--check` 与之逐字一致。⚠️ 这里纠一个易错判据：
+    `--check` 是 **`missing` 与 `added` 双向差集都必须为空**才 `exit 0`（`scripts/client-theme-tokens.mjs`
+    的 `diffThemeTokens`），**不是子集校验**——不重建快照就会因为 36 个 `added` 而红。
+    ④ **真宿主加载**（隔离 `DSH_HOME`，自建 rc.2 宿主）：`dsh plugin add link:<12 个包>` **无需任何豁免、
+    无 `incompatible-version`**；启动后 **12 个包全部加载（10 行 `mounted` + `dsh-tty` / `dsh-docker`
+    各一行 `agent tools registered`）、0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**；
+    `dsh web: http://127.0.0.1:3789/?token=…` 起来后根页面 **200（43270 B）**、
+    `GET /api/dsh-docker/targets` **200**、`GET /api/dsh-tty/config` **200**。
+    ⑤ **自动化验收**：`live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox --dsh <自建宿主>`
+    **23/23 PASS**（18 条 HTTP：授权阶梯 A1–A7b / B1–B6；5 条真浏览器：C1 页面真渲染、C2 本仓 bundle 真加载、
+    C3 无未捕获异常、C4 子请求无 4xx/5xx、C5 控制台无插件 error）。⑥ 官方判定器（`getDshRuntimeVersion()`
+    自报 `0.2.2-rc.2`）**十四档 × 14 条目全部放行**。
+    - ⚠️ **这一档最该带走的不是「零差异」，而是一条会改变验收方式的宿主变更**：rc.2 起可选插件客户端
+      bundle 加载失败**不再中止宿主启动**——`packages/client/web/src/boot-client.ts` 新增
+      `requiredClientEntryNames` 白名单（只含 7 个内置包），白名单外的 bundle 失活只打一次 `console.warn`，
+      应用照常挂载；同时「已启用但未加载」在插件管理里显示为「未运行」。后果是**「页面能打开」不再能
+      证明插件加载了**：以后排查「插件没出现」要先看控制台与 `error` / `entryId`，别从「宿主起来了」倒推。
+      本轮的 `live-smoke --render` C2/C3/C5 三条正好是这条变更的护栏，已确认本次未踩。
+    - **未跑**：`verify-client-ui` / `verify-rss-opml` / `verify-mcp-http` / `verify-mcp-tools` /
+      `verify-codegraph-host-contract` / `verify-issue-13-14` 与五个进程内真机脚本（`tier-smoke`、
+      `agent-scope`、`agent-integration`、`cg69-real-cordis`、mcp `on-demand`）——本轮改动只涉及兼容性
+      声明、主题令牌快照与文档，未动任何插件运行代码；但按第十三档「零差异只对包成立、对使用面不成立」
+      的教训，这五条**必须在发版前补跑**，不能沿用旧记录。
 
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 

@@ -255,8 +255,31 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    执行得单独 mount `@deepseek-ai/dsh-tool-executor-native`）、`tools.execute()` 改成**批** API、
  *    `AgentRegistry` 新增 `static inject = ["sessionProjections"]`。五个进程内真机脚本与两处
  *    浏览器夹具因此红的红、瞎的瞎，已在本轮一并修好；判据与清单见 ROADMAP 第十三档条目。
+ *  - **0.2.2-rc.2（第十四档基线，2026-11-11 实测）**：**显式声明，但不是零差异**——`0.2.2-rc.2`
+ *    本来就被 `^0.2.2-rc.1` 覆盖（同一个 `0.2.2` 版本元组，预发布之间不比大小；`semver.satisfies`
+ *    在 plain 与 `includePrerelease` 下都为真），官方判定器实测放行。**宿主 API 面一处未改**：
+ *    `dsh-app-boot` 的 `src/plugin-compatibility.ts`、`dsh-tools` 的 `src/schema.ts`（`defineTool`）、
+ *    `dsh-host-webserver` 的整个 `src/` 在两档之间 **diff 为空**；`@deepseek-ai/dsh` 伞包在本仓 `src`
+ *    里零导入，客户端半体也只 import react 三兄弟。所以 release note 里两句吓人的话都打不到本仓：
+ *    「浮层定位要适配新接口」——`useAnchoredPosition` / `getAnchorRect` 在 `client-src` 零命中
+ *    （15 处浮层全部自绘定位）；「工具失败的错误类型与代码变了」——那是**纯增量**（新增
+ *    `ToolContextUnavailableError` 与审批拒绝的 `ApprovalError` 三元码，`errorInfo()` 判据一字未动，
+ *    本仓 107 处 `throw new Error` 照旧被接受，只是不带 `info`）。真正变的是**主题令牌 414 → 450
+ *    （+36 / 0 删除 / 0 改名）**——本仓在用的 45 个 `--dsw-*` 全部存活，快照已用 rc.2 宿主重新生成
+ *    并与之一致。
+ *    ⚠️ **一条会改变验收方式的宿主变更**：rc.2 起可选插件客户端 bundle 加载失败**不再中止宿主启动**
+ *    （`packages/client/web/src/boot-client.ts` 的 `requiredClientEntryNames` 白名单只含内置包，插件侧
+ *    降级为一次 `console.warn`），且「已启用」不再等于「已加载」——验收必须看控制台与 `error` /
+ *    `entryId`，不能只看页面能打开。
+ *    实测证据：官方判定器（自报运行时 `0.2.2-rc.2`，由 tag 源码 `build:lib` + `build:web` 自建——
+ *    这一档发布时 **npm 上还没有 rc.2**，`latest` 仍是 rc.1）**十四档 × 14 条目全放行**；隔离
+ *    `DSH_HOME` 起真宿主后 **12 个包全部加载（10 行 `mounted` + `dsh-tty` / `dsh-docker` 各一行
+ *    `agent tools registered`）、0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**，
+ *    `GET /api/dsh-docker/targets` 与 `GET /api/dsh-tty/config` 均 200、根页面 200（43270 B）；
+ *    `live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox` **23/23 PASS**（18 条 HTTP +
+ *    5 条真浏览器）。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十四档条目。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

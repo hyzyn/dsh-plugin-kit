@@ -115,14 +115,16 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek-Harness installed and `dsh web` starts normally. **Thirteen DSH cohorts are currently
+- DeepSeek-Harness installed and `dsh web` starts normally. **Fourteen DSH cohorts are currently
   supported: `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.1`, `0.2.1-alpha.2`,
   `0.2.1-alpha.5`, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3`, `0.2.1-rc.4`, `0.2.1-rc.5`,
-  `0.2.2-alpha.3` and `0.2.2-rc.1`**; `0.1.6-alpha.2` and earlier are no longer
-  supported (the newest eight cohorts are explicit declarations, but **not all are zero-difference**:
+  `0.2.2-alpha.3`, `0.2.2-rc.1` and `0.2.2-rc.2`**; `0.1.6-alpha.2` and earlier are no longer
+  supported (the newest nine cohorts are explicit declarations, but **not all are zero-difference**:
   `0.2.2-alpha.3` removed one theme token, and the rss / search sidebar hover was adapted with it;
   `0.2.1-alpha.5` carried real host behaviour changes in the evaluator, `engines.dsh`, credentials and
-  the macOS picker; the other six are zero-difference — this round’s `0.2.2-rc.1` differs only in the
+  the macOS picker; `0.2.2-rc.2` leaves the host API surface untouched but grows the theme-token table
+  by 36 entries (414 → 450, additions only), so the snapshot was regenerated with it; the other six
+  are zero-difference — `0.2.2-rc.1` differs only in the
   version string of four client bundles. The per-item evidence is in the cohort notes at the top of
   [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs)).
 - Compatibility is guaranteed by the `@deepseek-ai/dsh` range each installable plugin declares in
