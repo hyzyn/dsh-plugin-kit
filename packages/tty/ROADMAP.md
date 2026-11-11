@@ -11,7 +11,7 @@
 > [docs/conventions.md 的边界判据](../../docs/conventions.md#l0--l1-的边界判据)上提到项目级
 > [ROADMAP.md](../../ROADMAP.md)（两包原文都在那里逐字保留）。本文只留「改 tty 一个包就能做完」的项。
 
-## 待办（8 项 + 2 条待定性缺陷）
+## 待办（8 项 + 3 条待定性缺陷）
 
 > 下面 8 条是**规划**，不是缺陷——单人项目不另开 Issue，待办就记在这里，做完打勾。
 > 新发现的缺陷也接着编号记在本文，不要只留在对话里。
@@ -87,6 +87,20 @@
 **2026-09-25 追加**：`allowProxyCommand` 的提权按项目级 ROADMAP 第 5.1 节收口——只认宿主侧
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
 里那个开关点不动 + 附一行说明，「试连」与拨号按**原因**分两条文案（未授权 vs 未启用）。
+
+**2026-11-11 新登记一条待定性缺陷（未编号，等维护者分配 `Dxx`）**：DSH `0.2.2-rc.2` 把宿主侧栏行
+`.panelRow` 的几何从 `min-height: 36px` / `padding: 7px` 收紧到 `32px` / `5px`
+（`packages/client/ui-sidebar/src/client/SidebarRoot.module.css`：rc.1 在 `:543`、rc.2 在 `:685`）。
+tty 的 `[data-host-align]` 段（`client-src/tty.css:295-316`）是**照 rc.1 实测值写死**的，于是在 rc.2 上
+开了 `sidebarHostAlign`（默认 `false`）的用户，侧栏入口会比同栏其它条目**高 4px**。
+影响面已核实：折叠态 `[data-sidebar-collapsed] .tt_sidebarEntry` 那条 36×36 两档**未变**、不受影响；
+只有展开态、且只影响显式开了该配置的用户。
+**为什么不能直接把 36 改成 32**：宿主两档都没有暴露「行高」类令牌（`--dsh-sidebar-*` 都是
+`inline-padding` / `label-gap` / `paint-inset` / `row-padding` 四个，没有高度），客户端半体也拿不到
+宿主版本号——写死新值会让 rc.1 及更早档**反向偏 4px**。正解是**量宿主实际行高再写 CSS 变量**：
+`mountSidebarEntry` 已经能摸到宿主 DOM，可在挂载时读相邻 `.panelRow` 的 computed style 把
+`min-height` / 纵向 padding 写到入口上。
+**未动手的原因**：这要改客户端半体并补真机视觉证据，而本仓 `Dxx` 编号的增改需先经维护者确认。
 
 ### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测；**2026-10-13 定位并修复 → [D100](./DEFECTS.md)**）
 
