@@ -453,12 +453,33 @@ function checkHostWorld(world: HostWorld): string[] {
   const moduleLoader = file(HOST_FILES.moduleLoader)
   if (moduleLoader !== '') {
     if (moduleLoader.length < 1000) out.push(`${HOST_FILES.moduleLoader} 短得不像话`)
-    if (!/createElement\(['"]script['"]\)/.test(moduleLoader)) {
+    /*
+     * 引号形式**不是**判据的一部分：宿主用 bundler 打包，同一段 `createElement('script')`
+     * 在 rc.1 输出里是单引号、rc.2 里成了反引号模板字面量。钉引号会让判据在宿主换打包器时
+     * 误报（2026-11-12 实测：`0.2.2-rc.2` 就是这样，事实 2 本身完全没变）。
+     * 真正要说的是「装的是 script 元素」，所以三种引号都认。
+     */
+    if (!/createElement\(\s*[`'"](?:script)[`'"]\s*\)/.test(moduleLoader)) {
       out.push('插件 bundle 的装载方式变了（不再是同源 classic script）——若已改为 iframe 隔离，方案 §2.1 事实 2 需重写')
     }
-    if (!moduleLoader.includes('same-origin external classic script')) {
-      out.push('装载说明文案变了（原为「same-origin external classic script」）')
+    /*
+     * 「不是 iframe / 不是 module script」这两条是事实 2 的**实质**，比 JSDoc 文案可靠：
+     * 前者一旦成立就是隔离，后者会让半体跑进独立 module 作用域——都直接推翻方案的立论。
+     * 2026-11-12 起加在这里，正是因为 rc.2 把 JSDoc 注释剥掉了（文案判据失效），
+     * 而只靠注释判就会漏掉真回归。
+     */
+    if (/createElement\(\s*[`'"](?:iframe)[`'"]\s*\)/.test(moduleLoader)) {
+      out.push('装载器里出现了 iframe 创建——若用它跑插件半体就是隔离，方案 §2.1 事实 2 需重写')
     }
+    if (/createElement\(\s*[`'"](?:script)[`'"]\s*\)[^\n]{0,200}type\s*=\s*[`'"]module/.test(moduleLoader)) {
+      out.push('装载器把插件 bundle 装成了 module script（不再是 classic script）')
+    }
+    /*
+     * 原先这里还有一条「装载说明文案」判据（`same-origin external classic script`）。
+     * 2026-11-12 删掉：宿主的 JSDoc 会被打包器整体剥掉（rc.2 实测，文件 46569 → 25831 B），
+     * 于是它只会制造误报。**删掉它不降低覆盖**——上面三条判据（装的是 script、不是 iframe、
+     * 不是 module script）说的正是这段注释想表达的事实，而且它们改不了、剥不掉。
+     */
   }
   const approvalClientForLoader = file(HOST_FILES.approvalClient)
   if (approvalClientForLoader !== '' && !approvalClientForLoader.includes('__ModuleLoader__')) {
@@ -689,8 +710,23 @@ describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧三条事
  * ------------------------------------------------------------------ */
 
 /** 在真实文本上做一次替换；**替换没生效就抛**（否则反例会变成空测试）。 */
-function mutate(text: string, from: string, to: string): string {
-  if (!text.includes(from)) throw new Error(`fixture 替换没匹配上：${from.slice(0, 60)}`)
+/**
+ * 在一段文本上做一次替换，**没匹配上就抛**——反例不许静默空转。
+ *
+ * `from` 可以是正则：宿主的产物是打包器输出，同一段逻辑在不同 cohort 里会换引号、
+ * 被剥掉注释、被重排（2026-11-12 的 `0.2.2-rc.2` 三样都占）。钉字面量会让反例
+ * 在「判据其实还很好」的时候误报失败，于是有人把断言删掉——那就把牙一起拔了。
+ * 正则型锚点要求**恰好命中一次**，避免「改到了别处也算过」。
+ */
+function mutate(text: string, from: string | RegExp, to: string): string {
+  const matched = typeof from === 'string' ? text.includes(from) : from.test(text)
+  if (!matched) throw new Error(`fixture 替换没匹配上：${String(from).slice(0, 60)}`)
+  if (typeof from !== 'string') {
+    const hits = text.match(new RegExp(from.source, from.flags.includes('g') ? from.flags : `${from.flags}g`))
+    if ((hits?.length ?? 0) !== 1) {
+      throw new Error(`fixture 锚点应恰好命中一次，实际 ${String(hits?.length ?? 0)} 次：${String(from).slice(0, 60)}`)
+    }
+  }
   const mutated = text.replace(from, to)
   expect(mutated, 'fixture 必须真的改动文本').not.toBe(text)
   return mutated
@@ -704,7 +740,7 @@ function repoWorldWith(rel: string, from: string, to: string): Map<string, strin
 }
 
 /** 取一份宿主世界；宿主不存在时返回 undefined（反例层据此跳过）。 */
-function hostWorldWith(rel: string, from: string, to: string): HostWorld | undefined {
+function hostWorldWith(rel: string, from: string | RegExp, to: string): HostWorld | undefined {
   if (HOST_WORLD.kind !== 'present') return undefined
   const files = new Map(HOST_WORLD.files)
   const current = files.get(rel)
@@ -794,16 +830,37 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
  * 所以单独成块 + `skipIf`，与「宿主侧三条事实」那条同款。
  */
 describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧反例（需真实 DSH）', () => {
+  /*
+   * 夹具的锚点必须与**宿主当前文本**一致，否则反例改不到东西、断言就成了空转。
+   *
+   * 2026-11-12（`0.2.2-rc.2`）两个夹具同时失配，原因都是宿主换了打包输出形态，而不是判据变了：
+   *   - 审批订阅的引号从 `"` 变成反引号（`ctx.remote.$on(` + 反引号 + `approval/request` …）；
+   *   - `same-origin external classic script` 那段 JSDoc 被整体剥掉了（文件 46569 → 25831 B）。
+   * 所以锚点改成「与引号/注释无关」的实质片段，并保留 A1 的自证：替换后文本必须真的变了。
+   */
   it('宿主把审批改由宿主 answerer 回答（不再是页面 remote）→ 宿主判据红', () => {
-    const world = hostWorldWith(HOST_FILES.approvalClient, 'ctx.remote.$on("approval/request"', 'ctx.notTheRemoteAnymore("approval/request"')
+    const world = hostWorldWith(
+      HOST_FILES.approvalClient,
+      /ctx\.remote\.\$on\(\s*[`'"]approval\/request[`'"]/,
+      'ctx.notTheRemoteAnymore("approval/request"',
+    )
     expect(checkHostWorld(world).length, '反例必须让真判据报错（A1：不能只断言 replace 成功）').toBeGreaterThan(0)
   })
 
   it('宿主换成 iframe 隔离插件半体 → 宿主判据红', () => {
-    const world = hostWorldWith(HOST_FILES.moduleLoader, 'same-origin external classic script', 'sandboxed iframe bundle')
+    /*
+     * 直接改写装载实现本身（而不是某句注释）：把 `createElement('script')` 换成 iframe。
+     * 这比原来「改注释文案」强——它模拟的是宿主**真的**换了隔离方式，
+     * 也正是 §2.1 事实 2 要防的那件事；注释文案在 rc.2 已不存在，旧写法会退化成空转。
+     */
+    const world = hostWorldWith(
+      HOST_FILES.moduleLoader,
+      /createElement\(\s*[`'"]script[`'"]\s*\)/,
+      'createElement("iframe")',
+    )
     const violations = checkHostWorld(world)
     expect(violations.length).toBeGreaterThan(0)
-    expect(violations.join('\n')).toMatch(/iframe|装载说明/)
+    expect(violations.join('\n')).toMatch(/iframe|装载/)
   })
 
   it('宿主里出现确认框原语（全树扫描）→ 宿主判据红', () => {
