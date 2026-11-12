@@ -310,7 +310,7 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 
 ## 已完成（落点 + 门槛）
 
-### 2026-11-12：侧栏入口几何改成「按宿主行现量」（未编号，待维护者分配 `Dxx`）
+### 2026-11-12：侧栏入口几何改成「按宿主行现量」（→ [D107](./DEFECTS.md)）
 
 **现象**：DSH `0.2.2-rc.2` 把宿主侧栏行 `.panelRow` 的几何从 `min-height: 36px` / `padding: 7px`
 收紧到 `32px` / `5px`，而本包 `[data-host-align]` 那段是照 rc.1 实测值写死的——开了
@@ -341,8 +341,8 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 入口与宿主行**逐项相等**——`min-height 32px` / `padding-top 5px` / `padding-left 9px`、
 实际高度 32.00 ↔ 32.00（修前是 36 ↔ 32）。
 
-> 台账状态：本条目**未编号**。本仓 `Dxx` 编号的增改需维护者确认，确认后把这条并进
-> [DEFECTS.md](./DEFECTS.md) 并把这里改成编号引用。
+> 台账：已并入 [DEFECTS.md](./DEFECTS.md) 的 **tty D107**（索引表 §1 + 三处代码注释
+> `client-src/{index.js,tty.css,sidebar-metrics.js}`）。发布为 **0.38.1**（tag `v0.1.83`）。
 
 > 已落地的批次按**主题**记在这里：结论 → 为什么（用户原话照录）→ 落点 / 门槛 → 刻意不做的边界。
 > 缺陷的症状 / 根因 / 修法仍在 [DEFECTS.md](./DEFECTS.md) 的索引表；逐轮往返的**过程原文**（2026-10-01

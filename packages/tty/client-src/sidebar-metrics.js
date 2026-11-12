@@ -1,6 +1,8 @@
 /**
  * @hyzyn/dsh-tty — 侧栏入口「与宿主行对齐」的几何推导（纯逻辑）。
  *
+ * tty **D107**：「与宿主对齐」不是一组常数，是一条要持续成立的等式（详见 DEFECTS.md）。
+ *
  * 为什么单独成文件：`client-src/index.js` 是浏览器 IIFE 入口、没有导出，几何计算放在里面
  * 就只能靠真机点。这里把「宿主行的 computed style → 本插件入口该用的 min-height / padding」
  * 抽成纯函数，vitest 直接钉住（esbuild 打包时按普通本地模块内联，产物形态不变）——与

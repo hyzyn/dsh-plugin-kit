@@ -5607,7 +5607,7 @@ function applyHostRowMetrics(entry) {
 /**
  * 让**单个**入口与当前配置一致：属性决定 CSS 要不要套对齐几何，变量给它宿主行的实际尺寸。
  *
- * 两个出口共用它（`applySidebarHostAlign` 批量、`mountSidebarEntry` 单点）——
+ * 两个出口共用它（`applySidebarHostAlign` 批量、`mountSidebarEntry` 单点；tty D107）——
  * 2026-11-12 实测踩到的形状：入口往往在配置到达**之前**就建好了（`createSidebarEntry` 那时
  * 看到的是默认 false），而配置到达时 `applySidebarHostAlign` 只遍历**已存在**的入口；
  * 于是「配置晚到 + 入口后建」这一路会只量了尺寸却没加属性，症状是「对齐开关打开了、
