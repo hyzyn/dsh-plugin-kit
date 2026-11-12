@@ -653,7 +653,7 @@ per-generation landing spots and the four registration contracts live in
 | `terminalCursorStyle` | `bar` | Cursor shape: `bar` / `block` / `underline`. Programs inside the terminal write this too (DECSCUSR), so the plugin corrects it back after each parsed output batch; **full-screen programs (vim / less / htop / fzf, alternate screen) are left alone** |
 | `terminalCursorBlink` | true | Whether the cursor blinks. Programs’ `?12h` / `?12l` override it; corrected back on the normal buffer, left alone in full-screen programs |
 | `terminalLineHeight` | 1.35 | Line-height multiplier (1~2). A block cursor usually wants `1`: 1.35 stretches the cell so the cursor is taller than the glyphs |
-| `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host’s `.panelRow`: width `calc(100% - 4px)`, `margin 0 2px`, `min-height 36`, `padding 7px 8px`, 14px font, 16px icon. Default false = the plugin’s own sizing (purely additive styling) |
+| `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host’s `.panelRow`: width `calc(100% - 4px)`, `margin 0 2px`, 14px font, 16px icon; **`min-height` and `padding` are measured from the host row at mount time** (the two host cohorts use 36/7 and 32/5, so hard-coding either makes the other 4px off), falling back to 36/7 when nothing can be measured. Default false = the plugin’s own sizing (purely additive styling) |
 
 ## Connection bar: connection identity and copy
 

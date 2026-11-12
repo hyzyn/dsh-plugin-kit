@@ -11,7 +11,7 @@
 > [docs/conventions.md 的边界判据](../../docs/conventions.md#l0--l1-的边界判据)上提到项目级
 > [ROADMAP.md](../../ROADMAP.md)（两包原文都在那里逐字保留）。本文只留「改 tty 一个包就能做完」的项。
 
-## 待办（8 项 + 3 条待定性缺陷）
+## 待办（8 项 + 2 条待定性缺陷）
 
 > 下面 8 条是**规划**，不是缺陷——单人项目不另开 Issue，待办就记在这里，做完打勾。
 > 新发现的缺陷也接着编号记在本文，不要只留在对话里。
@@ -87,20 +87,6 @@
 **2026-09-25 追加**：`allowProxyCommand` 的提权按项目级 ROADMAP 第 5.1 节收口——只认宿主侧
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
 里那个开关点不动 + 附一行说明，「试连」与拨号按**原因**分两条文案（未授权 vs 未启用）。
-
-**2026-11-11 新登记一条待定性缺陷（未编号，等维护者分配 `Dxx`）**：DSH `0.2.2-rc.2` 把宿主侧栏行
-`.panelRow` 的几何从 `min-height: 36px` / `padding: 7px` 收紧到 `32px` / `5px`
-（`packages/client/ui-sidebar/src/client/SidebarRoot.module.css`：rc.1 在 `:543`、rc.2 在 `:685`）。
-tty 的 `[data-host-align]` 段（`client-src/tty.css:295-316`）是**照 rc.1 实测值写死**的，于是在 rc.2 上
-开了 `sidebarHostAlign`（默认 `false`）的用户，侧栏入口会比同栏其它条目**高 4px**。
-影响面已核实：折叠态 `[data-sidebar-collapsed] .tt_sidebarEntry` 那条 36×36 两档**未变**、不受影响；
-只有展开态、且只影响显式开了该配置的用户。
-**为什么不能直接把 36 改成 32**：宿主两档都没有暴露「行高」类令牌（`--dsh-sidebar-*` 都是
-`inline-padding` / `label-gap` / `paint-inset` / `row-padding` 四个，没有高度），客户端半体也拿不到
-宿主版本号——写死新值会让 rc.1 及更早档**反向偏 4px**。正解是**量宿主实际行高再写 CSS 变量**：
-`mountSidebarEntry` 已经能摸到宿主 DOM，可在挂载时读相邻 `.panelRow` 的 computed style 把
-`min-height` / 纵向 padding 写到入口上。
-**未动手的原因**：这要改客户端半体并补真机视觉证据，而本仓 `Dxx` 编号的增改需先经维护者确认。
 
 ### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测；**2026-10-13 定位并修复 → [D100](./DEFECTS.md)**）
 
@@ -323,6 +309,40 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)，本文不复述。
 
 ## 已完成（落点 + 门槛）
+
+### 2026-11-12：侧栏入口几何改成「按宿主行现量」（未编号，待维护者分配 `Dxx`）
+
+**现象**：DSH `0.2.2-rc.2` 把宿主侧栏行 `.panelRow` 的几何从 `min-height: 36px` / `padding: 7px`
+收紧到 `32px` / `5px`，而本包 `[data-host-align]` 那段是照 rc.1 实测值写死的——开了
+`sidebarHostAlign`（默认 `false`）的用户，入口比同栏其它条目**高 4px**。折叠态那条 36×36
+两档未变，不受影响。
+
+**为什么不直接把 36 改成 32**：宿主没有暴露行高类令牌（`--dsh-sidebar-*` 只有
+`inline-padding` / `label-gap` / `paint-inset` / `row-padding`），客户端也拿不到宿主版本号——
+写死任何一档都会让另一档**反向偏 4px**。
+
+**改法**：
+
+- 新增纯逻辑模块 `client-src/sidebar-metrics.js`：`hostRowMetrics(computedStyle)` → 像素数，
+  `hostRowCssVars(metrics)` → 要写的 CSS 变量。只认能解析成有限非负 `px` 的值；`0` 是合法值，
+  `auto` / `calc(…)` / 空串一律当「没量到」——半截脏值比不写更糟。
+- `tty.css` 的 `[data-host-align]` 改用 `--tt-host-*` 变量，**默认值仍写 36/7**（= rc.1 实测，
+  量不到时观感与 0.34.0 一致）；JS 量到后以**内联样式**覆盖（内联优先于规则）。
+- 两处测量收敛成 `syncEntryHostAlign(entry)`：`applySidebarHostAlign` 批量、`mountSidebarEntry`
+  单点共用。抽它的原因是实测踩到的第二种形状——**入口常在配置到达之前就建好**，而配置到达时
+  只遍历「已存在」的入口，于是「配置晚到 + 入口后建」这一路会只量尺寸不加属性，症状是
+  「开关打开了、入口没变」。
+- 参照行的挑选：取**后代**里的 `.panelRow`（宿主插件行在侧栏滚动区里，不是 root 的直接子元素——
+  只查 `root.children` 会找不到，退回「新建会话」那一行而它是另一套几何）。
+
+**门槛**：`test/sidebar-metrics.test.ts` **15/15**（两档真实几何、`0` 不被当「没量到」、
+小数像素、六种脏值、变量名必须真的被 `tty.css` 引用——钉住「改名后 JS 静默写了个没人读的变量」
+这个最难查的失效形状）。**真机实测**（DSH `0.2.2-rc.2`、test profile、真浏览器）：
+入口与宿主行**逐项相等**——`min-height 32px` / `padding-top 5px` / `padding-left 9px`、
+实际高度 32.00 ↔ 32.00（修前是 36 ↔ 32）。
+
+> 台账状态：本条目**未编号**。本仓 `Dxx` 编号的增改需维护者确认，确认后把这条并进
+> [DEFECTS.md](./DEFECTS.md) 并把这里改成编号引用。
 
 > 已落地的批次按**主题**记在这里：结论 → 为什么（用户原话照录）→ 落点 / 门槛 → 刻意不做的边界。
 > 缺陷的症状 / 根因 / 修法仍在 [DEFECTS.md](./DEFECTS.md) 的索引表；逐轮往返的**过程原文**（2026-10-01

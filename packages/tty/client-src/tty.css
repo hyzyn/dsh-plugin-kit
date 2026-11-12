@@ -280,21 +280,38 @@
  * 与宿主侧栏条目 .panelRow 对齐（0.34.0，配置项 `sidebarHostAlign`）。
  *
  * 只在入口带 `data-host-align` 时套用：默认（不配）保持上面的自带尺寸，所以这是一层
- * **纯增量**的样式，不改任何已有观感。几何取自宿主行实际值——min-height 36 / padding
- * 7px 8px / margin 0 2px / line-height 22 / 14px 字号 / 16px 图标；宽度让出左右各 2px
- * 外边距（宿主不做全局 box-sizing reset，这里必须显式 border-box，见上面那条注释）。
+ * **纯增量**的样式，不改任何已有观感。宽度让出左右各 2px 外边距（宿主不做全局
+ * box-sizing reset，这里必须显式 border-box，见上面那条注释）。
  * 悬停/激活态统一用插件令牌 --tt-hover / --tt-hover-solid（= 宿主的
  * interactive-bg-hover(-solid)）：旧版 sidebar-nav-item-hover 已被 0.2.2-alpha.3
  * 移除，interactive-bg-hover(-solid) 是宿主侧栏自己在用的令牌，
  * 十二档 cohort 都存在（证据见 README 兼容性段）。
+ *
+ * ## 几何为什么不写死（0.2.2-rc.2 起）
+ *
+ * `min-height` 与 `padding` 走 `--tt-host-*` 变量，由 `mountSidebarEntry` 在挂载时**现量**
+ * 宿主侧栏行（`.panelRow`）的 computed style 写进来（推导逻辑与边界见
+ * `client-src/sidebar-metrics.js`）。原因是宿主的行高**会变**：rc.1 是 36px / 7px，
+ * rc.2 收紧成 32px / 5px，而宿主既没有暴露行高类令牌、客户端也拿不到宿主版本号——
+ * 写死任何一个值都会让另一档偏 4px。
+ *
+ * 括号里写的是**兜底值**（= rc.1 的实测几何）：量不到时与 0.34.0 的观感完全一致，不会更差。
+ * 折叠态（`[data-sidebar-collapsed]`）是另一套 36×36 的 rail 几何，两档未变，仍写死。
  */
 .tt_sidebarEntry[data-host-align] {
+  /* 默认几何 = rc.1 的实测值；JS 量到宿主行后以**内联样式**覆盖（内联优先于本规则） */
+  --tt-host-min-height: 36px;
+  --tt-host-pad-top: 7px;
+  --tt-host-pad-right: 8px;
+  --tt-host-pad-bottom: 7px;
+  --tt-host-pad-left: 8px;
   gap: 8px;
   width: calc(100% - 4px);
   margin: 0 2px;
-  min-height: 36px;
+  min-height: var(--tt-host-min-height);
   height: auto;
-  padding: 7px 8px;
+  padding: var(--tt-host-pad-top) var(--tt-host-pad-right)
+    var(--tt-host-pad-bottom) var(--tt-host-pad-left);
   color: var(--tt-label);
   font-size: 14px;
   line-height: 22px;

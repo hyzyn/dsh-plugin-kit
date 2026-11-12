@@ -511,7 +511,7 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`（us
 | `terminalCursorStyle` | `bar` | 光标形态：`bar` / `block` / `underline`。终端里的程序也会写这个值（DECSCUSR），所以本插件在每批输出解析完后把被改掉的纠回；**全屏程序（vim / less / htop / fzf，备用屏幕）让位** |
 | `terminalCursorBlink` | true | 光标是否闪烁。程序发的 `?12h` / `?12l` 会覆盖它，普通缓冲区里会被纠回，全屏程序让位 |
 | `terminalLineHeight` | 1.35 | 行高倍数（1~2）。方块光标通常配 `1`：1.35 会把单元格撑高，光标比字形高出一截 |
-| `sidebarHostAlign` | false | 侧栏「终端」入口与宿主 `.panelRow` 对齐：宽度 `calc(100% - 4px)`、`margin 0 2px`、`min-height 36`、`padding 7px 8px`、14px 字号、16px 图标。默认 false = 插件自带尺寸（纯增量样式） |
+| `sidebarHostAlign` | false | 侧栏「终端」入口与宿主 `.panelRow` 对齐：宽度 `calc(100% - 4px)`、`margin 0 2px`、14px 字号、16px 图标；**`min-height` 与 `padding` 在挂载时按宿主行现量**（宿主两档是 36/7 与 32/5，写死任何一档都会让另一档偏 4px），量不到时回落到 36/7。默认 false = 插件自带尺寸（纯增量样式） |
 
 ## 连接栏：连接身份与复制
 

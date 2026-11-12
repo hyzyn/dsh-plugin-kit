@@ -87,6 +87,7 @@ import { connCopyText, connDetailRows, jumpLabelOf, resolveConnSpec, sshCommandO
 import { checkedForBookName, nameForBookChecked } from './save-book.js'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
 import { deriveWsUrl } from './ws-url.js'
+import { hostRowCssVars, hostRowMetrics } from './sidebar-metrics.js'
 import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
@@ -5566,11 +5567,69 @@ function applyTerminalLook() {
   }
 }
 
+/**
+ * 挑一行「宿主自己的侧栏条目」当几何参照。
+ *
+ * 取**后代里**的 `.panelRow`（类名带 hash 前缀，只能按子串匹配）：宿主的插件行都在侧栏的
+ * 滚动区里，不是 root 的直接子元素——2026-11-12 实测就栽在这一点上（只查 `root.children`
+ * 会找不到，退回「新建会话」那一行，而它是另一套几何）。跳过本插件与其它插件自建的入口。
+ * 一行 `.panelRow` 都没有时才退回「新建会话」按钮；都拿不到返回 undefined，
+ * 由调用方保持 CSS 默认几何。
+ */
+function hostRowReference(root, entry) {
+  const pluginEntry = '[data-dsh-global-search-entry], [data-dsh-rss-entry], [data-dsh-taskboard-entry], [data-dsh-ssh-entry], [data-dsh-tty-entry], [data-dsh-docker-entry]'
+  for (const row of root.querySelectorAll('[class*="panelRow"]')) {
+    if (row === entry || !(row instanceof HTMLElement)) continue
+    if (row.matches(pluginEntry) || row.querySelector(pluginEntry) !== null) continue
+    return row
+  }
+  return newSessionButton(root)
+}
+
+/**
+ * 把宿主侧栏行的**实际几何**写成入口上的 CSS 变量（见 `sidebar-metrics.js` 的文件头）。
+ *
+ * 为什么要量而不是写死：宿主的行高会随版本变（rc.1 是 36px/7px、rc.2 是 32px/5px），
+ * 而它既没暴露行高类令牌、客户端也拿不到宿主版本号。量到就套、量不到就什么都不写，
+ * CSS 的 `var(--tt-host-*, 兜底)` 会接手。
+ */
+function applyHostRowMetrics(entry) {
+  const root = entry.parentElement
+  if (root === null) return
+  const reference = hostRowReference(root, entry)
+  if (reference === undefined) return
+  const style = typeof getComputedStyle === 'function' ? getComputedStyle(reference) : undefined
+  for (const [name, value] of hostRowCssVars(hostRowMetrics(style))) {
+    entry.style.setProperty(name, value)
+  }
+}
+
+/**
+ * 让**单个**入口与当前配置一致：属性决定 CSS 要不要套对齐几何，变量给它宿主行的实际尺寸。
+ *
+ * 两个出口共用它（`applySidebarHostAlign` 批量、`mountSidebarEntry` 单点）——
+ * 2026-11-12 实测踩到的形状：入口往往在配置到达**之前**就建好了（`createSidebarEntry` 那时
+ * 看到的是默认 false），而配置到达时 `applySidebarHostAlign` 只遍历**已存在**的入口；
+ * 于是「配置晚到 + 入口后建」这一路会只量了尺寸却没加属性，症状是「对齐开关打开了、
+ * 但入口没变」。抽成一个函数，两条路就不会再漂开。
+ */
+function syncEntryHostAlign(entry) {
+  if (sidebarHostAlignCache) {
+    entry.dataset.hostAlign = '1'
+    applyHostRowMetrics(entry)
+    return
+  }
+  delete entry.dataset.hostAlign
+  // 关掉即撤掉变量，避免下次打开时沿用上一次量的旧值
+  for (const name of ['--tt-host-min-height', '--tt-host-pad-top', '--tt-host-pad-right', '--tt-host-pad-bottom', '--tt-host-pad-left']) {
+    entry.style.removeProperty(name)
+  }
+}
+
 /** 侧栏入口对齐开关：入口是动态挂载的，按 DOM 查一遍再写属性（热生效）。 */
 function applySidebarHostAlign() {
   for (const entry of document.querySelectorAll('[data-dsh-tty-entry]')) {
-    if (sidebarHostAlignCache) entry.dataset.hostAlign = '1'
-    else delete entry.dataset.hostAlign
+    syncEntryHostAlign(entry)
   }
 }
 
@@ -10823,6 +10882,8 @@ function mountSidebarEntry() {
     if (root === undefined) return
     placed = placeSidebarEntry(root, entry)
     if (placed) {
+      // 落位之后才有「同栏的宿主行」可量；属性与变量一起补（见 syncEntryHostAlign）
+      syncEntryHostAlign(entry)
       rootObserver.observe(root, { childList: true, subtree: true })
     }
   }
