@@ -193,6 +193,66 @@ dsh plugin --profile web ls @hyzyn/dsh-tty --depth 0
 </details>
 
 <details>
+<summary><strong>设置卡片保存报 `profile reload requires the root Include entry`？</strong></summary>
+
+**症状**：插件本身挂载正常、设置能读、页面能用，只有**保存**失败——HTTP 500，错误体是
+`保存失败: dsh: profile reload requires the root Include entry`。任何走「写 settings」的卡片
+（codegraph 的模式切换、docker 的开关等）都会中招。
+
+**根因不在插件，也不在 DSH 版本**：profile 的 `package.json` 把**宿主 bundle 写进了
+`dependencies`**（典型是旧文档教的 `dsh plugin add @deepseek-ai/dsh-web-app@<版本>`），
+而 `@deepseek-ai/dsh-base` / `dsh-web-app` 会拖进**整份宿主运行时**。于是 `dsh-app-boot`
+在磁盘上有**两份物理拷贝**：
+
+- 宿主安装里的那份 —— 启动时 `mountRootInclude()` 用它把 root Include 登记进自己的
+  `bootstrapIncludes`（一个模块级 `WeakMap`）；
+- profile 里的那份 —— 保存走 `settings.write → configEditor.edit() → reconcileProfilePatches()`
+  时，按 profile 目录解析到的是**这一份**，它查的是**自己那个空的** `WeakMap` → 查不到
+  → 抛上面那句。
+
+两份文件内容可以完全一致（`md5` 相同），**但模块实例不同，`WeakMap` 就不共享**。
+所以它表现为「版本对得上、装得上、跑得动，唯独保存 500」。
+
+**判据（三步，全部只读）**：
+
+```sh
+# 1) profile 是否把宿主包写进了 dependencies
+node -e "const j=require(process.env.HOME+'/.dsh/profiles/<p>/package.json');console.log(Object.keys(j.dependencies).filter(k=>k.startsWith('@deepseek-ai')))"
+
+# 2) profile 自带的宿主运行时有多大（干净 profile 应当接近 0）
+ls ~/.dsh/profiles/<p>/node_modules/@deepseek-ai | wc -l
+
+# 3) 从 profile 目录解析 app-boot，落点是 profile 自带副本就中了
+node -e "console.log(require.resolve('@deepseek-ai/dsh-app-boot/package.json',{paths:[process.env.HOME+'/.dsh/profiles/<p>']}))"
+```
+
+实测样本（2026-11-12）：`@deepseek-ai` 包数 **259 / 271**、`node_modules` **698M / 1.1G** 的两个
+profile 全中；不声明这些依赖的干净 profile 是 **0 个包**、从不出现。
+
+**修法**：把宿主 bundle 从 `dependencies` 里摘掉、**保留在 `dsh.profile.bundles` 里**
+（它们本来就能从「dsh 安装」解析，跟新建 profile 一样），再剪枝：
+
+```sh
+# dsh.profile.bundles 保持不动；只删 dependencies 里的 @deepseek-ai/dsh-base / dsh-web-app 等
+cd ~/.dsh/profiles/<p>
+pnpm install --no-frozen-lockfile     # 会打出 -551 这类剪枝行
+```
+
+> ⚠️ 例外：**宿主安装里没有的 bundle 不能摘**。判据是逐个看
+> `<dsh 安装>/node_modules/@deepseek-ai/<包名>` 是否存在——不存在就必须留在 `dependencies`
+> 里，否则下次启动会 `skipping profile bundle`（实测例外：`@deepseek-ai/dsh-browser-use`、
+> `@deepseek-ai/dsh-experimental-browser-use-playwright-mcp`，这两个只在 npm 上有）。
+
+修复后实测：上述两个 profile 的 `node_modules` 降到 **4.8M / 485M**，
+`@hyzyn/dsh-codegraph` 的宿主契约脚本从 **36/41** 变 **42/42**，设置保存 **500 → 200**。
+
+**为什么它容易被误判成升级回归**：它和 DSH 版本无关——同一份配置在 `0.2.1-rc.5` 上
+**报一模一样的错**。查这条时先用「换一个干净 profile 试同一动作」做二分，
+别一上来就怀疑新 cohort。
+
+</details>
+
+<details>
 <summary><strong>改了插件代码不生效？</strong></summary>
 
 重新 `pnpm build` 后**重启** `dsh web`。改的是浏览器半体时，还要清缓存或硬刷新。
