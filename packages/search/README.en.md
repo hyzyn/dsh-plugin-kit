@@ -54,7 +54,7 @@ Moving the mouse brings the highlight to the row under the pointer; the keyboard
 
 ## Routes
 
-Loopback + same-origin access only:
+Loopback requests keep the local loopback + same-origin fence. Every other request (behind a reverse proxy, or a `--trusted-host` name) goes through the host's own auth: `connection.requestRejection` applies the Host/Origin fence and requires a signed-in browser session (401 without one, 403 for an untrusted Host). On hosts without that service or method such requests still get the loopback fence's 403:
 
 - `GET /api/dsh-search/query?q=<keyword>` — returns `{ sessions, prompts, tools, panels }`: search results for past sessions, Prompts, MCP tools, and settings panels
 - `GET /api/dsh-search/catalog` — returns `{ panels }`: the currently available settings panel directory (with `titles` / `keywords` / `description`), used by the browser half for "content on open" and instant filtering
