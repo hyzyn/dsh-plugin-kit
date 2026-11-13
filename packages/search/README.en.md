@@ -54,7 +54,7 @@ Moving the mouse brings the highlight to the row under the pointer; the keyboard
 
 ## Routes
 
-Loopback + same-origin access only:
+Access follows the host's own `/api` auth: `connection.requestRejection` applies the Host/Origin fence (including `--trusted-host`) and requires a signed-in browser session; hosts without that service fall back to loopback + same-origin only:
 
 - `GET /api/dsh-search/query?q=<keyword>` — returns `{ sessions, prompts, tools, panels }`: search results for past sessions, Prompts, MCP tools, and settings panels
 - `GET /api/dsh-search/catalog` — returns `{ panels }`: the currently available settings panel directory (with `titles` / `keywords` / `description`), used by the browser half for "content on open" and instant filtering

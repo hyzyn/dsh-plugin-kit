@@ -56,7 +56,7 @@
 
 ## 路由
 
-仅限 loopback + 同源访问：
+鉴权与宿主自己的 `/api` 一致：经 `connection.requestRejection` 过 Host/Origin 围栏（含 `--trusted-host`）并要求已登录的浏览器会话；宿主没有该服务时回落为 loopback + 同源：
 
 - `GET /api/dsh-search/query?q=<关键词>` —— 返回 `{ sessions, prompts, tools, panels }`：历史会话、Prompt、MCP 工具与设置面板搜索结果
 - `GET /api/dsh-search/catalog` —— 返回 `{ panels }`：当前可用的设置面板目录（含 `titles` / `keywords` / `description`），供浏览器半体做「打开即有内容」与即时筛选

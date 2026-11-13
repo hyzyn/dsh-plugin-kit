@@ -838,7 +838,7 @@ function getService(ctx: Context, name: string): unknown {
 }
 
 /* ------------------------------------------------------------------ *
- * HTTP 路由（loopback-only 围栏）
+ * HTTP 路由（宿主 Connection 鉴权；旧宿主回落 loopback-only 围栏）
  * ------------------------------------------------------------------ */
 
 interface ReqLike {
@@ -875,6 +875,22 @@ function isLoopbackRequest(request: ReqLike): boolean {
   }
 }
 
+/**
+ * Admit a request the way DSH's own /api routes do: the host Connection
+ * service applies its Host/Origin fence (loopback, the bind address and any
+ * configured trusted hosts) and requires the signed browser session cookie or
+ * an API peer. Hosts without that service fall back to the loopback fence.
+ * @returns the HTTP rejection status, or undefined when the request is admitted.
+ */
+function requestRejection(ctx: Context, request: ReqLike): { status: number; error: string } | undefined {
+  const connection = getService(ctx, 'connection') as { requestRejection?: (request: ReqLike) => number | undefined } | undefined
+  if (typeof connection?.requestRejection === 'function') {
+    const status = connection.requestRejection(request)
+    return status === undefined ? undefined : { status, error: status === 401 ? 'unauthorized' : 'forbidden' }
+  }
+  return isLoopbackRequest(request) ? undefined : { status: 403, error: 'forbidden: loopback-only' }
+}
+
 function writeJson(res: ResLike, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' })
   res.end(JSON.stringify(body))
@@ -890,8 +906,9 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
       kind: 'exact',
       path: '/api/dsh-search/catalog',
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+        const rejection = requestRejection(ctx, req)
+        if (rejection !== undefined) {
+          writeJson(res, rejection.status, { error: rejection.error })
           return
         }
         if (req.method !== 'GET') {
@@ -906,8 +923,9 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
       kind: 'exact',
       path: '/api/dsh-search/query',
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+        const rejection = requestRejection(ctx, req)
+        if (rejection !== undefined) {
+          writeJson(res, rejection.status, { error: rejection.error })
           return
         }
         if (req.method !== 'GET') {

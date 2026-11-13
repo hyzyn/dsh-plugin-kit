@@ -7,6 +7,8 @@
  *   a. 空 q：200 短路，四类结果均为空数组，且不触碰会话/工具服务
  *   b. 信任围栏：非 loopback 地址、跨站 host、跨站 origin、sec-fetch-site: cross-site 一律 403；
  *      非 GET 405；同源 origin / IPv4-mapped loopback 放行
+ *   b2. 宿主 Connection 鉴权：有 connection.requestRejection 时以它为准（反代 / --trusted-host
+ *      的非 loopback 请求凭会话放行，401 / 403 原样透传），回落围栏不再参与
  *   c. FTS 正常路径：header.id / bestMatch 映射、条数按 limit 截断、query/eventFilters/signal 透传
  *   d. FTS 抛错（openAt: "never"）回退扫描：会话最近优先截断到 maxScanSessions、
  *      命中按时间倒序、maxScanSessions 可放宽（对照组证明空结果源于截断）
@@ -253,6 +255,42 @@ await test('b. 信任围栏：非 loopback / 跨站来源 403，方法非 GET 40
   const post = await call(queryParam('abc'), { method: 'POST' })
   assert.equal(post.status, 405)
   assert.match(post.body.error, /method not allowed/)
+})
+
+/* ------------------------------------------------------------------ *
+ * b2. 宿主 Connection 鉴权
+ * ------------------------------------------------------------------ */
+
+await test('b2. 宿主 Connection 鉴权：requestRejection 决定放行，401 / 403 透传', async () => {
+  const seen = []
+  const connection = {
+    requestRejection: (req) => {
+      seen.push(req)
+      if (req.headers.host !== 'dsh.example.com' && req.headers.host !== '127.0.0.1:3080') return 403
+      return req.headers.cookie === 'dsh-auth=ok' ? undefined : 401
+    },
+  }
+  const { call, callCatalog } = await mount({ services: { connection }, viaGet: ['connection'] })
+  const proxied = { remoteAddress: '172.25.0.9', headers: { host: 'dsh.example.com', origin: 'https://dsh.example.com' } }
+
+  const admitted = await call(queryParam('abc'), { ...proxied, headers: { ...proxied.headers, cookie: 'dsh-auth=ok' } })
+  assert.equal(admitted.status, 200)
+  assert.equal(seen.at(-1).headers.host, 'dsh.example.com')
+
+  const noSession = await call(queryParam('abc'), proxied)
+  assert.equal(noSession.status, 401)
+  assert.deepEqual(noSession.body, { error: 'unauthorized' })
+
+  const localNoSession = await call(queryParam('abc'))
+  assert.equal(localNoSession.status, 401)
+
+  const hostile = await call(queryParam('abc'), { headers: { host: 'evil.example', cookie: 'dsh-auth=ok' } })
+  assert.equal(hostile.status, 403)
+  assert.deepEqual(hostile.body, { error: 'forbidden' })
+
+  const catalog = await callCatalog({ ...proxied, headers: { ...proxied.headers, cookie: 'dsh-auth=ok' } })
+  assert.equal(catalog.status, 200)
+  assert.equal((await callCatalog(proxied)).status, 401)
 })
 
 /* ------------------------------------------------------------------ *
