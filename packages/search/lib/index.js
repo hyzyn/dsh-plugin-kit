@@ -163,6 +163,11 @@ function searchPrompts(rawQuery, limit) {
     return hits;
 }
 const MAX_SCAN_SESSIONS = 80;
+// 宿主 FTS 命中之后还要过滤（子代理会话、GUI 打不开的会话），所以向宿主多取几倍；
+// 只取 limit 条时这些命中会占满名额，可打开的会话反而进不了面板。
+// 上限 50，留在 session-query 默认 maxLimit（100）以内。
+const FTS_OVERFETCH_FACTOR = 5;
+const FTS_MAX_FETCH = 50;
 const SESSION_SCAN_CONCURRENCY = 6;
 // 冷扫描（逐会话解压）单会话约 100-300ms，5s 只够覆盖 ~30 个会话，首个查询
 // 容易被截断成空结果；10s 配合文档缓存预热（超时后后台扫描继续填缓存）
@@ -253,9 +258,9 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
                     { kind: 'type', values: ['user/message', 'assistant/message'] },
                     { kind: 'surface', values: ['current'] },
                 ],
-                limit,
+                limit: Math.max(limit, Math.min(limit * FTS_OVERFETCH_FACTOR, FTS_MAX_FETCH)),
             }, { signal });
-            hits = (page.items ?? []).slice(0, limit).flatMap((hit) => {
+            hits = (page.items ?? []).flatMap((hit) => {
                 const id = hit.header?.id;
                 if (!id)
                     return [];
@@ -267,7 +272,7 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
                         time: hit.bestMatch?.time ?? 0,
                     }];
             });
-            const visible = await filterVisibleSessionHits(ctx, hits, signal);
+            const visible = (await filterVisibleSessionHits(ctx, hits, signal)).slice(0, limit);
             // 空结果不写缓存：回退扫描被超时截断时可能暂时为空，
             // 缓存会让 30s 内的重试一直为空（后台扫描仍在填充文档缓存）。
             if (visible.length > 0)

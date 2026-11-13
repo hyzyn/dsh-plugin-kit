@@ -11,6 +11,7 @@
  *       --trusted-host 凭会话放行，401 / 403 原样透传）；本机回环仍走旧围栏且不惊动宿主
  *   b3. 旧方法集：connection 上没有 requestRejection 时，非本机回落 loopback 围栏 403
  *   c. FTS 正常路径：header.id / bestMatch 映射、条数按 limit 截断、query/eventFilters/signal 透传
+ *   c2. FTS 先过滤再截断：向宿主多取，子代理与不可见会话不占用 limit 名额
  *   d. FTS 抛错（openAt: "never"）回退扫描：会话最近优先截断到 maxScanSessions、
  *      命中按时间倒序、maxScanSessions 可放宽（对照组证明空结果源于截断）
  *   e. 结果缓存：同 query 二次请求不再调用宿主 FTS，也不再重跑回退扫描
@@ -343,7 +344,7 @@ await test('c. FTS 正常路径：映射 / limit 截断 / query+eventFilters+sig
   assert.equal(res.body.query, 'fts 命中')
   assert.equal(calls.length, 1)
   assert.equal(calls[0].request.query, 'fts 命中')
-  assert.equal(calls[0].request.limit, 8, '默认 maxResults = 8')
+  assert.equal(calls[0].request.limit, 40, '默认 maxResults = 8，向宿主多取 5 倍留给过滤')
   assert.deepEqual(calls[0].request.eventFilters, [
     { kind: 'type', values: ['user/message', 'assistant/message'] },
     { kind: 'surface', values: ['current'] },
@@ -359,6 +360,24 @@ await test('c. FTS 正常路径：映射 / limit 截断 / query+eventFilters+sig
   assert.deepEqual(res.body.prompts, [])
   assert.deepEqual(res.body.tools, [])
   assert.deepEqual(res.body.panels, [])
+})
+
+await test('c2. FTS 先过滤再截断：子代理 / 不可见会话不占用 limit 名额', async () => {
+  const items = [
+    ...Array.from({ length: 8 }, (_, index) => ({ header: { id: 'sub-' + index, origin: 'subagent' }, bestMatch: { snippet: 's', time: 1 } })),
+    ...Array.from({ length: 4 }, (_, index) => ({ header: { id: 'hidden-' + index }, bestMatch: { snippet: 'h', time: 1 } })),
+    ...Array.from({ length: 10 }, (_, index) => ({ header: { id: 'main-' + index }, bestMatch: { snippet: 'm', time: 1 } })),
+  ]
+  const { call } = await mount({
+    services: {
+      sessionQuery: { searchSessions: async (request) => ({ items: items.slice(0, request.limit) }) },
+      sessions: { list: () => [...Array.from({ length: 10 }, (_, index) => ({ id: 'main-' + index })), { id: 'sub-0' }] },
+    },
+    viaGet: ['sessionQuery'],
+  })
+  const res = await call(queryParam('过滤 截断'))
+  assert.equal(res.status, 200)
+  assert.deepEqual(res.body.sessions.map((hit) => hit.id), Array.from({ length: 8 }, (_, index) => 'main-' + index))
 })
 
 /* ------------------------------------------------------------------ *
