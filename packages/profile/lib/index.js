@@ -3,7 +3,7 @@
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { dshHome, registerLiteralSection, spawnPortable } from '@hyzyn/dsh-kit';
+import { admitRoute, dshHome, registerLiteralSection, spawnPortable } from '@hyzyn/dsh-kit';
 export const name = 'profile-manager';
 export const inject = [];
 /* ------------------------------------------------------------------ *
@@ -282,34 +282,6 @@ function renameProfile(oldName, newName) {
         }
     }
 }
-function isLoopbackRequest(request) {
-    const address = request.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
-        return false;
-    const host = request.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (request.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = request.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
-}
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
     res.end(JSON.stringify(body));
@@ -336,10 +308,11 @@ async function readJsonBody(req) {
         return undefined;
     }
 }
-function makeRoutes() {
+function makeRoutes(ctx) {
     const guard = (req, res, method) => {
-        if (!isLoopbackRequest(req)) {
-            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+        const rejection = admitRoute(ctx, req);
+        if (rejection !== undefined) {
+            writeJson(res, rejection.status, { error: rejection.error });
             return false;
         }
         if (req.method !== method) {
@@ -553,7 +526,7 @@ const PROFILE_GUIDANCE = '本机装有 dsh-profile-manager 插件（profile 管�
 export function apply(ctx, config) {
     if (config?.enabled === false)
         return;
-    const routes = makeRoutes();
+    const routes = makeRoutes(ctx);
     const announce = config?.announceToAgent !== false;
     ctx.inject(['webServer'], (webCtx) => {
         webCtx.effect(() => {

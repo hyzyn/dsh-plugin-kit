@@ -15,7 +15,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { definePlugin, dshHome, registerLiteralSection } from '@hyzyn/dsh-kit'
+import { admitRoute, definePlugin, dshHome, registerLiteralSection } from '@hyzyn/dsh-kit'
 import yaml from 'js-yaml'
 
 export interface Config {
@@ -840,7 +840,7 @@ function getService(ctx: Context, name: string): unknown {
 }
 
 /* ------------------------------------------------------------------ *
- * HTTP 路由（本机走 loopback 围栏；非本机交给宿主 Connection 鉴权）
+ * HTTP 路由（准入 = 本机回环围栏 ∪ 非本机宿主 Connection 鉴权，见 kit.admitRoute）
  * ------------------------------------------------------------------ */
 
 interface ReqLike {
@@ -853,72 +853,6 @@ interface ReqLike {
 interface ResLike {
   writeHead(status: number, headers?: Record<string, string>): void
   end(body?: string): void
-}
-
-function isLoopbackRequest(request: ReqLike): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL('http://' + host)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
-}
-
-/**
- * 取一个**可选**宿主服务：没有它时按「没有」处理，不抛。
- *
- * 真 cordis 上只能走 `ctx.get()`——它对未 `inject` 的服务名返回 undefined；
- * 而 `ctx.connection` 这种**属性读**会在插件 ctx 上抛
- * `cannot get property "connection" without inject`（0.2.2-rc.2 上实测）。
- * 属性读分支只服务于假 ctx / 没有 `get` 的旧 cordis，所以必须包 try。
- */
-function optionalService(ctx: Context, name: string): unknown {
-  const withGet = ctx as unknown as { get?: (service: string) => unknown }
-  if (typeof withGet.get === 'function') return withGet.get(name)
-  try {
-    return (ctx as unknown as Record<string, unknown>)[name]
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * 路由准入 = **本机回环围栏** ∪ **宿主 Connection 鉴权**。
- *
- * - 本机回环：维持本包一贯的 loopback + 同源口径。本机任意进程能读这些结果本来就是
- *   现状，收紧它是全仓信任模型的活（仓根 ROADMAP.md 第 5 项），
- *   不在一个包里先动——同时保证仓库真机脚本与裸 `curl` 照旧可用。
- * - 非本机（反代 / `--trusted-host`）：交给宿主自己的 `connection.requestRejection`，
- *   同一套 Host/Origin 围栏（回环、绑定地址、trusted hosts）加**浏览器会话或 API peer**。
- *   未登录是 401，Host 不被信任是 403——与宿主 `/api` 一致。
- * - 旧宿主（没有该服务，或服务上没有这个方法）：非本机请求退回 loopback 围栏的 403，
- *   与改动前逐字一致。
- *
- * @returns 拒绝时的状态与错误码；放行时 undefined。
- */
-function requestRejection(ctx: Context, request: ReqLike): { status: number; error: string } | undefined {
-  if (isLoopbackRequest(request)) return undefined
-  const connection = optionalService(ctx, 'connection') as
-    | { requestRejection?: (request: ReqLike) => number | undefined }
-    | undefined
-  if (typeof connection?.requestRejection === 'function') {
-    const status = connection.requestRejection(request)
-    return status === undefined ? undefined : { status, error: status === 401 ? 'unauthorized' : 'forbidden' }
-  }
-  return { status: 403, error: 'forbidden: loopback-only' }
 }
 
 function writeJson(res: ResLike, status: number, body: unknown): void {
@@ -936,7 +870,7 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
       kind: 'exact',
       path: '/api/dsh-search/catalog',
       handler: async (req, res) => {
-        const rejection = requestRejection(ctx, req)
+        const rejection = admitRoute(ctx, req)
         if (rejection !== undefined) {
           writeJson(res, rejection.status, { error: rejection.error })
           return
@@ -953,7 +887,7 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
       kind: 'exact',
       path: '/api/dsh-search/query',
       handler: async (req, res) => {
-        const rejection = requestRejection(ctx, req)
+        const rejection = admitRoute(ctx, req)
         if (rejection !== undefined) {
           writeJson(res, rejection.status, { error: rejection.error })
           return

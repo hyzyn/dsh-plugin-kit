@@ -79,7 +79,7 @@ DSH 的 MCP 客户端不声明 MCP roots，`codegraph serve --mcp` 只能从**�
 
 `mcp` 是**盘上快照**（不推测下次写入）：`mode` / `cwd` / `disabled` / `indexed` / `cwdExists` + `note`。托管行为空的两种已知空态由 `note` 自证——空占位 `- insert: []` 且默认项目未索引时是「没有已索引的默认项目…设为默认项目后会自动写入」，per-agent 生效时是「托管行已挂起（工具按 agent 挂载）」；真有行在托管时不写 `note`（卡片上 cwd / disabled 已经说清状态，不让它每刷一次重复一遍）。
 
-所有路由均为 loopback-only，防止远程访问。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。`diagnose` 只认 GET（只读），但它可能补跑一次探测，所以不会在写路径上被顺手调用。
+所有路由的准入 = 本机回环围栏 ∪ 非本机宿主会话（反代 / `--trusted-host` 凭 DSH 会话放行：未登录 401、外部 Host 403）；旧宿主没有 `connection` 服务时退回 loopback-only。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。`diagnose` 只认 GET（只读），但它可能补跑一次探测，所以不会在写路径上被顺手调用。
 
 诊断包的脱敏口径（`diagnose`）：`~/.dsh/cordis.patch.yml` 是所有 MCP 服务器共用的文件，别家的行里可能有 `headers` / `env` 这类凭据，所以**只摘 codegraph 相关的两个区块**（本插件区块 + dsh-mcp 卡片区块），并按**键名**处理——`id` / `name` / `serverName` / `transport` / `command` / `args` / `cwd` / `disabled` 留值（这些正是排查要看的东西），其余键一律 `<redacted>`，且 `headers:` / `env:` 这类敏感键会污染整棵子树（连 `authorization:` 的值一起抹掉，但键名保留）。新增字段默认脱敏（fail-closed）。
 

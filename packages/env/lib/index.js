@@ -25,12 +25,12 @@
  * readStoreRefs()（直接读 .credentials.yaml 的 refs），不依赖 seam；seam 那条路继续
  * 负责迁移与对账。判据与代价见 applyStoreRefsToProcessEnv 的注释。
  *
- * 浏览器半体（./client）通过 /api/dsh-env/* 路由读写配置；路由带
- * loopback-only 信任围栏，密钥条目不下发明文（write-only）。
+ * 浏览器半体（./client）通过 /api/dsh-env/* 路由读写配置；路由准入 = 本机回环围栏
+ * ∪ 非本机宿主鉴权（kit.admitRoute），密钥条目不下发明文（write-only）。
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { dshHome, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit';
+import { admitRoute, dshHome, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 export const name = 'env-manager';
 export const inject = [];
@@ -465,34 +465,6 @@ async function routeSecretEntries(seam, entries, previous, inherited, warnings) 
         }
     }
 }
-function isLoopbackRequest(request) {
-    const address = request.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
-        return false;
-    const host = request.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (request.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = request.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
-}
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     res.end(JSON.stringify(body));
@@ -521,8 +493,9 @@ async function readJsonBody(req) {
 }
 function makeRoutes(ctx, applyOnSave, store) {
     const guard = (req, res, method) => {
-        if (!isLoopbackRequest(req)) {
-            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+        const rejection = admitRoute(ctx, req);
+        if (rejection !== undefined) {
+            writeJson(res, rejection.status, { error: rejection.error });
             return false;
         }
         if (req.method !== method) {

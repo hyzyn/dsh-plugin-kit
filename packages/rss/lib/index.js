@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DEFAULT_SECTION_MAX_CHARS, definePlugin, dshHome, getService, registerLiteralSection, requestJson, writeFileAtomic } from '@hyzyn/dsh-kit';
+import { DEFAULT_SECTION_MAX_CHARS, admitRoute, definePlugin, dshHome, getService, registerLiteralSection, requestJson, writeFileAtomic } from '@hyzyn/dsh-kit';
 import { BUILTIN_CATALOG_NAME, getBuiltinCatalogEntries, getCatalogCategories, getCatalogSourceNames, getMergedCatalogEntries, searchCatalogEntries, catalogStatus, } from './catalog.js';
 export const name = 'rss-digest';
 export const inject = [];
@@ -1118,34 +1118,6 @@ export function readLatestDigest(config) {
         return null;
     }
 }
-function isLoopbackRequest(request) {
-    const address = request.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
-        return false;
-    const host = request.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (request.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = request.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
-}
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
     res.end(JSON.stringify(body));
@@ -1185,7 +1157,7 @@ function digestMarkdown(digest) {
         return '';
     }
 }
-function makeRoutes(config, onDigestChanged, 
+function makeRoutes(ctx, config, onDigestChanged, 
 /** 禁用闸门与配置保存回调：disabled 供数据路由短路（/config 例外），onStoreSaved 在保存成功后触发热应用。 */
 hooks, 
 /** AI 摘要所需的宿主 Context（/refresh 触发的生成要用）。 */
@@ -1197,8 +1169,9 @@ runtime = {}) {
         return true;
     };
     const guard = (req, res, method) => {
-        if (!isLoopbackRequest(req)) {
-            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+        const rejection = admitRoute(ctx, req);
+        if (rejection !== undefined) {
+            writeJson(res, rejection.status, { error: rejection.error });
             return false;
         }
         if (req.method !== method) {
@@ -1550,7 +1523,7 @@ export function apply(ctx, config) {
             ctx.logger('rss-digest').warn('generate digest failed: %s', error instanceof Error ? error.message : String(error));
         }
     };
-    const routes = makeRoutes(config, (digest) => {
+    const routes = makeRoutes(ctx, config, (digest) => {
         latest = digest;
         updateSystemPrompt();
     }, {

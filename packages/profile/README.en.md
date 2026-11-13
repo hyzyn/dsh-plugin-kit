@@ -27,11 +27,13 @@ Each profile is a standalone directory under `$DSH_HOME/profiles` (default `~/.d
 
 | File | Description |
 | --- | --- |
-| `src/index.ts` | Host half: profile directory read/write, validation, create / copy / rename / delete, `/api/dsh-profile/*` routes (loopback-only fence) |
+| `src/index.ts` | Host half: profile directory read/write, validation, create / copy / rename / delete, `/api/dsh-profile/*` routes (admission = loopback or a host session for non-loopback requests) |
 | `client.js` | Browser half: registers the `settings.plugin.item` card (React shell + plain-DOM management panel, `window.__ModuleLoader__.load` format) |
 | `cordis.patch.yml` | Bundle patch: inserts the plugin line into the profile roster |
 
-Routes (loopback + same-origin only):
+Routes:
+
+Loopback requests keep the local loopback + same-origin fence. Every other request (behind a reverse proxy, or a `--trusted-host` name) goes through the host's own auth: `connection.requestRejection` applies the Host/Origin fence and requires a signed-in browser session (401 without one, 403 for an untrusted Host). On hosts without that service or method such requests still get the loopback fence's 403:
 
 - `GET /api/dsh-profile/list` — list all profiles and their status
 - `POST /api/dsh-profile/create` — create (`name` + optional `template` / `port`)

@@ -24,9 +24,20 @@
  *     来源检查排在 DNS 之前的时序（docker D80）、变更端点与长流端点的同源证明
  *     （docker D32/D139）。`docker` · `tty` · `dsh-mcp` 已改走这一档（三处各写一份
  *     必然漂，见项目级 ROADMAP 第 1 项）；其余包仍用同步档——收敛到同一档要连信任
- *     模型一起定（同文件第 5 项），单包先做只会造出不一致的安全假设。
+ *     模型一起定（同文件第 5 项），单包先做只会造出不一致的安全假设。同步档的包若
+ *     要支持反代 / `--trusted-host`，在它之上叠下一段的 `admitRoute`（不是把档位升上去）。
+ *
+ * **准入层 `admitRoute`（2026-11-13，项目级 ROADMAP 第 13 项）**：同步档之上再叠一层
+ * **宿主自己的鉴权**——非本机请求（反代 / `--trusted-host`）交给
+ * `connection.requestRejection`：同一套 Host/Origin 围栏（回环、绑定地址、trusted hosts）
+ * 加浏览器会话或 API peer，未登录 401、Host 不被信任 403。本机回环**维持同步档口径**
+ * （本机任意进程本来就能读，收紧是全仓信任模型的活，且仓库真机脚本与裸 curl 依赖它）；
+ * 旧宿主没有这个服务、或服务上没有这个方法时，非本机请求退回同步档的 403。
+ * 谁在用：`search` / `codegraph` / `env` / `profile` / `prompt` / `rss` 的数据路由——
+ * 它们此前在反代 / 另一台机器访问下整块 403（ROADMAP 第 13 项）。
  */
 import { promises as dns } from 'node:dns';
+import { getService } from './services.js';
 /** readJsonBody 的默认上限（字节）：与 mcp / rss / prompt 外的多数实现一致。 */
 export const MAX_JSON_BODY_BYTES = 1024 * 1024;
 /** 回环来源允许的 remoteAddress 形态：IPv4、IPv6、IPv4-mapped IPv6。 */
@@ -240,6 +251,36 @@ export function originProofHint(request) {
         return typeof value === 'string' && value !== '' ? '有' : '无';
     };
     return `origin=${has('origin')} sec-fetch-site=${has('sec-fetch-site')} cookie=${has('cookie')}`;
+}
+/**
+ * 数据路由的准入 = **本机回环围栏** ∪ **非本机宿主 Connection 鉴权**。
+ *
+ * 走这两档而不是一刀切的原因（判据见 docs/architecture.md § 7 的档位表）：
+ *   - **本机回环**：维持同步档的老口径。本机任意进程本来就能读这些结果，收紧它是全仓
+ *     信任模型的活（ROADMAP 第 5 项），而且仓库的真机脚本（`scripts/verify-*.mjs`、
+ *     `scripts/windows/verify-plugins.mjs`）与裸 `curl` 都依赖「本机不带会话也能用」。
+ *   - **非本机**：交给宿主自己的 `connection.requestRejection`——反代 / `--trusted-host`
+ *     部署下浏览器带的是宿主会话，与宿主 `/api` 同一套判据；此前这些路由一律 403，
+ *     反代后面的面板整块用不了（ROADMAP 第 13 项）。
+ *   - **旧宿主**（没有 `connection`，或服务上没有 `requestRejection`）：非本机请求退回
+ *     同步档的 403，与改动前逐字一致。
+ *
+ * `getService` 会把「未 inject 的服务属性访问抛错」吞成 undefined（kit D17 / loglens D11），
+ * 所以这里不会因为宿主没有该服务而把整条路由抛成 500——这正是先前那版实现的缺陷。
+ *
+ * @param ctx - 插件 Context（按请求读取宿主服务；端口就绪后才有值）。
+ * @param request - 宿主路由请求（node:http 的 IncomingMessage 结构上兼容）。
+ * @returns 拒绝时的状态与错误码；放行时 undefined。
+ */
+export function admitRoute(ctx, request) {
+    if (isLoopbackRequest(request))
+        return undefined;
+    const connection = getService(ctx, 'connection');
+    if (typeof connection?.requestRejection === 'function') {
+        const status = connection.requestRejection(request);
+        return status === undefined ? undefined : { status, error: status === 401 ? 'unauthorized' : 'forbidden' };
+    }
+    return { status: 403, error: 'forbidden: loopback-only' };
 }
 /**
  * JSON 响应基线：content-type / referrer-policy 是各包公共基线，cache-control

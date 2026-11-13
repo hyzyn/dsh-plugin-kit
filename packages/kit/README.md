@@ -106,6 +106,12 @@ const patchFile = join(dshHome(), 'cordis.patch.yml')
     转发链会删掉前两个头，见 `docker D139`）；
   - `originProofHint(req): string` —— 403 的成因摘要（只报三个头的有无，**不落 Cookie 值**）；
   - `isLoopbackAddress(address): boolean` —— 地址判定本身（127/8 全段 + IPv6 等价形式）。
+- `admitRoute(ctx, req): { status, error } | undefined` —— **数据路由准入**（2026-11-13，
+  ROADMAP 第 13 项）：`isLoopbackRequest` 放行本机；**其余请求**交给宿主
+  `connection.requestRejection`（同一套 Host/Origin 围栏 + 浏览器会话 / API peer）——
+  未登录 401、Host 不被信任 403；旧宿主没有该服务、或服务上没有该方法时退回同步档的 403。
+  本机回环**不带会话也放行**（本机进程 / 仓库真机脚本 / 裸 `curl` 依赖它）。在用：
+  `search` · `codegraph` · `env` · `profile` · `prompt` · `rss` 六包的数据路由。
 - `writeJson(res, status, body, headers?)` —— JSON 响应基线（content-type /
   referrer-policy / cache-control: no-store / x-content-type-options: nosniff），
   `headers` 可覆盖单条。
@@ -116,6 +122,12 @@ const patchFile = join(dshHome(), 'cordis.patch.yml')
 if (!isLoopbackRequest(req)) return writeJson(res, 403, { error: 'forbidden: loopback-only' })
 const body = await readJsonBody(req)
 if (body === undefined) return writeJson(res, 400, { error: 'invalid json body' })
+```
+
+```ts
+// 数据路由：本机回环 ∪ 宿主鉴权（反代 / --trusted-host 走后者）
+const rejection = admitRoute(ctx, req)
+if (rejection !== undefined) return writeJson(res, rejection.status, { error: rejection.error })
 ```
 
 ```ts

@@ -10,13 +10,13 @@
  * - 导出/分享：导出 JSON / Markdown，支持 JSON 导入。
  *
  * 配置保存在 ~/.dsh/prompts.yml（可用 DSH_PROMPT_FILE 覆盖）的托管区块中。
- * 浏览器半体（./client）通过 /api/dsh-prompt/* 路由读写；路由带 loopback-only
- * 信任围栏。
+ * 浏览器半体（./client）通过 /api/dsh-prompt/* 路由读写；路由准入 = 本机回环围栏
+ * ∪ 非本机宿主鉴权（kit.admitRoute）。
  */
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { dshHome, readManagedBlock, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit';
+import { admitRoute, dshHome, readManagedBlock, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 export const name = 'prompt-manager';
 export const inject = [];
@@ -428,34 +428,6 @@ export function promptBodyWarning(prompt) {
     return (`这份 Prompt 的版本 ${ids} 正文超过每轮注入上限 ${PROMPT_BODY_MAX_CHARS} 字符，` +
         `启用后每轮只会注入前 ${PROMPT_BODY_MAX_CHARS} 字符；完整内容仍保存在文件里，可随时在卡片查看`);
 }
-function isLoopbackRequest(request) {
-    const address = request.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
-        return false;
-    const host = request.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (request.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = request.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
-}
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
     res.end(JSON.stringify(body));
@@ -485,8 +457,9 @@ async function readJsonBody(req) {
 /** 导出仅为测试：生产路径只有 apply 里这一处调用。 */
 export function makeRoutes(ctx, onChanged) {
     const guard = (req, res, method) => {
-        if (!isLoopbackRequest(req)) {
-            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+        const rejection = admitRoute(ctx, req);
+        if (rejection !== undefined) {
+            writeJson(res, rejection.status, { error: rejection.error });
             return false;
         }
         if (req.method !== method) {

@@ -141,34 +141,37 @@
 浏览器 client.js
   └─ fetch('/api/dsh-<id>/…')          ← 相对路径，桌面版与浏览器都成立
        └─ 宿主插件路由
-            ├─ kit.isLoopbackRequest()  ← 回环围栏（全部路由；`dsh-search` 的非本机请求
-            │                             另由宿主 connection.requestRejection 定夺，见下表）
+            ├─ kit.admitRoute()        ← 准入门：本机回环围栏；非本机交给宿主
+            │                             connection.requestRejection（见下表）
             ├─ kit.readJsonBody()       ← POST body 围栏（畸形/超限 → undefined → 400）
             └─ 业务：子进程 / SSH / 文件 / 宿主服务
 ```
 
 四条**跨包一致**的约定，改任何插件都适用：
 
-1. **回环围栏**：全部路由先过回环围栏；变更端点另需**同源证明**（`Origin` / `Sec-Fetch-Site`），
-   且来源检查必须排在 DNS 等异步分支**之前**。围栏实现只有一份（`@hyzyn/dsh-kit`），
-   但**分两档**：同步档 `isLoopbackRequest`（9 个插件的历史口径，语义未动）与加固档
-   `isLoopbackRequestStrict` + `hasSameOriginProof`（127/8 全段、别名 DNS 确认、桌面壳
-   Cookie 例外）。**哪些包在哪一档**是安全假设的一部分，别按「顺手升级」改：
+1. **回环围栏与准入**：全部路由先过回环围栏；变更端点另需**同源证明**（`Origin` /
+   `Sec-Fetch-Site`），且来源检查必须排在 DNS 等异步分支**之前**。围栏实现只有一份
+   （`@hyzyn/dsh-kit`），**分两档**：同步档 `isLoopbackRequest`（历史口径，语义未动）与
+   加固档 `isLoopbackRequestStrict` + `hasSameOriginProof`（127/8 全段、别名 DNS 确认、
+   桌面壳 Cookie 例外）；数据路由另可叠一层**准入** `admitRoute`（本机回环 ∪ 宿主鉴权，
+   见下表第二行）。**哪些包在哪一档**是安全假设的一部分，别按「顺手升级」改：
 
    | 包 | 闸门 | 变更端点的同源证明 |
    |---|---|---|
    | `docker` · `tty` · `dsh-mcp` · `loglens` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法）——`docker` / `tty` 两处 `/config` **整体豁免**（它是禁用后唯一的恢复入口）；`loglens` **按动作部分豁免**：`enabled` 免、`targets` 的增删改要同源证明；`dsh-mcp` 没有 `/config` 路由（配置走 `POST /api/dsh-mcp/servers/save`），**无豁免** |
-   | `search` | `isLoopbackRequest`（同步档）**∪** 宿主 `connection.requestRejection`（非本机请求） | 无 |
-   | 其余 6 个插件 | `isLoopbackRequest`（同步档） | 无 |
+   | `search` · `codegraph` · `env` · `profile` · `prompt` · `rss` | `kit.admitRoute(ctx, req)`：同步档 `isLoopbackRequest` **∪** 宿主 `connection.requestRejection`（非本机请求） | 无 |
+   | `kit-settings` | 没有 HTTP 数据路由（只有设置卡片） | — |
 
-   > **口径标注（2026-11-13 补）**：`dsh-search` 的两条数据路由（`/query` / `/catalog`）
-   > 改成**回环围栏 ∪ 宿主鉴权**。本机请求仍走同步档——本机任意进程本来就能读这些结果，
-   > 收紧它是全仓信任模型的活（[ROADMAP.md](../ROADMAP.md) 第 5 项），而且仓库真机脚本与裸
-   > `curl` 依赖这条；非本机（反代 / `--trusted-host`）交给宿主 `connection.requestRejection`：
-   > 同一套 Host/Origin 围栏 + 浏览器会话或 API peer，未登录 **401**、Host 不被信任 **403**，
-   > 与宿主 `/api` 一致（此前一律 403，反代后面这块搜索完全用不了）。旧宿主没有这个服务、
-   > 或服务上没有这个方法时，非本机请求退回同步档的 403。表里因此把 `search` 单列一行：
-   > **同步档 7 → 6**（成员少一个，语义未动）。
+   > **口径标注（2026-11-13 补）**：`search` · `codegraph` · `env` · `profile` · `prompt` ·
+   > `rss` 六个包的数据路由改成**回环围栏 ∪ 宿主鉴权**，实现收敛到 kit 的 `admitRoute`（一份，
+   > 六个包里的本地 `isLoopbackRequest` 副本一并删掉）。本机回环**维持同步档不动**——本机任意
+   > 进程本来就能读这些结果，收紧它是全仓信任模型的活（[ROADMAP.md](../ROADMAP.md) 第 5 项），
+   > 而且仓库真机脚本与裸 `curl` 依赖它；非本机（反代 / `--trusted-host`）交给宿主
+   > `connection.requestRejection`：同一套 Host/Origin 围栏 + 浏览器会话或 API peer，未登录
+   > **401**、Host 不被信任 **403**，与宿主 `/api` 一致（此前这些面板在反代 / 另一台机器访问下
+   > 整块 403）。旧宿主没有这个服务、或服务上没有这个方法时，非本机请求退回同步档的 403。
+   > 表里因此把这六个包单列一行，同步档不再有包**只**走它（`kit-settings` 无路由）——同步档
+   > 仍作为 `admitRoute` 的兜底分支与 kit 的公共导出保留。
 
    > **口径标注（2026-10-11 加 `loglens` 时补）**：按 [conventions § 文档分档](./conventions.md#文档分档)
    > 纪律 3，旧数只加标注、不擅自改。上一段的「9 个插件」与上表「其余 7 个」**本来就不同源**：

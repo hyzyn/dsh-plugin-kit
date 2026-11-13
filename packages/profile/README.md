@@ -27,11 +27,13 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `src/index.ts` | 宿主半体：profile 目录读写、校验、创建 / 复制 / 重命名 / 删除、`/api/dsh-profile/*` 路由（loopback-only 围栏） |
+| `src/index.ts` | 宿主半体：profile 目录读写、校验、创建 / 复制 / 重命名 / 删除、`/api/dsh-profile/*` 路由（准入 = 本机回环 ∪ 非本机宿主会话） |
 | `client.js` | 浏览器半体：注册 `settings.plugin.item` 卡片（React 外壳 + 纯 DOM 管理面板，`window.__ModuleLoader__.load` 格式） |
 | `cordis.patch.yml` | bundle 补丁：把插件行插入 profile 阵容 |
 
-路由（仅限 loopback + 同源）：
+路由：
+
+本机回环请求维持 loopback + 同源围栏；**非本机**请求（反代 / `--trusted-host`）交给宿主自己的鉴权：经 `connection.requestRejection` 过 Host/Origin 围栏并要求已登录的浏览器会话（未登录 401、Host 不被信任 403）。宿主没有该服务（或没有这个方法）时，非本机请求仍是 loopback 围栏的 403：
 
 - `GET /api/dsh-profile/list` —— 列出全部 profile 及状态
 - `POST /api/dsh-profile/create` —— 新建（`name` + 可选 `template` / `port`）
