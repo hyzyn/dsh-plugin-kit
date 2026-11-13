@@ -658,6 +658,15 @@ loopback, `localhost`, or a hostname / `/etc/hosts` alias that **resolves to thi
 `forbidden: loopback-only`. The request body is capped at 1MB, and responses are uniformly `application/json` +
 `referrer-policy: no-referrer`.
 
+**Not available behind a reverse proxy or from another machine**: non-local requests get 403
+`forbidden: loopback-only`. That is deliberate — these routes carry the mutating and execution
+surface (docker stop / remove / exec), which is not opened to remote sessions (see [ROADMAP.md](../../ROADMAP.md)
+item 5 § 5.4). To use this panel from another machine, use an **SSH tunnel**:
+`ssh -L 3080:127.0.0.1:3080 <host>` and open `http://localhost:3080` — the host sees a loopback
+source and a `localhost` Host, so the fence admits it, and the session cookie is minted for that
+authority.
+
+
 **On top of loopback there is a second gate, the "same-origin proof"**: the four SSE streams (`/logs/stream`,
 `/stats/stream`, `/events/stream`, `/images/pull/stream`) and every write sub-route (`/action`,
 `/images/remove|prune`, `/networks/remove|prune`, `/volumes/remove|prune`, `/exec`, `/elevate` (including

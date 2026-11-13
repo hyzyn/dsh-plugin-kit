@@ -159,6 +159,15 @@ same-origin` or a matching `Origin`; with both absent, only requests carrying th
 pass — the desktop shell's forwarding chain, see `docker D139`). The read-only `GET /servers` needs no
 proof, so bare curl still works; the rationale and the single implementation live in `packages/kit/src/http.ts`.
 
+**Not available behind a reverse proxy or from another machine**: non-local requests get 403
+`forbidden: loopback-only`. That is deliberate — these routes carry the mutating and execution
+surface (adding a server spawns a process), which is not opened to remote sessions (see [ROADMAP.md](../../ROADMAP.md)
+item 5 § 5.4). To use this panel from another machine, use an **SSH tunnel**:
+`ssh -L 3080:127.0.0.1:3080 <host>` and open `http://localhost:3080` — the host sees a loopback
+source and a `localhost` Host, so the fence admits it, and the session cookie is minted for that
+authority.
+
+
 ## Installation
 
 ```bash

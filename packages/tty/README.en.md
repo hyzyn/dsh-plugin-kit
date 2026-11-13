@@ -934,6 +934,7 @@ light/dark theme switch” can be verified. The `.preview/` artifact directory i
 
 ## Known limitations
 
+- **Not available behind a reverse proxy or from another machine**: non-local requests get 403, read-only routes included — these routes are the PTY / SSH / SFTP execution surface and are not opened to remote sessions (see [ROADMAP.md](../../ROADMAP.md) item 5 § 5.4). From another machine, use an **SSH tunnel**: `ssh -L 3080:127.0.0.1:3080 <host>` and open `http://localhost:3080` — the host sees a loopback source and a `localhost` Host, so the fence admits it and the session cookie is minted for that authority.
 - **resize is an internal coupling**: DSH’s `spawnTerminal` handle does not expose resize, so the plugin passes
   through `(handle).terminal.resize(cols, rows)` (the native node-pty API). If a DSH upgrade changes the
   internals, since 0.3.0 it warns once and degrades to a fixed size instead of throwing every frame (D79).

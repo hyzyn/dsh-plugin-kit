@@ -273,6 +273,14 @@ are ≤120 characters each; details live in the result-side warnings.
 
 ## HTTP surface (loopback)
 
+**Not available behind a reverse proxy or from another machine**: non-local requests get 403
+`forbidden: loopback-only`. That is deliberate — these routes carry the mutating and execution
+surface (credential-bearing source configuration), which is not opened to remote sessions (see [ROADMAP.md](../../ROADMAP.md)
+item 5 § 5.4). To use this panel from another machine, use an **SSH tunnel**:
+`ssh -L 3080:127.0.0.1:3080 <host>` and open `http://localhost:3080` — the host sees a loopback
+source and a `localhost` Host, so the fence admits it, and the session cookie is minted for that
+authority.
+
 | Action | Request | Notes |
 |---|---|---|
 | Read config | `GET /api/dsh-loglens/config` | Returns `{ ok, config: { enabled, targets }, plugins: { docker: true\|false } }` — `plugins.docker` is the freshly computed "is the docker plugin here" verdict ([src/plugins.ts](./src/plugins.ts)); the panel uses it to decide whether the Docker cell gets an entry |

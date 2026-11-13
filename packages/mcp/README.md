@@ -134,6 +134,13 @@ per-agent 挂载，按需装载在那条路上也照样有意义。
 ——见 `docker D139`）。只读的 `GET /servers` 不要求证明，裸 curl 也能读；成因与实现只有一份，
 在 `packages/kit/src/http.ts`。
 
+**反代 / 另一台机器访问下不可用**：非本机请求一律 403 `forbidden: loopback-only`——这是刻意的，
+这些路由里包含变更与执行面（添加服务器 = 起进程），不开放给远程会话（评估与取舍见 [ROADMAP.md](../../ROADMAP.md)
+第 5 项 § 5.4）。需要从另一台机器用这块面板时走 **SSH 隧道**：`ssh -L 3080:127.0.0.1:3080 <host>`，
+浏览器打开 `http://localhost:3080`——宿主侧看到的来源是回环、Host 是 `localhost`，围栏直接放行，
+会话 cookie 也按该 authority 铸造。
+
+
 ## 安装
 
 ```bash

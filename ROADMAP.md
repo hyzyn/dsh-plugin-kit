@@ -213,6 +213,36 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 名字都带前缀，现实风险低）；③ 没有「仅本次运行有效」档位（TTL / boot 计数），持久生效是刻意的。
 三条都写进了 `grant-store.ts` 的「已知限制」。
 
+#### 5.4 反代 / 另一台机器访问下的加固档：评估（2026-11-13，已决：维持回环专属）
+
+第 13 项把 `search` / `codegraph` / `env` / `profile` / `prompt` / `rss` 六个同步档包的数据
+路由改成「本机回环 ∪ 非本机宿主鉴权」（`kit.admitRoute`）。**加固档四包没有跟着改**：
+`docker` / `tty` / `dsh-mcp` / `loglens` 的全部路由仍走 `isLoopbackRequestStrict`（变更端点
+再加同源证明），非本机请求一律 403——保留公网 Host 的反代、或直接用 LAN 地址访问时，这四块
+面板整块打不开（宿主自己的 `/api` 反倒能用）。
+
+**为什么不顺手改**：这四包暴露的是**变更与执行面**（docker 的 stop/remove/exec、tty 的
+PTY / SSH / SFTP、mcp 添加服务器 = 起进程、loglens 的目标配置带凭据），不是只读检索。
+接到宿主鉴权等于让**远程会话**（浏览器 cookie）第一次获得这些能力。能力开关
+（`allowMutations` / `allowExec` / `allowProxyCommand`）是**独立闸门**、不会被这条改动绕过，
+但闸门之外的面（tty 开 shell、mcp 加服务器、docker 读日志与 inspect）本来就不需要授权。
+
+**三条路（选一条再动手，选之前不要改闸门）**：
+
+1. **只读白名单接宿主鉴权**：逐条列出「纯信息」端点（docker 的 ps / images / networks /
+   volumes / stats / inspect、loglens 的 query / facets / fields / context），变更、执行与
+   文件读写端点维持回环。面板能看不能改；要配一份逐端点清单与守卫（漏一条就是把执行面放出去）。
+2. **全部端点接宿主鉴权**：与宿主 `/api` 同口径，能力开关照旧独立。面板完整可用；代价是
+   远程会话能开 shell、加 MCP 服务器、改日志源。
+3. **不动**：加固档保持回环专属。需要从另一台机器用这四块面板时走 **SSH 隧道**
+   （`ssh -L 3080:127.0.0.1:3080 <host>`，访问 `http://localhost:3080`）：宿主侧看到的来源
+   是回环、Host 是 `localhost`，加固档直接放行（会话 cookie 也按该 authority 铸造）。
+   这条路今天就能用，且不扩大任何暴露面。
+
+**决定（2026-11-13，维护者拍板）：取 ③**——加固档四包的闸门**不动**，四个 README（中英）各加一段
+「反代 / 另一台机器访问下不可用 + SSH 隧道」的说明。若以后确实要支持 Cloudflare 这类反代部署，
+再按 ① 做（逐端点白名单 + 守卫）；② 需要维护者书面接受「远程会话 = 本机 shell」，目前不做。
+
 ### 6. ✅ CI 与 `package.json` 的脚本双真相源
 
 诊断正文在 [conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线)

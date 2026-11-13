@@ -211,6 +211,12 @@ dsh plugin --profile web add link:$(pwd)/packages/loglens    # 仓库开发调�
 
 ## HTTP 面（回环）
 
+**反代 / 另一台机器访问下不可用**：非本机请求一律 403 `forbidden: loopback-only`——这是刻意的，
+这些路由里包含变更与执行面（带凭据的来源配置），不开放给远程会话（评估与取舍见 [ROADMAP.md](../../ROADMAP.md)
+第 5 项 § 5.4）。需要从另一台机器用这块面板时走 **SSH 隧道**：`ssh -L 3080:127.0.0.1:3080 <host>`，
+浏览器打开 `http://localhost:3080`——宿主侧看到的来源是回环、Host 是 `localhost`，围栏直接放行，
+会话 cookie 也按该 authority 铸造。
+
 | 动作 | 请求 | 说明 |
 |---|---|---|
 | 读配置 | `GET /api/dsh-loglens/config` | 返回 `{ ok, config: { enabled, targets }, plugins: { docker: true\|false } }`——`plugins.docker` 是「docker 插件在不在」的现算判据（[src/plugins.ts](./src/plugins.ts)），面板靠它决定 Docker 那一格给不给入口 |
