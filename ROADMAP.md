@@ -353,7 +353,7 @@ docker 与 tty 两个消费包的调用点与测试要同步；kit 版本一动�
 历史不动（用户明确「历史记录先不处理了」）。落点与门槛见
 [§ 已完成第 12 项](#12--内网标识的专项排查--闸门)。
 
-### 13. 反代 / 用另一台机器访问时，其余同步档插件的数据路由仍是 403
+### 13. ✅ 反代 / 用另一台机器访问时，其余同步档插件的数据路由仍是 403
 
 **发现（2026-11-13，处理 `dsh-search` 路由鉴权时）**：`dsh-search` 的两条数据路由
 （`/query` / `/catalog`）此前只认 loopback，用户跑反代（`--host <lan ip> --trusted-host
@@ -366,13 +366,15 @@ docker 与 tty 两个消费包的调用点与测试要同步；kit 版本一动�
 （trusted host + 浏览器会话），插件面板却整块打不开。这不只是「反代」：把 DSH 绑到 LAN 地址、
 用另一台机器的浏览器访问，Host 就不是回环名，`isLoopbackRequest` 直接判否。
 
-**两条路，选一条再动手**（要连信任模型一起定，见第 5 项）：
+**两条路**（要连信任模型一起定，见第 5 项）：① 各包各自走宿主鉴权，准入**先上提到 kit**
+做成一份实现再逐包接；② 由宿主统一判（`webServer` 在把请求交给插件路由前先过一道鉴权，
+插件不再自己判）——依赖 DSH 侧有没有这个接缝。
 
-1. **各包各自走宿主鉴权**（`dsh-search` 现在的做法：本机口径不动，非本机交给
-   `connection.requestRejection`）——同一段准入会出现在 N 个包里，所以应该**先上提到 kit**
-   做成一份实现，再逐包接；
-2. **由宿主统一判**（例如 `webServer` 在把请求交给插件路由前先过一道鉴权，插件不再自己判）
-   ——依赖 DSH 侧有没有这个接缝，需先确认。
+**状态**：**同日完成，选的是 ①**。准入收敛为 kit 的 `admitRoute(ctx, req)`（本机回环围栏
+**∪** 非本机 `connection.requestRejection`），`search` / `codegraph` / `env` / `profile` /
+`prompt` / `rss` 六个包的数据路由全部接入，六个包里的本地 `isLoopbackRequest` 副本一并
+删掉；档位表、六个包的 README 与 `packages/kit/README.md` 同步。落点与门槛见
+[§ 已完成第 13 项](#13--反代--用另一台机器访问时其余同步档插件的数据路由仍是-403)。
 
 **为什么是 L0**：横跨 6 个包 + kit 共享件；单包先做会让「哪些部署能用哪些面板」在不同插件
 之间不一致（与第 1 项同一条理由）。
@@ -877,6 +879,33 @@ build / i18n（11/11 客户端半体）/ doc-links（644 条）/ 公网 IP 闸�
 
 **没做的（如实记下）**：历史未处理（用户明确「历史记录先不处理了」——本仓是公开仓，已公开的
 内容不做重写；清理历史只能重写，代价远高于入口拦一次）。
+
+### 13. ✅ 反代 / 用另一台机器访问时，其余同步档插件的数据路由仍是 403
+
+**落点**：`admitRoute(ctx, request)` 进 [`packages/kit/src/http.ts`](./packages/kit/src/http.ts)，
+只有一份实现：本机回环走同步档围栏（**不读宿主服务**，保持「本机进程 / 真机脚本 / 裸 `curl`
+不带会话也能用」）；非本机交给宿主 `connection.requestRejection`（Host/Origin 围栏 + 浏览器
+会话或 API peer：未登录 401、Host 不被信任 403）；旧宿主没有该服务或方法时退回同步档 403。
+`getService` 的 try 兜底吃掉 cordis「未 inject 的服务属性访问会抛」——这是先前 search 那版
+实现的缺陷（旧宿主上每条请求 500）。
+
+**接入的六个包**：`search` · `codegraph` · `env` · `profile` · `prompt` · `rss`（数据路由的
+`guard` 全部改成 `admitRoute(ctx, req)`；四个包自带的 `isLoopbackRequest` 副本删除）。
+
+**门槛**：
+- 行为：`packages/kit/test/http.test.ts` 新增 5 例——本机放行且不读服务、非本机 401/403/放行
+  映射、无服务回落、**真 cordis 不抛**（`new Context()` 无 `connection` 时属性访问陷阱）、
+  真 cordis `provide` 后走宿主鉴权。
+- 结构：`scripts/test/route-admission.test.ts`（L0 守卫）——六个包不许再定义本地围栏副本、
+  不许再自己写 `forbidden: loopback-only`、必须调 `admitRoute(ctx, req)`；三条判据各配反例，
+  防「命中 0 个文件、恒绿」。
+- 文档：`architecture.md § 7` 档位表（六个包单列一行，`kit-settings` 无路由）、六个包的
+  中英 README、`kit` README 的 `admitRoute` 条目。
+- 版本：`kit` 0.8.0 → 0.8.1（内容变了必须 bump），全仓 10 处 kit 钉子与
+  `templates/hello` 同步；`pnpm aggregate` 无 diff。
+
+**未做**：加固档四包（`docker` / `tty` / `dsh-mcp` / `loglens`）的变更端点仍只认回环 —— 它们
+的闸门是安全假设的一部分，扩到反代需要连能力开关的信任模型一起定（第 5 项），不在本项范围。
 
 ### 2026-10-25：MCP 工具面按需加载（`agentToolLoading`）
 

@@ -10,13 +10,13 @@
  * - 导出/分享：导出 JSON / Markdown，支持 JSON 导入。
  *
  * 配置保存在 ~/.dsh/prompts.yml（可用 DSH_PROMPT_FILE 覆盖）的托管区块中。
- * 浏览器半体（./client）通过 /api/dsh-prompt/* 路由读写；路由带 loopback-only
- * 信任围栏。
+ * 浏览器半体（./client）通过 /api/dsh-prompt/* 路由读写；路由准入 = 本机回环围栏
+ * ∪ 非本机宿主鉴权（kit.admitRoute）。
  */
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { dshHome, readManagedBlock, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit'
+import { admitRoute, dshHome, readManagedBlock, registerLiteralSection, spliceManagedBlock } from '@hyzyn/dsh-kit'
 import type { PromptSectionApi } from '@hyzyn/dsh-kit'
 import type { Context } from '@deepseek-ai/cordis'
 import yaml from 'js-yaml'
@@ -534,7 +534,7 @@ export function promptBodyWarning(prompt: Prompt): string | undefined {
 }
 
 /* ------------------------------------------------------------------ *
- * HTTP 路由（loopback-only 围栏）
+ * HTTP 路由（准入 = 本机回环围栏 ∪ 非本机宿主鉴权，见 kit.admitRoute）
  * ------------------------------------------------------------------ */
 
 interface ReqLike {
@@ -547,28 +547,6 @@ interface ReqLike {
 interface ResLike {
   writeHead(status: number, headers?: Record<string, string>): void
   end(body?: string): void
-}
-
-function isLoopbackRequest(request: ReqLike): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL('http://' + host)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
 }
 
 function writeJson(res: ResLike, status: number, body: unknown): void {
@@ -605,8 +583,9 @@ export function makeRoutes(
   onChanged: () => void,
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
+    const rejection = admitRoute(ctx, req)
+    if (rejection !== undefined) {
+      writeJson(res, rejection.status, { error: rejection.error })
       return false
     }
     if (req.method !== method) {

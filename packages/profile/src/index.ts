@@ -4,7 +4,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { dshHome, registerLiteralSection, spawnPortable } from '@hyzyn/dsh-kit'
+import { admitRoute, dshHome, registerLiteralSection, spawnPortable } from '@hyzyn/dsh-kit'
 
 export const name = 'profile-manager'
 export const inject: string[] = []
@@ -318,7 +318,7 @@ function renameProfile(oldName: string, newName: string): void {
 }
 
 /* ------------------------------------------------------------------ *
- * HTTP 路由（loopback-only 围栏）
+ * HTTP 路由（准入 = 本机回环围栏 ∪ 非本机宿主鉴权，见 kit.admitRoute）
  * ------------------------------------------------------------------ */
 
 interface ReqLike {
@@ -331,28 +331,6 @@ interface ReqLike {
 interface ResLike {
   writeHead(status: number, headers?: Record<string, string>): void
   end(body?: string): void
-}
-
-function isLoopbackRequest(request: ReqLike): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL('http://' + host)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
 }
 
 function writeJson(res: ResLike, status: number, body: unknown): void {
@@ -382,10 +360,11 @@ async function readJsonBody(req: ReqLike & AsyncIterable<Uint8Array>): Promise<R
 
 type RouteHandler = (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => Promise<void>
 
-function makeRoutes(): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
+function makeRoutes(ctx: Context): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
+    const rejection = admitRoute(ctx, req)
+    if (rejection !== undefined) {
+      writeJson(res, rejection.status, { error: rejection.error })
       return false
     }
     if (req.method !== method) {
@@ -590,7 +569,7 @@ const PROFILE_GUIDANCE = '本机装有 dsh-profile-manager 插件（profile 管�
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return
-  const routes = makeRoutes()
+  const routes = makeRoutes(ctx)
   const announce = config?.announceToAgent !== false
 
   ctx.inject(['webServer'], (webCtx: Context) => {

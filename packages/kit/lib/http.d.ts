@@ -1,3 +1,4 @@
+import type { Context } from '@deepseek-ai/cordis';
 /** 宿主路由请求的最小形状（node:http 的 IncomingMessage 结构上兼容）。 */
 export interface ReqLike {
     method?: string;
@@ -77,6 +78,32 @@ export declare function hasSameOriginProof(request: ReqLike): boolean;
  * **绝不落 Cookie 的值**（它是宿主会话凭据）。
  */
 export declare function originProofHint(request: ReqLike): string;
+/** 路由准入的拒绝结果：HTTP 状态码 + 原样写进响应体 `error` 的错误码。 */
+export interface RouteRejection {
+    status: number;
+    error: string;
+}
+/**
+ * 数据路由的准入 = **本机回环围栏** ∪ **非本机宿主 Connection 鉴权**。
+ *
+ * 走这两档而不是一刀切的原因（判据见 docs/architecture.md § 7 的档位表）：
+ *   - **本机回环**：维持同步档的老口径。本机任意进程本来就能读这些结果，收紧它是全仓
+ *     信任模型的活（ROADMAP 第 5 项），而且仓库的真机脚本（`scripts/verify-*.mjs`、
+ *     `scripts/windows/verify-plugins.mjs`）与裸 `curl` 都依赖「本机不带会话也能用」。
+ *   - **非本机**：交给宿主自己的 `connection.requestRejection`——反代 / `--trusted-host`
+ *     部署下浏览器带的是宿主会话，与宿主 `/api` 同一套判据；此前这些路由一律 403，
+ *     反代后面的面板整块用不了（ROADMAP 第 13 项）。
+ *   - **旧宿主**（没有 `connection`，或服务上没有 `requestRejection`）：非本机请求退回
+ *     同步档的 403，与改动前逐字一致。
+ *
+ * `getService` 会把「未 inject 的服务属性访问抛错」吞成 undefined（kit D17 / loglens D11），
+ * 所以这里不会因为宿主没有该服务而把整条路由抛成 500——这正是先前那版实现的缺陷。
+ *
+ * @param ctx - 插件 Context（按请求读取宿主服务；端口就绪后才有值）。
+ * @param request - 宿主路由请求（node:http 的 IncomingMessage 结构上兼容）。
+ * @returns 拒绝时的状态与错误码；放行时 undefined。
+ */
+export declare function admitRoute(ctx: Context, request: ReqLike): RouteRejection | undefined;
 /**
  * JSON 响应基线：content-type / referrer-policy 是各包公共基线，cache-control
  * no-store 与 x-content-type-options nosniff 取自 env 的收紧版本（含配置与密钥

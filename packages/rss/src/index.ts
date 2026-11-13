@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { DEFAULT_SECTION_MAX_CHARS, definePlugin, dshHome, getService, registerLiteralSection, requestJson, writeFileAtomic } from '@hyzyn/dsh-kit'
+import { DEFAULT_SECTION_MAX_CHARS, admitRoute, definePlugin, dshHome, getService, registerLiteralSection, requestJson, writeFileAtomic } from '@hyzyn/dsh-kit'
 import type { PromptSectionApi } from '@hyzyn/dsh-kit'
 import {
   BUILTIN_CATALOG_NAME,
@@ -1405,7 +1405,7 @@ export function readLatestDigest(config?: Config): DigestResult | null {
 }
 
 /* ------------------------------------------------------------------ *
- * HTTP 路由（loopback-only 围栏，供 Web GUI client 使用）
+ * HTTP 路由（准入 = 本机回环围栏 ∪ 非本机宿主鉴权，见 kit.admitRoute；供 Web GUI client 使用）
  * ------------------------------------------------------------------ */
 
 interface ReqLike {
@@ -1421,28 +1421,6 @@ interface ResLike {
 }
 
 type RouteHandler = (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => Promise<void>
-
-function isLoopbackRequest(request: ReqLike): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL('http://' + host)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
-}
 
 function writeJson(res: ResLike, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' })
@@ -1481,6 +1459,7 @@ function digestMarkdown(digest: DigestResult | null): string {
 }
 
 function makeRoutes(
+  ctx: Context,
   config?: Config,
   onDigestChanged?: (digest: DigestResult) => void,
   /** 禁用闸门与配置保存回调：disabled 供数据路由短路（/config 例外），onStoreSaved 在保存成功后触发热应用。 */
@@ -1494,8 +1473,9 @@ function makeRoutes(
     return true
   }
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
+    const rejection = admitRoute(ctx, req)
+    if (rejection !== undefined) {
+      writeJson(res, rejection.status, { error: rejection.error })
       return false
     }
     if (req.method !== method) {
@@ -1839,7 +1819,7 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }
 
-  const routes = makeRoutes(config, (digest) => {
+  const routes = makeRoutes(ctx, config, (digest) => {
     latest = digest
     updateSystemPrompt()
   }, {

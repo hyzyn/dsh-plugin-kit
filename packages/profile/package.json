@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",
-    "@hyzyn/dsh-kit": "0.8.0"
+    "@hyzyn/dsh-kit": "0.8.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

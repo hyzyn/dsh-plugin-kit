@@ -15,7 +15,7 @@
 
 ## Routes
 
-Loopback + same-origin access only:
+Loopback requests keep the local loopback + same-origin fence. Every other request (behind a reverse proxy, or a `--trusted-host` name) goes through the host's own auth: `connection.requestRejection` applies the Host/Origin fence and requires a signed-in browser session (401 without one, 403 for an untrusted Host). On hosts without that service or method such requests still get the loopback fence's 403:
 
 - `GET /api/dsh-prompt/list` — list all Prompts and their activation state
 - `POST /api/dsh-prompt/save` — create / save a Prompt as a whole

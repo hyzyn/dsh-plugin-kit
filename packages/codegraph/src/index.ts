@@ -22,7 +22,7 @@ import {
   createOutputDecoder,
   definePlugin,
   dshHome,
-  isLoopbackRequest,
+  admitRoute,
   jsYamlSchema,
   killProcessTree,
   plainConfig,
@@ -1869,7 +1869,7 @@ function syncMcpRowOnDisk(decision: McpSyncDecision, patchFile: string): { chang
 
 /**
  * 本插件统一的 JSON body 读取：上限 512KB（kit 默认 1MB，这里显式收紧）。
- * loopback 围栏 / writeJson 直接用 kit 的共享实现（全仓 9 份副本的基准）。
+ * 准入门（kit.admitRoute：本机回环围栏 ∪ 非本机宿主鉴权）/ writeJson 直接用 kit 的共享实现。
  */
 const readBody = (req: ReqLike & AsyncIterable<Uint8Array>) => readJsonBody(req, MAX_JSON_BODY_BYTES)
 
@@ -2595,6 +2595,7 @@ function createMetricsCollector(): {
 const MAX_QUERY_LIMIT = 10_000
 
 function makeRoutes(
+  ctx: Context,
   cli: CliResolved,
   defaultPath: string,
   /**
@@ -2627,8 +2628,9 @@ function makeRoutes(
   mcpPatchFile: () => string,
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
+    const rejection = admitRoute(ctx, req)
+    if (rejection !== undefined) {
+      writeJson(res, rejection.status, { error: rejection.error })
       return false
     }
     if (req.method !== method) {
@@ -3267,8 +3269,9 @@ function makeRoutes(
       kind: 'exact',
       path: '/api/dsh-codegraph/default-path',
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+        const rejection = admitRoute(ctx, req)
+        if (rejection !== undefined) {
+          writeJson(res, rejection.status, { error: rejection.error })
           return
         }
         const rt = runtime()
@@ -4473,7 +4476,7 @@ const plugin = definePlugin<Config>({
       }
     }, 'dsh-codegraph: probe retry ladder')
 
-    const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
+    const routes = makeRoutes(ctx, cli, config?.defaultPath?.trim() || process.cwd(), {
       get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
       reprobe: () => runProbe(true),
     }, getRuntime, () => metricsCollector.access, projectRegistry, () => {

@@ -12,13 +12,13 @@
 - **启动期同步预注入**：冷启动时，凭据存储（ref 托管）里的密钥在 `apply()` 返回前就已同步写进 `process.env`，赶得上其它插件条目的求值时机——MCP 认证头写的就是 `js:process.env.XXX`，等异步凭据 seam 会输掉这场竞态（症状：卡片「未连接」/ `ValidationError` + 「1 entry did not activate」）。
 - **`dshEnvReady` 就绪服务**：同步注入完成后 `ctx.provide('dshEnvReady', { enabled, keys, at })`（`keys` 只含键名、不含值）；被禁用时也 provide `{ enabled: false }`。消费者（如 codegraph 的 per-agent MCP 挂载）用 `ctx.inject` 等它，从而不依赖插件加载顺序。**注意**：它保证的只是「注入先于消费者动手」；热重载不会让**已经挂上**的消费者（如已 spawn 的 MCP 子进程）重新同步一份环境——那种同步只在启动时发生一次——契约见 [architecture.md § 5](../../docs/architecture.md#5-跨插件协作数据级复用不是代码依赖)。
 - **存储降级是全有全无**：宿主没有凭据 seam 或关掉 `secretsInCredentials` 时退回「env 文件单存储」，不产生半迁移状态。
-- **围栏与文件权限显式约束**：路由仅 loopback + 同源，env 文件固定 0600；明确提示不要把 GUI 端口经隧道 / 反代暴露。
+- **围栏与文件权限显式约束**：路由准入 = 本机回环围栏 ∪ 非本机宿主会话（反代 / `--trusted-host` 要求已登录的 DSH 会话），env 文件固定 0600；明确提示不要把 GUI 端口经隧道暴露给不可信网络。
 
 ![环境变量 / 密钥管理卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
 
 ## 路由
 
-仅限 loopback + 同源访问：
+本机回环请求维持 loopback + 同源围栏；**非本机**请求（反代 / `--trusted-host`）交给宿主自己的鉴权：经 `connection.requestRejection` 过 Host/Origin 围栏并要求已登录的浏览器会话（未登录 401、Host 不被信任 403）。宿主没有该服务（或没有这个方法）时，非本机请求仍是 loopback 围栏的 403：
 
 - `GET /api/dsh-env/list` —— 列出全部环境变量（密钥条目 value 为 null，不回明文；`storage: refs` 表示值在官方凭据存储，`file` 表示留在 env 文件）
 - `POST /api/dsh-env/save` —— 整体保存（校验键名、去重后写回；条目 value 为 null 表示保留已存值；密钥值自动写入凭据存储，写入失败留在文件并返回 `warnings`）
@@ -60,4 +60,4 @@ interface Config {
 - `js:` 表达式在宿主内评估（与 loader 相同的信任模型），仅建议存放本机可解析的表达式。
 - env 文件落盘固定 0600（承载清单与少量遗留明文，不继承既有宽松权限）。
 - 升级提示：迁移后密钥值在 `.credentials.yaml`，不建议回退到未迁移的旧版本插件使用同一 `~/.dsh`。
-- 安全提示：路由仅信任 loopback + 同源请求，且无鉴权——凡能以本机回环身份到达端口的进程或隧道（如 `ssh -L` 端口转发、把 Host 改写为 localhost 的本机反向代理）都能读取未迁入凭据存储的值；`js:` 前缀值会在宿主进程内执行，等同于本机代码执行。不要将 GUI 端口经隧道 / 代理暴露给不可信网络，除非额外加鉴权。
+- 安全提示：**本机回环请求仍无鉴权**——凡能以本机回环身份到达端口的进程或隧道（如 `ssh -L` 端口转发、把 Host 改写为 localhost 的本机反向代理）都能读取未迁入凭据存储的值；`js:` 前缀值会在宿主进程内执行，等同于本机代码执行。反代 / `--trusted-host` 的非本机请求要过宿主会话（未登录 401），但把 GUI 端口经隧道 / 代理暴露给不可信网络仍会扩大暴露面，除非额外加鉴权。

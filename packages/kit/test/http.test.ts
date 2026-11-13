@@ -19,7 +19,10 @@ import { describe, expect, it, vi } from 'vitest'
 const dnsLookup = vi.hoisted(() => vi.fn())
 vi.mock('node:dns', () => ({ promises: { lookup: dnsLookup } }))
 
+import { Context } from '@deepseek-ai/cordis'
+
 import {
+  admitRoute,
   hasSameOriginProof,
   isLoopbackAddress,
   isLoopbackRequest,
@@ -266,5 +269,63 @@ describe('readJsonBody', () => {
     }
     req[Symbol.asyncIterator] = () => failing()
     await expect(readJsonBody(req)).resolves.toBeUndefined()
+  })
+})
+
+describe('admitRoute（本机回环 ∪ 非本机宿主鉴权，ROADMAP 第 13 项）', () => {
+  /** 非本机来源 + trusted host + 同源 Origin（反代后面的浏览器）。 */
+  const proxied = (): ReqLike =>
+    makeReq({ socket: { remoteAddress: '172.25.0.9' }, headers: { host: 'dsh.example.com', origin: 'https://dsh.example.com' } })
+
+  /** 记录服务读取的假 ctx；`admitRoute` 只应读 `connection` 这一个名字。 */
+  function makeCtx(services: Record<string, unknown> = {}): { ctx: Context; calls: string[] } {
+    const calls: string[] = []
+    const ctx = {
+      get(name: string) {
+        calls.push(name)
+        return services[name]
+      },
+    }
+    return { ctx: ctx as unknown as Context, calls }
+  }
+
+  it('本机回环：放行，且根本不读宿主服务（本机口径与收紧前一致）', () => {
+    const { ctx, calls } = makeCtx({ connection: { requestRejection: () => 403 } })
+    expect(admitRoute(ctx, makeReq())).toBeUndefined()
+    expect(calls).toEqual([])
+  })
+
+  it('非本机：宿主 requestRejection 的放行 / 401 / 403 原样映射', () => {
+    const { ctx } = makeCtx({ connection: { requestRejection: () => undefined } })
+    expect(admitRoute(ctx, proxied())).toBeUndefined()
+
+    const unauthorized = makeCtx({ connection: { requestRejection: () => 401 } })
+    expect(admitRoute(unauthorized.ctx, proxied())).toEqual({ status: 401, error: 'unauthorized' })
+
+    const forbidden = makeCtx({ connection: { requestRejection: () => 403 } })
+    expect(admitRoute(forbidden.ctx, proxied())).toEqual({ status: 403, error: 'forbidden' })
+  })
+
+  it('非本机 + 宿主没有 connection 服务 / 服务上没有 requestRejection：回落同步档 403', () => {
+    for (const services of [{}, { connection: {} }]) {
+      const { ctx } = makeCtx(services)
+      expect(admitRoute(ctx, proxied())).toEqual({ status: 403, error: 'forbidden: loopback-only' })
+    }
+  })
+
+  it('真 cordis：没有 connection 服务时不抛（「属性访问未 inject 服务会抛」的陷阱）', () => {
+    const ctx = new Context()
+    // getService 的 try 兜底把 cordis 的 `cannot get property "connection" without inject` 吞掉；
+    // 漏了它，旧宿主上每条路由都会 500（search 的合并前版本就踩过）。
+    expect(() => admitRoute(ctx as unknown as Context, proxied())).not.toThrow()
+    expect(admitRoute(ctx as unknown as Context, proxied())).toEqual({ status: 403, error: 'forbidden: loopback-only' })
+  })
+
+  it('真 cordis：宿主真的 provide 了 connection 时走宿主鉴权', () => {
+    const ctx = new Context()
+    ctx.provide('connection', { requestRejection: (request: ReqLike) => (request.headers.cookie === 'dsh-auth=ok' ? undefined : 401) })
+    const withCookie = { ...proxied(), headers: { ...proxied().headers, cookie: 'dsh-auth=ok' } }
+    expect(admitRoute(ctx as unknown as Context, withCookie)).toBeUndefined()
+    expect(admitRoute(ctx as unknown as Context, proxied())).toEqual({ status: 401, error: 'unauthorized' })
   })
 })
