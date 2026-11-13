@@ -7,8 +7,10 @@
  *   Prompt 读取 ~/.dsh/prompts.yml 托管区块；MCP 工具从 ctx.tools.schemas()
  *   枚举 mcp__ 前缀工具。
  *
- * 浏览器半体（./client）通过 /api/dsh-search/query 查询；路由带 loopback-only
- * 信任围栏。
+ * 浏览器半体（./client）通过 /api/dsh-search/query 查询。路由准入分两路：
+ * 本机回环维持 loopback + 同源围栏；非本机（反代 / `--trusted-host`）交给宿主
+ * 自己的 `connection.requestRejection`——同一套 Host/Origin 围栏加浏览器会话，
+ * 所以反代后面的 GUI 不再 403，而未登录的远程请求是 401。
  */
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -838,7 +840,7 @@ function getService(ctx: Context, name: string): unknown {
 }
 
 /* ------------------------------------------------------------------ *
- * HTTP 路由（宿主 Connection 鉴权；旧宿主回落 loopback-only 围栏）
+ * HTTP 路由（本机走 loopback 围栏；非本机交给宿主 Connection 鉴权）
  * ------------------------------------------------------------------ */
 
 interface ReqLike {
@@ -876,19 +878,47 @@ function isLoopbackRequest(request: ReqLike): boolean {
 }
 
 /**
- * Admit a request the way DSH's own /api routes do: the host Connection
- * service applies its Host/Origin fence (loopback, the bind address and any
- * configured trusted hosts) and requires the signed browser session cookie or
- * an API peer. Hosts without that service fall back to the loopback fence.
- * @returns the HTTP rejection status, or undefined when the request is admitted.
+ * 取一个**可选**宿主服务：没有它时按「没有」处理，不抛。
+ *
+ * 真 cordis 上只能走 `ctx.get()`——它对未 `inject` 的服务名返回 undefined；
+ * 而 `ctx.connection` 这种**属性读**会在插件 ctx 上抛
+ * `cannot get property "connection" without inject`（0.2.2-rc.2 上实测）。
+ * 属性读分支只服务于假 ctx / 没有 `get` 的旧 cordis，所以必须包 try。
+ */
+function optionalService(ctx: Context, name: string): unknown {
+  const withGet = ctx as unknown as { get?: (service: string) => unknown }
+  if (typeof withGet.get === 'function') return withGet.get(name)
+  try {
+    return (ctx as unknown as Record<string, unknown>)[name]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 路由准入 = **本机回环围栏** ∪ **宿主 Connection 鉴权**。
+ *
+ * - 本机回环：维持本包一贯的 loopback + 同源口径。本机任意进程能读这些结果本来就是
+ *   现状，收紧它是全仓信任模型的活（仓根 ROADMAP.md 第 5 项），
+ *   不在一个包里先动——同时保证仓库真机脚本与裸 `curl` 照旧可用。
+ * - 非本机（反代 / `--trusted-host`）：交给宿主自己的 `connection.requestRejection`，
+ *   同一套 Host/Origin 围栏（回环、绑定地址、trusted hosts）加**浏览器会话或 API peer**。
+ *   未登录是 401，Host 不被信任是 403——与宿主 `/api` 一致。
+ * - 旧宿主（没有该服务，或服务上没有这个方法）：非本机请求退回 loopback 围栏的 403，
+ *   与改动前逐字一致。
+ *
+ * @returns 拒绝时的状态与错误码；放行时 undefined。
  */
 function requestRejection(ctx: Context, request: ReqLike): { status: number; error: string } | undefined {
-  const connection = getService(ctx, 'connection') as { requestRejection?: (request: ReqLike) => number | undefined } | undefined
+  if (isLoopbackRequest(request)) return undefined
+  const connection = optionalService(ctx, 'connection') as
+    | { requestRejection?: (request: ReqLike) => number | undefined }
+    | undefined
   if (typeof connection?.requestRejection === 'function') {
     const status = connection.requestRejection(request)
     return status === undefined ? undefined : { status, error: status === 401 ? 'unauthorized' : 'forbidden' }
   }
-  return isLoopbackRequest(request) ? undefined : { status: 403, error: 'forbidden: loopback-only' }
+  return { status: 403, error: 'forbidden: loopback-only' }
 }
 
 function writeJson(res: ResLike, status: number, body: unknown): void {
