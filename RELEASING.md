@@ -6,6 +6,90 @@
 
 ## 一次性配置
 
+发布认证有两条路，**它们同时生效、由 npm 客户端决定用哪条**：可信发布（OIDC）优先，
+`NPM_TOKEN` 兜底。两条都配齐才算配完。
+
+### 1. 可信发布（OIDC，preferred）
+
+发布走**可信发布**：workflow 的 `id-token: write` 换一个短命令牌，npm 用它覆盖
+`~/.npmrc` 里的 `_authToken`。好处是不必再长期保管一个能写全 scope 的 token，且发布自动带
+provenance 证明。**前提是每个包在 npm 上都注册了这个 workflow 为 trusted publisher**——
+没注册的包不会被拦，只是**静默退回 token 那条路**（所以配不齐也能发，但省不掉 token）。
+
+**14 个可发布包逐个注册**（npm 只能按包配，没有 org 级开关；清单见
+`scripts/publish-targets.mjs`）：
+
+```sh
+# 先登录（需要账号级 2FA；npm trust 明确不支持「2FA bypass」的 granular token，
+# 所以必须是交互登录，不能拿 CI 那个 token 来配）
+npm login
+
+# 配置全部 14 个包并逐个回读核验（幂等，已配好的会跳过）
+pnpm trusted-publishing:setup
+
+# 只想看会做什么、不写入：
+pnpm trusted-publishing:setup --dry-run
+# 只处理个别包：
+pnpm trusted-publishing:setup --only=packages/tty,@hyzyn/dsh-all
+```
+
+第一次会要求 2FA，网页上会提供「接下来 5 分钟免重复 2FA」的选项——勾上，14 个包可以一次跑完。
+注册 `npmjs.com → Packages → <pack> → Settings → Trusted publishing` 里能看到，等同网页配置。
+
+> **为什么用脚本而不是手抄循环**：漏配一个包**不会报错**——npm 的 OIDC 交换失败只打 verbose
+> 日志并退回 `NPM_TOKEN`（`oidc()` 在任何失败分支都 `return undefined`），于是「全配好了」与
+> 「漏了两个」在 CI 输出里长得一模一样。脚本最后会**逐个回读 registry** 核验，并把未就绪的包
+> 点名报红。
+
+> `--file` 只写文件名（`release.yml`），必须带 `.yml`；必须是 `.github/workflows/` 下真实存在的
+> 那个文件。本仓的发布 workflow 就叫 `release.yml`。
+
+#### CLI 配不了时的走法：**凭据不能是 2FA-bypass 的 GAT**
+
+实测（2026-11-14，npm 11.19.1）：拿 `~/.npmrc` 里的凭据跑 `npm trust`，`whoami` 正常返回 200，
+但 trust 端点回
+
+```
+403 {"message":"Please enable 2fa for your account"}
+```
+
+按 [GitHub 2026-07-31 公告](https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/)，
+**bypass-2FA 的 GAT 已不能修改 trusted publishing 配置**（「Changing package access, maintainers,
+or trusted publishing configuration」就在被禁清单里），必须交互式 2FA 挑战。`whoami` 能过
+**不代表**能改 trust——两者权限不同，脚本的前置检查因此按 403 内容单列一类。
+
+> ⚠️ **重新 `npm login` 救不了这个 403**。实测：15:12 `npm login` 写进 `~/.npmrc` 的凭据，
+> 15:12 立即跑脚本就 403。那一步本身已经完成 2FA，服务端发回来的就是「免再验」的会话凭据
+> （它不在账号 `tokens` 列表里——那是 GAT 列表）。而 npm 文档写死「GAT with the bypass 2FA
+> option are not supported」。
+>
+> ⚠️ 判定时**别只看 `npm-notice` 那行**：实测它在 **200 成功响应里也会出现**（同一凭据读
+> `/-/npm/v1/tokens` 就带），是账号级全局横幅，不是「这个 token 是 bypass」的证据。真正的
+> 判据是响应体的 `Please enable 2fa` 加上「该凭据不在 GAT 列表里」。
+
+**三条出路**（按省事程度排序）：
+
+| 路子 | 怎么做 | 代价 |
+| --- | --- | --- |
+| **CLI 铸一个不勾 bypass 的 GAT**（最快） | ```npm token create --name trust-setup --scopes @hyzyn --packages-and-scopes-permission read-write``` 把它输出的 `Created token npm_xxx` 替换 `~/.npmrc` 的 `_authToken`，再跑 `pnpm trusted-publishing:setup` | 要账号密码 + 一次邮箱 OTP；**别加 `--bypass-2fa`**（加了又 403）；**必须用 `--scopes` 而不是 `--packages-all`**（见下） |
+| **网页配**（不依赖 token） | 每个包 `npmjs.com → Packages → <包> → Settings → Trusted publishing`：选 GitHub Actions，User `hyzyn`、Repository `dsh-plugin-kit`、Workflow `release.yml`，勾 **Allow npm publish**（要 OIDC 管 dist-tag 再勾 **Allow npm dist-tag**） | 14 个包手工点；「Allow npm dist-tag」本来就只能在网页勾（CLI 没这个开关） |
+| ~~交互式登录再跑脚本~~ | ~~`npm login` 后 `pnpm trusted-publishing:setup`~~ | ❌ 实测**走不通**（见上）：登录产出的就是免验凭据，会 403 |
+
+> 为什么 CLI 铸 token 这条路通（已实测）：同一个凭据打 `POST /-/npm/v1/tokens` 返回的是
+> `400 {"message":"\"password\" is required"}` ——**不是 403**，说明它**有权限铸 token、
+> 只是不能改 trust**。而铸出来的新 GAT 不勾 bypass，正好是 trust 接口要的类型。
+
+> ⚠️ **`--packages-all` 会被 registry 拒**（实测 2026-11-14）：npm 11.19.1 只往请求体里放
+> `packages_all: true`，而 registry 要的是「至少一个**显式**的 package / scope / organization」，
+> 于是回 `400 You must have at least one package / scope or organization added to this token`。
+> 改用 `--scopes @hyzyn`（14 个包全在这个 scope 下）即可，且将来新增 `@hyzyn/*` 包自动覆盖。
+
+> ⚠️ **网页配完≠CI 能发**：网页是无状态的服务端配置，配完要回读核验。CLI 能跑通时用
+> `pnpm trusted-publishing:setup` 回读；CLI 被 403 时只能换一个能过交互 2FA 的凭据再回读
+> （`curl -s -H "Authorization: Bearer <token>" 'https://registry.npmjs.org/-/package/@hyzyn%2Fdsh-tty/trust'`）。
+
+### 2. `NPM_TOKEN` 兜底（当前仍然必需）
+
 GitHub 仓库 Settings → Secrets and variables → Actions 新增 `NPM_TOKEN`。token 在
 npmjs.com → Access Tokens → Generate New Token（granular）生成：
 
@@ -14,9 +98,25 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 - **2FA**：选 bypass（CI 没法输动态码）。
 
 未配置时 Release workflow **直接失败**（`::error::` + 退出 1），不会建 GitHub Release。
-早期行为是「warning + 跳过发布」，结果是 workflow 全绿、包一个没发上 npm、却照样建出
+早期行为是「warning + 跳过发布」，结果是 workflow 全绿、包一个都没发上 npm、却照样建出
 Release 页——绿条里的假成功比红条难发现得多，所以改成硬失败。补上 secret 后重跑同一个
 tag 即可（幂等）。
+
+**为什么现在还不能删它**：`scripts/release-publish-tag.mjs` 末尾会把 `next` dist-tag 指到本仓
+版本（`npm dist-tag add`），而 npm CLI 直到 **12.2.0** 才支持 dist-tag 走 OIDC（runner 上
+Node 24 自带的是 11.19.1）。此刻删 token 的结果是「包都发成功了、dist-tag 那一步红、整个
+release job 红」。
+
+#### 去掉 `NPM_TOKEN` 的前置条件
+
+两件事都做到，才可以把 secret 与 workflow 里的写入步骤一起删掉：
+
+1. **runner 的 npm ≥ 12.2.0**：在 `actions/setup-node` 之后加一步 `npm install -g npm@^12`；
+2. **每个包的 trusted publisher 上勾「Allow npm dist-tag」**：这一项 `npm trust` CLI 没有开关，
+   只能逐个包在网页 `Settings → Trusted publishing` 里改（14 个包）。
+
+做完后先发一个**带 `-rc` 的版本**验证一次（rc 走 `next` tag，出问题的爆炸半径小），绿了再删
+secret。
 
 ### 本地钩子（提交前闸门）
 

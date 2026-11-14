@@ -54,7 +54,8 @@
     "readme-facts:check": "node scripts/check-readme-facts.mjs --self-test && node scripts/check-readme-facts.mjs",
     "readme-structure:check": "node scripts/check-readme-structure.mjs",
     "release:publish": "node scripts/release-publish-tag.mjs",
-    "release:preflight": "node scripts/release-publish-tag.mjs --preflight"
+    "release:preflight": "node scripts/release-publish-tag.mjs --preflight",
+    "trusted-publishing:setup": "node scripts/setup-trusted-publishing.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "3.2.7",

@@ -21,6 +21,16 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      # npm 可信发布（trusted publishing）的 OIDC 令牌来源。**这是 publish 走 OIDC 的前提**：
+      # npm CLI 先交换 OIDC 令牌、成功就用它覆盖 ~/.npmrc 里的 `_authToken`，静态 token 只当
+      # 兜底（同 pnpm#11495 镜像的 npm 行为）。没有这一行，publish 会退回 NPM_TOKEN。
+      #
+      # 为什么此刻**同时**保留 NPM_TOKEN：`scripts/release-publish-tag.mjs` 末尾的 `next`
+      # dist-tag 同步调的是 `npm dist-tag add`，而 npm CLI 要到 12.2.0 才支持 dist-tag 的
+      # OIDC（runner 上 Node 24 自带 11.19.1）；且「允许 npm dist-tag」这个权限在 npm 网页上
+      # 勾，`npm trust` CLI 没有对应开关。现在删 token 的结果是「包发上去了、dist-tag 一步红」。
+      # 详见 RELEASING.md「一次性配置」。
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,6 +127,11 @@ jobs:
           # token 明文写入 runner 的 ~/.npmrc 后由 pnpm publish 读取；
           # ${VAR} 占位符在 pnpm publish 下解析不可靠（会拿错凭证 → 403/404 乱象），不用
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
+          # 上面这个 `_authToken` 与 job 的 `id-token: write` 合起来才是「OIDC 优先、token 兜底」：
+          # npm CLI 检测到 OIDC 环境会先交换令牌，成功即覆盖 `_authToken`（publish 因此带
+          # provenance）；交换失败才退回 token。**token 现在仍必须存在**，因为脚本末尾的
+          # `npm dist-tag add` 还得靠它（npm 11 的 dist-tag 不支持 OIDC）。彻底去掉 secret 的
+          # 前置条件见 RELEASING.md「一次性配置 → 去掉 NPM_TOKEN 的前置条件」。
           pnpm release:publish
       - name: Create GitHub release
         env:
