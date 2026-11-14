@@ -61,3 +61,27 @@ describe('数据路由准入只有一份实现（kit.admitRoute）', () => {
     expect(admitsThroughKit(legacyGuard)).toBe(false)
   })
 })
+
+/**
+ * 加固档四包**不许**接 `admitRoute`——这是 ROADMAP § 5.4 选③「维持回环专属」的守卫面。
+ *
+ * 为什么需要这条：上一条只钉「六个体走 admitRoute」，没钉「另外四个不走」。谁给 `docker`
+ * 顺手加一句 `admitRoute`，上面全绿——而远程浏览器会话就此拿到了 stop/remove/exec 与
+ * 开 shell 的能力，正是 § 5.4 明确拒绝的那条路（②）。文档里那张「反代下能不能用」的表
+ * （[troubleshooting.md](../../docs/troubleshooting.md)）靠这一条才和代码绑在一起。
+ *
+ * 放开的前提是维护者改判 § 5.4（并从 ① 逐端点白名单里选），不是这条测试「顺手放宽」。
+ */
+const STRICT_TIER_PACKAGES = ['docker', 'tty', 'mcp', 'loglens'] as const
+
+describe('加固档四包维持回环专属（ROADMAP § 5.4 决定 ③）', () => {
+  it('docker / tty / dsh-mcp / loglens 都不接 admitRoute', () => {
+    for (const pkg of STRICT_TIER_PACKAGES) {
+      expect(admitsThroughKit(readSource(pkg)), `${pkg} 接了 admitRoute：远程会话会拿到变更 / 执行面，先改 ROADMAP § 5.4`).toBe(false)
+    }
+  })
+
+  it('反例：搭好 admitRoute 的闸门必须被判违规（守卫不许恒绿）', () => {
+    expect(admitsThroughKit('const rejection = admitRoute(ctx, req)')).toBe(true)
+  })
+})
