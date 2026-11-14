@@ -1323,11 +1323,15 @@ await test('切目标的过渡：过期标注 / 内容锁定 / 淡入 / 失败�
   }
 })
 
-await test('样式表：折叠态（data-sidebar-collapsed）隐藏入口标签', () => {
-  // DSH 外壳（dsh-client-ui-layout）在侧边栏折叠时打这个属性；tty 入口同款规则。
-  // 少了它，窄栏里会溢出一条竖排文字（真实踩过的回归）
-  assert.ok(code.includes('[data-sidebar-collapsed] [data-dsh-docker-entry]'), '缺少折叠态入口规则')
-  assert.ok(code.includes('[data-sidebar-collapsed] .dk_entryLabel'), '缺少折叠态标签隐藏规则')
+await test('样式表：折叠态隐藏入口标签，且只在宿主已落 rail 后生效（D171）', () => {
+  // DSH 外壳在**点下收起的那一刻**就打 data-sidebar-collapsed，但布局要 150ms 之后才落到
+  // rail（宽内容先冻结在展开宽度淡出）。所以规则必须带 data-sidebar-scrollport——宿主只在
+  // **展开**时挂的稳定标记——这层门控：少了它，收起动画的第一帧入口就只剩图标、还被居中
+  // 推到冻结宽度的一半，与同栏官方面板行不同拍（docker D171）。
+  // 少了整条规则，窄栏里会溢出一条竖排文字（真实踩过的回归）。
+  const gate = '[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *)'
+  assert.ok(code.includes(gate), '缺少折叠态入口规则（或它没带「宿主已落 rail」的门控）')
+  assert.ok(code.includes(gate + ' .dk_entryLabel'), '缺少折叠态标签隐藏规则')
 })
 
 await test('样式表：字段标签锁死 line-height（中英混排的行框不等高会让输入框错开）', () => {
