@@ -62,13 +62,18 @@ export function hostRowMetrics(style) {
   return any ? metrics : undefined
 }
 
-/** 变量名 → metrics 字段。顺序固定，便于断言与排查。 */
+/**
+ * 变量名 → metrics 字段。顺序固定，便于断言与排查。
+ *
+ * **只有上下几何**：宿主那一行右侧还挂着 unpin 槽位（`.panelEntryWide .panelRow`
+ * 的 `padding-right: 38px`），量到的 `paddingRight` 不是「行内边距」而是「行内边距 + 槽位」，
+ * 套到没有槽位的入口上会把徽标顶偏 29px。左右内边距本来就由宿主的
+ * `--dsh-sidebar-row-padding` / `-paint-inset` 令牌算得出、不会随版本漂，所以不量。
+ */
 const CSS_VAR_OF = {
   '--tt-host-min-height': 'minHeight',
   '--tt-host-pad-top': 'padTop',
-  '--tt-host-pad-right': 'padRight',
   '--tt-host-pad-bottom': 'padBottom',
-  '--tt-host-pad-left': 'padLeft',
 }
 
 /**

@@ -6,6 +6,24 @@
 
 ## 已完成（落点 + 门槛）
 
+### ✅ 侧栏入口挪进宿主面板导航、与宿主面板行同规格（2026-11-14）
+
+**落点**：入口从「侧栏顶层、新建会话下方」搬进宿主的**面板导航里、紧跟固定面板「插件」那一行**
+（`placeInPanelNav`：从宿主的 `.panelRow` 往上找它的 `nav`，插在第一条面板行之后），并带
+`data-dsh-kit-sidebar-rank = 10`，与同族（全局搜索 20 / 终端 30 / 容器 40）按属性让位而不是靠加载顺序。
+
+**样式**：`.rss_sidebarEntry` 换成宿主面板行的规格——`font: inherit`（14px，不再是 13px）、
+`color: inherit`（主文字色，不再是 secondary）、行内边距与标签间距取宿主 `--dsh-sidebar-*`
+几何契约、圆角走 `--dsw-radius-md`（不再是字面量 8px）、悬停用宿主侧栏自己在用的
+`--dsw-alias-interactive-bg-hover`、键盘焦点走宿主全局焦点环。顺带删掉从没被写过的
+`[data-active]` 死规则。
+
+**门槛**：`node scripts/client-lint.mjs`（样式变量 / 圆角档位 / 字号配行高 / 颜色出处）
++ 真宿主 0.2.2-rc.3 实测：图标 x=20、文字 x=42、行 32px、14/22 字号，与宿主「插件」行逐项相等；
+折叠 rail 同为 36×36、18px 图标。图标笔画在入口内覆盖成 `1`：宿主面板图标是 `viewBox 16` +
+`stroke-width="1"` 的 sprite symbol（16px 时实心 1.0px），本包图标常量按 18px 设计写的是 1.7，
+直接并排会粗 70%。
+
 ### ✅ 刷新过渡层（0.3.1）：与 dsh-docker 同一套语言的提示
 
 **落点**：两处刷新路径注入「2px 不定长流光进度条 + 蓝色胶囊」，与 dsh-docker 的 `dk_switchOverlay`

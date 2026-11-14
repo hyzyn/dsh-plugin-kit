@@ -210,68 +210,105 @@
 
 /* ======================= 侧边栏入口 ======================= */
 
+/*
+ * 入口与宿主面板行（`.panelRow`）**同规格**：入口住在宿主的面板导航里、紧跟固定面板
+ * 「插件」，与「插件 / 插件市场 / …」并排出现，差一个字号或一个灰度都看得出来。
+ *
+ * 取值一律跟着宿主走、不抄数字：
+ *   - `font: inherit` → 字号/字族随宿主侧栏（`.root` 的 14px），不再是 13px；
+ *   - `color: inherit` → 主文字色随宿主 `.root`（`--dsw-alias-label-primary`），
+ *     不再是比邻居暗一档的 secondary；
+ *   - 行内边距与标签间距取宿主的 `--dsh-sidebar-row-padding` / `-label-gap` /
+ *     `-paint-inset`（宿主侧栏自己的几何契约，随它改版一起变）；
+ *   - 圆角走 radius token，悬停底色用宿主侧栏自己在用的 `--dsw-alias-interactive-bg-hover`；
+ *   - 键盘焦点走宿主的全局焦点环令牌，不自造私有环。
+ *
+ * 只有「上下内边距 / 最小行高」宿主没暴露令牌（rc.1 是 7px/36px、rc.2 是 5px/32px）：
+ * 这里给 rc.2 的兜底值，量得到真值时由下面的 `[data-host-align]` 用 `--tt-host-*` 覆盖。
+ *
+ * 宿主不对插件 DOM 做全局 box-sizing reset，`box-sizing` 必须显式声明：
+ * width:100% + 左右 padding 在 content-box 下会比容器宽，右侧被侧边栏裁掉。
+ */
 .tt_sidebarEntry {
   position: relative;
-  /* 宿主不对插件 DOM 做全局 box-sizing reset（它自己的组件都逐个显式声明）：
-     width:100% + 左右各 12px padding 在 content-box 下会比容器宽 24px，多出的右侧
-     12px 正好是徽标所在处，被侧边栏裁掉 → 徽标贴死裁切线、末位字符被切一半。 */
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: var(--tt-gap-md);
+  gap: var(--dsh-sidebar-label-gap, 6px);
   width: 100%;
   min-width: 0;
-  height: 32px;
-  padding: 0 12px;
+  min-height: var(--tt-host-min-height, 32px);
+  padding: 5px calc(var(--dsh-sidebar-row-padding, 12px) - var(--dsh-sidebar-paint-inset, 3px));
   border: none;
-  border-radius: var(--tt-r-md);
+  border-inline: var(--dsh-sidebar-paint-inset, 3px) solid transparent;
+  border-radius: var(--dsw-radius-md);
   background: 0 0;
-  color: var(--tt-label-2);
-  font-size: 13px;
-  line-height: 20px;
+  background-clip: padding-box;
+  color: inherit;
+  font: inherit;
+  line-height: 22px;
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
+  transition: background-color var(--tt-dur) var(--tt-ease);
 }
 /*
  * 悬停态用 --tt-hover（= 宿主 interactive-bg-hover）：宿主 0.2.2-alpha.3 移除了旧的
  * sidebar-nav-item-hover 令牌，而 interactive-bg-hover 是宿主侧栏自己在用的
- * 令牌、十二档 cohort 都存在（证据见 README 兼容性段）。
+ * 令牌、十二档 cohort 都存在（证据见 README 兼容性段）。文字色不动——宿主的面板行
+ * 悬停只换底色，正文一直是 label-primary。
  */
 .tt_sidebarEntry:hover {
-  background: var(--tt-hover);
-  color: var(--tt-label);
+  background-color: var(--tt-hover);
 }
+/* 打开中 / 收纳中：用宿主侧栏的「导航项选中」色，与宿主同一族（不再是自造的强调色）。 */
 .tt_sidebarEntry[data-active],
 .tt_sidebarEntry[data-minimized] {
-  background: var(--dsw-specific-sidebar-nav-item-active, var(--tt-hover-solid));
-  color: var(--tt-label);
-  font-weight: 600;
+  background-color: var(--dsw-specific-sidebar-nav-item-active, var(--tt-hover));
 }
 .tt_sidebarEntry:focus-visible {
-  outline: none;
-  box-shadow: var(--tt-ring);
+  /* 单行写：client-lint 的变量名扫描按行取名字，折行会把变量名截断成不存在的名字。 */
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
+/*
+ * 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+ *
+ * 笔画按**宿主的图标口径**覆盖成 1：宿主面板图标是 sprite symbol（`viewBox 16` +
+ * `stroke-width="1"`），渲染 16px 时实际笔画 1.0px；本包的 `TERMINAL_ICON` 是按 18px
+ * 设计的（写了 1.7），直接塞进 16px 的行里会比邻居明显更粗——2026-11-14 真机实测
+ * 1.7px vs 宿主 1.0px。只覆盖入口内的实例，图标常量本身不动（面板头部那枚仍按自己的
+ * 尺寸与笔画用）。
+ */
 .tt_sidebarEntryIcon {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   color: currentColor;
+}
+.tt_sidebarEntryIcon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1;
 }
 .tt_sidebarEntryLabel {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。 */
 [data-sidebar-collapsed] .tt_sidebarEntry {
   justify-content: center;
   width: 100%;
-  /* 折叠 rail 里宿主的行是 36×36（.hHd-Xa_collapsed .hHd-Xa_panelRow），跟齐，
-     否则本插件入口比同栏其它入口矮 4px */
-  height: 36px;
+  min-height: 36px;
   padding: 0;
+  border-inline: 0;
+}
+[data-sidebar-collapsed] .tt_sidebarEntryIcon,
+[data-sidebar-collapsed] .tt_sidebarEntryIcon svg {
+  width: 18px;
+  height: 18px;
 }
 [data-sidebar-collapsed] .tt_sidebarEntryLabel {
   display: none;
@@ -299,44 +336,23 @@
  * 折叠态（`[data-sidebar-collapsed]`）是另一套 36×36 的 rail 几何，两档未变，仍写死。
  */
 .tt_sidebarEntry[data-host-align] {
-  /* 默认几何 = rc.1 的实测值；JS 量到宿主行后以**内联样式**覆盖（内联优先于本规则） */
-  --tt-host-min-height: 36px;
-  --tt-host-pad-top: 7px;
-  --tt-host-pad-right: 8px;
-  --tt-host-pad-bottom: 7px;
-  --tt-host-pad-left: 8px;
-  gap: 8px;
-  width: calc(100% - 4px);
-  margin: 0 2px;
+  /*
+   * 上面那条基准样式**已经是**宿主面板行的规格（字号/颜色/圆角/悬停/左右内边距都由宿主
+   * 令牌算出来）；这个开关只把「量到的」行高与上下内边距换成实测值——那是宿主唯一没暴露
+   * 令牌、又会随版本漂的两项（rc.1 是 36px/7px、rc.2 是 32px/5px，见 `sidebar-metrics.js`）。
+   *
+   * 左右内边距**不**用实测值：宿主那一行右侧带着 unpin 槽位（38px），套过来会把徽标顶偏；
+   * 而左右内边距由 `--dsh-sidebar-*` 令牌算得出，不随版本漂。
+   */
+  --tt-host-min-height: 32px;
+  --tt-host-pad-top: 5px;
+  --tt-host-pad-bottom: 5px;
   min-height: var(--tt-host-min-height);
-  height: auto;
-  padding: var(--tt-host-pad-top) var(--tt-host-pad-right)
-    var(--tt-host-pad-bottom) var(--tt-host-pad-left);
-  color: var(--tt-label);
-  font-size: 14px;
-  line-height: 22px;
-}
-.tt_sidebarEntry[data-host-align]:hover {
-  background: var(--tt-hover);
-}
-.tt_sidebarEntry[data-host-align][data-active],
-.tt_sidebarEntry[data-host-align][data-minimized] {
-  background: var(--tt-hover);
-  color: var(--tt-label);
-  font-weight: 400;
-}
-.tt_sidebarEntry[data-host-align] .tt_sidebarEntryIcon {
-  width: 16px;
-  height: 16px;
-}
-.tt_sidebarEntry[data-host-align] .tt_sidebarEntryIcon svg {
-  width: 16px;
-  height: 16px;
+  padding-top: var(--tt-host-pad-top);
+  padding-bottom: var(--tt-host-pad-bottom);
 }
 [data-sidebar-collapsed] .tt_sidebarEntry[data-host-align] {
-  width: 100%;
-  margin: 0;
-  height: 36px;
+  min-height: 36px;
   padding: 0;
 }
 .tt_sidebarEntryBadge {
@@ -346,7 +362,9 @@
   flex: none;
   margin-left: auto;
   padding-left: 8px;
-  font-family: var(--tt-mono);
+  /* 与同族的 docker 入口一致：徽标数字走宿主正文族 + 等宽数字（换字体是为了防跳动，
+     不是为了与众不同——`--tt-mono` 在同栏里会变成第二种字体）。 */
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   line-height: 16px;
   color: var(--tt-label-3);

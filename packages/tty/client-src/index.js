@@ -530,8 +530,8 @@ const I18N_ZH = {
   'option.cursorUnderline': '下划线（underline）',
   'hint.terminalAppearance': '方块光标配行高 1 最贴字：大于 1 会把单元格撑高，光标看起来比字形高一截。形状与闪烁由这里说了算——终端里的程序（zsh 的 zle、vi 模式等）每画一次提示符都会自己设定，本插件在输出解析完后纠回；全屏程序（vim / less / htop）除外，那类程序对自己的光标有真实语义',
   'check.terminalCursorBlink': '光标闪烁',
-  'check.sidebarHostAlign': '侧栏「终端」入口与宿主其它入口对齐（宽度 / 内边距 / 字号 / 图标）',
-  'hint.sidebarHostAlign': '宿主换版式后本插件入口可能比邻居窄或矮；打开即按宿主侧栏行的几何对齐（宽度让出左右各 2px）。默认关，关着时完全用插件自带尺寸',
+  'check.sidebarHostAlign': '侧栏「终端」入口按宿主实测的行高与上下内边距渲染（入口默认已与宿主面板行同规格）',
+  'hint.sidebarHostAlign': '入口默认就已经和邻居同规格：字号 / 字色 / 圆角 / 悬停 / 键盘焦点都取宿主面板行那套 token，左右内边距由宿主令牌算出。打开这个开关，再用挂载时从宿主行量到的「行高 + 上下内边距」覆盖 CSS 兜底值——宿主两档是 36/7 与 32/5，写死任何一档都会让另一档偏 4px。量不到时退回兜底值',
   'section.assist': 'AI 辅助',
   'check.assistEnabled': '失败即解释（命令非零退出时问模型「为什么 / 下一步」）',
   'hint.assistEnabled': '默认关。开启后，命令以非零状态结束时终端右下角会出现一枚徽标；点它才把那条命令的「输出尾部」（剥离颜色与进度条、折掉重复行、密钥/token 已遮盖）连同当前屏幕发给模型，不发 scrollback。模型给的命令只会「填入」命令行，永不替你回车。',
@@ -1049,8 +1049,8 @@ const I18N_EN = {
   'option.cursorUnderline': 'Underline',
   'hint.terminalAppearance': 'A block cursor sits best on line height 1: above 1 the cell grows and the cursor towers over the glyphs. Shape and blink are owned here: programs in the terminal (zsh’s zle, vi mode, …) reset them on every prompt, so they are re-asserted once each output batch is parsed — full-screen programs (vim / less / htop) are left alone, since they use the cursor meaningfully',
   'check.terminalCursorBlink': 'Blinking cursor',
-  'check.sidebarHostAlign': 'Align the sidebar “Terminal” entry with the host’s other sidebar rows (width / padding / font size / icon)',
-  'hint.sidebarHostAlign': 'After a host layout change this entry can end up narrower or shorter than its neighbours; turning this on matches the host sidebar row geometry (2px side insets). Off by default — when off the plugin keeps its own sizing',
+  'check.sidebarHostAlign': 'Render the sidebar “Terminal” entry with the host row’s measured height and vertical padding (the entry already matches the host panel row by default)',
+  'hint.sidebarHostAlign': 'The entry already matches its neighbours: font size, ink, radius, hover and keyboard focus all come from the host panel-row token set, and the horizontal padding is derived from the host tokens. Turning this switch on additionally overrides the CSS fallbacks with the row height and vertical padding measured from the host row at mount time — the two host cohorts use 36/7 and 32/5, so hard-coding either makes the other 4px off; when nothing can be measured the fallbacks stay',
   'section.assist': 'AI assist',
   'check.assistEnabled': 'Explain failures (ask the model "why / what next" when a command exits non-zero)',
   'hint.assistEnabled': 'Off by default. When on, a chip appears in the corner of the terminal after a command exits non-zero; clicking it sends that command\'s output tail (colors and progress bars stripped, repeated lines collapsed, keys/tokens masked) together with the current screen to the model — never the scrollback. A suggested command is only ever typed into the prompt line, never submitted for you.',
@@ -1389,6 +1389,16 @@ function ensureStyle() {
 
 const TERMINAL_ICON =
   '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5l3.5 3L3 11"/><path d="M8.5 11H13"/></svg>'
+
+/**
+ * 侧栏入口专用图标：按**宿主的 16 格**画（墨迹 2.5~13.5、笔画 1）。
+ *
+ * 为什么不复用 `TERMINAL_ICON`：那枚按 18px 设计（笔画 1.7、墨迹只占 3~13），塞进 16px 的行里
+ * 墨迹比宿主邻居小一圈、还整体右移 2px——真机并排时像「左边距不对」（2026-11-14 实测）。
+ * 面板头部与各处仍用 `TERMINAL_ICON`，它在那儿有自己的尺寸。
+ */
+const TERMINAL_ENTRY_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.4 3.4 6.6 8l-5.2 4.6"/><path d="M8.4 12.6h6.2"/></svg>'
 
 // 头部工具按钮图标（14px 线性风格，与 TERMINAL_ICON 同族）：搜索 / 清屏
 const ICON_SEARCH =
@@ -5621,7 +5631,7 @@ function syncEntryHostAlign(entry) {
   }
   delete entry.dataset.hostAlign
   // 关掉即撤掉变量，避免下次打开时沿用上一次量的旧值
-  for (const name of ['--tt-host-min-height', '--tt-host-pad-top', '--tt-host-pad-right', '--tt-host-pad-bottom', '--tt-host-pad-left']) {
+  for (const name of ['--tt-host-min-height', '--tt-host-pad-top', '--tt-host-pad-bottom']) {
     entry.style.removeProperty(name)
   }
 }
@@ -10818,9 +10828,64 @@ function newSessionButton(root) {
   return undefined
 }
 
+/**
+ * kit 家族在宿主面板导航里的次序：小的在前。
+ *
+ * 四条入口由四个插件各挂各的、加载顺序不定，所以先后不能靠「谁先插」——按下表的值
+ * 互相让位（见 `placeInPanelNav`）：今日值得读 < 全局搜索 < 终端 < 容器。
+ */
+const KIT_SIDEBAR_RANK = 30
+const KIT_ENTRY = '[data-dsh-kit-sidebar-rank]'
+
+/**
+ * 宿主的面板导航：从宿主的**面板行**（`.panelRow`，类名带 hash 前缀，只能子串匹配）
+ * 往上找它所在的 `nav`。
+ *
+ * 为什么不再挂顶层：入口原先插在侧栏 root 的直接子级（logo 行之后），于是四条入口顶在
+ * 侧栏最上面、与宿主的「插件 / 插件市场 / …」分成两段。宿主把面板行渲染在侧栏滚动区里的
+ * `nav` 中，**不是 root 的直接子元素**——这也正是 `hostRowReference` 当年栽的那一格。
+ */
+function panelNavOf(root, entry) {
+  for (const row of root.querySelectorAll('[class*="panelRow"]')) {
+    if (!(row instanceof HTMLElement)) continue
+    if (row === entry || row.contains(entry)) continue
+    if (row.matches(KIT_ENTRY) || row.querySelector(KIT_ENTRY) !== null) continue
+    const nav = row.closest('nav')
+    if (nav !== null && nav.contains(row)) return nav
+  }
+  return undefined
+}
+
+/**
+ * 插进宿主面板导航：紧跟固定面板「插件」（宿主 `FIXED_PANEL_ID='plugins'`，order 0、
+ * 永不折叠，所以它总是第一行）。同族按 rank 让位，加载顺序变了也不会颠倒；只在**位置
+ * 不对**时才动 DOM（宿主重渲染后由 MutationObserver 叫回来，位置对就不做事，免得自激）。
+ */
+function placeInPanelNav(root, entry) {
+  const nav = panelNavOf(root, entry)
+  if (nav === undefined) return false
+  const row = nav.querySelector('[class*="panelRow"]')
+  if (row === null) return false
+  const wrapper = row.closest('[class*="panelEntry"]')
+  const anchor = wrapper !== null && wrapper.parentElement === nav ? wrapper : row
+  if (anchor.parentElement !== nav) return false
+  let after = anchor
+  for (const node of nav.children) {
+    if (!(node instanceof HTMLElement) || node === entry) continue
+    if (!node.matches(KIT_ENTRY)) continue
+    const rank = Number(node.getAttribute('data-dsh-kit-sidebar-rank'))
+    if (Number.isFinite(rank) && rank < KIT_SIDEBAR_RANK) after = node
+  }
+  if (entry.parentElement !== nav || entry.previousElementSibling !== after) {
+    nav.insertBefore(entry, after.nextSibling)
+  }
+  return true
+}
+
 function createSidebarEntry() {
   const entry = document.createElement('div')
   entry.dataset.dshTtyEntry = ''
+  entry.dataset.dshKitSidebarRank = String(KIT_SIDEBAR_RANK)
   entry.className = 'tt_sidebarEntry'
   // 与宿主 .panelRow 对齐（0.34.0 可配）：属性在，CSS 才套对齐几何
   if (sidebarHostAlignCache) entry.dataset.hostAlign = '1'
@@ -10828,7 +10893,7 @@ function createSidebarEntry() {
   entry.setAttribute('aria-label', t('panel.title'))
   // 键盘可达（0.19.0，WCAG 2.1.1）：纯键盘用户此前进不了面板
   entry.tabIndex = 0
-  entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ICON + '</span><span class="tt_sidebarEntryLabel">' + t('panel.title') + '</span>'
+  entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ENTRY_ICON + '</span><span class="tt_sidebarEntryLabel">' + t('panel.title') + '</span>'
   entry.addEventListener('click', (event) => {
     event.preventDefault()
     openModal()
@@ -10843,6 +10908,8 @@ function createSidebarEntry() {
 }
 
 function placeSidebarEntry(root, entry) {
+  if (placeInPanelNav(root, entry)) return true
+  // 宿主没有面板导航（老版本 / 版式换过一轮）：退回顶层紧接 logo 行，入口不消失。
   const button = newSessionButton(root)
   if (button === undefined) return false
   if (entry.parentElement !== root) {
@@ -10899,7 +10966,10 @@ function mountSidebarEntry() {
       tryPlace()
       return
     }
-    if (!root.contains(entry)) placed = placeSidebarEntry(root, entry)
+    // 位置也要复核：入口现在住在宿主的面板 `nav` 里，宿主重渲染可能把它挤到别处
+    // （`root.contains` 仍为真，只看「还在不在」会漏掉被挪走那一档）。
+    // `placeSidebarEntry` 只在位置不对时动 DOM，所以这里不会自己触发自己。
+    placed = placeSidebarEntry(root, entry)
   })
 
   tryPlace()

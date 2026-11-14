@@ -1685,6 +1685,16 @@ function sessionHostOf(spec, bookName, liveTarget) {
 
 const ICON_BOX =
   '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l5.4 3.1v6.2L8 14.2 2.6 11.1V4.9z"/><path d="M2.6 4.9L8 8l5.4-3.1"/><path d="M8 8v6.2"/></svg>'
+/**
+ * 侧栏入口专用图标：按**宿主的 16 格**画（墨迹 2.5~13.5、笔画 1）。
+ *
+ * 为什么不复用 `ICON_BOX`：那枚按 18px 设计（笔画 1.5、墨迹只占 2.6~13.4），塞进 16px 的行里
+ * 墨迹比宿主邻居小一圈——真机并排时像「左边距不对」（2026-11-14 实测）。面板头部与连接栏
+ * 仍用 `ICON_BOX` / `ICON_BOX_SM`，它们在那儿有自己的尺寸。
+ */
+const ICON_BOX_ENTRY =
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14.3 5.2v5.6L8 14.5 1.7 10.8V5.2z"/><path d="M1.7 5.2 8 8.85l6.3-3.65"/><path d="M8 8.85v5.65"/></svg>'
+
 /** 连接栏按钮用的 13px 版本（与 tty 的 SFTP / 隧道按钮同尺寸）。 */
 const ICON_BOX_SM =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l5.4 3.1v6.2L8 14.2 2.6 11.1V4.9z"/><path d="M2.6 4.9L8 8l5.4-3.1"/><path d="M8 8v6.2"/></svg>'
@@ -10418,14 +10428,69 @@ window.__ModuleLoader__.load({
       return undefined
     }
 
+    /**
+     * kit 家族在宿主面板导航里的次序：小的在前。
+     *
+     * 四条入口由四个插件各挂各的、加载顺序不定，所以先后不能靠「谁先插」——按下表的值
+     * 互相让位（见 `placeInPanelNav`）：今日值得读 < 全局搜索 < 终端 < 容器。
+     */
+    const KIT_SIDEBAR_RANK = 40
+    const KIT_ENTRY = '[data-dsh-kit-sidebar-rank]'
+
+    /**
+     * 宿主的面板导航：从宿主的**面板行**（`.panelRow`，类名带 hash 前缀，只能子串匹配）
+     * 往上找它所在的 `nav`。
+     *
+     * 为什么不再挂顶层：入口原先插在侧栏 root 的直接子级（logo 行之后），于是四条入口顶在
+     * 侧栏最上面、与宿主的「插件 / 插件市场 / …」分成两段。宿主把面板行渲染在侧栏滚动区里的
+     * `nav` 中，**不是 root 的直接子元素**——只看 `root.children` 会找不到。
+     */
+    function panelNavOf(rootNode, entry) {
+      for (const row of rootNode.querySelectorAll('[class*="panelRow"]')) {
+        if (!(row instanceof HTMLElement)) continue
+        if (row === entry || row.contains(entry)) continue
+        if (row.matches(KIT_ENTRY) || row.querySelector(KIT_ENTRY) !== null) continue
+        const nav = row.closest('nav')
+        if (nav !== null && nav.contains(row)) return nav
+      }
+      return undefined
+    }
+
+    /**
+     * 插进宿主面板导航：紧跟固定面板「插件」（宿主 `FIXED_PANEL_ID='plugins'`，order 0、
+     * 永不折叠，所以它总是第一行）。同族按 rank 让位，加载顺序变了也不会颠倒；只在**位置
+     * 不对**时才动 DOM（宿主重渲染后由 MutationObserver 叫回来，位置对就不做事，免得自激）。
+     */
+    function placeInPanelNav(rootNode, entry) {
+      const nav = panelNavOf(rootNode, entry)
+      if (nav === undefined) return false
+      const row = nav.querySelector('[class*="panelRow"]')
+      if (row === null) return false
+      const wrapper = row.closest('[class*="panelEntry"]')
+      const anchorRow = wrapper !== null && wrapper.parentElement === nav ? wrapper : row
+      if (anchorRow.parentElement !== nav) return false
+      let after = anchorRow
+      for (const node of nav.children) {
+        if (!(node instanceof HTMLElement) || node === entry) continue
+        if (!node.matches(KIT_ENTRY)) continue
+        const rank = Number(node.getAttribute('data-dsh-kit-sidebar-rank'))
+        if (Number.isFinite(rank) && rank < KIT_SIDEBAR_RANK) after = node
+      }
+      if (entry.parentElement !== nav || entry.previousElementSibling !== after) {
+        nav.insertBefore(entry, after.nextSibling)
+      }
+      return true
+    }
+
     function createSidebarEntry() {
       const entry = document.createElement('div')
       entry.dataset.dshDockerEntry = ''
+      entry.dataset.dshKitSidebarRank = String(KIT_SIDEBAR_RANK)
       entry.className = 'dk_sidebarEntry'
       entry.setAttribute('role', 'button')
       entry.setAttribute('aria-label', t('panel.containers'))
       entry.innerHTML =
-        '<span class="dk_entryIcon">' + ICON_BOX + '</span>' +
+        '<span class="dk_entryIcon">' + ICON_BOX_ENTRY + '</span>' +
         '<span class="dk_entryLabel">' + t('panel.containers') + '</span>'
       entry.addEventListener('click', (event) => {
         event.preventDefault()
@@ -10435,6 +10500,8 @@ window.__ModuleLoader__.load({
     }
 
     function placeSidebarEntry(rootNode, entry) {
+      if (placeInPanelNav(rootNode, entry)) return true
+      // 宿主没有面板导航（老版本 / 版式换过一轮）：退回顶层紧接 logo 行，入口不消失。
       const button = newSessionButton(rootNode)
       if (button === undefined) return false
       if (entry.parentElement !== rootNode) {
@@ -10487,7 +10554,10 @@ window.__ModuleLoader__.load({
           tryPlace()
           return
         }
-        if (!rootNode.contains(entry)) placed = placeSidebarEntry(rootNode, entry)
+        // 位置也要复核：入口现在住在宿主的面板 `nav` 里，宿主重渲染可能把它挤到别处
+        // （`rootNode.contains` 仍为真，只看「还在不在」会漏掉被挪走那一档）。
+        // `placeSidebarEntry` 只在位置不对时动 DOM，所以这里不会自己触发自己。
+        placed = placeSidebarEntry(rootNode, entry)
       })
 
       tryPlace()

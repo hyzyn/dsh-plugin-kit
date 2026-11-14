@@ -39,21 +39,17 @@ function functionBody(name: string): string {
 /** 假 entry：只提供 `refreshEntryLabels` 真正用到的两个 DOM 方法。 */
 function fakeEntry() {
   const attrs: Record<string, string> = {}
-  const inputAttrs: Record<string, string> = {}
-  const input = {
-    attrs: inputAttrs,
-    setAttribute(name: string, value: string) {
-      inputAttrs[name] = value
-    },
-  }
+  // 入口现在是与宿主面板行同形的「图标 + 文字」整行（原来是只读输入框），
+  // 所以可见文案落在标签的 textContent 上，不再是输入框的 placeholder。
+  const label = { textContent: '' }
   return {
     attrs,
-    input,
+    label,
     setAttribute(name: string, value: string) {
       attrs[name] = value
     },
     querySelector(selector: string) {
-      return selector === '.gs_sidebarSearchInput' ? input : null
+      return selector === '.gs_sidebarEntryLabel' ? label : null
     },
   }
 }
@@ -66,8 +62,8 @@ function buildRefresh(t: (key: string) => string): (entry: unknown) => void {
   return factory(t)
 }
 
-const zh = (key: string): string => ({ 'card.name': '全局搜索', 'placeholder.sidebar': '全局搜索…' })[key] ?? key
-const en = (key: string): string => ({ 'card.name': 'Global search', 'placeholder.sidebar': 'Search…' })[key] ?? key
+const zh = (key: string): string => ({ 'card.name': '全局搜索' })[key] ?? key
+const en = (key: string): string => ({ 'card.name': 'Global search' })[key] ?? key
 
 describe('侧边栏入口：切换语言后必须重绘（PR #15 的缺陷）', () => {
   it('同一个 entry 先渲染中文，再按英文重绘 —— 两处文案都要跟着变', () => {
@@ -75,12 +71,12 @@ describe('侧边栏入口：切换语言后必须重绘（PR #15 的缺陷）', 
 
     buildRefresh(zh)(entry)
     expect(entry.attrs['aria-label']).toBe('全局搜索')
-    expect(entry.input.attrs['placeholder']).toBe('全局搜索…')
+    expect(entry.label.textContent).toBe('全局搜索')
 
     // 这就是切语言：同一个节点、不重建，只重新套一遍当前语言的文案
     buildRefresh(en)(entry)
     expect(entry.attrs['aria-label']).toBe('Global search')
-    expect(entry.input.attrs['placeholder']).toBe('Search…')
+    expect(entry.label.textContent).toBe('Global search')
   })
 
   it('入口还未建（入口为 null / undefined）时不抛 —— 订阅回调可能先于入口到达', () => {
@@ -89,7 +85,7 @@ describe('侧边栏入口：切换语言后必须重绘（PR #15 的缺陷）', 
     expect(() => { refresh(undefined) }).not.toThrow()
   })
 
-  it('没有输入框时只重绘 aria-label，不抛', () => {
+  it('没有标签节点时只重绘 aria-label，不抛', () => {
     const attrs: Record<string, string> = {}
     const entry = {
       setAttribute(name: string, value: string) {

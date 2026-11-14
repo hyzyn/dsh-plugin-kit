@@ -310,6 +310,29 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 
 ## 已完成（落点 + 门槛）
 
+### 2026-11-14：侧栏入口挪进宿主面板导航、与宿主面板行同规格
+
+**落点**：入口从「侧栏顶层、新建会话下方」搬进宿主的**面板导航里、紧跟固定面板「插件」那一行**
+（`placeInPanelNav`：从宿主的 `.panelRow` 往上找 `nav`，插在第一条面板行之后），带
+`data-dsh-kit-sidebar-rank = 30`，与同族（今日值得读 10 / 全局搜索 20 / 容器 40）按属性让位；
+宿主重渲染后按同一判据复位，**位置对就不动 DOM**（否则 MutationObserver 会自己触发自己）。
+
+**样式**：`.tt_sidebarEntry` 基准换成宿主面板行的规格（`font: inherit` / `color: inherit` /
+`--dsh-sidebar-*` 几何 / `--dsw-radius-md` / `interactive-bg-hover` / 宿主焦点环 / 宽态 16px 图标、
+rail 18px + 36×36）。图标笔画在入口内覆盖成 `1`：宿主面板图标是 `viewBox 16` + `stroke-width="1"`
+的 sprite symbol（16px 时实心 1.0px），而 `TERMINAL_ICON` 按 18px 设计写的是 1.7——真机实测比
+邻居粗 70%。`[data-host-align]` 瘦成一层「实测覆盖」：只留 `min-height` 与上下 `padding`
+——**左右内边距不再量**，宿主那一行右侧还挂着 unpin 槽位（`padding-right: 38px`），套过来会把
+徽标顶偏 29px；左右本来就由宿主令牌算得出、不会随版本漂（`sidebar-metrics.js` 的 `CSS_VAR_OF`
+同步瘦成三项，用例跟着改）。徽标去掉 `--tt-mono`、改 `tabular-nums`，与 docker 入口一致。
+
+**实测**（真宿主 0.2.2-rc.3）：图标 x=20、文字 x=42、行 32px、14/22 字号、字色 `rgb(15,17,21)`，
+与宿主「插件」行逐项相等；折叠 rail 同为 35×36、18px 图标，图标 x 也对齐。点「插件市场」再切回
+「插件」触发 nav 重渲染后，四条入口的次序不变。
+
+**门槛**：`client-lint`（tty 136 处样式变量全过）+ `test/sidebar-metrics.test.ts`
+（钉住「写出去的变量名必须真的被 `tty.css` 引用」，现在是三个）+ 真机截图。
+
 ### 2026-11-12：侧栏入口几何改成「按宿主行现量」（→ [D107](./DEFECTS.md)）
 
 **现象**：DSH `0.2.2-rc.2` 把宿主侧栏行 `.panelRow` 的几何从 `min-height: 36px` / `padding: 7px`

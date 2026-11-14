@@ -120,45 +120,77 @@
 
 /* ============================ 侧边栏入口 ============================ */
 
+/*
+ * 入口与宿主面板行（`.panelRow`）**同规格**：入口住在宿主的面板导航里、紧跟固定面板
+ * 「插件」，与「插件 / 插件市场 / …」并排出现，差一个字号或一个灰度都看得出来。
+ *
+ * 取值一律跟着宿主走、不抄数字：`font: inherit` 拿宿主侧栏字号（14px）、
+ * `color: inherit` 拿 `.root` 的主文字色、行内边距与标签间距取宿主的 `--dsh-sidebar-*`
+ * 几何契约、圆角走 radius token、悬停底色用宿主侧栏自己在用的
+ * `--dsw-alias-interactive-bg-hover`、键盘焦点走宿主的全局焦点环令牌。
+ *
+ * 只有「上下内边距 / 最小行高」宿主没暴露令牌（rc.1 是 7px/36px、rc.2 是 5px/32px），
+ * 这里给 rc.2 的兜底值。
+ *
+ * 宿主无全局 box-sizing reset：`box-sizing` 必须显式声明，否则 width:100% + 左右 padding
+ * 在 content-box 下比容器宽，右侧被侧边栏裁掉（hover 底色缺一角）。
+ */
 [data-dsh-docker-entry] {
   position: relative;
-  /* 与 tty 侧边栏入口同因：宿主无全局 box-sizing reset，width:100% + 左右 padding
-     在 content-box 下会比容器宽 24px，多出的右侧会被侧边栏裁掉（hover 底色缺一角）。 */
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: var(--dk-gap-md);
+  gap: var(--dsh-sidebar-label-gap, 6px);
   width: 100%;
   min-width: 0;
-  height: var(--dk-h-lg);
-  padding: 0 var(--dk-gap-lg);
-  border-radius: var(--dk-r-md);
-  color: var(--dk-label-2);
-  font-size: 13px;
-  line-height: 20px;
+  min-height: 32px;
+  padding: 5px calc(var(--dsh-sidebar-row-padding, 12px) - var(--dsh-sidebar-paint-inset, 3px));
+  border: none;
+  border-inline: var(--dsh-sidebar-paint-inset, 3px) solid transparent;
+  border-radius: var(--dsw-radius-md);
+  background: 0 0;
+  background-clip: padding-box;
+  color: inherit;
+  font: inherit;
+  line-height: 22px;
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
-  transition: background var(--dk-dur) var(--dk-ease), color var(--dk-dur) var(--dk-ease);
+  transition: background-color var(--dk-dur) var(--dk-ease);
 }
 
 [data-dsh-docker-entry]:hover {
-  background: var(--dk-hover);
-  color: var(--dk-label);
+  background-color: var(--dk-hover);
 }
 
 [data-dsh-docker-entry]:focus-visible {
-  outline: none;
-  box-shadow: var(--dk-ring);
+  /* 单行写：client-lint 的变量名扫描按行取名字，折行会把变量名截断成不存在的名字。 */
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
 
+/*
+ * 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+ *
+ * 笔画按**宿主的图标口径**覆盖成 1：宿主面板图标是 sprite symbol（`viewBox 16` +
+ * `stroke-width="1"`），渲染 16px 时实际笔画 1.0px；`ICON_BOX` 是按 18px 设计的（写了 1.5），
+ * 直接塞进 16px 的行里会比邻居粗半档——2026-11-14 真机实测 1.5px vs 宿主 1.0px。
+ * 只覆盖入口内的实例，图标常量本身不动（面板头部那枚仍按自己的尺寸用）。
+ */
 .dk_entryIcon {
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   color: currentColor;
+}
+
+.dk_entryIcon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1;
 }
 
 .dk_entryLabel {
@@ -168,14 +200,21 @@
 }
 
 /* 侧边栏折叠（DSH 外壳在祖先元素上打 data-sidebar-collapsed）：只留图标，
-   与 tty 的终端入口同形——否则标签会从窄栏里溢出一条竖条 */
+   与 tty 的终端入口同形——否则标签会从窄栏里溢出一条竖条。
+   宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边，跟齐。 */
 [data-sidebar-collapsed] [data-dsh-docker-entry] {
   justify-content: center;
   width: 100%;
-  /* 折叠 rail 里宿主的行是 36×36，跟齐（与 tty 入口一致） */
-  height: 36px;
+  min-height: 36px;
   padding: 0;
   margin: 0;
+  border-inline: 0;
+}
+
+[data-sidebar-collapsed] .dk_entryIcon,
+[data-sidebar-collapsed] .dk_entryIcon svg {
+  width: 18px;
+  height: 18px;
 }
 
 [data-sidebar-collapsed] .dk_entryLabel {

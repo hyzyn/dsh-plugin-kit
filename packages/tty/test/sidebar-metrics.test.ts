@@ -113,7 +113,13 @@ describe('hostRowCssVars：只写量到的项', () => {
   it('名字与 CSS 对得上：每个写出去的变量都在 tty.css 里被引用', () => {
     const css = readFileSync(new URL('../client-src/tty.css', import.meta.url), 'utf8')
     const vars = hostRowCssVars({ minHeight: 1, padTop: 1, padRight: 1, padBottom: 1, padLeft: 1 })
-    expect(vars).toHaveLength(5)
+    // 只有上下几何会被写出去：左右内边距由宿主令牌算得出，且量到的那一行右侧还带着
+    // unpin 槽位（见 sidebar-metrics.js 的 CSS_VAR_OF 注释）。
+    expect(vars.map(([name]) => name)).toEqual([
+      '--tt-host-min-height',
+      '--tt-host-pad-top',
+      '--tt-host-pad-bottom',
+    ])
     for (const [name] of vars) {
       // 改名后 JS 会静默写一个没人读的变量，症状是「修了但没生效」——所以钉住
       expect(css.includes(`var(${name}`), `${name} 没有被 tty.css 引用`).toBe(true)

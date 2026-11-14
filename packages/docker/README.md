@@ -57,7 +57,7 @@ dsh plugin --profile web add link:$(pwd)/packages/docker    # 仓库开发调试
 ```
 
 聚合包 `@hyzyn/dsh-all`（或仓库根 bundle）已包含本插件，一次装齐时不必单独 add。装完重启 `dsh web`，
-侧边栏出现「容器」入口；「Docker 容器面板」卡片维护目标与开关，**保存即热生效**（`settings/updated`
+侧栏**面板导航里紧跟「插件」那一行**出现「容器」入口（与「今日值得读 / 全局搜索 / 终端」同栏、同规格）；「Docker 容器面板」卡片维护目标与开关，**保存即热生效**（`settings/updated`
 触发重解析，无需重启）。
 
 > 已在 web profile 里装过 `@hyzyn/dsh-all` 或根 bundle 时**不要**再 add 本包，否则插件行重复挂载，
