@@ -7,11 +7,18 @@
  *
  * 断言的是**真实结果**：
  *   O1 导出：点「导出 OPML」→ 走真实下载 → 解析下载到的文件，逐个核对宿主 `/config` 里的
- *      source 都在 OPML 里（`xmlUrl` 与分组 `category` 都对）；
+ *      source 都在 OPML 里（`xmlUrl` 与分组 `category` 都对）。
+ *      ⚠️ 宿主**没有存储的订阅源**时这条记 **WARN 而不是 FAIL**（2026-11-14 改）：`readRssStore()`
+ *      不会给**显式空数组**补默认值，而 digest 走的是「空则用内置源」那条回落，于是
+ *      「配置 0 个源、仍出 digest、导出 0 个源」是自洽状态，判据无从核对——红得没有信息量。
+ *      但「点了导出却没有文件下来」与源数量无关，那种情况仍是 FAIL。
  *   O2 导入：把一份 OPML 经 `DOM.setFileInputFiles` 喂给隐藏的 file input → 该路径会
  *      **自动保存**（`importSourcesFromText(..., 'OPML', true)`）→ 回读宿主 `/config`，
  *      两个新源必须真的落了盘，且已存在的源被跳过（不重复）；
  *   O3 回环：再导出一次，刚导入的源要出现在 OPML 里。
+ *
+ * 汇总把 WARN 单独数出来（退出码只看 FAIL）——「这一档没验到」不能混成「验过了」，
+ * 也不该让闸门为此变红。
  *
  * 脚本会把宿主配置**恢复原状**（导入前先存基线，结束前写回），不会留下测试订阅源。
  *
@@ -55,6 +62,18 @@ const results = []
 const record = (name, ok, detail) => {
   results.push({ name, ok, detail })
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '\n      ' + detail : ''}`)
+}
+/**
+ * 记一条 **WARN**：环境或前置条件让它无从核对，但**不是回归**。
+ *
+ * 与 `verify-client-ui.mjs` 同一个形态（那边 UI11 的 PTY 被拒也是这样记的）：
+ * `ok: true` 让它不计入 FAIL、退出码不受影响；`warned: true` 让汇总把它单独数出来——
+ * 既不会让闸门变绿得无声（汇总里能看见 WARN 几条），也不会把「这一格没验到」
+ * 混成「验过了」。
+ */
+const warn = (name, detail) => {
+  results.push({ name, ok: true, detail, warned: true })
+  console.log(`WARN  ${name}\n      ${detail}`)
 }
 
 const url = new URL(baseUrl)
@@ -378,13 +397,38 @@ try {
   const exported = first?.path
   const opml = first?.text ?? ''
   const missing = baseline.sources.filter((source) => !opml.includes(String(source.url)))
-  record(
-    'O1 点「导出 OPML」→ 真实下载→ 每个宿主订阅源都在 OPML 里（xmlUrl 逐个核对）',
-    exported !== undefined && baseline.sources.length > 0 && missing.length === 0,
-    exported === undefined
-      ? '没等到下载文件'
-      : `文件=${exported.split('/').pop()} 大小=${String(opml.length)} 字节 源数=${String(baseline.sources.length)} 缺失=${JSON.stringify(missing.map((s) => s.url))}`,
-  )
+  if (baseline.sources.length === 0) {
+    /*
+     * 宿主**没有存储的订阅源**时，O1 的判据（「每个宿主订阅源都在 OPML 里」）无从核对：
+     * `readRssStore()` 对**显式空数组**不做默认填充（`sources: []` 会原样覆盖内置默认），
+     * 而 digest 走的是 `sources.length > 0 ? sources : defaultSources()` 那条回落——
+     * 于是「配置里 0 个源、却仍出 digest、导出 0 个源的 OPML」是完全自洽的状态。
+     *
+     * （rss D01）2026-11-14 在 test profile（3082）上实测踩到：那里 `sources: []`、digest 用内置源，
+     * 旧判据把这一格判成 FAIL——红得没有信息量，还容易被当成回归。所以改记 WARN。
+     * 但「点了导出却没有文件下来」与源数量无关（按钮 / 下载链断了），那种情况仍然是 FAIL。
+     */
+    if (exported === undefined) {
+      record(
+        'O1 点「导出 OPML」→ 真实下载',
+        false,
+        '没等到下载文件——这与宿主有几个源无关，导出按钮或下载链路断了',
+      )
+    } else {
+      warn(
+        'O1 点「导出 OPML」→ 宿主订阅源都在 OPML 里（宿主无存储源，无从核对）',
+        `宿主配置里 sources 为空（digest 走内置源），导出 ${String(opml.length)} 字节 / 0 个源属预期；O1 无从核对——不是回归`,
+      )
+    }
+  } else {
+    record(
+      'O1 点「导出 OPML」→ 真实下载→ 每个宿主订阅源都在 OPML 里（xmlUrl 逐个核对）',
+      exported !== undefined && missing.length === 0,
+      exported === undefined
+        ? '没等到下载文件'
+        : `文件=${exported.split('/').pop()} 大小=${String(opml.length)} 字节 源数=${String(baseline.sources.length)} 缺失=${JSON.stringify(missing.map((s) => s.url))}`,
+    )
+  }
   if (baseline.sources[0]?.category !== undefined && baseline.sources[0].category !== '') {
     record(
       'O1 导出保留了分组（category 属性）',
@@ -457,7 +501,10 @@ try {
     )
   }
   const failed = results.filter((item) => item.ok !== true)
-  console.log(`\n# 汇总：PASS ${results.filter((r) => r.ok === true).length} / FAIL ${failed.length}`)
+  const warned = results.filter((item) => item.warned === true)
+  console.log(
+    `\n# 汇总：PASS ${String(results.filter((r) => r.ok === true && r.warned !== true).length)} / WARN ${String(warned.length)} / FAIL ${String(failed.length)}`,
+  )
   if (failed.length > 0) {
     console.log('# 失败项：')
     for (const item of failed) console.log(`  - ${item.name}`)

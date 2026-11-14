@@ -84,7 +84,7 @@ const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
 
 describe('缺陷台账：现算（唯一真值来源）', () => {
   it('每个登记的包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
-    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'loglens'])
+    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'loglens', 'rss'])
     for (const spec of LEDGER_SPECS) {
       const fact = facts.get(spec.name)
       expect(fact, `${spec.name} 没算出来`).toBeDefined()
@@ -422,6 +422,14 @@ describe('判据 8：跨包引用的号必须真实存在（悬空引用）', ()
 
   it('loglens 的悬空引用也要报（它登记进了台账，却漏在正则名单里——2026-10-18 补）', () => {
     const bogus = danglingRef('loglens')
+    const diffs = checkWithReferences([...real.references, { path: 'docs/fixture.md', text: `见 ${bogus}。\n` }])
+    const diff = diffs.find((item) => item.kind === 'ledger.ref.dangling')
+    expect(diff, `${bogus} 应被报出来`).toBeDefined()
+    expect(diff?.actual).toBe(bogus)
+  })
+
+  it('rss 的悬空引用也要报（2026-11-14 建台账时同步登记，别让新包忘了进正则名单）', () => {
+    const bogus = danglingRef('rss')
     const diffs = checkWithReferences([...real.references, { path: 'docs/fixture.md', text: `见 ${bogus}。\n` }])
     const diff = diffs.find((item) => item.kind === 'ledger.ref.dangling')
     expect(diff, `${bogus} 应被报出来`).toBeDefined()

@@ -395,6 +395,68 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
       声明、主题令牌快照与文档，未动任何插件运行代码；但按第十三档「零差异只对包成立、对使用面不成立」
       的教训，这五条**必须在发版前补跑**，不能沿用旧记录。
 
+  - **`0.2.2-rc.3`（第十五档基线，2026-11-13 实测）**：**纯显式声明、零差异**（`pnpm -r build` 之后
+    `lib/` 与 `client.js` 产物零 diff）。`0.2.2-rc.3` 本来就被 `^0.2.2-rc.2` 覆盖（同一个 `0.2.2`
+    版本元组，预发布之间不比大小；`semver.satisfies` 在 plain 与 `includePrerelease` 下都为真），
+    加档只是把「适配到哪一档就写到哪一档」落全。**取证口径**：这一档 npm 上已经发出（`next` tag，
+    2026-11-13T08:05Z），所以 rc.2 直接取**桌面版 `app.asar` 里的 dsh 载荷**（桌面版仍停在 rc.2）、
+    rc.3 取本机 npm 全局安装，两边各 339 个宿主包、其中 **337 个两边都有**，逐个比对时先把版本串
+    与构建产物里的 CSS Module 类名哈希归一化；rc.3 只多两个包（新增的官方 bundle
+    `dsh-deepseek-chat-import` 与 `libreoffice-kit-wasm`，均本仓零引用），rc.2 侧多出的
+    `dsh` / `dsh-desktop-host` 是桌面版载荷的打包形状差异。结果：**本仓 import 的宿主包 `lib/` 全部逐字节相同**——`cordis`（含
+    `cordis-plugin-loader` / `cosmokit`）/ `dsh-app-boot`（判定器）/ `dsh-tools`（`defineTool`）/
+    `dsh-host-webserver` / `dsh-mcp-client` / `dsh-subprocess` / `dsh-subprocess-local` /
+    `dsh-settings` / `dsh-storage` / `schemastery`。有真实 `src/` 改动的只有 8 个包，且**一处都不在
+    本仓引用面内**：`dsh-client-ui-sidebar` / `-workspace`（槽面**只增**——新增
+    `sidebar.session.action`（`hoc`）与 `workspace.picker` Factory + `workspace.picker.directoryFlow`）、
+    `dsh-client-ui-directory-picker-browse` / `-native`（把选择器补进第三个 directoryFlow 洞）、
+    `dsh-cordis-client-runner`（槽目录同步新增两条，仍 0 删 0 改名）、`dsh-official-bundles`
+    （官方 bundle 清单新增 `@deepseek-ai/dsh-deepseek-chat-import`）、`dsh-session-log-export`
+    （归档时附件不可读不再整体失败，改为记进 `missing`）、`dsh-tool-cordis`（API 目录补文档）。
+    本仓注册的槽只有 `settings.kit.item` / `settings.plugin.item` / `sidebar.right.pane.tab` 三条，
+    两档之间逐字节相同；其余约 36 个 `client-ui-*` 的 `lib/client.js` 差异**只有 CSS Module 类名
+    前缀**（构建期哈希换了种子，如 `._0K0vAa_cards` → `.k74WwW_cards`，归一化后为空）。
+    证据：① `node scripts/check-dsh-peers.mjs --with-app-boot` —— **十五档 × 14 条目全部放行**
+    （判定器自报运行时 `0.2.2-rc.3`）。② **真宿主加载**（隔离 `DSH_HOME`，真实 `~/.dsh` 全程只读）：
+    从自带 `web` 模板新建 profile、`dsh plugin add link:<11 个可安装包>` **无需任何豁免、无
+    `incompatible-version`**；启动后 **11/11 个包全部加载（10 行 `mounted` + `dsh-tty` 的
+    `agent tools registered`）、0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**，
+    根页面 **200（43290 B；须带 `dsh web` 打印的 `?token=`，裸访问时 401 并提示重开那个 URL）**，
+    `GET /api/dsh-docker/targets` 与 `GET /api/dsh-tty/config` 均 **200**，页面模块注册表里列出
+    全部 11 个 `@hyzyn/*` bundle。③ 主题令牌 **450 → 450**，`sync-dsh-theme-tokens --check` 与 rc.3
+    宿主**逐字一致**——这一档**不需要重建**快照。④ `docs/os-consent-plan.md` 的升级绊线按设计报红，
+    逐条复核三条事实后基准更新到 rc.3（五处载体文件里四处与 rc.2 逐字节相同，唯一非逐字节的
+    `dsh-client-ui-approval/lib/client.js` 只差 CSS Module 类名前缀），`os-consent-scope.test.ts`
+    **27/27 绿**。⑤ 真宿主 + 真浏览器：`node scripts/live-host-smoke.mjs --bootstrap --strict --render --chrome-arg
+    --no-sandbox`（一次性 `DSH_HOME` 在 /tmp）**23/23 PASS**——18 条 HTTP（授权阶梯 A/B 两实例、
+    路由门控、agent 工具清单、宿主服务的 `client.js`）+ 5 条真浏览器（界面渲染、本仓客户端 bundle
+    真加载、无未捕获异常、无 4xx/5xx 子请求、控制台无插件 error）。⑥ 工作区回归：
+    `pnpm -r typecheck`（含 client-lint，`--dsw-*` 全部命中 450 个真实令牌）、`pnpm -r build`
+    （产物零 diff）、`pnpm test` **229 files / 4188 tests 全过**、`pnpm dsh-peers:check` /
+    `pnpm toolchain:check`（15 档 / pin 2 处）/ `aggregate`（幂等）及其余静态闸门全绿。
+    ⑦ **十三条真机脚本本轮全跑了一遍（rc.3 宿主，2026-11-13）**，没有 FAIL：进程内五条
+    `tier-smoke` **11/11**、`agent-scope` **10/10**、`agent-integration` **9/9**、
+    `cg69-real-cordis` **3/3**、mcp `on-demand` **10/10**；自起宿主的四条 `host-contract`
+    **42/42**、`indexforce` **5/5**、codegraph `client-ui` **17 PASS / 1 WARN / 0 FAIL**、
+    `verify-client-ui --mode full` **17 PASS / 1 WARN / 0 FAIL**；打在线宿主的四条 `rss-opml`
+    **9/9**、`mcp-http` **7 PASS / 0 FAIL**、`mcp-tools` **7 PASS / 1 WARN / 0 FAIL**、
+    `verify-issue-13-14 --from test` **15 PASS / 2 WARN / 0 FAIL**。五条 WARN 全是环境或脚本分工，
+    不是回归：沙箱里 PTY `posix_openpt` 被拒（两条 UI 脚本各计 1 条）、`mcp-tools` 的夹具服务器
+    尚未被 agent 回合真调用（该脚本只负责 L1，L2 由那次回合的 `--log` 举证）、`verify-issue-13-14` 的两条
+    环境缺口（沿用历次口径）。
+    ⚠️ `verify-issue-13-14 --from test` 用的是**真实 `test` profile 的副本**（隔离 `DSH_HOME`，
+    真实 `~/.dsh` 五个关键文件逐字节未变），所以它顺带证明了「`test` profile 在 rc.3 上能组合、
+    能起、六条插件路由（docker / tty / codegraph / mcp / env / prompt）都能答」。
+    ⑧ **在真实的 `test` profile（127.0.0.1:3082，未重启）上补跑**：`verify-client-ui --mode full`
+    **18 PASS / 0 WARN / 0 FAIL**（9 个插件的配置卡片全渲染、命令面板往返、终端 xterm 起来且无
+    `posix_openpt` 限制——隔离宿主上那条 WARN 在真机上不存在）；`verify-rss-opml` 暴露了脚本自己的
+    一个前置假设——它要求宿主**有存储的订阅源**，而 3082 的 `sources: []`（digest 走内置源）让 O1
+    **无从核对**，旧判据记 FAIL。已改成 WARN（「点了导出却没有文件下来」仍是 FAIL），复跑
+    **7 PASS / 1 WARN / 0 FAIL**，并在 `docs/agent-real-test.md` 第 6 条补上这条例；缺陷本身入 `rss` 台账（`rss D01`，2026-11-14 建台账）。
+    - **仍未跑**：`mcp-tool-budget` 与 `disclosure-report` 这两条**只读报告**（不是回归闸门；
+    本轮在一次性空 profile 上跑过，前者报 0 条已启用行——空 profile 本来就没有 MCP 服务器配置，
+    与「55 个工具」那条历史记录的差别是配置而非回归）。
+
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
 一次性能解决五个问题，是唯一改到「上限」的项：

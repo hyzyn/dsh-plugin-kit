@@ -359,6 +359,12 @@ Windows 侧则是 junction，必须建成 junction（建目录符号链接要特
    不是回归（硬约束 ②）。但**也不能默默 PASS**——WARN 要写清「用 `--from <哪个 profile>` 能覆盖」。
    本轮最终：`test` 14 PASS / 2 WARN、`logs-test`（带 loglens）16/16、`desktop` 6 PASS / 8 WARN，
    **0 FAIL**；WARN 全部是 desktop 没装 rss / prompt / profile / loglens 那四个插件。
+   2026-11-14 又一例：`verify-rss-opml` 的 O1 判据要求宿主**有存储的订阅源**，而 `sources: []`
+   的宿主（digest 走内置源，`readRssStore()` 不给显式空数组补默认值）让这条**无从核对**——
+   旧版记 FAIL，红得没有信息量还容易被当成回归。现已改成 WARN 并写明原因；
+   但「点了导出却没有文件下来」与源数量无关（按钮 / 下载链断了），那种情况**仍然记 FAIL**。
+   WARN 的通用形态与 `verify-client-ui.mjs` 一致：`ok: true` + `warned: true`，
+   汇总单独数 WARN、退出码只看 FAIL。
 
 > **另一条与脚本无关的观察**：`web` profile 的 `mcpScope` 是 `per-agent`，按设计会
 > **撤销** `~/.dsh/cordis.patch.yml` 里 `dsh-codegraph mcp managed` 那条全局托管行。
