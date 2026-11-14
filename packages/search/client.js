@@ -33,9 +33,10 @@ window.__ModuleLoader__.load({
       '.gs_sidebarSearch{box-sizing:border-box;display:flex;align-items:center;gap:var(--dsh-sidebar-label-gap,6px);width:100%;min-width:0;min-height:32px;padding:5px calc(var(--dsh-sidebar-row-padding,12px) - var(--dsh-sidebar-paint-inset,3px));border:none;border-inline:var(--dsh-sidebar-paint-inset,3px) solid transparent;border-radius:var(--dsw-radius-md);background:0 0;background-clip:padding-box;color:inherit;cursor:pointer;font:inherit;line-height:22px;white-space:nowrap;transition:background-color .12s ease}',
       '.gs_sidebarSearch:hover{background-color:var(--dsw-alias-interactive-bg-hover)}',
       '.gs_sidebarSearch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
-      // 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+      // 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px；
+      // 笔画按宿主的 sprite symbol 口径覆盖成 1（16 viewBox 渲染 16px = 1.0px，与邻居等重）。
       '.gs_sidebarEntryIcon{flex:none;align-items:center;justify-content:center;display:inline-flex;width:16px;height:16px}',
-      '.gs_sidebarEntryIcon svg{width:16px;height:16px}',
+      '.gs_sidebarEntryIcon svg{width:16px;height:16px;stroke-width:1}',
       '.gs_sidebarEntryLabel{overflow:hidden;text-overflow:ellipsis}',
       // 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
       '[data-sidebar-collapsed] .gs_sidebarSearch{justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',

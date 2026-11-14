@@ -288,7 +288,10 @@ kit 插件的设置面板按宿主槽位代际注册三代（`plugins.bundle.con
   `.root` 的 `--dsw-alias-label-primary`）、行内边距与标签间距取宿主的
   `--dsh-sidebar-row-padding` / `-label-gap` / `-paint-inset`、圆角 `--dsw-radius-md`、
   悬停 `--dsw-alias-interactive-bg-hover`、键盘焦点走宿主的全局焦点环令牌、图标宽态 16px /
-  折叠 rail 18px / 36×36。**只有**「上下内边距 / 最小行高」宿主没给令牌（rc.1 是 7px/36px、
+  折叠 rail 18px / 36×36。**图标笔画也要跟宿主**：宿主的面板图标是 sprite symbol
+  （`viewBox 16` + `stroke-width="1"`），渲染 16px 时实际笔画 **1.0px**；本仓图标常量是按
+  18px 设计的（1.5~1.7），必须在入口内用 CSS 覆盖成 `stroke-width:1`，否则与邻居并排时
+  明显更粗（2026-11-14 真机实测 1.7px vs 1.0px）。**只有**「上下内边距 / 最小行高」宿主没给令牌（rc.1 是 7px/36px、
   rc.2 是 5px/32px），给兜底值；量得到真值的包（tty）用挂载时实测覆盖。
 - **兜底**：拿不到宿主面板导航时退回旧逻辑（紧接 logo 行 / 新建会话），入口不消失。
 

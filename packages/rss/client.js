@@ -233,8 +233,12 @@ window.__ModuleLoader__.load({
       '.rss_sidebarEntry:hover{background-color:var(--dsw-alias-interactive-bg-hover)}',
       '.rss_sidebarEntry:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
       // 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+      // 笔画跟着宿主走：宿主的面板图标是 sprite symbol（`viewBox 16` + `stroke-width="1"`），
+      // 渲染 16px 时实际笔画 1.0px；本包图标常量按 18px 设计、写的是 1.5~1.7，直接放进 16px 的行里
+      // 会比邻居明显更粗（2026-11-14 真机实测：1.7px vs 宿主 1.0px）。这里在入口内覆盖，
+      // 不改图标常量本身（同一枚 svg 在别处仍按它自己的尺寸用）。
       '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex;width:16px;height:16px}',
-      '.rss_sidebarEntryIcon svg{width:16px;height:16px}',
+      '.rss_sidebarEntryIcon svg{width:16px;height:16px;stroke-width:1}',
       '.rss_sidebarEntryLabel{text-overflow:ellipsis;overflow:hidden}',
       // 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
       '[data-sidebar-collapsed] .rss_sidebarEntry{justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',

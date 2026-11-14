@@ -270,7 +270,15 @@
   outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
-/* 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。 */
+/*
+ * 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+ *
+ * 笔画按**宿主的图标口径**覆盖成 1：宿主面板图标是 sprite symbol（`viewBox 16` +
+ * `stroke-width="1"`），渲染 16px 时实际笔画 1.0px；本包的 `TERMINAL_ICON` 是按 18px
+ * 设计的（写了 1.7），直接塞进 16px 的行里会比邻居明显更粗——2026-11-14 真机实测
+ * 1.7px vs 宿主 1.0px。只覆盖入口内的实例，图标常量本身不动（面板头部那枚仍按自己的
+ * 尺寸与笔画用）。
+ */
 .tt_sidebarEntryIcon {
   flex: none;
   display: inline-flex;
@@ -283,6 +291,7 @@
 .tt_sidebarEntryIcon svg {
   width: 16px;
   height: 16px;
+  stroke-width: 1;
 }
 .tt_sidebarEntryLabel {
   overflow: hidden;

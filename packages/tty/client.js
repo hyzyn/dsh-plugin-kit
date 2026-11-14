@@ -605,7 +605,15 @@ void main() {
   outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
-/* \u56FE\u6807\uFF1A\u5BBF\u4E3B\u5BBD\u6001\u9762\u677F\u884C\u662F 16px\uFF08\`sidebar.panel.icon\` \u7684 size\uFF09\uFF0C\u6298\u53E0 rail \u662F 18px\u3002 */
+/*
+ * \u56FE\u6807\uFF1A\u5BBF\u4E3B\u5BBD\u6001\u9762\u677F\u884C\u662F 16px\uFF08\`sidebar.panel.icon\` \u7684 size\uFF09\uFF0C\u6298\u53E0 rail \u662F 18px\u3002
+ *
+ * \u7B14\u753B\u6309**\u5BBF\u4E3B\u7684\u56FE\u6807\u53E3\u5F84**\u8986\u76D6\u6210 1\uFF1A\u5BBF\u4E3B\u9762\u677F\u56FE\u6807\u662F sprite symbol\uFF08\`viewBox 16\` +
+ * \`stroke-width="1"\`\uFF09\uFF0C\u6E32\u67D3 16px \u65F6\u5B9E\u9645\u7B14\u753B 1.0px\uFF1B\u672C\u5305\u7684 \`TERMINAL_ICON\` \u662F\u6309 18px
+ * \u8BBE\u8BA1\u7684\uFF08\u5199\u4E86 1.7\uFF09\uFF0C\u76F4\u63A5\u585E\u8FDB 16px \u7684\u884C\u91CC\u4F1A\u6BD4\u90BB\u5C45\u660E\u663E\u66F4\u7C97\u2014\u20142026-11-14 \u771F\u673A\u5B9E\u6D4B
+ * 1.7px vs \u5BBF\u4E3B 1.0px\u3002\u53EA\u8986\u76D6\u5165\u53E3\u5185\u7684\u5B9E\u4F8B\uFF0C\u56FE\u6807\u5E38\u91CF\u672C\u8EAB\u4E0D\u52A8\uFF08\u9762\u677F\u5934\u90E8\u90A3\u679A\u4ECD\u6309\u81EA\u5DF1\u7684
+ * \u5C3A\u5BF8\u4E0E\u7B14\u753B\u7528\uFF09\u3002
+ */
 .tt_sidebarEntryIcon {
   flex: none;
   display: inline-flex;
@@ -618,6 +626,7 @@ void main() {
 .tt_sidebarEntryIcon svg {
   width: 16px;
   height: 16px;
+  stroke-width: 1;
 }
 .tt_sidebarEntryLabel {
   overflow: hidden;

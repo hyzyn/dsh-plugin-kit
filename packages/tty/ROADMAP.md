@@ -319,7 +319,9 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 
 **样式**：`.tt_sidebarEntry` 基准换成宿主面板行的规格（`font: inherit` / `color: inherit` /
 `--dsh-sidebar-*` 几何 / `--dsw-radius-md` / `interactive-bg-hover` / 宿主焦点环 / 宽态 16px 图标、
-rail 18px + 36×36）。`[data-host-align]` 瘦成一层「实测覆盖」：只留 `min-height` 与上下 `padding`
+rail 18px + 36×36）。图标笔画在入口内覆盖成 `1`：宿主面板图标是 `viewBox 16` + `stroke-width="1"`
+的 sprite symbol（16px 时实心 1.0px），而 `TERMINAL_ICON` 按 18px 设计写的是 1.7——真机实测比
+邻居粗 70%。`[data-host-align]` 瘦成一层「实测覆盖」：只留 `min-height` 与上下 `padding`
 ——**左右内边距不再量**，宿主那一行右侧还挂着 unpin 槽位（`padding-right: 38px`），套过来会把
 徽标顶偏 29px；左右本来就由宿主令牌算得出、不会随版本漂（`sidebar-metrics.js` 的 `CSS_VAR_OF`
 同步瘦成三项，用例跟着改）。徽标去掉 `--tt-mono`、改 `tabular-nums`，与 docker 入口一致。

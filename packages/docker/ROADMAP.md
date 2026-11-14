@@ -140,7 +140,9 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 **样式**：入口换成宿主面板行的规格——`font: inherit`（14px，不再是 13px）、`color: inherit`
 （主文字色，不再是 secondary）、行内边距与标签间距取宿主 `--dsh-sidebar-*` 几何契约、
 圆角 `--dsw-radius-md`、悬停 `interactive-bg-hover`、键盘焦点走宿主的全局焦点环令牌
-（不再自造 `--dk-ring`）；图标宽态 16px / 折叠 rail 18px + 36×36。
+（不再自造 `--dk-ring`）；图标宽态 16px / 折叠 rail 18px + 36×36，笔画在入口内覆盖成 `1`
+（宿主面板图标是 `viewBox 16` + `stroke-width="1"` 的 sprite symbol = 实心 1.0px；`ICON_BOX`
+按 18px 设计写的是 1.5）。
 
 **门槛**：`client-lint`（docker 75 处样式变量全过）+ 真宿主 0.2.2-rc.3 实测（与「插件」行逐项相等：
 图标 x=20、文字 x=42、行 32px、14/22 字号）。
