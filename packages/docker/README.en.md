@@ -69,7 +69,7 @@ dsh plugin --profile web add link:$(pwd)/packages/docker    # repo development a
 ```
 
 The aggregate package `@hyzyn/dsh-all` (or the repo-root bundle) already includes this plugin, so there is no need
-to add it separately. After installing, restart `dsh web` and the "Containers" entry appears in the sidebar; the
+to add it separately. After installing, restart `dsh web` and the "Containers" entry appears **in the panel navigation directly below "Plugins"** (same column and same spec as "Today's Worth Reading / Global search / Terminal"); the
 "Docker Container Panel" card maintains targets and switches, and **saving applies hot** (`settings/updated`
 triggers re-resolution, with no restart needed).
 

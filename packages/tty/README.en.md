@@ -22,7 +22,7 @@ dsh plugin --profile web add @hyzyn/dsh-tty    # npm install (after release)
 dsh plugin --profile web add link:$(pwd)/packages/tty   # repo development/debugging
 ```
 
-After installing, restart `dsh web`; a “Terminal” entry appears in the sidebar — click it to open the panel;
+After installing, restart `dsh web`; a “Terminal” entry appears **in the panel navigation directly below “Plugins”** (same column and same spec as “Today’s Worth Reading / Global search / Containers”) — click it to open the panel;
 the “Terminal Panel” card lets you change the configuration (**saving takes effect immediately**, no restart needed).
 
 ## How to use
@@ -653,7 +653,7 @@ per-generation landing spots and the four registration contracts live in
 | `terminalCursorStyle` | `bar` | Cursor shape: `bar` / `block` / `underline`. Programs inside the terminal write this too (DECSCUSR), so the plugin corrects it back after each parsed output batch; **full-screen programs (vim / less / htop / fzf, alternate screen) are left alone** |
 | `terminalCursorBlink` | true | Whether the cursor blinks. Programs’ `?12h` / `?12l` override it; corrected back on the normal buffer, left alone in full-screen programs |
 | `terminalLineHeight` | 1.35 | Line-height multiplier (1~2). A block cursor usually wants `1`: 1.35 stretches the cell so the cursor is taller than the glyphs |
-| `sidebarHostAlign` | false | Align the sidebar “Terminal” entry with the host’s `.panelRow`: width `calc(100% - 4px)`, `margin 0 2px`, 14px font, 16px icon; **`min-height` and `padding` are measured from the host row at mount time** (the two host cohorts use 36/7 and 32/5, so hard-coding either makes the other 4px off), falling back to 36/7 when nothing can be measured. Default false = the plugin’s own sizing (purely additive styling) |
+| `sidebarHostAlign` | false | The sidebar “Terminal” **entry already** renders to the host panel row’s (`.panelRow`) spec by default: it sits **in the host’s panel navigation, directly below the “Plugins” row**, takes its width, padding and label gap from the host’s `--dsh-sidebar-*` geometry contract, and takes font size, ink, radius, hover and keyboard focus ring from the same host panel-row token set. This switch adds one more **measured** layer: `min-height` and the vertical `padding` are measured from the host row at mount time (the two host cohorts use 36/7 and 32/5, so hard-coding either makes the other 4px off), falling back to the CSS defaults when nothing can be measured |
 
 ## Connection bar: connection identity and copy
 

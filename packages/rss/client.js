@@ -214,16 +214,31 @@ window.__ModuleLoader__.load({
       // toast 图标是图标不是正文：字重按「强调」档留 600（宿主自家组件没有 700）。
       '.rss_toastIcon{flex:none;font-weight:600}',
       '@keyframes rss_toastIn{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}',
-      // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
-      // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
-      '.rss_sidebarEntry{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;line-height:20px;display:flex}',
-      // 宿主 0.2.2-alpha.3 移除了旧版 sidebar-nav-item-hover 令牌；改用宿主侧栏
-      // 自己实际使用的 --dsw-alias-interactive-bg-hover——它在十二档 cohort 里都存在（证据见 README 兼容性段）。
-      '.rss_sidebarEntry:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
-      '.rss_sidebarEntry[data-active]{background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary);font-weight:600}',
-      '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex}',
+      /*
+       * 侧栏入口与宿主面板行（`.panelRow`）**同规格**：入口现在就住在宿主的面板导航里
+       * （紧跟固定面板「插件」），与邻居并排出现，差一个字号或一个灰度都能看出来。
+       *
+       * 取值一律跟着宿主走、不抄数字：
+       *   - `font:inherit` → 字号/字族随宿主侧栏（`.root` 的 14px），不再写死 13px；
+       *   - `color:inherit` → 主文字色随宿主 `.root`（`--dsw-alias-label-primary`），
+       *     不再是比邻居暗一档的 secondary；
+       *   - 行内边距与标签间距取宿主的 `--dsh-sidebar-row-padding` / `-label-gap` /
+       *     `-paint-inset`（这三个是宿主侧栏自己的几何契约，随它改版一起变）；
+       *   - 圆角走 radius token（原来写死 8px），悬停底色用宿主侧栏自己在用的
+       *     `--dsw-alias-interactive-bg-hover`。
+       * 只有「上下内边距 / 最小行高」宿主没暴露令牌（rc.1 是 7px/36px、rc.2 是 5px/32px），
+       * 这里给兜底值；量得到真值时由 `--dsh-sidebar-*` 覆盖不成立，所以只兜底不写死判据。
+       */
+      '.rss_sidebarEntry{box-sizing:border-box;display:flex;align-items:center;gap:var(--dsh-sidebar-label-gap,6px);width:100%;min-width:0;min-height:32px;padding:5px calc(var(--dsh-sidebar-row-padding,12px) - var(--dsh-sidebar-paint-inset,3px));border:none;border-inline:var(--dsh-sidebar-paint-inset,3px) solid transparent;border-radius:var(--dsw-radius-md);background:0 0;background-clip:padding-box;color:inherit;font:inherit;line-height:22px;white-space:nowrap;cursor:pointer;transition:background-color .12s ease}',
+      '.rss_sidebarEntry:hover{background-color:var(--dsw-alias-interactive-bg-hover)}',
+      '.rss_sidebarEntry:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
+      // 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+      '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex;width:16px;height:16px}',
+      '.rss_sidebarEntryIcon svg{width:16px;height:16px}',
       '.rss_sidebarEntryLabel{text-overflow:ellipsis;overflow:hidden}',
-      '[data-sidebar-collapsed] .rss_sidebarEntry{justify-content:center;width:100%;padding:0}',
+      // 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
+      '[data-sidebar-collapsed] .rss_sidebarEntry{justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',
+      '[data-sidebar-collapsed] .rss_sidebarEntryIcon,[data-sidebar-collapsed] .rss_sidebarEntryIcon svg{width:18px;height:18px}',
       '[data-sidebar-collapsed] .rss_sidebarEntryLabel{display:none}',
       '.rss_modalBackdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);justify-content:center;align-items:center;display:flex;position:fixed;inset:0}',
       // 刷新中的过渡层：与 dsh-docker 的「切目标过渡」同一套语言——不推版、有方向感。
@@ -1803,10 +1818,71 @@ window.__ModuleLoader__.load({
       return undefined
     }
 
+    /* ---------------------------- 侧栏落位（宿主面板导航） ---------------------------- */
+
+    /**
+     * kit 家族在宿主面板导航里的次序：小的在前。
+     *
+     * 四条入口由四个插件各挂各的、加载顺序不定，所以先后不能靠「谁先插」——按下表的值
+     * 互相让位（见 `placeInPanelNav`）：今日值得读 < 全局搜索 < 终端 < 容器。
+     */
+    const KIT_SIDEBAR_RANK = 10
+    const KIT_ENTRY = '[data-dsh-kit-sidebar-rank]'
+
+    /**
+     * 宿主的面板导航：从宿主的**面板行**（`.panelRow`，类名带 hash 前缀，只能子串匹配）
+     * 往上找它所在的 `nav`。
+     *
+     * 为什么不再挂顶层：入口原先插在侧栏 root 的直接子级（logo 行之后），于是四条入口顶在
+     * 侧栏最上面、与宿主的「插件 / 插件市场 / …」分成两段，字号与灰度也不一样。宿主把面板行
+     * 渲染在侧栏滚动区里的 `nav` 中，**不是 root 的直接子元素**——只看 `root.children` 会
+     * 找不到（tty 2026-11-12 实测踩过同一个坑）。
+     */
+    function panelNavOf(root, entry) {
+      for (const row of root.querySelectorAll('[class*="panelRow"]')) {
+        if (!(row instanceof HTMLElement)) continue
+        if (row === entry || row.contains(entry)) continue
+        if (row.matches(KIT_ENTRY) || row.querySelector(KIT_ENTRY) !== null) continue
+        const nav = row.closest('nav')
+        if (nav !== null && nav.contains(row)) return nav
+      }
+      return undefined
+    }
+
+    /**
+     * 插进宿主面板导航：紧跟固定面板「插件」（宿主 `FIXED_PANEL_ID='plugins'`，order 0、
+     * 永不折叠，所以它总是第一行——用户要的正是「插件栏下边」）。
+     *
+     * 同族按 rank 让位：跳过名次比自己靠前的入口再插，加载顺序变了也不会颠倒。只在**位置
+     * 不对**时才动 DOM（宿主重渲染后由 MutationObserver 把我们叫回来，位置对就什么都不做，
+     * 免得自己触发自己）。
+     */
+    function placeInPanelNav(root, entry) {
+      const nav = panelNavOf(root, entry)
+      if (nav === undefined) return false
+      const row = nav.querySelector('[class*="panelRow"]')
+      if (row === null) return false
+      const wrapper = row.closest('[class*="panelEntry"]')
+      const anchor = wrapper !== null && wrapper.parentElement === nav ? wrapper : row
+      if (anchor.parentElement !== nav) return false
+      let after = anchor
+      for (const node of nav.children) {
+        if (!(node instanceof HTMLElement) || node === entry) continue
+        if (!node.matches(KIT_ENTRY)) continue
+        const rank = Number(node.getAttribute('data-dsh-kit-sidebar-rank'))
+        if (Number.isFinite(rank) && rank < KIT_SIDEBAR_RANK) after = node
+      }
+      if (entry.parentElement !== nav || entry.previousElementSibling !== after) {
+        nav.insertBefore(entry, after.nextSibling)
+      }
+      return true
+    }
+
     function createSidebarEntry() {
       const entry = document.createElement('button')
       entry.type = 'button'
       entry.dataset.dshRssEntry = ''
+      entry.dataset.dshKitSidebarRank = String(KIT_SIDEBAR_RANK)
       entry.className = 'rss_sidebarEntry'
       entry.setAttribute('aria-label', t('panel.digest'))
       entry.title = t('panel.digest')
@@ -1850,6 +1926,8 @@ window.__ModuleLoader__.load({
     }
 
     function placeSidebarEntry(root, entry) {
+      if (placeInPanelNav(root, entry)) return true
+      // 宿主没有面板导航（老版本 / 版式换过一轮）：退回顶层紧接 logo 行，入口不消失。
       const button = newSessionButton(root)
       if (button === undefined) return false
       if (entry.parentElement !== root) {
@@ -1903,7 +1981,10 @@ window.__ModuleLoader__.load({
           tryPlace()
           return
         }
-        if (!root.contains(entry)) placed = placeSidebarEntry(root, entry)
+        // 位置也要复核：入口现在住在宿主的面板 `nav` 里，宿主重渲染可能把它挤到别处
+        // （`root.contains` 仍为真，只看「还在不在」会漏掉被挪走那一档）。
+        // `placeSidebarEntry` 只在位置不对时动 DOM，所以这里不会自己触发自己。
+        placed = placeSidebarEntry(root, entry)
       })
 
       tryPlace()

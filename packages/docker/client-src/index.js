@@ -10418,9 +10418,64 @@ window.__ModuleLoader__.load({
       return undefined
     }
 
+    /**
+     * kit 家族在宿主面板导航里的次序：小的在前。
+     *
+     * 四条入口由四个插件各挂各的、加载顺序不定，所以先后不能靠「谁先插」——按下表的值
+     * 互相让位（见 `placeInPanelNav`）：今日值得读 < 全局搜索 < 终端 < 容器。
+     */
+    const KIT_SIDEBAR_RANK = 40
+    const KIT_ENTRY = '[data-dsh-kit-sidebar-rank]'
+
+    /**
+     * 宿主的面板导航：从宿主的**面板行**（`.panelRow`，类名带 hash 前缀，只能子串匹配）
+     * 往上找它所在的 `nav`。
+     *
+     * 为什么不再挂顶层：入口原先插在侧栏 root 的直接子级（logo 行之后），于是四条入口顶在
+     * 侧栏最上面、与宿主的「插件 / 插件市场 / …」分成两段。宿主把面板行渲染在侧栏滚动区里的
+     * `nav` 中，**不是 root 的直接子元素**——只看 `root.children` 会找不到。
+     */
+    function panelNavOf(rootNode, entry) {
+      for (const row of rootNode.querySelectorAll('[class*="panelRow"]')) {
+        if (!(row instanceof HTMLElement)) continue
+        if (row === entry || row.contains(entry)) continue
+        if (row.matches(KIT_ENTRY) || row.querySelector(KIT_ENTRY) !== null) continue
+        const nav = row.closest('nav')
+        if (nav !== null && nav.contains(row)) return nav
+      }
+      return undefined
+    }
+
+    /**
+     * 插进宿主面板导航：紧跟固定面板「插件」（宿主 `FIXED_PANEL_ID='plugins'`，order 0、
+     * 永不折叠，所以它总是第一行）。同族按 rank 让位，加载顺序变了也不会颠倒；只在**位置
+     * 不对**时才动 DOM（宿主重渲染后由 MutationObserver 叫回来，位置对就不做事，免得自激）。
+     */
+    function placeInPanelNav(rootNode, entry) {
+      const nav = panelNavOf(rootNode, entry)
+      if (nav === undefined) return false
+      const row = nav.querySelector('[class*="panelRow"]')
+      if (row === null) return false
+      const wrapper = row.closest('[class*="panelEntry"]')
+      const anchorRow = wrapper !== null && wrapper.parentElement === nav ? wrapper : row
+      if (anchorRow.parentElement !== nav) return false
+      let after = anchorRow
+      for (const node of nav.children) {
+        if (!(node instanceof HTMLElement) || node === entry) continue
+        if (!node.matches(KIT_ENTRY)) continue
+        const rank = Number(node.getAttribute('data-dsh-kit-sidebar-rank'))
+        if (Number.isFinite(rank) && rank < KIT_SIDEBAR_RANK) after = node
+      }
+      if (entry.parentElement !== nav || entry.previousElementSibling !== after) {
+        nav.insertBefore(entry, after.nextSibling)
+      }
+      return true
+    }
+
     function createSidebarEntry() {
       const entry = document.createElement('div')
       entry.dataset.dshDockerEntry = ''
+      entry.dataset.dshKitSidebarRank = String(KIT_SIDEBAR_RANK)
       entry.className = 'dk_sidebarEntry'
       entry.setAttribute('role', 'button')
       entry.setAttribute('aria-label', t('panel.containers'))
@@ -10435,6 +10490,8 @@ window.__ModuleLoader__.load({
     }
 
     function placeSidebarEntry(rootNode, entry) {
+      if (placeInPanelNav(rootNode, entry)) return true
+      // 宿主没有面板导航（老版本 / 版式换过一轮）：退回顶层紧接 logo 行，入口不消失。
       const button = newSessionButton(rootNode)
       if (button === undefined) return false
       if (entry.parentElement !== rootNode) {
@@ -10487,7 +10544,10 @@ window.__ModuleLoader__.load({
           tryPlace()
           return
         }
-        if (!rootNode.contains(entry)) placed = placeSidebarEntry(rootNode, entry)
+        // 位置也要复核：入口现在住在宿主的面板 `nav` 里，宿主重渲染可能把它挤到别处
+        // （`rootNode.contains` 仍为真，只看「还在不在」会漏掉被挪走那一档）。
+        // `placeSidebarEntry` 只在位置不对时动 DOM，所以这里不会自己触发自己。
+        placed = placeSidebarEntry(rootNode, entry)
       })
 
       tryPlace()

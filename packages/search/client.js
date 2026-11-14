@@ -18,21 +18,29 @@ window.__ModuleLoader__.load({
     /* ================================ CSS ================================ */
 
     const CSS = [
-      // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
-      // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
-      // 侧边栏搜索框与行文本取宿主正文的角色（13 / 20）；行高按官方成对值写
-      // （规范：font-size 必须配 line-height，单行看不出、换行才不挤）。
-      '.gs_sidebarSearch{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:text;white-space:nowrap;background:0 0;border:1px solid transparent;border-radius:8px;align-items:center;gap:8px;padding:0 10px;font-size:13px;line-height:20px;display:flex}',
-      // 宿主 0.2.2-alpha.3 移除了旧版 sidebar-nav-item-hover 令牌；改用宿主侧栏
-      // 自己实际使用的 --dsw-alias-interactive-bg-hover——它在十二档 cohort 里都存在（证据见 README 兼容性段）。
-      '.gs_sidebarSearch:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
-      '.gs_sidebarSearch:focus-within{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary)}',
-      '.gs_sidebarSearchInput{flex:1;min-width:0;background:0 0;border:none;outline:none;color:inherit;font:inherit;padding:0}',
-      '.gs_sidebarSearchInput:focus,.gs_sidebarSearchInput:focus-visible{outline:none}',
-      '.gs_sidebarSearch:focus-within .gs_sidebarSearchInput{outline:none}',
-      '.gs_sidebarSearchInput::placeholder{color:var(--dsw-alias-label-tertiary)}',
-      '[data-sidebar-collapsed] .gs_sidebarSearch{justify-content:center;width:100%;padding:0;border-color:transparent}',
-      '[data-sidebar-collapsed] .gs_sidebarSearchInput{display:none}',
+      /*
+       * 侧栏入口与宿主面板行（`.panelRow`）**同规格**：入口住在宿主的面板导航里、紧跟固定
+       * 面板「插件」，与邻居并排出现，差一个字号或一个灰度都看得出来。
+       *
+       * 取值一律跟着宿主走、不抄数字：`font:inherit` 拿宿主侧栏字号（14px）、
+       * `color:inherit` 拿 `.root` 的主文字色、行内边距与标签间距取宿主的
+       * `--dsh-sidebar-*` 几何契约、圆角走 radius token、悬停底色用宿主侧栏自己在用的
+       * `--dsw-alias-interactive-bg-hover`。
+       *
+       * 入口原先是个只读输入框（`cursor:text` + 占位符），与邻居的字号/灰度都不同；这里
+       * 改成与「插件」同样的纯文字行：图标 + 标签，点击或键盘激活仍然唤出命令面板。
+       */
+      '.gs_sidebarSearch{box-sizing:border-box;display:flex;align-items:center;gap:var(--dsh-sidebar-label-gap,6px);width:100%;min-width:0;min-height:32px;padding:5px calc(var(--dsh-sidebar-row-padding,12px) - var(--dsh-sidebar-paint-inset,3px));border:none;border-inline:var(--dsh-sidebar-paint-inset,3px) solid transparent;border-radius:var(--dsw-radius-md);background:0 0;background-clip:padding-box;color:inherit;cursor:pointer;font:inherit;line-height:22px;white-space:nowrap;transition:background-color .12s ease}',
+      '.gs_sidebarSearch:hover{background-color:var(--dsw-alias-interactive-bg-hover)}',
+      '.gs_sidebarSearch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
+      // 图标：宿主宽态面板行是 16px（`sidebar.panel.icon` 的 size），折叠 rail 是 18px。
+      '.gs_sidebarEntryIcon{flex:none;align-items:center;justify-content:center;display:inline-flex;width:16px;height:16px}',
+      '.gs_sidebarEntryIcon svg{width:16px;height:16px}',
+      '.gs_sidebarEntryLabel{overflow:hidden;text-overflow:ellipsis}',
+      // 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
+      '[data-sidebar-collapsed] .gs_sidebarSearch{justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',
+      '[data-sidebar-collapsed] .gs_sidebarEntryIcon,[data-sidebar-collapsed] .gs_sidebarEntryIcon svg{width:18px;height:18px}',
+      '[data-sidebar-collapsed] .gs_sidebarEntryLabel{display:none}',
 
       /* ---------- 面板骨架 ---------- */
       '.gs_backdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);justify-content:center;align-items:flex-start;display:flex;position:fixed;inset:0;padding:12vh 16px 24px}',
@@ -150,7 +158,6 @@ window.__ModuleLoader__.load({
       'error.openFolderUnavailable': '当前环境无法打开文件夹',
       'error.openSettingsUnavailable': '当前环境无法打开设置',
       'error.copyFailed': '复制失败',
-      'placeholder.sidebar': '全局搜索…',
       'placeholder.panel': '搜索会话、设置与工具…',
     }
     const I18N_EN = {
@@ -198,7 +205,6 @@ window.__ModuleLoader__.load({
       'error.openFolderUnavailable': 'This environment cannot open folders',
       'error.openSettingsUnavailable': 'This environment cannot open settings',
       'error.copyFailed': 'Copy failed',
-      'placeholder.sidebar': 'Search…',
       'placeholder.panel': 'Search sessions, settings and tools…',
     }
     /* ==== dsh-i18n:end ==== */
@@ -227,8 +233,8 @@ window.__ModuleLoader__.load({
     function refreshEntryLabels(entry) {
       if (entry === undefined || entry === null) return
       entry.setAttribute('aria-label', t('card.name'))
-      const input = entry.querySelector('.gs_sidebarSearchInput')
-      if (input !== null) input.setAttribute('placeholder', t('placeholder.sidebar'))
+      const label = entry.querySelector('.gs_sidebarEntryLabel')
+      if (label !== null) label.textContent = t('card.name')
     }
 
     function refreshAllEntryLabels() {
@@ -439,12 +445,15 @@ window.__ModuleLoader__.load({
     }
 
     function createSidebarEntry() {
-      const entry = document.createElement('div')
+      // 与宿主面板行同形：图标 + 文字的整行按钮（原来是只读输入框，字号/灰度与邻居不一致）。
+      const entry = document.createElement('button')
+      entry.type = 'button'
       entry.dataset.dshGlobalSearchEntry = ''
+      entry.dataset.dshKitSidebarRank = String(KIT_SIDEBAR_RANK)
       entry.className = 'gs_sidebarSearch'
-      entry.setAttribute('role', 'search')
       entry.setAttribute('aria-label', t('card.name'))
-      entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ENTRY_ICON + '</span><input class="gs_sidebarSearchInput" placeholder="' + esc(t('placeholder.sidebar')) + '" readOnly />'
+      entry.title = t('card.name')
+      entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ENTRY_ICON + '</span><span class="gs_sidebarEntryLabel">' + esc(t('card.name')) + '</span>'
       sidebarEntries.add(entry)
       refreshEntryLabels(entry)
       entry.addEventListener('click', (event) => {
@@ -458,7 +467,65 @@ window.__ModuleLoader__.load({
       return entry
     }
 
+    /* ---------------------------- 侧栏落位（宿主面板导航） ---------------------------- */
+
+    /**
+     * kit 家族在宿主面板导航里的次序：小的在前。
+     *
+     * 四条入口由四个插件各挂各的、加载顺序不定，所以先后不能靠「谁先插」——按下表的值
+     * 互相让位（见 `placeInPanelNav`）：今日值得读 < 全局搜索 < 终端 < 容器。
+     */
+    const KIT_SIDEBAR_RANK = 20
+    const KIT_ENTRY = '[data-dsh-kit-sidebar-rank]'
+
+    /**
+     * 宿主的面板导航：从宿主的**面板行**（`.panelRow`，类名带 hash 前缀，只能子串匹配）
+     * 往上找它所在的 `nav`。
+     *
+     * 为什么不再挂顶层：入口原先插在侧栏 root 的直接子级（logo 行之后），于是四条入口顶在
+     * 侧栏最上面、与宿主的「插件 / 插件市场 / …」分成两段。宿主把面板行渲染在侧栏滚动区里的
+     * `nav` 中，**不是 root 的直接子元素**——只看 `root.children` 会找不到。
+     */
+    function panelNavOf(root, entry) {
+      for (const row of root.querySelectorAll('[class*="panelRow"]')) {
+        if (!(row instanceof HTMLElement)) continue
+        if (row === entry || row.contains(entry)) continue
+        if (row.matches(KIT_ENTRY) || row.querySelector(KIT_ENTRY) !== null) continue
+        const nav = row.closest('nav')
+        if (nav !== null && nav.contains(row)) return nav
+      }
+      return undefined
+    }
+
+    /**
+     * 插进宿主面板导航：紧跟固定面板「插件」（宿主 `FIXED_PANEL_ID='plugins'`，order 0、
+     * 永不折叠，所以它总是第一行）。同族按 rank 让位，加载顺序变了也不会颠倒；只在**位置
+     * 不对**时才动 DOM（宿主重渲染后由 MutationObserver 叫回来，位置对就不做事，免得自激）。
+     */
+    function placeInPanelNav(root, entry) {
+      const nav = panelNavOf(root, entry)
+      if (nav === undefined) return false
+      const row = nav.querySelector('[class*="panelRow"]')
+      if (row === null) return false
+      const wrapper = row.closest('[class*="panelEntry"]')
+      const anchor = wrapper !== null && wrapper.parentElement === nav ? wrapper : row
+      if (anchor.parentElement !== nav) return false
+      let after = anchor
+      for (const node of nav.children) {
+        if (!(node instanceof HTMLElement) || node === entry) continue
+        if (!node.matches(KIT_ENTRY)) continue
+        const rank = Number(node.getAttribute('data-dsh-kit-sidebar-rank'))
+        if (Number.isFinite(rank) && rank < KIT_SIDEBAR_RANK) after = node
+      }
+      if (entry.parentElement !== nav || entry.previousElementSibling !== after) {
+        nav.insertBefore(entry, after.nextSibling)
+      }
+      return true
+    }
+
     function placeSidebarEntry(root, entry) {
+      if (placeInPanelNav(root, entry)) return true
+      // 宿主没有面板导航（老版本 / 版式换过一轮）：退回顶层紧接 logo 行，入口不消失。
       const button = newSessionButton(root)
       if (button === undefined) return false
       if (entry.parentElement !== root) {
@@ -512,7 +579,10 @@ window.__ModuleLoader__.load({
           tryPlace()
           return
         }
-        if (!root.contains(entry)) placed = placeSidebarEntry(root, entry)
+        // 位置也要复核：入口现在住在宿主的面板 `nav` 里，宿主重渲染可能把它挤到别处
+        // （`root.contains` 仍为真，只看「还在不在」会漏掉被挪走那一档）。
+        // `placeSidebarEntry` 只在位置不对时动 DOM，所以这里不会自己触发自己。
+        placed = placeSidebarEntry(root, entry)
       })
 
       tryPlace()
