@@ -1693,7 +1693,7 @@ const ICON_BOX =
  * 仍用 `ICON_BOX` / `ICON_BOX_SM`，它们在那儿有自己的尺寸。
  */
 const ICON_BOX_ENTRY =
-  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2 13.8 5.4v5.9L8 13.8 2.2 10.6V5.4z"/><path d="M2.2 5.4 8 8.55l5.8-3.15"/><path d="M8 8.55v5.25"/></svg>'
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14.3 5.2v5.6L8 14.5 1.7 10.8V5.2z"/><path d="M1.7 5.2 8 8.85l6.3-3.65"/><path d="M8 8.85v5.65"/></svg>'
 
 /** 连接栏按钮用的 13px 版本（与 tty 的 SFTP / 隧道按钮同尺寸）。 */
 const ICON_BOX_SM =

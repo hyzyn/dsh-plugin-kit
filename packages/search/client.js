@@ -370,10 +370,18 @@ window.__ModuleLoader__.load({
      * 半径 4.7、手柄到 13.3），套用邻居的尺寸与线宽。面板内部仍用 ICONS 那套。
      */
     /*
-     * 侧栏入口图标：按**宿主的 16 格**画（墨迹 2.5~13.5、笔画 1）。旧路径只占 2.6~13.3 且
-     * 放大镜偏左，塞进 16px 盒子后墨迹比宿主邻居小一圈（2026-11-14 真机实测）。
+     * 侧栏入口图标 = **官方 `search-outline` 的 path 数据，逐字照抄**。
+     *
+     * 为什么抄数据而不是 `<use href="#dsw-icon-search-outline-regular">`：官方的 symbol 注册表
+     * 不是每个 cohort 都有——0.2.1-rc.5（本仓支持的最低档）里**根本没有** `search-outline`，
+     * `<use>` 在那档上会渲染成一个空图标（静默消失，比"画得不像"严重得多）。抄 path 是
+     * 自包含的：几何与官方逐字相同（墨迹 1.22~14.78，真机实测就是宿主的形状），
+     * 而 14 档 cohort 都能用。
+     *
+     * 出处：宿主 sprite 注册表 `"search-outline": {size: 16, viewBox 0 0 16 16, stroke-width 1}`，
+     * 2026-11-14 从 0.2.2-rc.3 的 web-frontend bundle 里取出。
      */
-    const ENTRY_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6.9" cy="6.9" r="5"/><path d="m10.5 10.5 3.3 3.3"/></svg>'
+    const ENTRY_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M6.58727 11.8586C9.55061 11.8586 11.9529 9.45637 11.9529 6.49304C11.9529 3.5297 9.55061 1.12744 6.58727 1.12744C3.62394 1.12744 1.22168 3.5297 1.22168 6.49304C1.22168 9.45637 3.62394 11.8586 6.58727 11.8586Z"/><path d="M10.2991 10.3933 14.7783 14.8725"/></svg>'
 
     /* ================================ 状态 ================================ */
 

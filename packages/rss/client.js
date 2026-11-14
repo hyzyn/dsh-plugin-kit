@@ -1764,7 +1764,7 @@ window.__ModuleLoader__.load({
      * 整体右移 1.5~2px——真机并排时一眼看出「左边距不对」（2026-11-14 实测：宿主的
      * `插件` 图标墨迹 1.0~14.9，本图标只有 4~13）。
      */
-    const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.6 7.4a6 6 0 0 1 6 6"/><path d="M2.6 2.6a10.8 10.8 0 0 1 10.8 10.8"/><circle cx="3.1" cy="12.9" r="1.1" fill="currentColor" stroke="none"/></svg>'
+    const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.79 7.31a6.9 6.9 0 0 1 6.9 6.9"/><path d="M1.79 1.79a12.42 12.42 0 0 1 12.42 12.42"/><circle cx="2.37" cy="13.64" r="1.27" fill="currentColor" stroke="none"/></svg>'
 
     /* ================================ 订阅源目录弹窗 ================================ */
 

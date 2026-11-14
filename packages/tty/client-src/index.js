@@ -1398,7 +1398,7 @@ const TERMINAL_ICON =
  * 面板头部与各处仍用 `TERMINAL_ICON`，它在那儿有自己的尺寸。
  */
 const TERMINAL_ENTRY_ICON =
-  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.3 4.2 6.8 8l-4.5 3.8"/><path d="M8.6 11.8h5.1"/></svg>'
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.4 3.4 6.6 8l-5.2 4.6"/><path d="M8.4 12.6h6.2"/></svg>'
 
 // 头部工具按钮图标（14px 线性风格，与 TERMINAL_ICON 同族）：搜索 / 清屏
 const ICON_SEARCH =
