@@ -1757,7 +1757,14 @@ window.__ModuleLoader__.load({
 
     /* ================================ 侧边栏入口 ================================ */
 
-    const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h.01M4 8a4 4 0 0 1 4 4M4 4a8 8 0 0 1 8 8"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg>'
+    /**
+     * 侧栏入口图标（按**宿主的 16 格**画：墨迹 2.5~13.5、笔画 1）。
+     *
+     * 为什么不是「把旧图标塞进 16px 盒子」：旧路径只在 4~13 之间，盒子对齐了墨迹却小一圈、
+     * 整体右移 1.5~2px——真机并排时一眼看出「左边距不对」（2026-11-14 实测：宿主的
+     * `插件` 图标墨迹 1.0~14.9，本图标只有 4~13）。
+     */
+    const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.6 7.4a6 6 0 0 1 6 6"/><path d="M2.6 2.6a10.8 10.8 0 0 1 10.8 10.8"/><circle cx="3.1" cy="12.9" r="1.1" fill="currentColor" stroke="none"/></svg>'
 
     /* ================================ 订阅源目录弹窗 ================================ */
 

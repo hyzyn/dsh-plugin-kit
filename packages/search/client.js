@@ -369,7 +369,11 @@ window.__ModuleLoader__.load({
      * 侧边栏里，共用那套的放大镜明显偏细偏小。这里把同一形状换算到 16 栅格（中心 7.3、
      * 半径 4.7、手柄到 13.3），套用邻居的尺寸与线宽。面板内部仍用 ICONS 那套。
      */
-    const ENTRY_ICON = '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.3" cy="7.3" r="4.7"/><path d="m13.3 13.3-2.4-2.4"/></svg>'
+    /*
+     * 侧栏入口图标：按**宿主的 16 格**画（墨迹 2.5~13.5、笔画 1）。旧路径只占 2.6~13.3 且
+     * 放大镜偏左，塞进 16px 盒子后墨迹比宿主邻居小一圈（2026-11-14 真机实测）。
+     */
+    const ENTRY_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6.9" cy="6.9" r="5"/><path d="m10.5 10.5 3.3 3.3"/></svg>'
 
     /* ================================ 状态 ================================ */
 

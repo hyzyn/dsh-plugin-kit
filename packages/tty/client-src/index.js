@@ -1390,6 +1390,16 @@ function ensureStyle() {
 const TERMINAL_ICON =
   '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5l3.5 3L3 11"/><path d="M8.5 11H13"/></svg>'
 
+/**
+ * 侧栏入口专用图标：按**宿主的 16 格**画（墨迹 2.5~13.5、笔画 1）。
+ *
+ * 为什么不复用 `TERMINAL_ICON`：那枚按 18px 设计（笔画 1.7、墨迹只占 3~13），塞进 16px 的行里
+ * 墨迹比宿主邻居小一圈、还整体右移 2px——真机并排时像「左边距不对」（2026-11-14 实测）。
+ * 面板头部与各处仍用 `TERMINAL_ICON`，它在那儿有自己的尺寸。
+ */
+const TERMINAL_ENTRY_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.3 4.2 6.8 8l-4.5 3.8"/><path d="M8.6 11.8h5.1"/></svg>'
+
 // 头部工具按钮图标（14px 线性风格，与 TERMINAL_ICON 同族）：搜索 / 清屏
 const ICON_SEARCH =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>'
@@ -10883,7 +10893,7 @@ function createSidebarEntry() {
   entry.setAttribute('aria-label', t('panel.title'))
   // 键盘可达（0.19.0，WCAG 2.1.1）：纯键盘用户此前进不了面板
   entry.tabIndex = 0
-  entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ICON + '</span><span class="tt_sidebarEntryLabel">' + t('panel.title') + '</span>'
+  entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ENTRY_ICON + '</span><span class="tt_sidebarEntryLabel">' + t('panel.title') + '</span>'
   entry.addEventListener('click', (event) => {
     event.preventDefault()
     openModal()

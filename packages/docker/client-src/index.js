@@ -1685,6 +1685,16 @@ function sessionHostOf(spec, bookName, liveTarget) {
 
 const ICON_BOX =
   '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l5.4 3.1v6.2L8 14.2 2.6 11.1V4.9z"/><path d="M2.6 4.9L8 8l5.4-3.1"/><path d="M8 8v6.2"/></svg>'
+/**
+ * 侧栏入口专用图标：按**宿主的 16 格**画（墨迹 2.5~13.5、笔画 1）。
+ *
+ * 为什么不复用 `ICON_BOX`：那枚按 18px 设计（笔画 1.5、墨迹只占 2.6~13.4），塞进 16px 的行里
+ * 墨迹比宿主邻居小一圈——真机并排时像「左边距不对」（2026-11-14 实测）。面板头部与连接栏
+ * 仍用 `ICON_BOX` / `ICON_BOX_SM`，它们在那儿有自己的尺寸。
+ */
+const ICON_BOX_ENTRY =
+  '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2 13.8 5.4v5.9L8 13.8 2.2 10.6V5.4z"/><path d="M2.2 5.4 8 8.55l5.8-3.15"/><path d="M8 8.55v5.25"/></svg>'
+
 /** 连接栏按钮用的 13px 版本（与 tty 的 SFTP / 隧道按钮同尺寸）。 */
 const ICON_BOX_SM =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l5.4 3.1v6.2L8 14.2 2.6 11.1V4.9z"/><path d="M2.6 4.9L8 8l5.4-3.1"/><path d="M8 8v6.2"/></svg>'
@@ -10480,7 +10490,7 @@ window.__ModuleLoader__.load({
       entry.setAttribute('role', 'button')
       entry.setAttribute('aria-label', t('panel.containers'))
       entry.innerHTML =
-        '<span class="dk_entryIcon">' + ICON_BOX + '</span>' +
+        '<span class="dk_entryIcon">' + ICON_BOX_ENTRY + '</span>' +
         '<span class="dk_entryLabel">' + t('panel.containers') + '</span>'
       entry.addEventListener('click', (event) => {
         event.preventDefault()
