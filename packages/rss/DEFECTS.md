@@ -5,8 +5,8 @@
 > 拿到任意一个 `（rss Dxx）`：先查 [§1 编号索引表](#1-编号索引表) 知道**当年坏了什么**，
 > 再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D01` 是 `packages/rss` 内部序列，与 `docker` / `tty` / `loglens`
-> 的 `Dxx` **不共享**；跨包引用请写「rss D01 / docker D03」。新缺陷接在 `D01` 之后，
+> **编号是硬契约**：`D01–D02` 是 `packages/rss` 内部序列，与 `docker` / `tty` / `loglens`
+> 的 `Dxx` **不共享**；跨包引用请写「rss D01 / docker D03」。新缺陷接在 `D02` 之后，
 > **不得重号、不得回收空号**。规范见 [docs/conventions.md § 编号规范](../../docs/conventions.md#编号规范)。
 >
 > **本文不含**逐条 postmortem（现场复现 / 回归 / 反向验证）——那是 commit message / PR
@@ -19,8 +19,9 @@
 | D | 症状（一句话：当年坏了什么） | 涉及文件 |
 |---|---|---|
 | D01 | **真机脚本 `verify-rss-opml` 的 O1 把「宿主没有存储源」判成回归**：通过条件里含 `baseline.sources.length > 0`，而 `~/.dsh/rss.json` 写着 `sources: []`（**显式空数组**，`readRssStore()` 不会给它补内置默认）的宿主导出 0 个源本就是与宿主状态一致的正确答案——2026-11-14 在 `test` profile（3082）上就这样红了一条，红得没有信息量、还容易被当成产品回归 | scripts/verify-rss-opml.mjs |
+| D02 | **侧栏入口在收起动画的第一帧就切 rail**：`data-sidebar-collapsed` 是外壳点下「收起」即刻打的框架属性，而布局要到 settle（150ms）之后才落到 rail——入口跟着它立刻切成「无标签 + 居中」（被推到冻结宽度的一半），与同栏官方面板行不同拍。修法：rail 覆盖改挂宿主 README 承诺给集成方的稳定标记 `data-sidebar-scrollport`（只在展开时挂在视口上），写成 `:not([data-sidebar-scrollport] *)` | client.js |
 
-**已修 1 / 待修 0**（编号至 `D01`）
+**已修 2 / 待修 0**（编号至 `D02`）
 
 ## 2. 编号字典（这段代码为什么长这样）
 

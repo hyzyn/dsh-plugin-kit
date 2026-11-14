@@ -38,10 +38,18 @@ window.__ModuleLoader__.load({
       '.gs_sidebarEntryIcon{flex:none;align-items:center;justify-content:center;display:inline-flex;width:16px;height:16px}',
       '.gs_sidebarEntryIcon svg{width:16px;height:16px;stroke-width:1}',
       '.gs_sidebarEntryLabel{overflow:hidden;text-overflow:ellipsis}',
-      // 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
-      '[data-sidebar-collapsed] .gs_sidebarSearch{justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',
-      '[data-sidebar-collapsed] .gs_sidebarEntryIcon,[data-sidebar-collapsed] .gs_sidebarEntryIcon svg{width:18px;height:18px}',
-      '[data-sidebar-collapsed] .gs_sidebarEntryLabel{display:none}',
+      // （同一根因与修法见 tty D108：search 尚无自己的台账）折叠 rail：宿主的
+      // `.collapsed .panelRow` 是 36×36、居中、无左右描边。
+      //
+      // **切 rail 的时机跟宿主，不跟「点了收起」**：外壳点下收起就给框架打 data-sidebar-collapsed，
+      // 但布局到 settle（150ms）之后才落到 rail（宽内容先固定在展开宽度淡出）。跟着属性立刻切，
+      // 收起的第一帧只剩图标、还被居中推到冻结宽度的一半——与同栏的「插件 / 插件市场 / 更多」
+      // 不在同一拍上（用户报告的效果不一致）。判据用宿主 README 留给集成方的稳定标记
+      // data-sidebar-scrollport（**只在展开时**挂在滚动视口上）：淡出阶段它还在 → 保持宽态，
+      // settle 后消失 → 与宿主同时切 rail；老宿主没有该标记时 :not() 恒真，退回原行为。
+      '[data-sidebar-collapsed] .gs_sidebarSearch:not([data-sidebar-scrollport] *){justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',
+      '[data-sidebar-collapsed] .gs_sidebarSearch:not([data-sidebar-scrollport] *) .gs_sidebarEntryIcon,[data-sidebar-collapsed] .gs_sidebarSearch:not([data-sidebar-scrollport] *) .gs_sidebarEntryIcon svg{width:18px;height:18px}',
+      '[data-sidebar-collapsed] .gs_sidebarSearch:not([data-sidebar-scrollport] *) .gs_sidebarEntryLabel{display:none}',
 
       /* ---------- 面板骨架 ---------- */
       '.gs_backdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);justify-content:center;align-items:flex-start;display:flex;position:fixed;inset:0;padding:12vh 16px 24px}',

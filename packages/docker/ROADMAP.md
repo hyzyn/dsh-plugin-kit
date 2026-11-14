@@ -130,6 +130,26 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 
 ## 已完成（落点 + 门槛）
 
+### ✅ 收起动画期间入口先于宿主切 rail（2026-11-14）
+
+**现场**（用户报告，桌面端点「收起」）：kit 的四个侧栏入口已经只剩图标、还被居中推到冻结宽度的
+一半，而同栏的「插件 / 插件市场 / 更多」仍保持宽态在淡出——两边不在同一拍上。
+
+**成因**（真宿主 `0.2.2-rc.3` 实测）：外壳点下收起的那一刻就给**框架**打
+`data-sidebar-collapsed`，但**布局要到 `COLLAPSE_SETTLE_MS`（150ms）之后**才落到 rail——宽内容
+先固定在展开宽度淡出，settle 时才卸载宽内容、换成 36×36。入口原先直接拿框架属性当 rail 门控，
+于是收起的第一帧就切。
+
+**改法**（`packages/docker/client-src/docker.css`）：rail 覆盖改挂宿主 README 承诺给集成方的**稳定标记**
+`data-sidebar-scrollport`（**只在展开时**挂在滚动视口上），写成
+`[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *)`：淡出阶段标记还在 → 保持宽态，settle 后标记消失 → 与宿主同时切。老宿主没有该标记时
+`:not()` 恒真，退回「点了就切」的原行为，不会比以前更差。
+
+**门槛**：新增 `scripts/sidebar-entry-rail.mjs` + `scripts/test/sidebar-entry-rail.test.ts`（四个
+入口包的客户端样式里，**每一条** `[data-sidebar-collapsed]` 规则都必须带这层门控；四包各设条数
+下限，防「前缀一改 = 0 命中恒绿」）；真宿主实测：淡出帧入口仍是 264×32、标签可见（与宿主行同形），
+settle 后 35×36 / 18px 图标 / x=10，与宿主 rail 行逐项相等。
+
 ### ✅ 侧栏入口挪进宿主面板导航、与宿主面板行同规格（2026-11-14 完成）
 
 **落点**：`[data-dsh-docker-entry]` 从「侧栏顶层、新建会话下方」搬进宿主的**面板导航里、紧跟

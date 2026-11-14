@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D170` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D107` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D170` 之后，
+> **编号是硬契约**：`D01–D171` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D108` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D171` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -36,7 +36,7 @@
 
 ## 现状
 
-**已修 170 / 待修 0**，编号至 `D170`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 171 / 待修 0**，编号至 `D171`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -239,6 +239,7 @@
 | D168 | **聚合日志给每个容器各开一条 EventSource**：3 个容器 = 3 条同源长连接，叠加活动条的事件流正好 4 条；浏览器 HTTP/1.1 每个源只有 6 条 TCP（D165 实测 5 条常驻流即整页静默排队），而 Compose 项目日志页**没有上限**（N 个 service = N 条）。用户报告的「打开容器面板就有 4 条 docker SSE」在 0.13.3 上不成立（面板只开活动条 1 条），但「多容器聚合 = 多条连接」这个放大器是真的 | src/index.ts、client-src/index.js、client-src/log-stream.js |
 | D169 | **连续 3 次 critical 会被说成「在变严重」**：诊断历史的判据 6 只判「非降」，平手也满足单调，于是严重度、findings 与数字全都没变化的容器，趋势块仍亮黄并给出「连续 3 次诊断的结论在变严重」。README 写的是「严重度连续走高」——判据与文档不一致。真机形状（真宿主 + 真 docker + 真 Chrome）：同一容器连续 3 次 `critical/unhealthy`、`errorLines` 全为 40 | src/history.ts、test/diagnosis-history.test.ts |
 | D170 | **`docker_targets` 看不见「目标 → 连接簿条目」这层关系**：`DockerTarget.book` 一直在配置里、`resolveTarget` 也一直在用它查表，但工具输出只有 `name` / `kind` / `label`，而 `label` 是 `user@host`。同一台机器因此有三套名字（终端面板的 `user@host`、docker 目标名、tty 连接簿条目名），agent 拿到「某容器所在的那台主机」推不出该用哪个连接簿条目，只能猜——猜错就是「连接簿中不存在」，而它手里没有第二个线索可推 | src/index.ts、test/targets-book.test.ts |
+| D171 | **侧栏入口在收起动画的第一帧就切 rail**：`data-sidebar-collapsed` 是外壳点下「收起」即刻打的框架属性，而布局要到 settle（150ms）之后才落到 rail——入口跟着它立刻切成「无标签 + 居中」（被推到冻结宽度的一半），与同栏官方面板行不同拍。修法：rail 覆盖改挂宿主 README 承诺给集成方的稳定标记 `data-sidebar-scrollport`（只在展开时挂在滚动视口上），写成 `:not([data-sidebar-scrollport] *)` | client-src/docker.css |
 
 ## 2. 编号字典：这段代码为什么长这样
 

@@ -10813,6 +10813,10 @@ function onModalKeydown(event) {
 
 /* ================================ 侧边栏入口 ================================ */
 
+// D108：入口的折叠 rail 覆盖挂在宿主的展开标记 data-sidebar-scrollport 上（不是框架的
+// data-sidebar-collapsed——那个在点下收起的第一帧就变，而布局 150ms 后才落）。判据与真机实测
+// 写在 client-src/tty.css 的那段注释里；这里落编号，改 CSS 的人才知道回哪查台账。
+
 function sidebarRoot() {
   const column = document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]')
   if (column === null) return undefined

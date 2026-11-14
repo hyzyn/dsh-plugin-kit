@@ -199,10 +199,18 @@
   white-space: nowrap;
 }
 
-/* 侧边栏折叠（DSH 外壳在祖先元素上打 data-sidebar-collapsed）：只留图标，
-   与 tty 的终端入口同形——否则标签会从窄栏里溢出一条竖条。
-   宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边，跟齐。 */
-[data-sidebar-collapsed] [data-dsh-docker-entry] {
+/* （D171）侧边栏折叠：只留图标，与 tty 的终端入口同形——否则标签会从窄栏里溢出一条竖条。
+   宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边，跟齐。
+
+   **切 rail 的时机要跟宿主，不能跟「点了收起」**：外壳在点下收起的那一刻就给框架打
+   `data-sidebar-collapsed`，但布局要到 settle（150ms）之后才落到 rail（宽内容先固定在展开
+   宽度淡出）。跟着框架属性立刻切，收起的第一帧就只剩图标、还被居中推到冻结宽度的一半，
+   与同栏的「插件 / 插件市场 / 更多」不在同一拍上（用户报告的「kit 入口和官方行的效果不一样」）。
+
+   判据是宿主 README 留给集成方的稳定标记 `data-sidebar-scrollport`：**只在展开时**挂在滚动
+   视口上。于是 rail = 「框架已标收起」且「入口不在带该标记的视口里」——淡出阶段标记还在，
+   保持宽态；settle 后标记消失，与宿主同时切。老宿主没有该标记时 `:not()` 恒真，退回原行为。 */
+[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *) {
   justify-content: center;
   width: 100%;
   min-height: 36px;
@@ -211,17 +219,17 @@
   border-inline: 0;
 }
 
-[data-sidebar-collapsed] .dk_entryIcon,
-[data-sidebar-collapsed] .dk_entryIcon svg {
+[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *) .dk_entryIcon,
+[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *) .dk_entryIcon svg {
   width: 18px;
   height: 18px;
 }
 
-[data-sidebar-collapsed] .dk_entryLabel {
+[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *) .dk_entryLabel {
   display: none;
 }
 
-[data-sidebar-collapsed] .dk_entryBadge {
+[data-sidebar-collapsed] [data-dsh-docker-entry]:not([data-sidebar-scrollport] *) .dk_entryBadge {
   margin-left: 0;
   padding-left: 0;
 }

@@ -240,10 +240,17 @@ window.__ModuleLoader__.load({
       '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex;width:16px;height:16px}',
       '.rss_sidebarEntryIcon svg{width:16px;height:16px;stroke-width:1}',
       '.rss_sidebarEntryLabel{text-overflow:ellipsis;overflow:hidden}',
-      // 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
-      '[data-sidebar-collapsed] .rss_sidebarEntry{justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',
-      '[data-sidebar-collapsed] .rss_sidebarEntryIcon,[data-sidebar-collapsed] .rss_sidebarEntryIcon svg{width:18px;height:18px}',
-      '[data-sidebar-collapsed] .rss_sidebarEntryLabel{display:none}',
+      // （rss D02）折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
+      //
+      // **切 rail 的时机跟宿主，不跟「点了收起」**：外壳点下收起就给框架打 data-sidebar-collapsed，
+      // 但布局到 settle（150ms）之后才落到 rail（宽内容先固定在展开宽度淡出）。跟着属性立刻切，
+      // 收起的第一帧只剩图标、还被居中推到冻结宽度的一半——与同栏的「插件 / 插件市场 / 更多」
+      // 不在同一拍上（用户报告的效果不一致）。判据用宿主 README 留给集成方的稳定标记
+      // data-sidebar-scrollport（**只在展开时**挂在滚动视口上）：淡出阶段它还在 → 保持宽态，
+      // settle 后消失 → 与宿主同时切 rail；老宿主没有该标记时 :not() 恒真，退回原行为。
+      '[data-sidebar-collapsed] .rss_sidebarEntry:not([data-sidebar-scrollport] *){justify-content:center;width:100%;min-height:36px;padding:0;border-inline:0}',
+      '[data-sidebar-collapsed] .rss_sidebarEntry:not([data-sidebar-scrollport] *) .rss_sidebarEntryIcon,[data-sidebar-collapsed] .rss_sidebarEntry:not([data-sidebar-scrollport] *) .rss_sidebarEntryIcon svg{width:18px;height:18px}',
+      '[data-sidebar-collapsed] .rss_sidebarEntry:not([data-sidebar-scrollport] *) .rss_sidebarEntryLabel{display:none}',
       '.rss_modalBackdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);justify-content:center;align-items:center;display:flex;position:fixed;inset:0}',
       // 刷新中的过渡层：与 dsh-docker 的「切目标过渡」同一套语言——不推版、有方向感。
       // 两者都是绝对定位：插入文档流会把标题/列表整块推下去（这正是要避免的跳动）。

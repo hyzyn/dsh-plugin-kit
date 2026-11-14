@@ -297,20 +297,35 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。 */
-[data-sidebar-collapsed] .tt_sidebarEntry {
+/*
+ * （D108）折叠 rail：宿主的 `.collapsed .panelRow` 是 36×36、居中、无左右描边。
+ *
+ * **切 rail 的时机要跟宿主，不能跟「点了收起」**：宿主在点下收起的那一刻就给**框架**打
+ * `data-sidebar-collapsed`，但布局要到 `COLLAPSE_SETTLE_MS`（150ms）之后才落到 rail——
+ * 先把冻结在展开宽度的内容淡出，settle 时才卸载宽内容、换成 36×36。入口若跟着框架属性立刻切，
+ * 收起的第一帧就只剩图标，而且被 `justify-content:center` 推到**冻结宽度**（宿主默认 280px）
+ * 的一半，与同栏的「插件 / 插件市场 / 更多」不在同一拍上——用户在桌面上点收起时看到的就是
+ * 「kit 的入口和官方面板行的效果不一样」。
+ *
+ * 判据用宿主 README 明确留给集成方的**稳定标记**：`data-sidebar-scrollport` **只在展开时**
+ * 挂在滚动视口上（「展开时视口带有 data-sidebar-scrollport，这是供测试和集成方定位的稳定标记」）。
+ * 于是 rail = 「框架已标收起」**且**「入口不在带该标记的视口里」：淡出阶段标记还在（宿主仍是
+ * 宽态）→ 保持宽态；settle 后标记消失 → 与宿主同时切 rail。老宿主根本没有这个标记时
+ * `:not()` 恒真 → 退回「点了就切」的原行为，不会比以前更差。
+ */
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) {
   justify-content: center;
   width: 100%;
   min-height: 36px;
   padding: 0;
   border-inline: 0;
 }
-[data-sidebar-collapsed] .tt_sidebarEntryIcon,
-[data-sidebar-collapsed] .tt_sidebarEntryIcon svg {
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryIcon,
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryIcon svg {
   width: 18px;
   height: 18px;
 }
-[data-sidebar-collapsed] .tt_sidebarEntryLabel {
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryLabel {
   display: none;
 }
 /*
@@ -333,7 +348,8 @@
  * 写死任何一个值都会让另一档偏 4px。
  *
  * 括号里写的是**兜底值**（= rc.1 的实测几何）：量不到时与 0.34.0 的观感完全一致，不会更差。
- * 折叠态（`[data-sidebar-collapsed]`）是另一套 36×36 的 rail 几何，两档未变，仍写死。
+ * 折叠态（`[data-sidebar-collapsed]` 且宿主已落到 rail，判据见上面那条注释）是另一套
+ * 36×36 的 rail 几何，两档未变，仍写死。
  */
 .tt_sidebarEntry[data-host-align] {
   /*
@@ -351,7 +367,7 @@
   padding-top: var(--tt-host-pad-top);
   padding-bottom: var(--tt-host-pad-bottom);
 }
-[data-sidebar-collapsed] .tt_sidebarEntry[data-host-align] {
+[data-sidebar-collapsed] .tt_sidebarEntry[data-host-align]:not([data-sidebar-scrollport] *) {
   min-height: 36px;
   padding: 0;
 }
@@ -374,15 +390,15 @@
 }
 /* 折叠态徽标只剩一个状态点：必须脱离 flex 流当角标。留在流里的话，它和图标一起被
    justify-content:center 居中（18 图标 + 8 间距 + 7 点 = 33px），图标被顶偏 7.5px，
-   与同栏其它折叠入口的图标错位。 */
-[data-sidebar-collapsed] .tt_sidebarEntryBadge {
+   与同栏其它折叠入口的图标错位。门控与上面的 rail 同源（见那条注释）。 */
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryBadge {
   position: absolute;
   top: 3px;
   right: 3px;
   margin-left: 0;
   padding-left: 0;
 }
-[data-sidebar-collapsed] .tt_sidebarBadgeCount {
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarBadgeCount {
   display: none;
 }
 .tt_sidebarBadgeDot {

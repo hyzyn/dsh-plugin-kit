@@ -302,6 +302,18 @@ kit 插件的设置面板按宿主槽位代际注册三代（`plugins.bundle.con
   入口必须用**按宿主 16 格画**的专用图标（墨迹约 2~14），不要指望把 18px 的旧图标塞进 16px 盒子。
   这一维**没有**静态守卫（墨迹形状是几何，正则判不了），只能真机上量 `getBBox()`。**只有**「上下内边距 / 最小行高」宿主没给令牌（rc.1 是 7px/36px、
   rc.2 是 5px/32px），给兜底值；量得到真值的包（tty）用挂载时实测覆盖。
+- **折叠切 rail 的时机跟着宿主**：外壳在点下「收起」的那一刻就给**框架**打
+  `data-sidebar-collapsed`，但**布局到 settle（150ms）之后才落到 rail**——它先把冻结在展开
+  宽度的内容淡出，settle 时才卸载宽内容、换成 36×36。入口若跟着框架属性立刻切，收起的第一帧
+  就只剩图标、还被 `justify-content:center` 推到冻结宽度的一半，与同栏的「插件 / 插件市场 /
+  更多」不在同一拍上（2026-11-14 桌面端实测报告：「kit 的效果和官方的效果不太一样」）。
+  判据是宿主 README 明确留给集成方的**稳定标记** `data-sidebar-scrollport`——**只在展开时**
+  挂在滚动视口上。所以 rail 覆盖一律写成
+  `[data-sidebar-collapsed] <入口类>:not([data-sidebar-scrollport] *)`：淡出阶段标记还在 →
+  保持宽态；settle 后标记消失 → 与宿主同时切。老宿主没有该标记时 `:not()` 恒真，退回
+  「点了就切」的原行为。判据由 `scripts/sidebar-entry-rail.mjs` 执行（四个入口包的客户端样式里
+  **每一条** `[data-sidebar-collapsed]` 规则都必须带这层门控，接线在
+  `scripts/test/sidebar-entry-rail.test.ts`）。
 - **兜底**：拿不到宿主面板导航时退回旧逻辑（紧接 logo 行 / 新建会话），入口不消失。
 
 ### order 取号

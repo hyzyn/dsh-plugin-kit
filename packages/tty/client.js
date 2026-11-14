@@ -632,20 +632,35 @@ void main() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* \u6298\u53E0 rail\uFF1A\u5BBF\u4E3B\u7684 \`.collapsed .panelRow\` \u662F 36\xD736\u3001\u5C45\u4E2D\u3001\u65E0\u5DE6\u53F3\u63CF\u8FB9\u3002 */
-[data-sidebar-collapsed] .tt_sidebarEntry {
+/*
+ * \uFF08D108\uFF09\u6298\u53E0 rail\uFF1A\u5BBF\u4E3B\u7684 \`.collapsed .panelRow\` \u662F 36\xD736\u3001\u5C45\u4E2D\u3001\u65E0\u5DE6\u53F3\u63CF\u8FB9\u3002
+ *
+ * **\u5207 rail \u7684\u65F6\u673A\u8981\u8DDF\u5BBF\u4E3B\uFF0C\u4E0D\u80FD\u8DDF\u300C\u70B9\u4E86\u6536\u8D77\u300D**\uFF1A\u5BBF\u4E3B\u5728\u70B9\u4E0B\u6536\u8D77\u7684\u90A3\u4E00\u523B\u5C31\u7ED9**\u6846\u67B6**\u6253
+ * \`data-sidebar-collapsed\`\uFF0C\u4F46\u5E03\u5C40\u8981\u5230 \`COLLAPSE_SETTLE_MS\`\uFF08150ms\uFF09\u4E4B\u540E\u624D\u843D\u5230 rail\u2014\u2014
+ * \u5148\u628A\u51BB\u7ED3\u5728\u5C55\u5F00\u5BBD\u5EA6\u7684\u5185\u5BB9\u6DE1\u51FA\uFF0Csettle \u65F6\u624D\u5378\u8F7D\u5BBD\u5185\u5BB9\u3001\u6362\u6210 36\xD736\u3002\u5165\u53E3\u82E5\u8DDF\u7740\u6846\u67B6\u5C5E\u6027\u7ACB\u523B\u5207\uFF0C
+ * \u6536\u8D77\u7684\u7B2C\u4E00\u5E27\u5C31\u53EA\u5269\u56FE\u6807\uFF0C\u800C\u4E14\u88AB \`justify-content:center\` \u63A8\u5230**\u51BB\u7ED3\u5BBD\u5EA6**\uFF08\u5BBF\u4E3B\u9ED8\u8BA4 280px\uFF09
+ * \u7684\u4E00\u534A\uFF0C\u4E0E\u540C\u680F\u7684\u300C\u63D2\u4EF6 / \u63D2\u4EF6\u5E02\u573A / \u66F4\u591A\u300D\u4E0D\u5728\u540C\u4E00\u62CD\u4E0A\u2014\u2014\u7528\u6237\u5728\u684C\u9762\u4E0A\u70B9\u6536\u8D77\u65F6\u770B\u5230\u7684\u5C31\u662F
+ * \u300Ckit \u7684\u5165\u53E3\u548C\u5B98\u65B9\u9762\u677F\u884C\u7684\u6548\u679C\u4E0D\u4E00\u6837\u300D\u3002
+ *
+ * \u5224\u636E\u7528\u5BBF\u4E3B README \u660E\u786E\u7559\u7ED9\u96C6\u6210\u65B9\u7684**\u7A33\u5B9A\u6807\u8BB0**\uFF1A\`data-sidebar-scrollport\` **\u53EA\u5728\u5C55\u5F00\u65F6**
+ * \u6302\u5728\u6EDA\u52A8\u89C6\u53E3\u4E0A\uFF08\u300C\u5C55\u5F00\u65F6\u89C6\u53E3\u5E26\u6709 data-sidebar-scrollport\uFF0C\u8FD9\u662F\u4F9B\u6D4B\u8BD5\u548C\u96C6\u6210\u65B9\u5B9A\u4F4D\u7684\u7A33\u5B9A\u6807\u8BB0\u300D\uFF09\u3002
+ * \u4E8E\u662F rail = \u300C\u6846\u67B6\u5DF2\u6807\u6536\u8D77\u300D**\u4E14**\u300C\u5165\u53E3\u4E0D\u5728\u5E26\u8BE5\u6807\u8BB0\u7684\u89C6\u53E3\u91CC\u300D\uFF1A\u6DE1\u51FA\u9636\u6BB5\u6807\u8BB0\u8FD8\u5728\uFF08\u5BBF\u4E3B\u4ECD\u662F
+ * \u5BBD\u6001\uFF09\u2192 \u4FDD\u6301\u5BBD\u6001\uFF1Bsettle \u540E\u6807\u8BB0\u6D88\u5931 \u2192 \u4E0E\u5BBF\u4E3B\u540C\u65F6\u5207 rail\u3002\u8001\u5BBF\u4E3B\u6839\u672C\u6CA1\u6709\u8FD9\u4E2A\u6807\u8BB0\u65F6
+ * \`:not()\` \u6052\u771F \u2192 \u9000\u56DE\u300C\u70B9\u4E86\u5C31\u5207\u300D\u7684\u539F\u884C\u4E3A\uFF0C\u4E0D\u4F1A\u6BD4\u4EE5\u524D\u66F4\u5DEE\u3002
+ */
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) {
   justify-content: center;
   width: 100%;
   min-height: 36px;
   padding: 0;
   border-inline: 0;
 }
-[data-sidebar-collapsed] .tt_sidebarEntryIcon,
-[data-sidebar-collapsed] .tt_sidebarEntryIcon svg {
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryIcon,
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryIcon svg {
   width: 18px;
   height: 18px;
 }
-[data-sidebar-collapsed] .tt_sidebarEntryLabel {
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryLabel {
   display: none;
 }
 /*
@@ -668,7 +683,8 @@ void main() {
  * \u5199\u6B7B\u4EFB\u4F55\u4E00\u4E2A\u503C\u90FD\u4F1A\u8BA9\u53E6\u4E00\u6863\u504F 4px\u3002
  *
  * \u62EC\u53F7\u91CC\u5199\u7684\u662F**\u515C\u5E95\u503C**\uFF08= rc.1 \u7684\u5B9E\u6D4B\u51E0\u4F55\uFF09\uFF1A\u91CF\u4E0D\u5230\u65F6\u4E0E 0.34.0 \u7684\u89C2\u611F\u5B8C\u5168\u4E00\u81F4\uFF0C\u4E0D\u4F1A\u66F4\u5DEE\u3002
- * \u6298\u53E0\u6001\uFF08\`[data-sidebar-collapsed]\`\uFF09\u662F\u53E6\u4E00\u5957 36\xD736 \u7684 rail \u51E0\u4F55\uFF0C\u4E24\u6863\u672A\u53D8\uFF0C\u4ECD\u5199\u6B7B\u3002
+ * \u6298\u53E0\u6001\uFF08\`[data-sidebar-collapsed]\` \u4E14\u5BBF\u4E3B\u5DF2\u843D\u5230 rail\uFF0C\u5224\u636E\u89C1\u4E0A\u9762\u90A3\u6761\u6CE8\u91CA\uFF09\u662F\u53E6\u4E00\u5957
+ * 36\xD736 \u7684 rail \u51E0\u4F55\uFF0C\u4E24\u6863\u672A\u53D8\uFF0C\u4ECD\u5199\u6B7B\u3002
  */
 .tt_sidebarEntry[data-host-align] {
   /*
@@ -686,7 +702,7 @@ void main() {
   padding-top: var(--tt-host-pad-top);
   padding-bottom: var(--tt-host-pad-bottom);
 }
-[data-sidebar-collapsed] .tt_sidebarEntry[data-host-align] {
+[data-sidebar-collapsed] .tt_sidebarEntry[data-host-align]:not([data-sidebar-scrollport] *) {
   min-height: 36px;
   padding: 0;
 }
@@ -709,15 +725,15 @@ void main() {
 }
 /* \u6298\u53E0\u6001\u5FBD\u6807\u53EA\u5269\u4E00\u4E2A\u72B6\u6001\u70B9\uFF1A\u5FC5\u987B\u8131\u79BB flex \u6D41\u5F53\u89D2\u6807\u3002\u7559\u5728\u6D41\u91CC\u7684\u8BDD\uFF0C\u5B83\u548C\u56FE\u6807\u4E00\u8D77\u88AB
    justify-content:center \u5C45\u4E2D\uFF0818 \u56FE\u6807 + 8 \u95F4\u8DDD + 7 \u70B9 = 33px\uFF09\uFF0C\u56FE\u6807\u88AB\u9876\u504F 7.5px\uFF0C
-   \u4E0E\u540C\u680F\u5176\u5B83\u6298\u53E0\u5165\u53E3\u7684\u56FE\u6807\u9519\u4F4D\u3002 */
-[data-sidebar-collapsed] .tt_sidebarEntryBadge {
+   \u4E0E\u540C\u680F\u5176\u5B83\u6298\u53E0\u5165\u53E3\u7684\u56FE\u6807\u9519\u4F4D\u3002\u95E8\u63A7\u4E0E\u4E0A\u9762\u7684 rail \u540C\u6E90\uFF08\u89C1\u90A3\u6761\u6CE8\u91CA\uFF09\u3002 */
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarEntryBadge {
   position: absolute;
   top: 3px;
   right: 3px;
   margin-left: 0;
   padding-left: 0;
 }
-[data-sidebar-collapsed] .tt_sidebarBadgeCount {
+[data-sidebar-collapsed] .tt_sidebarEntry:not([data-sidebar-scrollport] *) .tt_sidebarBadgeCount {
   display: none;
 }
 .tt_sidebarBadgeDot {
