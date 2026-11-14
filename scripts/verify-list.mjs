@@ -95,7 +95,7 @@ export const VERIFY_SCRIPTS = [
     pkg: 'rss',
     entry: 'opml-smoke',
     needs: '正在跑的宿主 + token + 真 Chrome（见 --url / --token）；受限沙箱加 `--chrome-arg --no-sandbox`（默认关）',
-    note: '✅ 2026-09-30 重跑：9/9 PASS（带 --chrome-arg --no-sandbox）',
+    note: '✅ 2026-09-30 重跑：9/9 PASS（带 --chrome-arg --no-sandbox）；宿主**没有存储的订阅源**时 O1 记 WARN 而不是 FAIL（2026-11-14 改，见文件头）',
   },
   {
     file: 'verify-mcp-http.mjs',

@@ -6,12 +6,12 @@
 > 它是纯 UX 改进、不改变安全等级（§5 末：不做也完全成立），要不要做是独立的价值判断。
 > §0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
-> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.2-rc.2`** 现算的
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.2-rc.3`** 现算的
 > （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 复核于 `0.2.1-alpha.2`，
 > 2026-10-16 复核于 `0.2.1-alpha.5`，2026-10-17 复核于 `0.2.1-rc.1`，
 > 2026-10-19 复核于 `0.2.1-rc.2`，2026-10-24 复核于 `0.2.1-rc.3`，
 > 2026-10-27 复核于 `0.2.1-rc.4`，2026-10-30 复核于 `0.2.1-rc.5`，
-> 2026-11-04 复核于 `0.2.2-alpha.3`，2026-11-05 复核于 `0.2.2-rc.1`，2026-11-12 复核于 `0.2.2-rc.2`，见 §2.1 末「升级复核」）。
+> 2026-11-04 复核于 `0.2.2-alpha.3`，2026-11-05 复核于 `0.2.2-rc.1`，2026-11-12 复核于 `0.2.2-rc.2`，2026-11-13 复核于 `0.2.2-rc.3`，见 §2.1 末「升级复核」）。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
@@ -90,7 +90,7 @@
 
 ## 2. 现算事实与那条实现约束
 
-### 2.1 三条实测事实（DSH `0.2.2-rc.2`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 / 10-19 / 10-24 / 10-27 / 10-30 / 11-04 / 11-05 / 11-12 复核）
+### 2.1 三条实测事实（DSH `0.2.2-rc.3`，2026-10-07 首测 · 10-09 / 10-16 / 10-17 / 10-19 / 10-24 / 10-27 / 10-30 / 11-04 / 11-05 / 11-12 / 11-13 复核）
 
 **事实 1：审批瀑布的答案今天由「页面」给出。**
 
@@ -362,6 +362,30 @@ nvm 并存时不再取目录序第一个），否则装了新 cohort 后仍会�
 > 一条容易误判的观察：rc.2 里 `srcdoc` 有命中，但那是
 > `dsh-client-ui-sidebar-documentpreview` 的**恶意 HTML 检测规则表**（`html-srcdoc` 那条正则），
 > 不是宿主拿 iframe 隔离插件半体——`createElement("iframe")` 全树零命中。事实 2 不受影响。
+
+**升级复核（2026-11-13，宿主 `0.2.2-rc.2` → `0.2.2-rc.3`）**：三条事实逐条重跑，**全部仍然成立**，
+且 `checkHostWorld()` 返回空数组——红的只有「基准版本对不上」这条绊线（按设计）。逐条锚点：
+
+- **事实 1（答案走页面）**：`dsh-user-approval/lib/index.js` 里那条
+  `ctx.waterfall(scopeTarget(req.agent, req.agent), "approval/request", …)` 形状未变
+  （8979 B，与 rc.2 **逐字节相同**）；`dsh-client-ui-approval/lib/client.js` 里 `answerApproval`
+  仍在（19634 B 等长，差异仅 CSS Module 类名前缀 `.ImxglW_` → `.mna1RW_`，有效路径未变）。
+- **事实 2（同 realm、无 iframe 隔离）**：`dsh-client-modules/lib/client.js` 里 `type="module"`
+  **零命中**（25831 B，与 rc.2 逐字节相同）。全树 `createElement("iframe")` 这一档只在
+  `dsh-experimental-inspector` 的 DevTools 分块里命中 1 处，同样不是「拿来跑第三方插件 bundle
+  的沙箱」（上一档记的 2 处里，`dsh-client-ui-sidebar-browser` 那处随该包产物重打包，
+  已不是同一写法），事实 2 的结论不变。
+- **事实 3（原生对话框只在目录选择器）**：`zenity` 的命中仍**只在**
+  `dsh-host-directory-picker-{auto,native}`（唯一的原生接缝；`dsh-host-directory-picker-native/lib/index.js`
+  13011 B，与 rc.2 逐字节相同）。
+
+五处载体文件这一档的字节数（`0.2.2-rc.3`，作为下一次比对的锚点）：
+`dsh-user-approval/lib/index.js` 8979 B、`dsh-client-ui-approval/lib/client.js` 19634 B、
+`dsh-client-modules/lib/client.js` 25831 B、`dsh-api-remotes/lib/types/remote-events.js` 2890 B、
+`dsh-host-directory-picker-native/lib/index.js` 13011 B（与 rc.2 **四处逐字节相同**；
+唯一非逐字节的 `dsh-client-ui-approval/lib/client.js` 差异只有 CSS Module 类名前缀）。
+`scripts/test/os-consent-scope.test.ts` 本轮 **27/27 绿**（基准更新后）。本节基准随之更新到
+`0.2.2-rc.3`。
 
 ### 2.2 把事实合起来：两个形态，只有一个成立
 

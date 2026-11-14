@@ -180,6 +180,21 @@ export const LEDGER_SPECS = [
     codeRefs: false,
     // 2026-10-11 建包当天登记：台账里只有建包当天真实发生的那一条（`D01`），末列是「涉及文件」、没有 `✓` 列
   },
+  {
+    name: 'rss',
+    prefix: 'D',
+    path: 'packages/rss/DEFECTS.md',
+    tableHeading: /^## 1\. 编号索引表/,
+    selfSequence: true,
+    nextAnchor: true,
+    crossRefs: [],
+    statusLine: { closedColumn: false, untilSentence: true },
+    mirror: false,
+    codeRefs: false,
+    // 2026-11-14 建台账：首条 `D01` 是**真机脚本自身的判据缺陷**（`verify-rss-opml` 的 O1 把
+    // 「宿主没有存储源」判成回归），不是产品缺陷——与 codegraph 的 CG45 / CG48 / CG73 同类，
+    // 入台账的理由相同：验证工具自己的缺陷最容易在「它红了」和「产品坏了」之间被误读。
+  },
 ]
 
 /** 编号数字串的公共形状（`D01` / `CG140`）。 */
@@ -223,7 +238,7 @@ const REFERENCE_SKIP_DIRS = new Set(['node_modules', 'lib', 'dist', 'build', 'ou
  * 就是拦这个。新增包时两处一起加；反例钉在 `scripts/test/defects-table.test.ts` 的
  * 「loglens 的悬空引用也要报」那一条。
  */
-const CROSS_REF_SOURCE = String.raw`\b(docker|tty|codegraph|kit|loglens)\s+([A-Z]{1,4})(\d{1,4})\b`
+const CROSS_REF_SOURCE = String.raw`\b(docker|tty|codegraph|kit|loglens|rss)\s+([A-Z]{1,4})(\d{1,4})\b`
 
 /**
  * 刻意写出的「不存在的号」的**豁免表**：只允许出现在守卫自己的夹具里（造 A 类反例用）。

@@ -278,8 +278,37 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    `GET /api/dsh-docker/targets` 与 `GET /api/dsh-tty/config` 均 200、根页面 200（43270 B）；
  *    `live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox` **23/23 PASS**（18 条 HTTP +
  *    5 条真浏览器）。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十四档条目。
+ *  - **0.2.2-rc.3（第十五档基线，2026-11-13 实测）**：**纯显式声明、零差异**——`0.2.2-rc.3`
+ *    本来就被 `^0.2.2-rc.2` 覆盖（同一个 `0.2.2` 版本元组，预发布之间不比大小；`semver.satisfies`
+ *    在 plain 与 `includePrerelease` 下都为真），加档只是把「适配到哪一档就写到哪一档」落全。
+ *    逐文件比对（rc.2 取**桌面版自带的那份** `app.asar` 里的 dsh 载荷 + 本机 npm 全局 rc.3，
+ *    两边各 339 个宿主包、其中 **337 个两边都有**，逐个比对时先把版本串与构建产物里的
+ *    CSS Module 类名哈希归一化；rc.3 只多两个包——新增的官方 bundle
+ *    `dsh-deepseek-chat-import` 与 `libreoffice-kit-wasm`，均本仓零引用；rc.2 侧多出的
+ *    `dsh` / `dsh-desktop-host` 是桌面版载荷的打包形状差异，不是删除）：
+ *      · **本仓 import 的宿主包 `lib/` 全部逐字节相同**：`cordis`（含 `cordis-plugin-loader` /
+ *        `cosmokit`）/ `dsh-app-boot`（判定器）/ `dsh-tools`（`defineTool`）/ `dsh-host-webserver` /
+ *        `dsh-mcp-client` / `dsh-subprocess` / `dsh-subprocess-local` / `dsh-settings` /
+ *        `dsh-storage` / `schemastery`；
+ *      · 有真实改动的只有 **8 个包的 `src/`**，逐个查清后一处都不落在本仓引用面内：
+ *        `dsh-client-ui-sidebar` / `-workspace`（**槽面只增**——新增 `sidebar.session.action`
+ *        （`hoc`）与 `workspace.picker` Factory + `workspace.picker.directoryFlow`）、
+ *        `dsh-client-ui-directory-picker-browse` / `-native`（把原生/浏览式目录选择器补进第三个
+ *        directoryFlow 洞）、`dsh-cordis-client-runner`（槽目录同步新增两条，仍 0 删 0 改名）、
+ *        `dsh-official-bundles`（官方 bundle 清单新增 `@deepseek-ai/dsh-deepseek-chat-import`）、
+ *        `dsh-session-log-export`（归档时附件不可读不再整体失败，改为记进 `missing`）、
+ *        `dsh-tool-cordis`（API 目录文档追加上面的 `deepseekChatImport`）；
+ *      · 本仓注册的槽只有 `settings.kit.item` / `settings.plugin.item` /
+ *        `sidebar.right.pane.tab` 三条，两档之间逐字节相同，新增的两条槽本仓零注册；
+ *      · 其余约 36 个 `client-ui-*` 的 `lib/client.js` 差异**只有 CSS Module 类名前缀**
+ *        （构建期哈希换了种子，如 `._0K0vAa_cards` → `.k74WwW_cards`），归一化后为空。
+ *    主题令牌 **450 → 450**（只差 `dshVersion` / `generatedAt` 两个元数据位），本仓在用的
+ *    `--dsw-*` 全部存活，快照**不需要重建**（`--check` 逐字一致）。
+ *    实测证据：官方判定器（自报运行时 `0.2.2-rc.3`）**十五档 × 14 条目全放行**；隔离
+ *    `DSH_HOME` 起真宿主后全部包加载、0 行 `skipping profile bundle`、0 行
+ *    `disabling profile plugin row`。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十五档条目。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
