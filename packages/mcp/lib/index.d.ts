@@ -188,6 +188,79 @@ interface ProbeResult {
  * 用用例钉住比真机截图稳定。运行期它只被路由调用。
  */
 export declare function testServer(rawConfig: unknown): Promise<ProbeResult>;
+/**
+ * 重启的等待预算（毫秒）。与 `PROBE_TIMEOUT_MS` 同款写法、同一个数级。
+ *
+ * **超时不算失败**：`fiber.restart()` 内部是 `await fiber.await()`（cordis 4.1.0），MCP 连接
+ * 建立慢（stdio 冷启动、远端不可达）时它可能远超任何合理的前端等待窗口。此刻重启**已经发出**、
+ * 只是还没有结论——报 500 会把一个进行中的动作说成失败，用户重试还会再叠一次重启。所以超时走
+ * 200 + `settled:false` + `warning`，由卡片说「重启已发出，连接仍在建立中」。
+ *
+ * 刻意 `export`：它是「等多久算还在建立」这条对外承诺的取值，README 引用它时
+ * `scripts/check-readme-facts.mjs` 才收得到——该闸门只认 `export const`，私有常量会让引用
+ * 恒绿（同 `AGENT_TOOL_BUDGET` 的理由）。
+ */
+export declare const RESTART_TIMEOUT_MS = 25000;
+/**
+ * 等待工具注册的轮询间隔（毫秒）。
+ *
+ * 纯内存读注册表，所以这个数只影响「多久发现一次」，与网络无关；50ms 让能连上的行走得跟
+ * 「点下去就回来了」一样快，又不至于把事件循环占满。
+ */
+export declare const RESTART_POLL_INTERVAL_MS = 50;
+/**
+ * 等工具注册的**上限**（毫秒）。与 `RESTART_TIMEOUT_MS` 分开是因为它们回答不同的问题：
+ *
+ * - `RESTART_TIMEOUT_MS`：`restart()` 本身（rebuild fiber + 重跑 apply）最长等多久；
+ * - 本值：apply 跑完之后，**再花多久认命说「它还是没连上」**。
+ *
+ * 为什么不是「等满预算」：一条连不上的行（人不在内网）**永远**不会有工具回来，等满任何预算
+ * 都只是让用户对着按钮干等。远端的失败通常在几秒内就有结论（TLS/DNS 立刻失败，或 SDK 自己的
+ * 请求超时），所以这个值刻意小于 `RESTART_TIMEOUT_MS`——宁可早一点说「仍未连上，再点一次」，
+ * 也不要让人等半分钟。工具**一回来就立即返回**，所以能连上的行感觉不到这个上限。
+ */
+export declare const RESTART_CONNECT_WAIT_MS = 8000;
+/** 重启的结果：成功（`settled` = 有没有在预算内给出结论）或拒绝（带该回出去的 HTTP 状态）。 */
+export type RestartManagedResult = {
+    ok: true;
+    /** `restart()` 有没有在预算内跑完（apply 是否返回）。 */
+    settled: boolean;
+    /**
+     * 该行**重启之后的真实连接态**，判据是工具注册表而不是 `restart()` 的返回：
+     * `connected` = 工具的真的回来了；`pending` = 重启已发出但预算内没等到工具。
+     * 连不上的行（例如人不在内网）**永远是 `pending`**——这正是要区分的那件事。
+     */
+    connection: 'connected' | 'pending';
+    /** 重启后该行在注册表里的工具数（`connection === 'connected'` 时必然 > 0）。 */
+    toolCount: number;
+} | {
+    ok: false;
+    status: 400 | 500;
+    error: string;
+};
+/**
+ * 重启一**行**托管实例（纯函数：判据全在这里，路由只负责把 status/error 写出去）。
+ *
+ * 拒绝分支按契约顺序（**先**看这是不是本卡的行，再看实例状态——否则一个拼错的 id 会被报成
+ * 「还没起来」，用户永远查不到真相）：
+ * 1. 400 非法 id（`ROW_ID_RE`，与保存路由同一条判据）；
+ * 2. 400 不在托管区块里（`readManagedRows()`，区块解析失败时自然也是这一支）；
+ * 3. 400 该行已停用（重启一条停用行等于绕过用户的「关掉」）；
+ * 4. 400 loader 里找不到这条 entry（刚保存、热加载还没跑完就是这个形状）；
+ * 5. 400 `fiber` 缺失或 `uid === null`（cordis 用 uid 被清表示 fiber 已 dispose /
+ *    还没起来——这时 `restart()` 只会 `assertActive()` 抛 INACTIVE_EFFECT，不要调它）；
+ * 6. 500 `fiber.restart()` 抛出（含「fiber 上没有 restart」这种宿主版本不符）。
+ *
+ * **成功 ≠ 连上了**（2026-11-18 真机事故）：`fiber.restart()` 的 `await` 只等到「apply 跑完」，
+ * 而 mcp-client 的 apply 在连不上时**照常 resolve**（`failOnStartupError` 默认 false）。于是
+ * 「重启成功了」与「工具一个都没回来」可以同时为真——用户看到的就是一条「已重连」提示配一个
+ * 「未连接 / 工具 0」的行。所以这里在预算内**等真实的工具注册**：拿到 ≥1 个工具才算 `connected`；
+ * 等不到就如实报 `pending`，由卡片说「仍未连上」而不是「已重连」。
+ *
+ * @param timeoutMs 等待预算，默认 {@link RESTART_TIMEOUT_MS}；单测注入小值来打超时那条分支。
+ * @returns `connection` 是**判据而不是猜测**：`connected` 仅当该行的工具的真的回到了注册表。
+ */
+export declare function restartManagedEntry(ctx: Context, id: string, timeoutMs?: number, connectWaitMs?: number): Promise<RestartManagedResult>;
 interface ReqLike {
     method?: string;
     url?: string;
@@ -212,8 +285,8 @@ interface RouteLogger {
  * 顺序与 docker 一致：先回环 → 再方法 → 最后同源证明。跨站 GET 打到写路由仍是 405
  * （方法不对就说方法不对），不会因为「没带证明」而多给一条信息。
  *
- * 本插件的 POST 只有两条：`/servers/save`（写 home 补丁文件）与 `/test`（起子进程探活），
- * 都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
+ * 本插件的 POST 有三条：`/servers/save`（写 home 补丁文件）、`/test`（起子进程探活）与
+ * `/restart`（重跑一条托管 entry），都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
  */
 export declare function routeGate(req: ReqLike, res: ResLike, method: string, logger?: RouteLogger): Promise<boolean>;
 export declare function apply(ctx: Context, rawConfig?: Config): void;

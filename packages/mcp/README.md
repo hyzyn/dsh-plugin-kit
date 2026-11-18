@@ -114,6 +114,10 @@ per-agent 挂载，按需装载在那条路上也照样有意义。
 真机回归：[`scripts/verify-mcp-on-demand.mjs`](../../scripts/verify-mcp-on-demand.mjs)
 （进程内真宿主、不 spawn 宿主、隔离临时 `DSH_HOME`，收尾断言真实补丁逐字节未变）。
 
+「重连」那条路由同样有一层真机回归：[`scripts/verify-mcp-restart.mjs`](../../scripts/verify-mcp-restart.mjs)
+——判据不是「注册表里还有那个名字」，而是**重启后真调用 `probe_echo` 拿到回显**，且探针服务器的
+`--log` 里重启前后各有一次真调用（`fiber.restart()` 在真宿主里确实 dispose 旧 effect 再重跑 apply）。
+
 ## 结构
 
 | 文件 | 说明 |
@@ -127,9 +131,10 @@ per-agent 挂载，按需装载在那条路上也照样有意义。
 - `GET /api/dsh-mcp/servers` —— 列表 + 状态（含每行的 `toolCount`，见下）+ **真重名**（`conflicts`）/ 本卡之外实例清单（`externalServers`）。**DTO 读取失败返回 500 + 原因原文**：宿主 webserver 对 handler 抛错只回空 400，界面上什么都看不到（围栏已过，回原文是安全的，也让下次出问题一眼可查）
 - `POST /api/dsh-mcp/servers/save` —— 整体保存（校验后写回托管区块）
 - `POST /api/dsh-mcp/test` —— 用表单配置做一次连接测试
+- `POST /api/dsh-mcp/restart` —— 重启某条托管行的 mcp-client 实例：重置其重连预算（`reconnect.maxAttempts` 用完后就放弃并注销工具，此后网络恢复也不会再试；本路由是「不用重启宿主」的恢复入口）。body `{ id }`，200 返回 `{ ok: true, settled, connection, toolCount, warning?, …servers DTO }`。**`connection` 是判据不是猜测**：`connected` 仅当该行的工具**真的**回到了注册表（`toolCount > 0`）；`pending` 表示重启发出了但没等到工具（人不在内网时就是这一档）——此时带 `warning`「仍未连上」，卡片据此提示，**不会**谎报「已重连」。`settled: false` 是 `restart()` 本身超时（不算失败）。只有被拒 / 失败才回 400 / 500 并带 `{ error }`
 
 **围栏**（2026-09-25 起与 `docker` / `tty` 同一档）：回环围栏走 `@hyzyn/dsh-kit` 的
-`isLoopbackRequestStrict`（127/8 全段 + 别名主机名的 DNS 确认），两条写操作**另需同源证明**
+`isLoopbackRequestStrict`（127/8 全段 + 别名主机名的 DNS 确认），三条写操作**另需同源证明**
 （`Sec-Fetch-Site: same-origin` 或同源 `Origin`；都缺省时只放行带宿主会话 Cookie 的桌面壳转发链
 ——见 `docker D139`）。只读的 `GET /servers` 不要求证明，裸 curl 也能读；成因与实现只有一份，
 在 `packages/kit/src/http.ts`。
@@ -200,7 +205,7 @@ dsh plugin --profile web remove @hyzyn/dsh-mcp
 | 判据（一条可粘贴命令 / 一处证据） | 结论 | 修法 |
 |---|---|---|
 | `nc -z <host> <port>` 不通（内网地址还要先看 `ping` 是否 100% 丢包） | **网络不可达**——与插件、凭据都无关 | 连 VPN / 换到能到那台机器的网络 |
-| 端口通，但宿主日志尾部有 `giving up after N consecutive failed reconnect attempts` | **重连预算已耗尽**：`reconnect.maxAttempts` 默认 10 次（`RECONNECT_DEFAULT_MAX_ATTEMPTS`）用完后就放弃并注销该服务器的工具，之后网络恢复它**也不会再试** | **重启宿主**（或对该插件做一次 HMR 重载） |
+| 端口通，但宿主日志尾部有 `giving up after N consecutive failed reconnect attempts` | **重连预算已耗尽**：`reconnect.maxAttempts` 默认 10 次（`RECONNECT_DEFAULT_MAX_ATTEMPTS`）用完后就放弃并注销该服务器的工具，之后网络恢复它**也不会再试** | **点该行的「重连」按钮**（卡片行操作区，`POST /api/dsh-mcp/restart`——重置预算、重挂该行，不用重启宿主）；或重启宿主 |
 | 端口通、日志里没有放弃记录，但仍未连接 | 连接还在建立中或刚失败待重试（首次连接约 10s，能连上但不回应最长 60s） | 等一个重连周期；持续失败就按上一档处理 |
 | 401 / 工具数是 0 | **凭据未注入**：`!!js process.env.X` 求值成 `undefined`，拼出 `Basic base64("undefined:undefined")` 这种**合法但错误**的串，服务器只会回 401 | 装并启用 `@hyzyn/dsh-env`，确认这些键**真的写进了宿主进程**（`env` 在同步预注入后才 `provide` `dshEnvReady`） |
 
@@ -220,4 +225,4 @@ dsh plugin --profile web remove @hyzyn/dsh-mcp
   agent 侧却连不上」通常不是本插件的问题，往上面那张表查。
 - **连接测试能给出凭据那一档的判词**：它会把「引用的环境变量 X 在当前宿主进程里没有值（未注入）」
   直接写进结果，而不是含糊的 401。**但这条检查只在点「连接测试」时才跑**，不覆盖启动时的连接。
-- **重启是重连预算耗尽后的唯一出路**：`enabled: true` 只表示「失败后会重试」，不表示「会永远重试」。
+- **重启宿主或点该行「重连」都能重置预算**：`enabled: true` 只表示「失败后会重试」，不表示「会永远重试」。

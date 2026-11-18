@@ -125,6 +125,14 @@ const IN_PROCESS_SCRIPTS = [
     /** 同上：它自己拉的是 MCP **探针服务器**子进程（由 `dsh-mcp-client` 管），不是 DSH 宿主。 */
     forbidSpawn: ["execFileSync('dsh'", 'spawn(\'dsh\'', 'spawnSync(\'dsh\''],
   },
+  {
+    file: 'verify-mcp-restart.mjs',
+    /**
+     * 同上：这条验收真调的那条链路是 `fiber.restart()` → mcp-client 重新拉起**探针服务器**
+     * 子进程，不是另起一个 DSH 宿主（「进程内那一个 fiber 被重启」正是它的判据）。
+     */
+    forbidSpawn: ["execFileSync('dsh'", 'spawn(\'dsh\'', 'spawnSync(\'dsh\''],
+  },
 ]
 
 /**

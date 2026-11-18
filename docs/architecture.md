@@ -158,7 +158,7 @@
 
    | 包 | 闸门 | 变更端点的同源证明 |
    |---|---|---|
-   | `docker` · `tty` · `dsh-mcp` · `loglens` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法）——`docker` / `tty` 两处 `/config` **整体豁免**（它是禁用后唯一的恢复入口）；`loglens` **按动作部分豁免**：`enabled` 免、`targets` 的增删改要同源证明；`dsh-mcp` 没有 `/config` 路由（配置走 `POST /api/dsh-mcp/servers/save`），**无豁免** |
+   | `docker` · `tty` · `dsh-mcp` · `loglens` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法）——`docker` / `tty` 两处 `/config` **整体豁免**（它是禁用后唯一的恢复入口）；`loglens` **按动作部分豁免**：`enabled` 免、`targets` 的增删改要同源证明；`dsh-mcp` 没有 `/config` 路由（配置走 `POST /api/dsh-mcp/servers/save`），**无豁免**；另有 `POST /api/dsh-mcp/restart`（重启某行 mcp-client 实例），同样**无豁免** |
    | `search` · `codegraph` · `env` · `profile` · `prompt` · `rss` | `kit.admitRoute(ctx, req)`：同步档 `isLoopbackRequest` **∪** 宿主 `connection.requestRejection`（非本机请求） | 无 |
    | `kit-settings` | 没有 HTTP 数据路由（只有设置卡片） | — |
 

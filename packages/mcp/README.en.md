@@ -138,6 +138,12 @@ Real-machine regression: [`scripts/verify-mcp-on-demand.mjs`](../../scripts/veri
 (in-process real host, no host spawn, isolated temporary `DSH_HOME`, and it asserts the real patch is
 byte-identical on exit).
 
+The “Reconnect” route has its own real-machine regression:
+[`scripts/verify-mcp-restart.mjs`](../../scripts/verify-mcp-restart.mjs) — its criterion is not “the name
+is still in the registry” but **a real `probe_echo` call after the restart returns an echo**, plus one real
+call before and one after in the probe server's `--log` (i.e. `fiber.restart()` really disposes the old
+effect and re-runs `apply` in a real host).
+
 ## Structure
 
 | File | Description |
@@ -151,10 +157,11 @@ Routes (loopback + same-origin only):
 - `GET /api/dsh-mcp/servers` — list + status (including each row’s `toolCount`, see below) + **real clashes** (`conflicts`) / instances outside this card (`externalServers`). **A failed DTO read returns 500 with the original reason**: the host webserver answers a throwing handler with an empty 400, which shows nothing in the UI (the fence has already passed, so returning the text is safe and makes the next incident obvious at a glance)
 - `POST /api/dsh-mcp/servers/save` — save the whole set (after validation, write back to the managed block)
 - `POST /api/dsh-mcp/test` — run one Connection Test with the form configuration
+- `POST /api/dsh-mcp/restart` — restart one managed row's mcp-client instance: it resets that row's reconnect budget (once `reconnect.maxAttempts` is used up, the client gives up and unregisters the tools, and it will not retry even after the network recovers — this route is the recovery entry that needs **no host restart**). Body `{ id }`; 200 returns `{ ok: true, settled, connection, toolCount, warning?, …servers DTO }`. **`connection` is a criterion, not a guess**: `connected` only when that row's tools **really** came back to the registry (`toolCount > 0`); `pending` means the restart was issued but no tools arrived (the normal outcome when you are off the intranet) — it carries a `warning` and the card says so instead of falsely claiming “reconnected”. `settled: false` means `restart()` itself timed out (not a failure). Only a rejection or failure answers 400 / 500 with `{ error }`
 
 **Fence** (same tier as `docker` / `tty` since 2026-09-25): the loopback fence uses
 `isLoopbackRequestStrict` from `@hyzyn/dsh-kit` (the whole 127/8 range plus DNS confirmation for alias
-hostnames), and the two write routes additionally require a **same-origin proof** (`Sec-Fetch-Site:
+hostnames), and the three write routes additionally require a **same-origin proof** (`Sec-Fetch-Site:
 same-origin` or a matching `Origin`; with both absent, only requests carrying the host session cookie
 pass — the desktop shell's forwarding chain, see `docker D139`). The read-only `GET /servers` needs no
 proof, so bare curl still works; the rationale and the single implementation live in `packages/kit/src/http.ts`.
@@ -238,7 +245,7 @@ its own looks like "authentication failure").
 | Criterion (one pasteable command / piece of evidence) | Conclusion | Fix |
 |---|---|---|
 | `nc -z <host> <port>` fails (for an intranet address, first check whether `ping` is 100% packet loss) | **Network unreachable** — nothing to do with the plugin or the credentials | Connect the VPN / move to a network that can reach that host |
-| The port is open, but the host log ends with `giving up after N consecutive failed reconnect attempts` | **Reconnect budget exhausted**: once `reconnect.maxAttempts`, which defaults to 10 (`RECONNECT_DEFAULT_MAX_ATTEMPTS`), is used up, the client gives up and unregisters that server's tools — it will **not** retry later even after the network recovers | **Restart the host** (or HMR-reload the plugin) |
+| The port is open, but the host log ends with `giving up after N consecutive failed reconnect attempts` | **Reconnect budget exhausted**: once `reconnect.maxAttempts`, which defaults to 10 (`RECONNECT_DEFAULT_MAX_ATTEMPTS`), is used up, the client gives up and unregisters that server's tools — it will **not** retry later even after the network recovers | **Click that row's “Reconnect” button** (in the row's action area; `POST /api/dsh-mcp/restart` — resets the budget and remounts the row, no host restart); or restart the host |
 | Port open, no give-up record in the log, still not connected | The connection is still being established, or just failed and is awaiting a retry (about 10s for a first attempt; up to 60s when reachable but unresponsive) | Wait one reconnect cycle; if it keeps failing, treat it as the row above |
 | 401 / tool count is 0 | **Credentials not injected**: `!!js process.env.X` evaluates to `undefined` and builds `Basic base64("undefined:undefined")` — a **legal but wrong** string, so the server can only answer 401 | Install and enable `@hyzyn/dsh-env`, and confirm those keys **really reached the host process** (`env` provides `dshEnvReady` only after its synchronous pre-injection) |
 
@@ -260,5 +267,5 @@ Three supporting criteria:
 - **The Connection Test can produce the verdict for the credential row**: it reports "the environment variable X
   referenced here has no value in the current host process (not injected)" instead of a vague 401. **But that
   check only runs when you press Connection Test**; it does not cover the connection made at startup.
-- **A restart is the only way out once the reconnect budget is spent**: `enabled: true` means "it will retry after
+- **Restarting the host or clicking that row's “Reconnect” both reset the budget**: `enabled: true` means "it will retry after
   a failure", not "it will retry forever".

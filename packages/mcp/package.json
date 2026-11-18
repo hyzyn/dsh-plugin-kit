@@ -52,7 +52,8 @@
     "lint:client": "node ../../scripts/client-lint.mjs",
     "http-smoke": "node ../../scripts/verify-mcp-http.mjs",
     "tools-smoke": "node ../../scripts/verify-mcp-tools.mjs",
-    "on-demand-smoke": "node ../../scripts/verify-mcp-on-demand.mjs"
+    "on-demand-smoke": "node ../../scripts/verify-mcp-on-demand.mjs",
+    "restart-smoke": "node ../../scripts/verify-mcp-restart.mjs"
   },
   "files": [
     "lib",

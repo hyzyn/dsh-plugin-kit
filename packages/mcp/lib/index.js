@@ -1146,6 +1146,208 @@ export async function testServer(rawConfig) {
         return probeStdio(config, PROBE_TIMEOUT_MS);
     return probeHttp(config, PROBE_TIMEOUT_MS);
 }
+/* ------------------------------------------------------------------ *
+ * 重启托管实例（fiber.restart，POST /api/dsh-mcp/restart）
+ * ------------------------------------------------------------------ */
+/**
+ * 重启的等待预算（毫秒）。与 `PROBE_TIMEOUT_MS` 同款写法、同一个数级。
+ *
+ * **超时不算失败**：`fiber.restart()` 内部是 `await fiber.await()`（cordis 4.1.0），MCP 连接
+ * 建立慢（stdio 冷启动、远端不可达）时它可能远超任何合理的前端等待窗口。此刻重启**已经发出**、
+ * 只是还没有结论——报 500 会把一个进行中的动作说成失败，用户重试还会再叠一次重启。所以超时走
+ * 200 + `settled:false` + `warning`，由卡片说「重启已发出，连接仍在建立中」。
+ *
+ * 刻意 `export`：它是「等多久算还在建立」这条对外承诺的取值，README 引用它时
+ * `scripts/check-readme-facts.mjs` 才收得到——该闸门只认 `export const`，私有常量会让引用
+ * 恒绿（同 `AGENT_TOOL_BUDGET` 的理由）。
+ */
+export const RESTART_TIMEOUT_MS = 25_000;
+/**
+ * 等待工具注册的轮询间隔（毫秒）。
+ *
+ * 纯内存读注册表，所以这个数只影响「多久发现一次」，与网络无关；50ms 让能连上的行走得跟
+ * 「点下去就回来了」一样快，又不至于把事件循环占满。
+ */
+export const RESTART_POLL_INTERVAL_MS = 50;
+/**
+ * 等工具注册的**上限**（毫秒）。与 `RESTART_TIMEOUT_MS` 分开是因为它们回答不同的问题：
+ *
+ * - `RESTART_TIMEOUT_MS`：`restart()` 本身（rebuild fiber + 重跑 apply）最长等多久；
+ * - 本值：apply 跑完之后，**再花多久认命说「它还是没连上」**。
+ *
+ * 为什么不是「等满预算」：一条连不上的行（人不在内网）**永远**不会有工具回来，等满任何预算
+ * 都只是让用户对着按钮干等。远端的失败通常在几秒内就有结论（TLS/DNS 立刻失败，或 SDK 自己的
+ * 请求超时），所以这个值刻意小于 `RESTART_TIMEOUT_MS`——宁可早一点说「仍未连上，再点一次」，
+ * 也不要让人等半分钟。工具**一回来就立即返回**，所以能连上的行感觉不到这个上限。
+ */
+export const RESTART_CONNECT_WAIT_MS = 8_000;
+/**
+ * 重启**已发出但没等到工具**时回给浏览器的提示语。
+ *
+ * **是契约文案**：客户端半体与 README 引用同一句（少一个字对不上），所以只允许出现在这里。
+ * 2026-11-18 真机事故：原来的这句是「已重连，工具会重新注册」，而连不上的行（人不在内网）
+ * 重启后**永远**不会有工具——那句把「没连上」说成了「已重连」，正是要区分的那件事。
+ */
+const RESTART_PENDING_WARNING = '重启已发出，但该行仍未连上（没有任何工具注册）';
+/**
+ * 在 loader 的**嵌套子树**里按 id 找托管 entry（找不到返回 undefined）。
+ *
+ * 为什么不用 `loader.resolve()`：insert patch 行挂在根 include 的嵌套子树里，按 ":" 分隔的显式
+ * 路径解析看不到它们——与 `liveStatus()` 同一条判据（见那里的注释）。
+ *
+ * 取 loader 与 `externalMcpEntries()` 一样**两条路都试、都不许外抛**：`ctx.loader` 是 cordis 的
+ * 严格属性访问，本插件没有声明式 `inject`，在插件 ctx 上读它会直接抛（宿主实测）。读不到就按
+ * 「找不到这条 entry」处理——调用方回 400，让用户看到原因而不是宿主的一个空 400。
+ */
+function findManagedEntry(ctx, id) {
+    let loader;
+    try {
+        loader = ctx.loader;
+    }
+    catch {
+        loader = undefined;
+    }
+    if (loader === undefined) {
+        // 反射层取法：未声明的服务在这里返回 undefined，而不是抛。
+        const get = ctx.get;
+        if (typeof get === 'function') {
+            try {
+                loader = get.call(ctx, 'loader');
+            }
+            catch {
+                loader = undefined;
+            }
+        }
+    }
+    if (loader === undefined)
+        return undefined;
+    try {
+        for (const raw of loader.entries()) {
+            const entry = raw;
+            if (entry.options?.id === id)
+                return entry;
+        }
+    }
+    catch {
+        /* 遍历失败按找不到处理 */
+    }
+    return undefined;
+}
+/**
+ * 在预算内等这次重启的结果：`'settled'` = 已经跑完，`'timeout'` = 还在建立。
+ *
+ * 两处细节：
+ * - `restart()` 用 `Promise.resolve().then(...)` 包一层：假 fiber 同步抛 / 真 fiber 返回
+ *   rejected Promise，在这里都收敛成同一个 reject，调用方只有一条 500 分支；
+ * - 超时先行时那次重启的 reject 已经没有接收方，所以预先挂一个空 `catch`——否则就是一个
+ *   unhandled rejection（进程级的噪音，排查时比原始故障还扎眼）。
+ */
+async function restartWithinBudget(restart, timeoutMs) {
+    const task = Promise.resolve().then(() => restart());
+    /*
+     * 必须看 `race` 的**胜者**，不能只 `await` 了事：超时那条分支 resolve 的是 'timeout'，
+     * 把它当成「跑完了」就等于把「还在建立」报成成功（初版就是这么写的，第 ⑦ 条用例当场抓红）。
+     */
+    const raced = task.then(() => 'settled');
+    // 超时先行时 `raced` 已经没有接收方，这里先挂一个空 catch——否则它是一次 unhandled rejection。
+    raced.catch(() => { });
+    let timer;
+    const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => { resolve('timeout'); }, timeoutMs);
+    });
+    try {
+        return await Promise.race([raced, timeout]);
+    }
+    finally {
+        // 预算内结束时要撤掉定时器：留着它就是测试进程 / 宿主事件循环上的一个孤儿
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
+}
+/**
+ * 在预算内等这些 server 真的把工具注册回来（拿到 ≥1 个就返回 true）。
+ *
+ * 为什么要轮询而不是只读一次：`fiber.restart()` 只等到 apply 返回，而 mcp-client 的连接是
+ * apply 里**异步**建的（先 `tools/list` 再注册）。重启一条**能连上**的行时，工具通常几十到几百
+ * 毫秒后自己回来——只读一次会把成功误判成失败，那比误报成功更糟（用户会反复点）。
+ *
+ * 每 {RESTART_POLL_INTERVAL_MS} 查一次注册表，纯内存遍历，不做任何网络探测。
+ */
+async function waitForRegisteredTools(ctx, serverNames, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const counts = registeredToolCounts(ctx, serverNames);
+        if (counts !== undefined && serverNames.some((name) => (counts.get(name) ?? 0) > 0))
+            return true;
+        if (Date.now() >= deadline)
+            return false;
+        await new Promise((resolve) => { setTimeout(resolve, RESTART_POLL_INTERVAL_MS); });
+    }
+}
+/**
+ * 重启一**行**托管实例（纯函数：判据全在这里，路由只负责把 status/error 写出去）。
+ *
+ * 拒绝分支按契约顺序（**先**看这是不是本卡的行，再看实例状态——否则一个拼错的 id 会被报成
+ * 「还没起来」，用户永远查不到真相）：
+ * 1. 400 非法 id（`ROW_ID_RE`，与保存路由同一条判据）；
+ * 2. 400 不在托管区块里（`readManagedRows()`，区块解析失败时自然也是这一支）；
+ * 3. 400 该行已停用（重启一条停用行等于绕过用户的「关掉」）；
+ * 4. 400 loader 里找不到这条 entry（刚保存、热加载还没跑完就是这个形状）；
+ * 5. 400 `fiber` 缺失或 `uid === null`（cordis 用 uid 被清表示 fiber 已 dispose /
+ *    还没起来——这时 `restart()` 只会 `assertActive()` 抛 INACTIVE_EFFECT，不要调它）；
+ * 6. 500 `fiber.restart()` 抛出（含「fiber 上没有 restart」这种宿主版本不符）。
+ *
+ * **成功 ≠ 连上了**（2026-11-18 真机事故）：`fiber.restart()` 的 `await` 只等到「apply 跑完」，
+ * 而 mcp-client 的 apply 在连不上时**照常 resolve**（`failOnStartupError` 默认 false）。于是
+ * 「重启成功了」与「工具一个都没回来」可以同时为真——用户看到的就是一条「已重连」提示配一个
+ * 「未连接 / 工具 0」的行。所以这里在预算内**等真实的工具注册**：拿到 ≥1 个工具才算 `connected`；
+ * 等不到就如实报 `pending`，由卡片说「仍未连上」而不是「已重连」。
+ *
+ * @param timeoutMs 等待预算，默认 {@link RESTART_TIMEOUT_MS}；单测注入小值来打超时那条分支。
+ * @returns `connection` 是**判据而不是猜测**：`connected` 仅当该行的工具的真的回到了注册表。
+ */
+export async function restartManagedEntry(ctx, id, timeoutMs = RESTART_TIMEOUT_MS, connectWaitMs = RESTART_CONNECT_WAIT_MS) {
+    if (!ROW_ID_RE.test(id))
+        return { ok: false, status: 400, error: '非法 id: ' + JSON.stringify(id) };
+    const managed = readManagedRows();
+    const row = managed.rows.find((candidate) => candidate.id === id);
+    if (row === undefined)
+        return { ok: false, status: 400, error: '不是本插件托管的行: ' + id };
+    if (row.disabled === true)
+        return { ok: false, status: 400, error: '该行已停用，不能重启（先在卡片里启用）: ' + id };
+    const entry = findManagedEntry(ctx, id);
+    if (entry === undefined)
+        return { ok: false, status: 400, error: 'loader 里找不到该托管实例（可能还在热加载）: ' + id };
+    // loader 侧也认一次停用：补丁文件刚改、HMR 还没落地的窗口里两边会短暂不一致，此时重启一条
+    // 停用 entry 会把它**强制拉起**（fiber.restart 不看 disabled），与用户的「关掉」相反。
+    if (entry.disabled === true)
+        return { ok: false, status: 400, error: '该行已停用，不能重启（先在卡片里启用）: ' + id };
+    const fiber = entry.fiber;
+    if (fiber === undefined || fiber === null || fiber.uid === null) {
+        return { ok: false, status: 400, error: '托管实例还没起来（fiber 未就绪），等连接建立后再试: ' + id };
+    }
+    const restart = fiber.restart;
+    // 宿主版本不符（fiber 上没有 restart）按**失败**报：静默成功会让卡片显示「已重启」而实例
+    // 根本没动。刻意不用 `restart?.()`——那会把「没有这个方法」变成 settled:true。
+    if (typeof restart !== 'function') {
+        return { ok: false, status: 500, error: '重启失败: 当前宿主的 fiber 没有 restart()（cordis < 4.1？）' };
+    }
+    try {
+        const outcome = await restartWithinBudget(() => restart.call(fiber), timeoutMs);
+        if (outcome === 'timeout')
+            return { ok: true, settled: false, connection: 'pending', toolCount: 0 };
+        /*
+         * apply 跑完了，但这**不代表连上**（见上面的注释）：再给连接一小段独立预算，按注册表下
+         * 结论。两个预算分开——`restart()` 慢不代表连接会成功，反之亦然（见 RESTART_CONNECT_WAIT_MS）。
+         */
+        const connected = await waitForRegisteredTools(ctx, [row.config.serverName], connectWaitMs);
+        const toolCount = registeredToolCounts(ctx, [row.config.serverName])?.get(row.config.serverName) ?? 0;
+        return { ok: true, settled: true, connection: connected && toolCount > 0 ? 'connected' : 'pending', toolCount };
+    }
+    catch (error) {
+        return { ok: false, status: 500, error: '重启失败: ' + (error instanceof Error ? error.message : String(error)) };
+    }
+}
 /*
  * 回环围栏与同源证明：**实现已收敛到 `@hyzyn/dsh-kit`**（2026-09-25，项目级 ROADMAP 第 1
  * 项）。本包此前那份只认 `127.0.0.1` 一个字面量的同步围栏已删除，改走 kit 的加固档
@@ -1186,8 +1388,8 @@ async function readJsonBody(req) {
  * 顺序与 docker 一致：先回环 → 再方法 → 最后同源证明。跨站 GET 打到写路由仍是 405
  * （方法不对就说方法不对），不会因为「没带证明」而多给一条信息。
  *
- * 本插件的 POST 只有两条：`/servers/save`（写 home 补丁文件）与 `/test`（起子进程探活），
- * 都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
+ * 本插件的 POST 有三条：`/servers/save`（写 home 补丁文件）、`/test`（起子进程探活）与
+ * `/restart`（重跑一条托管 entry），都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
  */
 export async function routeGate(req, res, method, logger) {
     if (!(await isLoopbackRequestStrict(req))) {
@@ -1321,6 +1523,61 @@ function makeRoutes(ctx) {
                 }
                 const result = await testServer(body.config);
                 writeJson(res, 200, { ok: true, result: { ...result, ...(result.tools !== undefined ? { tools: result.tools.slice(0, MAX_TOOLS_REPORTED) } : {}) } });
+            },
+        },
+        {
+            kind: 'exact',
+            path: '/api/dsh-mcp/restart',
+            handler: async (req, res) => {
+                if (!(await guard(req, res, 'POST')))
+                    return;
+                /*
+                 * 为什么需要这条路由（第三处 POST）：`reconnect` 的预算一旦用尽，实例就**放弃重连**，
+                 * 唯一的出路是重启那一条 entry——而热加载只对补丁文件的改动生效，用户为了「重连一次」
+                 * 得去改一行配置再改回来。这条路由就是那个动作的入口（判据与成因见 README 排障表）。
+                 *
+                 * 走 `/test` 的相对面：它不写文件、不碰配置，只重启**本卡已托管**的那一个实例，
+                 * 所以围栏照旧（回环 + 方法 + 同源证明），参数只有 id。
+                 */
+                const body = await readJsonBody(req);
+                if (body === undefined) {
+                    writeJson(res, 400, { error: 'invalid JSON body' });
+                    return;
+                }
+                const id = typeof body.id === 'string' ? body.id : '';
+                const result = await restartManagedEntry(ctx, id);
+                if (!result.ok) {
+                    logger?.warn(`dsh-mcp-config: 重启 ${JSON.stringify(id)} 被拒（${String(result.status)}）：${result.error}`);
+                    writeJson(res, result.status, { error: result.error });
+                    return;
+                }
+                /*
+                 * DTO 在**重启之后**读：它要反映重启后的新状态（status 从 error/loading 变回 active）。
+                 * 超时那条也照读——实例正在重连，此刻的 status 正是用户最该看到的东西。
+                 */
+                let dto;
+                try {
+                    dto = buildServersDto(ctx);
+                }
+                catch (error) {
+                    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+                    logger?.warn(`dsh-mcp-config: 重启后读取服务器列表失败 ${message}`);
+                    writeJson(res, 500, { error: '重启已发出，但读取服务器列表失败: ' + message });
+                    return;
+                }
+                writeJson(res, 200, {
+                    ok: true,
+                    settled: result.settled,
+                    /*
+                     * `connection` 是**判据**（注册表里真有工具），不是「restart() 返回了」这种代理指标。
+                     * 客户端据此决定 toast 说什么：`pending` 时那句 warning 必须说「仍未连上」，
+                     * 绝不能说「已重连」——2026-11-18 真机事故就是那句话说反了。
+                     */
+                    connection: result.connection,
+                    toolCount: result.toolCount,
+                    ...(result.connection === 'connected' ? {} : { warning: RESTART_PENDING_WARNING }),
+                    ...dto,
+                });
             },
         },
     ];

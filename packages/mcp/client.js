@@ -175,6 +175,7 @@ window.__ModuleLoader__.load({
       'btn.edit': '编辑',
       'btn.enable': '启用',
       'btn.disable': '停用',
+      'btn.restart': '重连',
       'btn.remove': '删除',
       'btn.cancel': '取消',
       'btn.testConnection': '测试连接',
@@ -235,6 +236,9 @@ window.__ModuleLoader__.load({
       'msg.saved': '已保存，正在热加载…',
       'msg.deleted': '已删除，正在热卸载…',
       'msg.updated': '已更新，正在热加载…',
+      'msg.restarted': '{name} 已重连，工具已重新注册',
+      'msg.restartPending': '{name} 重启已发出，但当前仍未连上（没有任何工具注册）——检查网络 / VPN 后再点一次重连',
+      'msg.restartFailed': '重连失败：{error}',
       'msg.testOkHint': '连接成功（确认无误后点保存）',
       'msg.testFailedToast': '连接失败',
       'msg.confirmRemoveLast': '确定删除最后一条 MCP 服务器「{name}」？删除后托管区块会清空，其注册的工具会立即被卸载。',
@@ -250,6 +254,7 @@ window.__ModuleLoader__.load({
       'btn.edit': 'Edit',
       'btn.enable': 'Enable',
       'btn.disable': 'Disable',
+      'btn.restart': 'Reconnect',
       'btn.remove': 'Remove',
       'btn.cancel': 'Cancel',
       'btn.testConnection': 'Test connection',
@@ -310,6 +315,9 @@ window.__ModuleLoader__.load({
       'msg.saved': 'Saved, hot-loading…',
       'msg.deleted': 'Removed, hot-unloading…',
       'msg.updated': 'Updated, hot-loading…',
+      'msg.restarted': '{name} reconnected; its tools re-registered',
+      'msg.restartPending': '{name} restart issued, but it is still not connected (no tools registered) — check the network / VPN and click Reconnect again',
+      'msg.restartFailed': 'Reconnect failed: {error}',
       'msg.testOkHint': 'Connected (click Save once it looks right)',
       'msg.testFailedToast': 'Connection failed',
       'msg.confirmRemoveLast': 'Remove the last MCP server “{name}”? The managed block will be emptied and its tools unloaded immediately.',
@@ -353,6 +361,7 @@ window.__ModuleLoader__.load({
       list: '/api/dsh-mcp/servers',
       save: '/api/dsh-mcp/servers/save',
       test: '/api/dsh-mcp/test',
+      restart: '/api/dsh-mcp/restart',
     }
 
     async function apiRequest(path, options) {
@@ -391,6 +400,16 @@ window.__ModuleLoader__.load({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ config }),
+    })
+    /*
+     * 「重连」= 让宿主把这一行 mcp-client 条目重新挂载一次（工具由它重新注册）。
+     * 与 save 的区别：**不改配置**——所以不发整份 servers 列表，只报 id；宿主那边
+     * 拿不到 id 会返回 4xx，正好在 catch 里变成一条 toast。
+     */
+    const apiRestart = (id) => apiRequest(API.restart, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
     })
 
     /* ================================ 面板状态 ================================ */
@@ -710,7 +729,10 @@ window.__ModuleLoader__.load({
       parts.push('<button class="mX_linkBtn" data-action="test" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.test') + '</button>')
       parts.push('<button class="mX_linkBtn" data-action="edit" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.edit') + '</button>')
       parts.push('<button class="mX_linkBtn" data-action="toggle" data-role="toggle" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + toggleLabel(server) + '</button>')
-      // 危险动作与上面三个安全动作之间隔一条发丝线：靠位置分组，不靠换样式（删除必须用官方
+      // 重连放在安全动作那一组（toggle 之后、发丝线之前）：它不改配置，只让宿主重挂这一行。
+      // 停用中没有可重连的条目，所以 disabled 多一条 `server.disabled`。
+      parts.push('<button class="mX_linkBtn" data-action="restart" data-id="' + esc(server.id) + '"' + (state.busy || server.disabled ? ' disabled' : '') + '>' + t('btn.restart') + '</button>')
+      // 危险动作与上面四个安全动作之间隔一条发丝线：靠位置分组，不靠换样式（删除必须用官方
       // danger 配方，见脚本检查十一）。
       parts.push('<span class="mX_actionSep" aria-hidden="true"></span>')
       parts.push('<button class="mX_btnGhost mX_btnDanger" data-action="remove" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.remove') + '</button>')
@@ -1172,6 +1194,46 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /*
+     * 「重连」：让宿主把这一行 mcp-client 条目重挂一次，工具随之重新注册。
+     *
+     * 形状照 toggleServer：置忙 → 请求 → applyServersDto → notifySaved → 轮询到收敛，
+     * **不整卡重绘**（重建就是用户看到的「点一下在闪」）。
+     * 收尾必须走 notifySaved：宿主在超时里返回 `warning`（「已经重连但工具还没注册完」之类），
+     * 那条比「已重连」重要，toast 只有一条，所以由它决定显示哪句。
+     */
+    async function restartServer(id) {
+      const server = state.servers.find((item) => item.id === id)
+      if (server === undefined) return
+      state.busy = true
+      try {
+        const body = await apiRestart(id)
+        applyServersDto(body)
+        /*
+         * 提示语按**宿主的判据**分两种，绝不一律说「已重连」：
+         * `connection === 'connected'` 才是真的重新注册上了；`pending` 表示重启发出了、
+         * 但预算内没有任何工具回到注册表（人不在内网时永远是这一档）。
+         *
+         * 2026-11-18 真机事故：原来无条件报「已重连，工具会重新注册」，而同一行还显示着
+         * 「未连接 / 工具 0」——提示在撒谎。`connection` 缺失（老宿主）时退回中性说法。
+         */
+        const connected = body !== undefined && body !== null && body.connection === 'connected'
+        const pending = body !== undefined && body !== null && body.connection === 'pending'
+        const fallback = t('msg.restarted', { name: server.serverName })
+        const message = connected
+          ? t('msg.restarted', { name: server.serverName })
+          : pending
+            ? t('msg.restartPending', { name: server.serverName })
+            : fallback
+        notifySaved(body, message)
+        void reloadUntilSettled()
+      } catch (error) {
+        toast(t('msg.restartFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
+      } finally {
+        state.busy = false
+      }
+    }
+
     async function runTest(server) {
       state.test = { serverName: server.serverName, running: true, result: null }
       state.editor = null
@@ -1254,6 +1316,7 @@ window.__ModuleLoader__.load({
         if (server) openEditor('edit', server)
       } else if (action === 'remove') removeServer(id)
       else if (action === 'toggle') toggleServer(id)
+      else if (action === 'restart') restartServer(id)
       else if (action === 'test') {
         const server = state.servers.find((item) => item.id === id)
         if (server) runTest(server)

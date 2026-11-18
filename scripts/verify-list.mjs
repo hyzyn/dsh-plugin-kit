@@ -118,6 +118,14 @@ export const VERIFY_SCRIPTS = [
     note: '按需加载的工具面实测：on-demand 下可见面里没有 mcp__probe__*、mcp_servers / mcp_load 在、装载后工具出现且**真调用**拿得到回显、另一个 agent 不受影响——与 tier-smoke 分工（那条验档位契约，这条验按需装载）',
   },
   {
+    file: 'verify-mcp-restart.mjs',
+    pkg: 'mcp',
+    entry: 'restart-smoke',
+    needs: '无需宿主 / 浏览器（进程内真 cordis 根 + 真 dsh-mcp-client 挂一个真 stdio MCP 服务器 + 真插件 + 真 webServer 服务，隔离临时 DSH_HOME）',
+    noHost: true,
+    note: '「重连」这条路由的实测：fiber.restart() 在真宿主里真的 dispose 旧 effect 再重跑 apply——判据是重启后**真调用** probe_echo 拿到回显，且探针 --log 里重启前后各有一次调用；顺带钉住拒绝分支（非法 id / 非托管行 → 400）',
+  },
+  {
     file: 'verify-client-ui.mjs',
     pkg: '（通用）',
     entry: undefined,
