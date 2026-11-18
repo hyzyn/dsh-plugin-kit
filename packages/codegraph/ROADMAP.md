@@ -457,6 +457,78 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
     本轮在一次性空 profile 上跑过，前者报 0 条已启用行——空 profile 本来就没有 MCP 服务器配置，
     与「55 个工具」那条历史记录的差别是配置而非回归）。
 
+  - **`0.2.2-rc.4`（第十六档基线，2026-11-18 实测）**：**引用面零差异的显式声明**（`pnpm -r build`
+    之后 `lib/` 与 `client.js` 产物零 diff）。`0.2.2-rc.4` 本来就被 `^0.2.2-rc.3` 覆盖（同一个
+    `0.2.2` 版本元组，预发布之间不比大小；`semver.satisfies` 在 plain 与 `includePrerelease`
+    下都为真），加档只是把「适配到哪一档就写到哪一档」落全。**取证口径**：rc.3 取**桌面版自带
+    的那份 `app.asar` 载荷**（桌面版仍停在 rc.3），rc.4 取本机 npm 全局安装；两边各 338 / 339 个
+    宿主包、其中 **336 个两边都有**，逐文件比对时先把版本串、构建期 CSS Module 类名哈希
+    （含 `.\34 ` 这类转义前缀）与 `dsh-client-modules` 里的 commit 串归一化；rc.3 侧多出的
+    `dsh` / `dsh-desktop-host` 是桌面版载荷的打包形状差异，rc.4 侧多出的
+    `libreoffice-kit` / `-darwin-arm64` / `-wasm` 是 npm 发布面的平台包（桌面版没带），均本仓零引用。
+    结果：**本仓 import 的宿主包 `lib/` 全部逐字节相同**——`cordis`（含 `cordis-plugin-loader` /
+    `cosmokit`）/ `dsh-app-boot`（判定器，227100 B）/ `dsh-tools`（`defineTool`）/
+    `dsh-host-webserver` / `dsh-mcp-client` / `dsh-subprocess` / `dsh-subprocess-local` /
+    `dsh-settings` / `dsh-storage` / `schemastery`；**槽面与官方 bundle 清单这一档一条都没动**——
+    `dsh-cordis-client-runner`（槽目录）、`dsh-client-ui-slots`、`dsh-official-bundles`、
+    `dsh-web-frontend` 的 `lib/` 同样逐字节相同，本仓注册的三条槽
+    （`settings.kit.item` / `settings.plugin.item` / `sidebar.right.pane.tab`）不受影响。
+    真实改动只有三处，**一处都不落在本仓引用面内**：① `dsh-llm` 的错误码表新增
+    `CONTENT_REFUSED`（纯增量），`dsh-llm-deepseek` 随之给 `refusal` 停止原因加了
+    `refusal(details)` 分支（把提供方给的 explanation 透出）——`dsh-llm` 在本仓 `src` 里**零导入**，
+    只在注释里被引用；② `dsh-experimental-liveshare` 起子进程时多注入 `workerNodeModeEnv`；
+    ③ `dsh-experimental-inspector` 的 DevTools 分块整包换版。其余约 93 个 `client-ui-*` 与少数内联包
+    （`dsh-tmux-context` / `dsh-repeat-tool-reminder` / `dsh-session-persistence-jsonl` 等把
+    `dsh-llm` 错误码表打进产物的包）的差异，归一化后**只剩上面 ① 那一行枚举与 CSS Module
+    类名前缀**；`dsh-client-modules` 只差 commit 串（`6b729fe` → `70005a5`）。`@deepseek-ai/dsh` 的
+    依赖集合 **91 → 91**（0 增 0 删），运行时依赖 `cordis` 4.1.0 / `schemastery` 3.19.0 /
+    `cosmokit` 1.9.0 与上一档同版本且 `lib/` 逐字节相同，`engines.node` 仍是 `>=24.9.0`。
+    主题令牌 **450 → 450**，`sync-dsh-theme-tokens --check` 与 rc.4 宿主**逐字一致**——这一档
+    **不需要重建**快照。
+    证据：① `node scripts/check-dsh-peers.mjs --with-app-boot` —— **十六档 × 14 条目全部放行**
+    （判定器自报运行时 `0.2.2-rc.4`）。② **真宿主加载**（隔离 `DSH_HOME` = 一次性 `/tmp` 目录，
+    真实 `~/.dsh` 全程只读、三个关键文件 mtime 未变）：从自带 `web` 模板新建 profile、
+    `dsh plugin add link:<11 个可安装包>` **无需任何豁免、无 `incompatible-version`**；启动后
+    **11/11 个包全部加载（10 行 `mounted` + `dsh-tty` / `dsh-docker` 各一行
+    `agent tools registered`）、0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**，
+    根页面 **200（43290 B；须带 `dsh web` 打印的 `?token=`，裸访问 401）**，boot graph 里列出
+    **全部 11 个 `@hyzyn/*` bundle**，`GET /api/dsh-docker/targets`（72 B）与
+    `GET /api/dsh-tty/config`（914 B）、`/api/dsh-rss/config`（1906 B）、`/api/dsh-codegraph/status`
+    均 **200**（其余四条路由在该空 profile 上要授权，401 是预期——`verify-client-ui` 与
+    `verify-rss-opml` 在真 token 会话里把它们逐条验过）。③ `docs/os-consent-plan.md` 的升级绊线
+    按设计报红，逐条复核三条事实后基准更新到 rc.4（五处载体文件里四处与 rc.3 逐字节相同，
+    唯一非逐字节的 `dsh-client-ui-approval/lib/client.js` 仍只差 CSS Module 类名前缀，归一化后相等），
+    `os-consent-scope.test.ts` **27/27 绿**。④ 真宿主 + 真浏览器：`live-host-smoke --bootstrap
+    --strict --render --chrome-arg --no-sandbox`（`DSH_HOME` 指向仓内 `.smoke/`，不碰 `~/.dsh`）
+    **23/23 PASS**——18 条 HTTP（授权阶梯 A/B 两实例、路由门控、agent 工具清单、宿主服务的
+    `client.js`）+ 5 条真浏览器（界面渲染、本仓客户端 bundle 真加载、无未捕获异常、无 4xx/5xx
+    子请求、控制台无插件 error）。⑤ **十二条真机脚本本轮全跑（rc.4 宿主，2026-11-18），0 FAIL**：
+    进程内五条 `tier-smoke` **11/11**、`agent-scope` **10/10**、`agent-integration` **9/9**、
+    `cg69-real-cordis` **3/3**、mcp `on-demand` **10/10**；自起宿主四条 `host-contract` **42/42**、
+    `indexforce` **5/5**、codegraph `client-ui` **18 PASS / 1 WARN / 0 FAIL**；在线宿主五条
+    （自起一次性隔离宿主，端口 63448 现选）`verify-client-ui --mode full` **17 PASS / 1 WARN /
+    0 FAIL**、`rss-opml` **9/9**、`mcp-http` **7/7**、`mcp-tools` **7 PASS / 1 WARN / 0 FAIL**、
+    `mcp-tool-budget` 与 `disclosure-report` 两条只读报告正常出数（0 条 MCP 行 / 公告 8 段
+    1181 字符 0 段超预算）。WARN 全是环境或脚本分工，不是回归：沙箱里 PTY `posix_openpt` 被拒
+    （两条 UI 脚本各计 1 条）、`mcp-tools` 的夹具服务器尚未被 agent 回合真调用（该脚本只负责 L1）。
+    ⑥ 工作区回归：`pnpm -r typecheck`（含 client-lint，`--dsw-*` 全部命中 450 个真实令牌）、
+    `pnpm -r build`（产物零 diff）、`pnpm test` **233 files / 4242 passed / 1 skipped 全过**、
+    `pnpm dsh-peers:check` / `pnpm toolchain:check`（16 档 / pin 2 处）/ `aggregate` 幂等
+    （两次产出逐字节相同；`aggregate:check` 在「聚合层已入库」的基线上 exit=0）及其余 16 道
+    静态闸门（artifacts / publishable / package-contents / flake / dsh-home / prompt-sections /
+    kit-pins / doc-links / test-collection / engines / issue-forms / i18n / no-public-ip /
+    internal-ids / readme-facts / readme-structure）全绿。
+    ⑦ **本轮修掉一条与本档无关的既有脚本缺陷**：`verify-client-ui` 的 UI10 仍按老口径找
+    `placeholder` 含「全局搜索」的输入框，而 search 的侧栏入口在 `6f92d23af`（2026-11-14，
+    kit 家族入口落进宿主面板导航）已改成 `<button data-dsh-global-search-entry>`——**那条断言
+    从 11-14 起在任何新宿主上都恒红**（rc.3 档的那次验收早于它，所以当时没暴露）。现改为
+    「先按稳定标记找按钮、找不到才退回老输入框口径」，两种形状都真的点一下。变异验证：
+    把选择器改回过期形式，UI10 立刻变红且在 `stage: 'trigger'`，报出的信息与现象一致。
+    - **仍未跑**：本期没有新增「已知会红」的项；`verify-issue-13-14` 因沙箱不允许在 `$HOME`
+      下建目录（`EPERM: mkdir '/Users/<user>/.dsh-verify-<pid>'`）而跳过——那是脚本把隔离 home
+      固定在同一深度的设计（profile 里的相对符号链接才不断），属**环境限制**，不是回归；
+      它覆盖的六条插件路由已由上面在线宿主那五条脚本逐条验到。
+
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
 一次性能解决五个问题，是唯一改到「上限」的项：

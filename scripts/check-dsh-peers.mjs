@@ -307,8 +307,42 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    实测证据：官方判定器（自报运行时 `0.2.2-rc.3`）**十五档 × 14 条目全放行**；隔离
  *    `DSH_HOME` 起真宿主后全部包加载、0 行 `skipping profile bundle`、0 行
  *    `disabling profile plugin row`。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十五档条目。
+ *  - **0.2.2-rc.4（第十六档基线，2026-11-18 实测）**：**显式声明，但不是零差异**——`0.2.2-rc.4`
+ *    本来就被 `^0.2.2-rc.3` 覆盖（同一个 `0.2.2` 版本元组，预发布之间不比大小；`semver.satisfies`
+ *    在 plain 与 `includePrerelease` 下都为真），加档只是把「适配到哪一档就写到哪一档」落全。
+ *    取证口径：rc.3 取**桌面版自带的那份 `app.asar` 载荷**（桌面版仍停在 rc.3），rc.4 取本机
+ *    npm 全局安装。两边各 338 / 339 个宿主包、其中 **336 个两边都有**，逐文件比对时先把版本串、
+ *    构建期 CSS Module 类名哈希（含 `.\34 ` 这类转义前缀）与 `dsh-client-modules` 里的 commit
+ *    串归一化：rc.3 侧多出的 `dsh` / `dsh-desktop-host` 是桌面版载荷的打包形状差异；rc.4 侧多出
+ *    的 `libreoffice-kit` / `-darwin-arm64` / `-wasm` 是 npm 发布面的平台包（桌面版载荷没带），
+ *    均本仓零引用。
+ *      · **本仓 import 的宿主包 `lib/` 全部逐字节相同**：`cordis`（含 `cordis-plugin-loader` /
+ *        `cosmokit`）/ `dsh-app-boot`（判定器）/ `dsh-tools`（`defineTool`）/ `dsh-host-webserver` /
+ *        `dsh-mcp-client` / `dsh-subprocess` / `dsh-subprocess-local` / `dsh-settings` /
+ *        `dsh-storage` / `schemastery`；**槽面与官方 bundle 清单这一档一条都没动**——
+ *        `dsh-cordis-client-runner`（槽目录）、`dsh-client-ui-slots`、`dsh-official-bundles`、
+ *        `dsh-web-frontend` 的 `lib/` 同样逐字节相同（本仓注册的三条槽不受影响）；
+ *      · 真实改动只有三处，一处都不落在本仓引用面内：
+ *        ① `dsh-llm` 的错误码表新增 `CONTENT_REFUSED`（**纯增量**），`dsh-llm-deepseek` 随之给
+ *           `refusal` 停止原因加了 `refusal(details)` 分支（把提供方给的 explanation 透出）——
+ *           `dsh-llm` 在本仓 `src` 里**零导入**，只在注释里被引用；
+ *        ② `dsh-experimental-liveshare` 起子进程时多注入 `workerNodeModeEnv`；
+ *        ③ `dsh-experimental-inspector` 的 DevTools 分块整包换版（Chromium DevTools 版本），
+ *           由 `dsh-experimental-inspector` 自带，本仓零引用；
+ *      · 其余约 93 个 `client-ui-*` 与少数内联包（`dsh-tmux-context` / `dsh-repeat-tool-reminder` /
+ *        `dsh-session-persistence-jsonl` 等把 `dsh-llm` 错误码表打进产物的包）的差异，归一化后
+ *        **只剩上面 ① 那一行枚举与 CSS Module 类名前缀**（构建期换了哈希种子，如
+ *        `.rK_xAW_card` → `._8HJdBW_card`）；`dsh-client-modules` 只差 commit 串
+ *        （`6b729fe` → `70005a5`）。
+ *    `@deepseek-ai/dsh` 的依赖集合 **91 → 91**（0 增 0 删），运行时依赖 `cordis` 4.1.0 /
+ *    `schemastery` 3.19.0 / `cosmokit` 1.9.0 与上一档同版本且 `lib/` 逐字节相同，`engines.node`
+ *    仍是 `>=24.9.0`。主题令牌 **450 → 450**（只差 `dshVersion` / `generatedAt` 两个元数据位），
+ *    本仓在用的 `--dsw-*` 全部存活，快照**不需要重建**（`--check` 逐字一致）。
+ *    实测证据：官方判定器（自报运行时 `0.2.2-rc.4`）**十六档 × 14 条目全放行**；隔离
+ *    `DSH_HOME` 起真宿主后全部包加载、0 行 `skipping profile bundle`、0 行
+ *    `disabling profile plugin row`。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十六档条目。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
