@@ -23,8 +23,9 @@
  * 不引入 puppeteer / playwright。Chrome 用系统已装的那份。
  *
  * 模式：
- *   --mode boot   启动 → 带 token 导航 → 收控制台错误/异常 → 断言 9 个 client bundle
- *                 真的被加载 → 截图（默认）
+ *   --mode boot   启动 → 带 token 导航 → 收控制台错误/异常 → 断言「宿主下发的每个本仓 client bundle
+ *                 （期望集取自 boot graph 的 entries，现算，不写死个数）都真的被加载了」
+ *                 → 截图（默认）
  *   --mode eval   在页面里跑一段 JS 并打印结果（探索 UI 结构用）
  *   --mode shot   只截一张图
  *
@@ -167,6 +168,17 @@ try {
       `title=${JSON.stringify(bootState.title)} bodyChildren=${String(bootState.bodyChildren)} 可见文本 ${String(bootState.textLength)} 字符 插件请求 ${String(bootState.pluginRequests)} 条`,
     )
 
+    /*
+     * UI2 的期望集**现算**，不写死数字。
+     *
+     * 旧版判据是 `ours.length >= 9`，而 2026-11-18 时本仓有 **11 个**客户端半体——阈值
+     * 落后于实际，于是「某两个包的 bundle 根本没被宿主下发」也能过。反过来把 11 写死也不行：
+     * 这个脚本要对**任意 profile** 跑（老 profile 可能只装 9 个），写死会让「装得少」变成红。
+     *
+     * 正确的来源是宿主自己：`globalThis.__DSH_BOOT__.entries` 就是它下发给浏览器、**要求加载**的
+     * 全部模块（本仓的与官方的都在里头）。拿它的 `@hyzyn/*` 子集当期望集，与实际加载到的比对
+     * ——「宿主说要加载的，浏览器真的加载了」，两边都现算。
+     */
     const bundleReport = await chrome.evaluate(`(() => {
       const names = performance.getEntriesByType('resource').map((entry) => entry.name)
       // client 模块是**一个合并请求**送来的：/plugins/??a/client.js,b/client.js&rev=…
@@ -174,15 +186,37 @@ try {
       // 于是 9 个只数出 1 个）。
       const ours = new Set()
       for (const name of names) {
-        for (const match of name.matchAll(/@hyzyn(?:%2F|\\/)([a-z-]+)/g)) ours.add(match[1])
+        // 取成 dsh-<短名>：URL 里是 @hyzyn/dsh-codegraph/client.js，与 boot graph 的 id 同形，
+        // 直接可比（早先只取第二段 codegraph，与 @hyzyn/dsh-codegraph 对不上）。
+        // 注意：这段是模板字符串里的代码，注释里**不能出现反引号**，会把外层模板截断。
+        for (const match of name.matchAll(/@hyzyn(?:%2F|\\/)(dsh-[a-z-]+)/g)) ours.add(match[1])
       }
+      // 宿主要求加载的（boot graph），只看本仓那一段
+      const boot = globalThis.__DSH_BOOT__
+      const entries = Array.isArray(boot?.entries) ? boot.entries : []
+      // 统一成 dsh-<短名>：URL 侧抠出来的是 dsh-codegraph（包名第二段），而 boot graph 的 id
+      // 是 @hyzyn/dsh-codegraph。两边都取「短名」再比——踩过一次：一边切前缀得 codegraph、
+      // 另一边是 dsh-codegraph，于是 11 个全报「未加载」。（同理：注释里不许出现反引号。）
+      const expected = [...new Set(entries
+        .map((entry) => String(entry?.id ?? ''))
+        .filter((id) => id.startsWith('@hyzyn/dsh-')))]
       const pluginUrls = names.filter((name) => name.includes('/plugins/'))
-      return { ours: [...ours], pluginUrls, total: names.length }
+      return { ours: [...ours], expected, pluginUrls, total: names.length, bootEntries: entries.length }
     })()`)
+    // 两侧都归一成 `dsh-<短名>`（boot graph 的 id 去掉 `@hyzyn/` 前缀即同形）
+    const expectedSet = (Array.isArray(bundleReport.expected) ? bundleReport.expected : [])
+      .map((id) => String(id).replace(/^@hyzyn\//, ''))
+    const loadedSet = new Set(bundleReport.ours)
+    const missingBundles = expectedSet.filter((id) => !loadedSet.has(id))
+    const sortedList = (list) => (Array.isArray(list) ? [...list].sort() : [])
     record(
-      'UI2 九个插件的客户端 bundle 在真浏览器里被真的加载了',
-      bundleReport.ours.length >= 9,
-      `${bundleReport.ours.length} 个 @hyzyn bundle（${bundleReport.pluginUrls.length} 条 /plugins/ 请求）：${JSON.stringify(bundleReport.ours.sort())}`,
+      'UI2 宿主下发的每个本仓客户端 bundle 都在真浏览器里被真的加载了（期望集来自 boot graph，现算）',
+      // 期望集为空说明连 boot graph 都没读到——那是判据本身失效，不能当成「0 个缺失」放行
+      expectedSet.length > 0 && missingBundles.length === 0,
+      `宿主下发 ${String(expectedSet.length)} 个本仓 bundle，加载到 ${String(bundleReport.ours.length)} 个` +
+        (sortedList(expectedSet).length === 0 ? '（⚠ 没读到 boot graph 的 entries——判据失效）' : '') +
+        (missingBundles.length === 0 ? '' : `；**未加载**：${JSON.stringify(missingBundles.sort())}`) +
+        `（${String(bundleReport.pluginUrls.length)} 条 /plugins/ 请求，boot entries ${String(bundleReport.bootEntries)} 条）：${JSON.stringify(sortedList(bundleReport.ours))}`,
     )
 
     if (shotDir !== undefined) {
@@ -290,12 +324,29 @@ try {
             await new Promise((r) => setTimeout(r, 2500))
             return { opened: true, by }
           },
-          /** 包详情页上的**内联配置卡片**与行标记（当前宿主形状，见上面的注释）。 */
+          /**
+           * 包详情页上的**内联配置卡片**与行标记（当前宿主形状，见上面的注释）。
+           *
+           * **先展开折叠态的卡片再量**（2026-11-18 补）：有的卡片（loglens）默认收起，
+           * 收起时只有标题与说明 —— 21 字符、2 个控件，会撞上「文本 > 40 且有控件」那条判据。
+           * 那不是缺陷，是形态差异。展开一次既让判据测得到真内容，也顺带验了
+           * 「这张卡片点得开」——比只量收起态的标题信息量大。
+           */
           readBundleConfig: () => {
             const cfg = document.querySelector('[data-plugin-config="true"]')
+            let expanded = false
+            if (cfg !== null) {
+              const collapsed = [...cfg.querySelectorAll('button[aria-expanded]')]
+                .filter((el) => el.getAttribute('aria-expanded') === 'false')
+              for (const toggle of collapsed) {
+                toggle.click()
+                expanded = true
+              }
+            }
             return {
               hasDetail: document.querySelector('[data-plugin-detail]') !== null,
               hasConfig: cfg !== null,
+              expanded,
               controls: cfg === null ? 0 : cfg.querySelectorAll('input, select, textarea, button').length,
               textLength: cfg === null ? 0 : (cfg.innerText ?? '').length,
               rowMarks: [...document.querySelectorAll('[data-plugin-row]')].map((el) => el.getAttribute('data-plugin-row')),
@@ -320,10 +371,20 @@ try {
       )
 
       // 插件短名 → 该 bundle 行的 plugins.row.config key（= `<bundle 包名>#<行 id>`）
+      //
+      // **覆盖面按「谁注册了插件行」定，不按包数定**（2026-11-18 补）：此前这里只有 8 个，
+      // 漏了 loglens——它 `plugins.row.config` 与 `plugins.bundle.config` 都注册
+      // （`ROW_CONFIG_KEYS` 里两条），和这 8 个同形，能验、且必须验。
+      // 另两个包**不该**加进来，理由不同：
+      //   · `search` 不注册任何插件行（它的设置面就是侧栏入口 + 命令面板），加进来会
+      //     在 `openPlugin()` 处必然返回 `opened: false` —— 那不是缺陷，是它在别的槽上；
+      //   · `kit-settings` 注册的是 `settings.section`（「插件配置」页本身），
+      //     由 UI12 覆盖，重复验没有新信息。
       const PLUGIN_ROWS = [
         ['codegraph', '@hyzyn/dsh-codegraph#codegraph'],
         ['docker', '@hyzyn/dsh-docker#docker'],
         ['env', '@hyzyn/dsh-env#env-manager'],
+        ['loglens', '@hyzyn/dsh-loglens#loglens'],
         ['mcp', '@hyzyn/dsh-mcp#mcp-config'],
         ['profile', '@hyzyn/dsh-profile#profile-manager'],
         ['prompt', '@hyzyn/dsh-prompt#prompt-manager'],
@@ -343,7 +404,14 @@ try {
           )
           continue
         }
-        const view = await chrome.evaluate('window.__dshUi.readBundleConfig()')
+        // 先量一遍（点开会触发 React 状态更新），再等一帧后重量——展开后的内容才是判据要看的东西
+        const firstView = await chrome.evaluate('window.__dshUi.readBundleConfig()')
+        let view = firstView
+        if (firstView.expanded === true) {
+          // 点开折叠态卡片后等重渲染一帧，再量展开后的内容
+          await new Promise((resolve) => setTimeout(resolve, 400))
+          view = await chrome.evaluate('window.__dshUi.readBundleConfig()')
+        }
         // 行 id 沿用既有映射（`<bundle>#<行 id>`），详情页上的 `[data-plugin-row="include:<行 id>"]` 是它的现算标记
         const rowId = expectedKey.split('#')[1]
         const wantMark = `include:${rowId}`
@@ -367,7 +435,7 @@ try {
         }
       }
       record(
-        'UI9 全部 8 个插件的内联配置卡片都渲染出来了（plugins.bundle.config 注册生效 + 行标记都在）',
+        `UI9 全部 ${String(PLUGIN_ROWS.length)} 个注册了插件行的包，内联配置卡片都渲染出来了（plugins.bundle.config 注册生效 + 行标记都在）`,
         configured === PLUGIN_ROWS.length,
         `${String(configured)}/${String(PLUGIN_ROWS.length)} 个配置卡片可用；整轮新增错误 ${String(consoleErrors.length + exceptions.length - beforeErrors)} 条`,
       )
