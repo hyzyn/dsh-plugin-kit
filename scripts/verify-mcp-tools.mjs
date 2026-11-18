@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeFileSync } from 'node:fs'
+import { restoreRowsFromDto, sameRowShape } from './lib/mcp-restore.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -112,13 +113,17 @@ console.log(`# node ${process.version} / 宿主 ${hostUrl} / 夹具 ${fixture}\n
 /**
  * 跑之前宿主上已有的条目（收尾原样写回，见文件末尾 M4 的理由）。
  *
- * 只取 `{ id, config }`：这两项就是保存接口的输入形状，DTO 里其余字段（status /
- * conflict / …）是运行时状态，写回去会被拒。
+ * 取 `{ id, config, disabled }`：前两项是保存接口的输入形状，`disabled` 是**行的状态**
+ * （DTO 里它在行上、不在 `config` 里），必须一起带上。DTO 里其余字段（status / conflict /
+ * toolCount …）才是运行时状态，写回去会被拒。
+ *
+ * **2026-11-18 真机踩到的缺陷**：旧版只取 `{ id, config }`，于是写回时 `disabled: true`
+ * 被静默丢掉——宿主上一行「已停用」的 MCP 服务器在收尾后**被重新启用**了。症状极隐蔽：
+ * M4 当时只断言「条数相同」，条数确实没变；是本轮真机验收用「真实配置逐字节未变」的
+ * 自证抓到的（真实 `~/.dsh/cordis.patch.yml` 少了正好 21 字节 = `      disabled: true\n`）。
+ * 判据放在「写回的每一项都要与快照同形」，而不是「写回了几条」。
  */
-const restoreList = (jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)?.servers ?? []).map((row) => ({
-  id: row.id,
-  config: row.config,
-}))
+const restoreList = restoreRowsFromDto(jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)?.servers)
 
 /* ---------- 保存夹具服务器 ---------- */
 const saved = await call('POST', '/api/dsh-mcp/servers/save', {
@@ -231,12 +236,18 @@ if (restoreList.length > 0) {
     restored = await call('POST', '/api/dsh-mcp/servers/save', { servers: restoreList })
   }
   const now = jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)?.servers ?? []
+  /*
+   * 判据是「**每一条都写回了原样**」，不是「条数对得上」。
+   * 2026-11-18 实测：旧版只比条数，于是丢掉 `disabled: true` 的那行照样 PASS——
+   * 而宿主上那台服务器已经从「停用」变成「启用」，配置被静默改写。
+   */
+  const sameShape = sameRowShape(restoreList, now)
   record(
-    'M4 跑完把宿主原有条目原样写回（不留夹具残留）',
-    restored.status === 200 && now.length === restoreList.length,
+    'M4 跑完把宿主原有条目原样写回（逐条同形，含 disabled 状态）',
+    restored.status === 200 && sameShape,
     // 失败时带上响应正文：这条是「收尾」，只说「没写回」帮不上排查（实测就是这么
     // 丢过一次原因——400 的正文里写着为什么）
-    `原有 ${String(restoreList.length)} 条 → 写回后 ${String(now.length)} 条（externalGone=${String(externalGone)} status=${String(restored.status)}${restored.status === 200 ? '' : ' body=' + restored.text.slice(0, 200)}）`,
+    `原有 ${String(restoreList.length)} 条 → 写回后 ${String(now.length)} 条（形态一致=${String(sameShape)} externalGone=${String(externalGone)} status=${String(restored.status)}${restored.status === 200 ? '' : ' body=' + restored.text.slice(0, 200)}）`,
   )
 } else {
   record('M4 跑完把宿主原有条目原样写回（不留夹具残留）', after.length === 0, '宿主原本没有条目，清空后即为原状')
