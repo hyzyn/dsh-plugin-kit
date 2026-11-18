@@ -376,13 +376,22 @@ try {
 
       await chrome.evaluate("window.__dshUi.clickExact('关闭')")
       await new Promise((resolve) => setTimeout(resolve, 800))
-      // 侧边栏那个不是按钮，而是 placeholder 为「全局搜索…」的输入框；
-      // React 受控输入要用原型上的原生 setter + input 事件才能触发 onChange。
+      /*
+       * 侧边栏入口的形状**换过一次**：早先是 `placeholder="全局搜索…"` 的只读输入框，`6f92d23af`
+       * （kit 家族入口落进宿主面板导航、统一面板行规格）之后是与邻居同形的 `<button>`，
+       * 带稳定标记 `data-dsh-global-search-entry`。
+       *
+       * 本脚本当时没跟上，于是在**任何**新宿主上都会停在 `stage: 'trigger'`——那条断言已经
+       * 恒红过一轮（2026-11-18 适配 rc.4 时发现：它与宿主换版本无关，只是选择器过期）。
+       * 现在**先按稳定标记找按钮**，找不到才退回老输入框口径：两种形状都真的点一下，
+       * 「入口在不在、点了会不会弹面板」这条断言才继续测得住东西。
+       */
       const searchResult = await chrome.evaluate(`(async () => {
-        // 侧边栏那个「全局搜索…」输入框是**打开命令面板的触发器**（点它才会出现 gs_palette），
-        // 不是就地搜索框 —— 早先直接往里打字，什么都不会发生。
-        const trigger = [...document.querySelectorAll('input')].find((el) => (el.placeholder ?? '').includes('全局搜索') && el.offsetParent !== null)
-        if (trigger === undefined) return { found: false, stage: 'trigger' }
+        // 入口点下去才会出现 gs_palette —— 它不是就地搜索框（早先直接往里打字，什么都不会发生）。
+        const entry = document.querySelector('[data-dsh-global-search-entry]')
+        const legacyInput = [...document.querySelectorAll('input')].find((el) => (el.placeholder ?? '').includes('全局搜索') && el.offsetParent !== null)
+        const trigger = entry ?? legacyInput
+        if (trigger === undefined || trigger === null) return { found: false, stage: 'trigger' }
         trigger.click()
         await new Promise((resolve) => setTimeout(resolve, 1800))
         const paletteInput = document.querySelector('input.gs_input') ?? [...document.querySelectorAll('input')].find((el) => (el.placeholder ?? '').includes('搜索会话、设置与工具'))
