@@ -512,7 +512,8 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
     1181 字符 0 段超预算）。WARN 全是环境或脚本分工，不是回归：沙箱里 PTY `posix_openpt` 被拒
     （两条 UI 脚本各计 1 条）、`mcp-tools` 的夹具服务器尚未被 agent 回合真调用（该脚本只负责 L1）。
     ⑥ 工作区回归：`pnpm -r typecheck`（含 client-lint，`--dsw-*` 全部命中 450 个真实令牌）、
-    `pnpm -r build`（产物零 diff）、`pnpm test` **233 files / 4242 passed / 1 skipped 全过**、
+    `pnpm -r build`（产物零 diff）、`pnpm test` **235 files / 4270 passed / 1 skipped 全过**（这一档收尾时的
+    最终数字；此前记的 233 / 4242 是中间态，后续两笔修复各带了自己的用例）、
     `pnpm dsh-peers:check` / `pnpm toolchain:check`（16 档 / pin 2 处）/ `aggregate` 幂等
     （两次产出逐字节相同；`aggregate:check` 在「聚合层已入库」的基线上 exit=0）及其余 16 道
     静态闸门（artifacts / publishable / package-contents / flake / dsh-home / prompt-sections /
@@ -524,10 +525,38 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
     从 11-14 起在任何新宿主上都恒红**（rc.3 档的那次验收早于它，所以当时没暴露）。现改为
     「先按稳定标记找按钮、找不到才退回老输入框口径」，两种形状都真的点一下。变异验证：
     把选择器改回过期形式，UI10 立刻变红且在 `stage: 'trigger'`，报出的信息与现象一致。
-    - **仍未跑**：本期没有新增「已知会红」的项；`verify-issue-13-14` 因沙箱不允许在 `$HOME`
-      下建目录（`EPERM: mkdir '/Users/<user>/.dsh-verify-<pid>'`）而跳过——那是脚本把隔离 home
-      固定在同一深度的设计（profile 里的相对符号链接才不断），属**环境限制**，不是回归；
-      它覆盖的六条插件路由已由上面在线宿主那五条脚本逐条验到。
+    ⑧ **补跑此前因环境限制跳过的 `verify-issue-13-14`**（2026-11-18 晚）：上一轮它因沙箱
+    不允许在 `$HOME` 下建目录而跳过，本轮权限放开后重跑 `--from test`，**15 PASS / 2 WARN /
+    0 FAIL**（脚本自证「隔离 home 已删、真实 `~/.dsh` 关键文件逐字节未变」）。两条 WARN 是
+    13.9a / 13.9b（loglens 的 `/config` 不回传 URL 里的 `user:pass`）——该 profile 没装
+    loglens，脚本按设计记 WARN 并写明「用装了 loglens 的 profile 重跑可覆盖」，不是回归。
+    - **仍未跑**：本期没有新增「已知会红」的项。
+    ⑨ **发布前的两笔修复**（都与本档适配无关，但同一次真机验收里挖出来的，各自带守卫）：
+    · `fix(real-test)` 6716c8298 —— `verify-mcp-tools` 收尾写回**丢掉了 `disabled` 行状态**，
+      会把宿主上一行「已停用」的 MCP 服务器静默重新启用。三处都不报（写回 200 / 条数分毫不差 /
+      宿主照常启动），抓到它的是「真实配置逐字节未变」这条自证：真实 `~/.dsh/cordis.patch.yml`
+      少了正好 **21 字节** = 一行 `      disabled: true`（6 空格 + 14 字符 + 换行）。判据抽成
+      `scripts/lib/mcp-restore.mjs` 的纯函数，收尾判定改成**逐条同形**（id / serverName /
+      disabled）而不是数条数；`scripts/test/mcp-restore.test.ts` **9/9**，含两组反例。
+    · `test(real-test)` 591a562e6 —— UI2 / UI8 / UI9 的覆盖面。UI2 原判据是
+      `ours.length >= 9`，而本仓当时有 **11 个**客户端半体（阈值落后于实际，两个包没加载也能过）；
+      现在期望集取自宿主自己下发的 `globalThis.__DSH_BOOT__.entries`（现算，不写死个数），
+      两边归一成 `dsh-<短名>` 再比。UI8 补上此前漏掉的 **loglens**（它 `plugins.row.config` /
+      `plugins.bundle.config` 都注册），并在量之前**先展开折叠态卡片**——loglens 的卡片默认
+      收起时只有 21 字符 / 2 个控件，会撞上「文本 > 40 且有控件」那条判据，那不是缺陷、是形态差异。
+      明确**不加** `search`（不注册任何插件行）与 `kit-settings`（注册的是 `settings.section`，
+      由 UI12 覆盖）。真机 **19 PASS / 0 WARN / 0 FAIL**（比改前多 1 条 = 新增的 loglens）；
+      变异验证两条：期望集里塞一个不存在的包 → UI2 立刻红；去掉「展开卡片」→ loglens 红在
+      「21 字符 / 2 个控件」、UI9 同时红在 8/9。
+    ⑩ **发版落地**（`v0.1.87`，2026-11-18 22:35Z 起）：12 个插件 patch + `@hyzyn/dsh-all` 0.1.87 +
+    根 `@hyzyn/dsh-plugin-kit` 0.1.81；`@hyzyn/dsh-kit` **不 bump**（本轮没改它的 `src` / `lib`）。
+    **发布前发现并修掉一个会退功能的坑**：分支从 `ba7c8f569` 分出、不含 `main` 上的 `817dd9ba6`
+    （mcp「重连」按钮），直接从它发版会把那 284 行功能从 registry 退回——`pnpm release:preflight`
+    **查不出来**，因为它比的是本 worktree 而非 `main`。先 `git rebase main` 再发，产物核验
+    100923 字节（含重连）。回查：**13/13 个包在 registry 上**（`latest` / `next` 均指向新版本，
+    peer 尾部一律 `^0.2.2-rc.4`）。CI 的 Release job 有两条 `::warning::` 说 rss / codegraph /
+    dsh-all「窗口内未核实」——按 `RELEASING.md` § 高频症状**没有删 tag 重跑**，直查权威源后三条
+    全部已发布，属回查窗口读到陈旧副本。
 
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 

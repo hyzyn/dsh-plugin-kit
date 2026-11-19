@@ -33,8 +33,18 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** 遍历时跳过的目录：产物、依赖、缓存、以及未跟踪的预览桩。 */
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.preview', 'lib'])
+/**
+ * 遍历时跳过的目录：产物、依赖、缓存、未跟踪的预览桩，以及 **`.agents`（worktree 副本）**。
+ *
+ * 为什么必须跳过 `.agents`：`git worktree` 默认把副本放在 `<repo>/.agents/worktrees/` 下，
+ * 而它**不在 `.gitignore` 里**——于是同一份 `docs/` 会在闸门眼里出现四五次，其中任何一次
+ * 白名单没覆盖到的相对链接都会让全仓变红。2026-11-19 实测：并发开出另外两个 worktree 之后，
+ * 这道闸门报出 6 条 `BROKEN FILE`，全部来自 `.agents/worktrees/` 下各副本的 `docs/`，
+ * 与当时正要提交的改动无关（用 git stash 把我的改动移开，报错数一模一样）。
+ *
+ * 副本不是本仓内容：它们的相对链接在自己的 checkout 里解析，本仓无权也不该替它们判定。
+ */
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.preview', 'lib', '.agents'])
 
 /**
  * 已知的「从本仓解析必然落空、但在目标上下文里正确」的链接，**精确白名单**。
