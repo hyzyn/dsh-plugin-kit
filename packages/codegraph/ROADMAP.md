@@ -315,7 +315,7 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
   引起的**（HEAD 版同样失败）：隔离宿主没有 API key → `MISSING_CREDENTIAL`（比失败早 15ms）→ agent 被
   回收，connection 在 pending 中途被 dispose。塞一个占位 `DEEPSEEK_API_KEY` 后挂载即成功。
 
-### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.2-rc.2）
+### host cohort 逐档实测证据（DSH 0.1.7-rc.1 → 0.2.2-rc.5）
 
 > 从 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli) 搬入（2026-10-23）：README 只留「支持哪些档 + 为什么这么声明」，
 > 逐轮实测的落点 / 门槛 / 「未跑」清单归这里。原文保留，只把「见上条」补成明确指向。
@@ -557,6 +557,58 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
     peer 尾部一律 `^0.2.2-rc.4`）。CI 的 Release job 有两条 `::warning::` 说 rss / codegraph /
     dsh-all「窗口内未核实」——按 `RELEASING.md` § 高频症状**没有删 tag 重跑**，直查权威源后三条
     全部已发布，属回查窗口读到陈旧副本。
+
+  - **`0.2.2-rc.5`（第十七档基线，2026-11-24 实测）**：**引用面零差异的显式声明**（`pnpm -r build`
+    之后 `lib/` 与 `client.js` 产物零 diff）。`0.2.2-rc.5` 本来就被 `^0.2.2-rc.4` 覆盖（同一个
+    `0.2.2` 版本元组，预发布之间不比大小；`semver.satisfies` 在 plain 与 `includePrerelease`
+    下都为真），加档只是把「适配到哪一档就写到哪一档」落全。**取证口径**：两边**都用 npm 装**
+    ——rc.4 用 `--registry=https://registry.npmjs.org` 装到一次性临时目录（公司私服对个别
+    tarball 返 500，换公网源才装全），rc.5 取本机全局安装。两边各 **339** 个宿主包、集合
+    **完全一致**；逐文件比对 **17963 个文件**（先归一化版本串、构建期 CSS Module 类名哈希与
+    `dsh-client-modules` 里的 commit 串），有实质差异的**只有 55 个文件、全在 6 个包的 web 搜索面上**。
+    结果：**本仓 import 的宿主包 `lib/` 全部逐字节相同**——`cordis`（含 `cordis-plugin-loader` /
+    `cosmokit`）/ `dsh-app-boot`（判定器）/ `dsh-tools`（`defineTool`）/ `dsh-host-webserver` /
+    `dsh-mcp-client` / `dsh-subprocess` / `dsh-subprocess-local` / `dsh-settings` / `dsh-storage` /
+    `schemastery`；`dsh` CLI 自己的 `lib/`（26 个文件）同样逐字节相同；**槽面与官方 bundle 清单
+    这一档一条都没动**——`dsh-cordis-client-runner` 的 `lib/client.js`（385543 B）逐字节相同、
+    点分槽名 122 → 122（0 增 0 删 0 改名），`dsh-official-bundles`、`dsh-client-ui-theme`
+    （450 个令牌）的 `lib/` 同样逐字节相同，本仓注册的三条槽（`settings.kit.item` /
+    `settings.plugin.item` / `sidebar.right.pane.tab`）不受影响。
+    真实改动集中在**网页搜索的 provider 选择**：`dsh-web` 的 `WebSearchRequest` 多一个可选的
+    `llmProvider`（未显式配置搜索 provider 时按模型请求的路由选——DeepSeek 路由用旧版
+    Messages 搜索 `deepseek-official`、其余用 `deepseek-search-api`），`dsh-tool-web` /
+    `dsh-web-search-deepseek`（请求带 `llmProvider`，`web_search_result` 自身带 `snippet` 时优先用它）/
+    `dsh-web-deepseek-api` / `dsh-client-ui-settings-web-search`（新增 `searchAutoHint` 文案）随之调整，
+    `dsh-base/cordis.patch.yml` 删掉写死的 `searchProvider: deepseek-search-api`。**这些一处都不落在
+    本仓引用面内**：`ctx.web` / `searchProvider` / `fetchProvider` / `dsh-web` 的搜索接缝在全仓
+    `src` 与 `client-src` 里**零引用**（`tty` 的 `listProviders` 是 `dsh-llm` 的 provider 目录，
+    与 `dsh-web` 的检索 provider 是两回事）。`dsh-api-remotes/lib/client.js` 只差一处内嵌的
+    `sourceLocation` **行号**（`152` → `174`，token 级比对 221007 个 token 里仅此 1 处），
+    `dsh-tool-cordis` 的 API 目录差的是同一条 `WebSearchRequest` 声明；其余差异全部是这些包的
+    `.map` / `src/` 同步产物与 README 文案。`@deepseek-ai/dsh` 的依赖集合 **91 → 91**（0 增 0 删），
+    运行时依赖 `cordis` 4.1.0 / `schemastery` 3.19.0 / `cosmokit` 1.9.0 / `cordis-plugin-loader` 1.1.0
+    与上一档同版本且 `lib/` 逐字节相同，`engines.node` 仍是 `>=24.9.0`。主题令牌 **450 → 450**，
+    `sync-dsh-theme-tokens --check` 与 rc.5 宿主**逐字一致**——这一档**不需要重建**快照。
+    证据：① `node scripts/check-dsh-peers.mjs --with-app-boot` —— **十七档 × 14 条目全部放行**
+    （判定器自报运行时 `0.2.2-rc.5`）。② **真宿主加载**（隔离 `DSH_HOME` = 一次性 `/tmp` 目录，
+    真实 `~/.dsh` 的两个补丁文件 md5 全程未变）：从自带 `web` 模板新建 profile、
+    `dsh plugin add link:<11 个可安装包>` **无需任何豁免、无 `incompatible-version`**；启动后
+    **11/11 个包全部加载（10 行 `mounted`——`dsh-tty` 走的是下一类——+ `dsh-tty` / `dsh-docker` 各一行 `agent tools registered`）、
+    0 行 `skipping profile bundle`、0 行 `disabling profile plugin row`**，根页面 **200（43290 B；
+    须带 `dsh web` 打印的 `?token=`，裸访问 303 → 401）**，boot graph 里列出**全部 11 个
+    `@hyzyn/*` bundle**，`GET /api/dsh-docker/targets`（24 B）、`/api/dsh-tty/config`（878 B）、
+    `/api/dsh-rss/config`（1859 B）均 **200**；`/api/dsh-codegraph/status` **500** 且响应体写明
+    `spawn codegraph ENOENT`——本机没装 `codegraph` CLI，属环境而非回归（启动日志同样明确报了这一句）。
+    ③ `docs/os-consent-plan.md` 的升级绊线按设计报红，复核三条事实后基准更新到 rc.5
+    （五处载体文件与 rc.4 **五处全部逐字节相同**，历次复核里第一次一个字节都没动），
+    `os-consent-scope.test.ts` **27/27 绿**。④ 真宿主 + 真浏览器：`live-host-smoke --bootstrap
+    --strict --render --chrome-arg --no-sandbox`（`DSH_HOME` 指向一次性 `/tmp` 目录，不碰 `~/.dsh`）
+    **23/23 PASS**——18 条 HTTP（授权阶梯 A/B 两实例、路由门控、agent 工具清单、宿主服务的
+    `client.js`）+ 5 条真浏览器（界面渲染、本仓客户端 bundle 真加载、无未捕获异常、无 4xx/5xx
+    子请求、控制台无插件 error）。
+    ⑤ 工作区回归：`pnpm -r typecheck` / `pnpm -r build`（产物零 diff）/ `pnpm test` /
+    `pnpm dsh-peers:check --with-app-boot`（十七档）/ `pnpm toolchain:check`（17 档 / pin 2 处）/
+    `aggregate` 幂等及其余静态闸门全绿（具体数字见本轮提交信息）。
 
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 

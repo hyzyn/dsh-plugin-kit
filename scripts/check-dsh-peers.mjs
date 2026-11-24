@@ -341,8 +341,41 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    实测证据：官方判定器（自报运行时 `0.2.2-rc.4`）**十六档 × 14 条目全放行**；隔离
  *    `DSH_HOME` 起真宿主后全部包加载、0 行 `skipping profile bundle`、0 行
  *    `disabling profile plugin row`。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十六档条目。
+ *  - **0.2.2-rc.5（第十七档基线，2026-11-24 实测）**：**显式声明，引用面零差异**——`0.2.2-rc.5`
+ *    本来就被 `^0.2.2-rc.4` 覆盖（同一个 `0.2.2` 版本元组，预发布之间不比大小；`semver.satisfies`
+ *    在 plain 与 `includePrerelease` 下都为真），加档只是把「适配到哪一档就写到哪一档」落全。
+ *    取证口径：**两边都用 npm 装**（rc.4 用 `--registry=https://registry.npmjs.org` 装到一次性
+ *    临时目录，rc.5 取本机全局）。各 **339** 个宿主包、集合**完全一致**；逐文件比对 **17963 个
+ *    文件**，归一化版本串 / 构建期 CSS Module 类名哈希 / `dsh-client-modules` 里的 commit 串后，
+ *    有实质差异的**只有 55 个文件、全在 6 个包的 web 搜索面上**，一处都不落在本仓引用面内。
+ *      · **本仓 import 的宿主包 `lib/` 全部逐字节相同**：`cordis`（含 `cordis-plugin-loader` /
+ *        `cosmokit`）/ `dsh-app-boot`（判定器）/ `dsh-tools`（`defineTool`）/ `dsh-host-webserver` /
+ *        `dsh-mcp-client` / `dsh-subprocess` / `dsh-subprocess-local` / `dsh-settings` /
+ *        `dsh-storage` / `schemastery`；`dsh` CLI 自己的 `lib/`（26 个文件）同样逐字节相同；
+ *      · **槽面与官方 bundle 清单这一档一条都没动**——`dsh-cordis-client-runner`
+ *        （槽目录 / `lib/client.js` 385543 B 逐字节相同，点分槽名 122 → 122、0 增 0 删 0 改名）、
+ *        `dsh-official-bundles`、`dsh-client-ui-theme`（450 个令牌）的 `lib/` 同样逐字节相同；
+ *      · 真实改动集中在**网页搜索的 provider 选择**（`dsh-web` 的 `WebSearchRequest` 多一个可选的
+ *        `llmProvider`，未显式配置搜索 provider 时按模型请求的路由选：DeepSeek 路由用旧版
+ *        Messages 搜索、其余用 Search API；`dsh-tool-web` / `dsh-web-search-deepseek` /
+ *        `dsh-web-deepseek-api` / `dsh-client-ui-settings-web-search` 随之改文案与 `searchAutoHint`，
+ *        `dsh-base/cordis.patch.yml` 据此删掉写死的 `searchProvider: deepseek-search-api`）——
+ *        本仓对 `ctx.web` / `searchProvider` / `fetchProvider` / `dsh-web` 的搜索接缝**全仓零引用**
+ *        （`grep` 过每个包的 `src` 与 `client-src`）；`dsh-api-remotes/lib/client.js`
+ *        只差一处内嵌的 `sourceLocation` **行号**（`152` → `174`），`dsh-tool-cordis` 的 API 目录
+ *        差的是同一条 `WebSearchRequest` 声明；其余差异全部是这两个包的 `.map` 与 `src/` 同步产物；
+ *      · 另有一处**只在 rc.5 安装面上**的差异：`dsh-acp/lib/index.js.bak-channel-20261122-145244`
+ *        是本机手工改 `dsh-acp` 渠道时留下的备份文件（与本仓无关，`npm` 装出来的 rc.5 里才有；
+ *        它旁边的 `index.js` 与 rc.4 **逐字节相同**）。
+ *    `@deepseek-ai/dsh` 的依赖集合 **91 → 91**（0 增 0 删），运行时依赖 `cordis` 4.1.0 /
+ *    `schemastery` 3.19.0 / `cosmokit` 1.9.0 / `cordis-plugin-loader` 1.1.0 与上一档同版本且
+ *    `lib/` 逐字节相同，`engines.node` 仍是 `>=24.9.0`。主题令牌 **450 → 450**，
+ *    `sync-dsh-theme-tokens --check` 与 rc.5 宿主**逐字一致**——这一档**不需要重建**快照。
+ *    实测证据：官方判定器（自报运行时 `0.2.2-rc.5`）**十七档 × 14 条目全放行**；隔离
+ *    `DSH_HOME` 起真宿主后全部包加载、0 行 `skipping profile bundle`、0 行
+ *    `disabling profile plugin row`。逐条落点见 `packages/codegraph/ROADMAP.md` 的第十七档条目。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4', '0.2.2-rc.5']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**

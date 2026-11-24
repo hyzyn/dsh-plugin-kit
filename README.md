@@ -112,14 +112,16 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 系统要求
 
-- 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配十六档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
-  `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`、`0.2.2-alpha.3`、`0.2.2-rc.1`、`0.2.2-rc.2`、`0.2.2-rc.3` 与 `0.2.2-rc.4`**；
-  `0.1.6-alpha.2` 及更早不再支持（最新十一档都是显式声明，但不都是零差异：`0.2.2-alpha.3` 移除了一个
+- 已安装 DeepSeek-Harness，`dsh web` 可正常启动。**当前适配十七档基线：DSH `0.1.7-rc.2`、`0.2.0-rc.1`、
+  `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`、`0.2.1-alpha.5`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`、`0.2.2-alpha.3`、`0.2.2-rc.1`、`0.2.2-rc.2`、`0.2.2-rc.3`、`0.2.2-rc.4` 与 `0.2.2-rc.5`**；
+  `0.1.6-alpha.2` 及更早不再支持（最新十二档都是显式声明，但不都是零差异：`0.2.2-alpha.3` 移除了一个
   主题令牌，rss / search 的侧栏 hover 已随档适配；`0.2.1-alpha.5` 带着判定器、`engines.dsh`、凭据与
   macOS picker 的真实行为变化；`0.2.2-rc.2` 的宿主 API 面零改动，但主题令牌表扩了 36 个
   （414 → 450，只增不删），快照已随档重建；`0.2.2-rc.4` 带着 `dsh-llm` 的新错误码
   `CONTENT_REFUSED`（`dsh-llm-deepseek` 随之给 `refusal` 停止原因加了处理），但本仓 `src` 对
-  `dsh-llm` 零导入，import 的宿主包 `lib/` 逐字节相同、槽面与官方 bundle 清单未动；其余七档对宿主
+  `dsh-llm` 零导入；`0.2.2-rc.5` 改了**网页搜索的 provider 选择**（`dsh-web` 的 `WebSearchRequest`
+  多一个可选 `llmProvider`，未配置搜索 provider 时按模型请求的路由选），但本仓对 `ctx.web` /
+  `searchProvider` 那条接缝全仓零引用；其余七档对宿主
   零差异——`0.2.2-rc.1` 逐文件比对只有 4 个客户端的版本串变了，`0.2.2-rc.3` 则是本仓 import 的
   宿主包 `lib/` 逐字节相同、主题令牌 450 → 450，新增的两条客户端槽本仓零注册。逐条证据见
   [`scripts/check-dsh-peers.mjs`](./scripts/check-dsh-peers.mjs) 头部的 cohort 说明）。

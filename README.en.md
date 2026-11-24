@@ -115,19 +115,21 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek-Harness installed and `dsh web` starts normally. **Sixteen DSH cohorts are currently
+- DeepSeek-Harness installed and `dsh web` starts normally. **Seventeen DSH cohorts are currently
   supported: `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.1`, `0.2.1-alpha.2`,
   `0.2.1-alpha.5`, `0.2.1-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.3`, `0.2.1-rc.4`, `0.2.1-rc.5`,
-  `0.2.2-alpha.3`, `0.2.2-rc.1`, `0.2.2-rc.2`, `0.2.2-rc.3` and `0.2.2-rc.4`**;
-  `0.1.6-alpha.2` and earlier are no longer supported (the newest eleven cohorts are explicit
+  `0.2.2-alpha.3`, `0.2.2-rc.1`, `0.2.2-rc.2`, `0.2.2-rc.3`, `0.2.2-rc.4` and `0.2.2-rc.5`**;
+  `0.1.6-alpha.2` and earlier are no longer supported (the newest twelve cohorts are explicit
   declarations, but **not all are zero-difference**: `0.2.2-alpha.3` removed one theme token, and
   the rss / search sidebar hover was adapted with it; `0.2.1-alpha.5` carried real host behaviour
   changes in the evaluator, `engines.dsh`, credentials and the macOS picker; `0.2.2-rc.2` leaves the
   host API surface untouched but grows the theme-token table by 36 entries (414 → 450, additions
   only), so the snapshot was regenerated with it; `0.2.2-rc.4` carries the new `dsh-llm` error code
   `CONTENT_REFUSED` (and the matching `refusal` stop handling in `dsh-llm-deepseek`), which this repo
-  never imports — the `lib/` of every host package it imports stays byte-identical, and neither the
-  slot surface nor the official bundle list changes; the other seven are zero-difference —
+  never imports; `0.2.2-rc.5` changes **web-search provider selection** (`dsh-web`'s
+  `WebSearchRequest` gains an optional `llmProvider`, and with no search provider configured the
+  seam picks per model route), a seam this repo never touches (`ctx.web` / `searchProvider` have zero
+  references repo-wide); the other seven are zero-difference —
   `0.2.2-rc.1` differs only in the version string of four client bundles, and `0.2.2-rc.3` leaves the
   `lib/` of every host package this repo imports byte-identical, keeps the theme-token table at 450,
   and adds two client slots that this repo does not register. The per-item evidence is in the cohort
