@@ -606,9 +606,29 @@ env/codegraph，真 `agent/created` → 真 session → 真 MCP 子进程；真�
     **23/23 PASS**——18 条 HTTP（授权阶梯 A/B 两实例、路由门控、agent 工具清单、宿主服务的
     `client.js`）+ 5 条真浏览器（界面渲染、本仓客户端 bundle 真加载、无未捕获异常、无 4xx/5xx
     子请求、控制台无插件 error）。
-    ⑤ 工作区回归：`pnpm -r typecheck` / `pnpm -r build`（产物零 diff）/ `pnpm test` /
-    `pnpm dsh-peers:check --with-app-boot`（十七档）/ `pnpm toolchain:check`（17 档 / pin 2 处）/
-    `aggregate` 幂等及其余静态闸门全绿（具体数字见本轮提交信息）。
+    ⑤ 工作区回归：`pnpm -r typecheck` / `pnpm -r build`（产物零 diff）/ `pnpm test`
+    （235 files / 4271 passed）/ `pnpm dsh-peers:check --with-app-boot`（十七档）/
+    `pnpm toolchain:check`（17 档 / pin 2 处）/ `aggregate` 幂等及其余 17 道静态闸门全绿。
+    ⑥ **十二条真机脚本本轮全跑（rc.5 宿主，2026-11-24），0 FAIL**：进程内六条 `tier-smoke`
+    **11/11**、codegraph `agent-scope` **10/10**、`agent-integration` **9/9**、
+    `cg69-real-cordis` **3/3**、mcp `on-demand` **10/10**、mcp `restart` **12/12**；
+    自起宿主三条 codegraph `host-contract` **42/42**、`indexforce` **5/5**、
+    `client-ui` **18 PASS / 1 WARN / 0 FAIL**；在线宿主六条（自起一次性隔离宿主，端口 6391）
+    `verify-client-ui --mode full` **18 PASS / 1 WARN / 0 FAIL**、`rss-opml` **9/9**、
+    `mcp-http` **7/7**、`mcp-tools` **7 PASS / 1 WARN / 0 FAIL**、
+    `mcp-tool-budget` 与 `disclosure-report` 两条只读报告正常出数（0 条 MCP 行 / 公告 8 段
+    1181 字符 0 段超预算）；`verify-issue-13-14 --from test` **15 PASS / 2 WARN / 0 FAIL**
+    （自证真实 `~/.dsh` 关键文件逐字节未变）。WARN 全是环境限制：沙箱里 PTY `posix_openpt`
+    被拒（两条 UI 脚本各计 1 条）、`mcp-tools` 的夹具服务器尚未被 agent 回合真调用（该脚本只负责 L1）。
+    ⑦ **`tty integration` 只跑到第 24 项**（前 23 项全过）：`[24] 跨窗口共享持久会话` 需要真
+    tmux，本机未装（`which tmux` 为空），按 tty README「本机/远程未安装 tmux 时持久 spawn 自动
+    落回普通会话」属**环境缺件**，不是回归。同一脚本第一次跑时连 `[1] 全链路` 都崩，原因是沙箱
+    拒绝 `posix_openpt`；放开权限后 23 项全过，正好把这两类环境限制分开。
+    ⑧ **一处必须记着的取证坑**：`verify-mcp-tools.mjs` 只认 `--host`（默认 `127.0.0.1:3082`），
+    不认 `--url`——传错参数会**静默回落到默认端口**，而那个端口上跑的是用户自己的宿主。本轮就
+    这样把真实 `~/.dsh/cordis.patch.yml` 清空了一次（M3 的 `clearAll` 生效），随后用最新备份
+    恢复、并复核恢复后的 5 条服务器与运行中宿主报告的 `externalServers` 一致。教训：**给真机
+    脚本传参前先确认它读的是哪个 flag**；「脚本没报错」不等于「它打的是隔离宿主」。
 
 ## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
