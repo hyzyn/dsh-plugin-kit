@@ -18,7 +18,7 @@ importers:
         specifier: 0.6.23
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.17.3
+        specifier: 0.17.4
         version: link:packages/docker
       '@hyzyn/dsh-env':
         specifier: 0.3.20
@@ -45,7 +45,7 @@ importers:
         specifier: 0.5.3
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.39.3
+        specifier: 0.40.0
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -70,7 +70,7 @@ importers:
         specifier: 0.6.23
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.17.3
+        specifier: 0.17.4
         version: link:../docker
       '@hyzyn/dsh-env':
         specifier: 0.3.20
@@ -97,7 +97,7 @@ importers:
         specifier: 0.5.3
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.39.3
+        specifier: 0.40.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
