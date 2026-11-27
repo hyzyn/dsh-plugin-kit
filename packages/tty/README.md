@@ -27,7 +27,9 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## 使用
 
-- 打开面板自动创建第一个终端（默认 `$SHELL`，macOS 上通常是 zsh）；
+- 打开面板时按 `startup` 配置决定开什么（默认 `local`）：自动创建第一个终端（默认 `$SHELL`，
+  macOS 上通常是 zsh）；改成 `ask` 就先弹「+」菜单等你选，改成 `book:<条目名>` 就直接连那个
+  连接簿条目（见 [§ 打开面板时的启动行为](#打开面板时的启动行为0400)）；
 - **多标签页**：标签栏「+」是菜单（本地终端 / SSH 连接簿（条目带 ✎ 编辑）/ SSH 连接…），
   标签 ✕ 关闭，**双击标签可重命名**（随标签持久化）；每个标签独立会话（本地 PTY 或 SSH channel）；
   标签栏放不下时**横向滚动**（两端渐隐），并在右缘出现**「⋯」标签列表**：只列被挤出视野的标签
@@ -344,6 +346,29 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`（us
   exec 内层 shell）。配置热改对新开 pane 生效；`tmux.conf` 只在 tmux server 首启时读取；
 - **降级**：本机/远程未安装 tmux 时，持久 spawn 自动落回普通会话，终端里回一行灰字提示。
 
+## 打开面板时的启动行为（0.40.0）
+
+`startup` 决定**面板刚打开、且没有可恢复标签**时开什么（issue #29）：
+
+| 值 | 行为 |
+| --- | --- |
+| `local`（默认） | 自动开一个本机终端——与旧版一字不差，升级**不会**静默改变任何人的行为 |
+| `ask` | 不创建任何会话，先弹面板自己的「+」菜单（本机终端 / 连接簿条目 / 新建 SSH）；点空白关掉就是空面板（「+」还在，随时可再开） |
+| `book:<条目名>` | 直接按该连接簿条目开 SSH 标签（裸条目名也认，`kb-target` 与 `book:kb-target` 等价） |
+
+判据与边界：
+
+- **只在「面板刚打开」那一拍**：已有标签、最小化再打开、socket 抖动重连都不会再触发——否则菜单会在
+  你没做任何操作的时候自己冒出来；
+- **只看本面板自己的标签**：dsh-docker 等经 `ttyTerminal.mount` 挂在**调用方自己界面**里的会话不占本
+  面板的标签位、也不参与判据；agent 用 `tty_open` / `tty_run` 显式开的会话完全不经过这条路径；
+- **认不出就回落 `local` 并点名**：条目被删、或手改配置写错名字时，照 `local` 开一个本机终端，同时
+  弹一条 toast 说出是哪个名字没了。设置卡片的下拉也会把这个失效值**原样列出来**（「（条目已不存在：…）」），
+  不会静默显示成「本机终端」——静默换掉用户配的意图最难查；
+- **`book:` 前缀是给「条目名恰好叫 `local` / `ask`」留的**：裸名在这两个词上必然有歧义，前缀永远可达
+  （`book:local` = 那个连接簿条目，`local` = 本机终端）；
+- `ask` / `book:` 模式下打开面板**不再无条件占一个 `maxSessions` 名额**——不创建会话就不占名额。
+
 ## SSH 连接
 
 标签栏「+」除本地终端外还能开 **SSH 标签页**：宿主半体用 `ssh2` 原生建立连接并打开 shell channel
@@ -499,6 +524,7 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`（us
 | `tunnels` | `[]` | 端口转发隧道 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目 |
 | `sftpStyle` | `dialog` | SFTP 界面风格：`dialog` 单窗体 / `dual` 双栏（左本机 / 右远程，行内 `⇨/⇦` 服务端直传）；重新打开 SFTP 生效 |
 | `persistence` | `off` | 会话持久化：`off` 会话随宿主生死；`tmux` 开启后**所有新开的标签默认由 tmux 托管**、可跨宿主重启恢复 |
+| `startup` | `local` | 打开面板时的启动行为：`local` 自动开一个本机终端（与旧版一致）/ `ask` 先弹「+」菜单等你选 / `book:<条目名>` 直接连该连接簿条目（裸条目名亦可）。只在「面板刚打开、且没有可恢复标签」那一拍生效，见 [§ 打开面板时的启动行为](#打开面板时的启动行为0400) |
 | `endOnPageClose` | `false` | 页面断开且保活期结束时，是否连 tmux 持久会话一起结束。默认 `false` = 留存可恢复 |
 | `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP 传输限制（浏览器侧保护，**0 = 不限**）；大文件请走双栏 `⇨/⇦` 服务端直传 |
 | `allowProxyCommand` | `false` | 允许连接簿条目里的**代理命令在本机执行**。默认关：关着时携带代理命令的连接**明确失败**，`~/.ssh/config` 导入**永不**自动带入该字段。docker 容器面板读同一个开关。**两条提权通道**：① 启动环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND=1`（只认宿主的启动环境快照）；② **就地提权**（免重启）。授权持久（`<DSH home>/dsh-kit/capability-grants.json`），重启后直接生效（见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么)） |

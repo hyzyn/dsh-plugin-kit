@@ -62,7 +62,8 @@ interface Harness {
   callPath(path: string, method: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> }>
 }
 
-function mount(config: Record<string, unknown> = {}): Harness {
+/** 挂载一个假宿主。`settingsValue` 给了就装作宿主有新版 settings 服务（resolved 值 = 它）。 */
+function mount(config: Record<string, unknown> = {}, settingsValue?: Record<string, unknown>): Harness {
   const routes: FakeRoute[] = []
   const makeChild = (names: string[]): Record<string, unknown> => {
     const child: Record<string, unknown> = {
@@ -80,6 +81,18 @@ function mount(config: Record<string, unknown> = {}): Harness {
       }
     }
     if (names.includes('systemPrompt')) child.systemPrompt = { section: () => () => {}, context: () => () => {} }
+    /*
+     * 新版 settings 服务的最小面（`settingsEntryScope` 认的是 describe + update）：
+     * describe 回**resolved** 值——与真宿主一致（默认值 ← profile 基础层 ← 用户层），
+     * 启动合并那条路径才能被验到（它读的就是 resolved）。
+     */
+    if (names.includes('settings') && settingsValue !== undefined) {
+      child.settings = {
+        describe: () => [{ ns: 'tty', value: settingsValue }],
+        update: async () => {},
+        configure: () => () => {},
+      }
+    }
     return child
   }
   const root = makeChild([])
@@ -366,5 +379,59 @@ describe('/config 的终端外观：字体栈 / 光标 / 行高', () => {
     const res = await h.callPath(CONFIG_PATH, 'POST', { sidebarHostAlign: true })
     expect(res.status, String(res.json.error ?? '')).toBe(200)
     expect(configOf(res.json).sidebarHostAlign).toBe(true)
+  })
+})
+
+/* ---------------- 启动行为（0.40.0 / issue #29） ---------------- */
+
+describe('/config 的 startup：默认 local，三档都原样往返', () => {
+  /*
+   * 宿主**只存不解析**：`book:` 前缀 / 裸条目名 / 条目是否存在都由客户端判
+   * （`client-src/startup-intent.js`）。所以这里钉的是「原值存得下、读得回、清得掉」，
+   * 以及默认值必须还是 local——老用户升级后不许静默变行为。
+   */
+  it('缺省就是 local（升级后行为不变）', async () => {
+    const h = mount()
+    expect(configOf((await h.callPath(CONFIG_PATH, 'GET')).json).startup).toBe('local')
+  })
+
+  it('ask / book:<条目名> / 裸条目名 三种写法都能存下来并读回', async () => {
+    const h = mount()
+    for (const value of ['ask', 'book:kb-target', 'kb-target']) {
+      const res = await h.callPath(CONFIG_PATH, 'POST', { startup: value })
+      expect(res.status, value).toBe(200)
+      expect(configOf(res.json).startup, value).toBe(value)
+      expect(configOf((await h.callPath(CONFIG_PATH, 'GET')).json).startup, value).toBe(value)
+    }
+  })
+
+  it('空串 = 回到默认 local（「清空」是真实意图，不是静默不修改）', async () => {
+    const h = mount({ startup: 'ask' })
+    expect(configOf((await h.callPath(CONFIG_PATH, 'GET')).json).startup).toBe('ask')
+    const res = await h.callPath(CONFIG_PATH, 'POST', { startup: '   ' })
+    expect(res.status, String(res.json.error ?? '')).toBe(200)
+    expect(configOf(res.json).startup).toBe('local')
+  })
+
+  it('非字符串被点名拒绝（不是静默回落）', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', { startup: 42 })
+    expect(res.status).toBe(400)
+    expect(String(res.json.error)).toContain('startup')
+  })
+
+  /*
+   * 启动合并那条路径（`stored.startup` → `stateRef`）：它**刻意不套「非默认值才覆盖」**的启发式。
+   * `local` 是用户会显式选回来的值——基础层写着 ask、卡片改回「本机终端」时，若把它当成
+   * 「没存过」跳过，用户就会卡在 ask 上（本仓最忌讳的「配了没反应」）。
+   */
+  it('设置层的 local 压过基础层的 ask（不能把显式 local 当成「没存过」）', async () => {
+    const h = mount({ startup: 'ask' }, { startup: 'local' })
+    expect(configOf((await h.callPath(CONFIG_PATH, 'GET')).json).startup).toBe('local')
+  })
+
+  it('反向：基础层缺省 + 设置层 ask 就是 ask', async () => {
+    const h = mount({}, { startup: 'ask' })
+    expect(configOf((await h.callPath(CONFIG_PATH, 'GET')).json).startup).toBe('ask')
   })
 })

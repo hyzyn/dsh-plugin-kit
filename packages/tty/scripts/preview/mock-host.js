@@ -38,6 +38,8 @@
     shellIntegration: true,
     sftpStyle: window.__PREVIEW_SFTP_STYLE || 'dialog',
     persistence: window.__PREVIEW_PERSISTENCE || 'off',
+    // 打开面板时的启动行为（0.40.0）：默认 local，与宿主 schema 的默认值一致
+    startup: window.__PREVIEW_STARTUP || 'local',
     endOnPageClose: false,
     statsEnabled: true,
     // AI 辅助：**默认关**（与宿主 Config 的默认值一致；夹具要开就自己改这一项，

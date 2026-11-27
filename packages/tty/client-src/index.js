@@ -96,6 +96,7 @@ import { agentTabDisposition, countLiveSessions, liveSessionSids, sessionFrameIn
 import { closePanelSummary } from './close-guard.js'
 import { bulkClosePlan, panelTabCount } from './tab-bulk.js'
 import { canHideFromAgent, hiddenMenuKey, isHiddenFromAgentSpec, withHiddenFromAgent } from './tab-hidden.js'
+import { planStartup, startupCardOptions } from './startup-intent.js'
 import { planResume } from './download-resume.js'
 import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
@@ -156,6 +157,7 @@ const I18N_ZH = {
   'btn.copySshCommand': '复制 SSH 命令',
   'btn.copySshCommandTitle': '复制一条可直接执行的 ssh 命令（含端口 / 跳板机 / 代理命令，不含凭据）',
   'msg.connCopied': '已复制连接信息',
+  'msg.startupBookMissing': '启动设置里的连接簿条目「{name}」已不存在，已按默认行为打开本机终端',
   'connDetail.title': '连接详情',
   'connDetail.clickHint': '点击查看连接详情（目标 / 跳板机 / 认证 / 持久化）',
   'connDetail.target': '目标',
@@ -493,6 +495,12 @@ const I18N_ZH = {
   'field.uploadCountLimit': '批量文件数上限',
   'hint.sftpLimits': '浏览器侧保护：单个文件超过上限时中止下载/上传（大文件请用双栏 ⇨/⇦ 直传或终端 scp/rsync，不占浏览器内存）；文件数上限针对一次批量/拖拽上传；保存即热生效',
   'section.session': '会话',
+  'field.startup': '打开面板时',
+  'option.startupLocal': '本机终端 — 直接开一个（默认，与旧版一致）',
+  'option.startupAsk': '每次询问 — 先弹「+」菜单再选',
+  'option.startupBook': '连接簿条目：{name}',
+  'option.startupStale': '（条目已不存在：{value}）',
+  'hint.startup': '只影响「面板刚打开、且没有可恢复标签」那一拍：本机终端 = 与旧版完全一致；每次询问 = 不创建任何会话，先弹面板自己的「+」菜单（点空白关掉就是空面板）；连接簿条目 = 直接开该条目的 SSH 会话。已有标签、最小化再打开、AI 经 tty_open 开的会话都不受影响；保存后下一次打开面板生效',
   'field.persistence': '会话持久化（tmux）',
   'option.persistOff': '关闭 — 会话随面板/宿主结束（默认）',
   'option.persistTmux': 'tmux — 新开的终端/SSH 标签默认持久化',
@@ -675,6 +683,7 @@ const I18N_EN = {
   'btn.copySshCommand': 'Copy ssh command',
   'btn.copySshCommandTitle': 'Copy a ready-to-run ssh command (port / jump host / ProxyCommand; no credentials)',
   'msg.connCopied': 'Connection info copied',
+  'msg.startupBookMissing': 'The connection-book entry “{name}” in the startup setting no longer exists; opened a local terminal instead',
   'connDetail.title': 'Connection details',
   'connDetail.clickHint': 'Click to view connection details (target / jump host / auth / persistence)',
   'connDetail.target': 'Target',
@@ -1012,6 +1021,12 @@ const I18N_EN = {
   'field.uploadCountLimit': 'Batch file count limit',
   'hint.sftpLimits': 'Browser-side guard: a single file over the limit aborts the download/upload (for large files use dual-pane ⇨/⇦ direct transfer or scp/rsync in the terminal; they do not consume browser memory); the file count limit applies to one batch/drag upload; applies live on save',
   'section.session': 'Sessions',
+  'field.startup': 'When the panel opens',
+  'option.startupLocal': 'Local terminal — open one directly (default, same as before)',
+  'option.startupAsk': 'Ask every time — show the “+” menu first',
+  'option.startupBook': 'Connection-book entry: {name}',
+  'option.startupStale': '(entry no longer exists: {value})',
+  'hint.startup': 'Applies only to the moment a panel is opened with nothing to restore: local terminal = exactly as before; ask every time = create no session and show the panel’s own “+” menu first (dismissing it leaves an empty panel); connection-book entry = open the SSH session for that entry directly. Existing tabs, minimize/restore, and sessions the AI opened through tty_open are unaffected; takes effect the next time the panel opens',
   'field.persistence': 'Session persistence (tmux)',
   'option.persistOff': 'Off — sessions end with the panel/host (default)',
   'option.persistTmux': 'tmux — new terminal/SSH tabs are persistent by default',
@@ -5446,6 +5461,19 @@ let tunnelsCache = []
 let sftpStyleCache = 'dialog'
 /** 会话持久化模式缓存（off / tmux）：config 快照与设置保存同步，控制「+」菜单与 SSH 对话框的持久入口。 */
 let persistenceCache = 'off'
+/**
+ * 「打开面板时开什么」的配置缓存（0.40.0，issue #29）：`local` / `ask` / `book:<条目名>`。
+ * 解析与决策在 `startup-intent.js`（纯模块 + 单测），这里只留缓存。
+ */
+let startupCache = 'local'
+/**
+ * 「这次面板打开还欠一次启动决策」（0.40.0）：由 `openModal()` 置位、决策一次即清。
+ *
+ * 为什么需要这个一次性标记：`afterSocketOpenInner()` 在 **socket 重连**时也会跑一遍，
+ * 那时面板可能还是空的（ask 模式下用户把菜单点掉了）——没有标记的话，网络抖一下
+ * 菜单就自己冒出来一次。最小化再恢复走的是 `restoreModal()`，根本不会重新进这里。
+ */
+let startupPending = false
 /** SFTP 传输限制缓存（0 = 不限）：跟随 config 快照，浏览器侧执行。 */
 let sftpLimitsCache = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }
 /**
@@ -5656,6 +5684,10 @@ function syncSshHostsCache(config) {
   }
   if (config !== null && typeof config === 'object' && (config.persistence === 'tmux' || config.persistence === 'off')) {
     persistenceCache = config.persistence
+  }
+  // 启动行为（0.40.0）：只影响「面板刚打开」那一拍，缓存下来给 afterSocketOpenInner 读
+  if (config !== null && typeof config === 'object' && typeof config.startup === 'string') {
+    startupCache = config.startup
   }
   if (config !== null && typeof config === 'object' && typeof config.sftpLimits === 'object' && config.sftpLimits !== null) {
     sftpLimitsCache = { ...sftpLimitsCache, ...config.sftpLimits }
@@ -5910,6 +5942,33 @@ function closeAddMenu() {
   document.removeEventListener('mousedown', onDocAddMenuMouseDown, true)
   addMenuEl.remove()
   addMenuEl = null
+}
+
+/**
+ * 打开面板时（`startup=ask`，0.40.0 / issue #29）自动弹出「+」菜单。
+ *
+ * 锚点必须是面板里那颗「+」：菜单的定位算法按锚点的包围盒贴边（placePopover），
+ * 没有锚点就不知道往哪放。面板没开（理论上不会走到这里）时静默不动——宁可什么都不弹，
+ * 也不要弹一个飘在屏幕左上角的菜单。
+ */
+function openStartupAddMenu() {
+  const anchor = modalEl === null ? null : modalEl.querySelector('.tt_tabAdd')
+  if (anchor === null) return
+  openAddMenu(anchor)
+}
+
+/**
+ * 按连接簿条目开一个 SSH 标签。
+ *
+ * 「+」菜单的连接项与 `startup=book:<条目名>` **共用这一条路径**：持久化规则只写一份
+ * （全局开关是总闸，条目级 `persist=false` 是取消项，没写过同样跟随全局），
+ * 否则两条路迟早在「要不要托管」上漂开。
+ */
+function connectBookEntry(entry) {
+  const persistSpec = persistenceCache === 'tmux' && entry.persist !== false
+    ? { persist: true, persistName: newPersistName() }
+    : {}
+  addTab({ t: 'ssh', name: entry.name, ...persistSpec }, entry.name)
 }
 
 /* ========================= 「⋯」标签列表（0.23.0） ========================= */
@@ -6684,12 +6743,8 @@ function renderAddMenuItems(menu) {
     item.addEventListener('click', async () => {
       if (await sessionLimitNotice()) return
       closeAddMenu()
-      // 持久化：全局开关是总闸，条目级 persist 是**取消项**——显式取消过（false）的条目不再托管，
-      // 其余（true / 没写过）跟随全局。没写过这个字段的条目同样跟随全局，导入条目因此不受影响。
-      const persistSpec = persistenceCache === 'tmux' && entry.persist !== false
-        ? { persist: true, persistName: newPersistName() }
-        : {}
-      addTab({ t: 'ssh', name: entry.name, ...persistSpec }, entry.name)
+      // 持久化规则与 startup=book 共用（见 connectBookEntry）：这里不再重复一遍
+      connectBookEntry(entry)
     })
     const browse = document.createElement('button')
     browse.type = 'button'
@@ -9869,6 +9924,36 @@ async function afterSocketOpenInner() {
       persistTabs()
     }
     if (![...tabs.values()].some((tab) => tab.embedded !== true)) {
+      /*
+       * 启动行为（0.40.0，issue #29）：默认 `local` 与旧版一字不差；`ask` / `book:<条目名>`
+       * 在这里分流。判据全在 `client-src/startup-intent.js`（纯模块 + 单测），这里只按出口动作。
+       *
+       * `startupPending` 用一次即清：socket 抖动重连会再跑一遍本函数，那时的事件是
+       * 「网络回来了」而不是「用户要开终端」——放过这一拍才不会再弹一次菜单。
+       * `hasOwnTabs` 传 false：外层的判据刚刚已经保证「没有自己的标签」。
+       */
+      const pending = startupPending
+      startupPending = false
+      const plan = planStartup({
+        startup: startupCache,
+        sshHosts: sshHostsCache,
+        hasOwnTabs: false,
+        pending,
+      })
+      if (plan.kind === 'none') return // 不是「刚打开」那一拍（重连 / 恢复）：什么都不做
+      if (plan.kind === 'ask') {
+        openStartupAddMenu()
+        return
+      }
+      if (plan.kind === 'missing') {
+        // 条目被删 / 手改配置写错名字：回落默认行为，但点名——静默换成别的东西最难查
+        showToast(t('msg.startupBookMissing', { name: plan.name }))
+      }
+      if (plan.kind === 'book') {
+        if (await sessionLimitNotice()) return
+        connectBookEntry(plan.entry)
+        return
+      }
       if (await sessionLimitNotice()) return // 上限已满：不再创建注定失败的空标签
       addTab()
     }
@@ -10231,6 +10316,10 @@ function openModal() {
     if (minimized) restoreModal()
     return
   }
+  // 启动行为（0.40.0，issue #29）：这一次「打开面板」欠一次决策——afterSocketOpenInner
+  // 恢复完标签、面板仍然空着时，按配置决定 local / ask / book（见 client-src/startup-intent.js）。
+  // 只在这一处置位、决策一次即清：重连 / 恢复都不该重新触发它。
+  startupPending = true
   ensureStyle()
 
   modalEl = document.createElement('div')
@@ -10504,7 +10593,9 @@ function syncEntryBadge() {
   entry.dataset.minimized = ''
   entry.title = t('status.minimized')
   const running = [...tabs.values()].filter((tab) => !tab.exited).length
-  badge.querySelector('.tt_sidebarBadgeCount').textContent = running + '/' + tabs.size
+  // 一个标签都没有时（0.40.0 起 ask 模式可以停在空面板，见 startup-intent.js）不摆「0/0」：
+  // 与悬浮条上那条同一条判据（见 refreshDockCount）
+  badge.querySelector('.tt_sidebarBadgeCount').textContent = tabs.size > 0 ? running + '/' + tabs.size : ''
   const dot = badge.querySelector('.tt_sidebarBadgeDot')
   if (dot !== null && statusDotEl !== null) dot.dataset.state = statusDotEl.dataset.state ?? ''
 }
@@ -10692,6 +10783,8 @@ function closeModal() {
   const keepSocket = hasEmbedded()
   intentionalClose = !keepSocket
   minimized = false
+  // 面板没了，这一次「打开 → 启动决策」的机会也作废（下次 openModal 会重新置位）
+  startupPending = false
   closeAddMenu()
   closeTabListMenu()
   closeTabContextMenu()
@@ -12416,6 +12509,19 @@ function TtySettingsCard(props) {
       hint ? jsx('span', { className: 'tt_cardHint', children: hint }) : null,
     ],
   })
+  /**
+   * 「打开面板时」下拉：现值与候选都来自纯模块 `startupCardOptions`（候选表与「失效值原样列出」
+   * 这两条判据在 `test/startup-intent.test.ts` 里钉着），这里只把 `kind` 翻成文案。
+   */
+  const startupCard = () => startupCardOptions({ startup: form?.startup, sshHosts: form?.sshHosts })
+  const startupOptions = () => startupCard().options.map((option) => jsx('option', {
+    value: option.value,
+    children: option.kind === 'stale'
+      ? t('option.startupStale', { value: option.value })
+      : option.kind === 'book'
+        ? t('option.startupBook', { name: option.name })
+        : option.kind === 'ask' ? t('option.startupAsk') : t('option.startupLocal'),
+  }))
   /*
    * `tt_cardToggle`（D71）：这一类行点整行就能勾上，所以要给手型——此前只有文字有反应、鼠标停上去
    * 是箭头，而 docker 卡片的 `.dk_check` 一直有。复选框本身还得单独写（UA 样式不让它继承 label 的
@@ -12623,6 +12729,19 @@ function TtySettingsCard(props) {
                   ],
                 }),
                 sectionTitle(t('section.session')),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: t('field.startup') }),
+                    jsxs('select', {
+                      className: 'tt_cardInput',
+                      value: startupCard().current,
+                      onChange: (event) => set('startup', event.target.value),
+                      children: startupOptions(),
+                    }),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.startup') }),
+                  ],
+                }),
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [

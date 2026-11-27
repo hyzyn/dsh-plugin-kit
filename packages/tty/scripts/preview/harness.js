@@ -349,6 +349,59 @@
         return null
       }
     },
+    /*
+     * 启动行为（0.40.0 / issue #29）：`ask` 打开面板**不建会话**，只弹面板自己的「+」菜单。
+     * 走的是真客户端路径（openModal → afterSocketOpenInner → planStartup），不是纯函数单测。
+     */
+    async 'startup-ask'() {
+      window.__PREVIEW_CONFIG.startup = 'ask'
+      await waitFor(() => entry())
+      entry().click()
+      await waitFor(() => modal())
+      await sleep(400)
+      if (tabs().length !== 0) throw new Error('ask 模式不该自动建标签（实测 ' + String(tabs().length) + ' 个）')
+      await waitFor(() => q('.tt_addMenu'))
+      const item = await waitFor(() => qa('.tt_addMenuItem').find((el) => says(el, 'prod-web-01')))
+      item.click()
+      await waitFor(() => tabs().length === 1, 4000)
+      await sleep(200)
+      window.__previewAssert = async () => {
+        if (tabs().length !== 1) return 'ask 模式下从「+」菜单选中条目后标签数不对：' + String(tabs().length)
+        if (q('.tt_addMenu') !== null) return '选中条目后「+」菜单没有收起'
+        return null
+      }
+    },
+    /*
+     * 启动行为：`ask` 模式下**停在菜单这一步**（不点选）——空面板 + 「+」菜单的画面本身要看一眼：
+     * 空态不能像坏了（状态胶囊、标签栏、终端区都要有交代）。
+     */
+    async 'startup-ask-menu'() {
+      window.__PREVIEW_CONFIG.startup = 'ask'
+      await waitFor(() => entry())
+      entry().click()
+      await waitFor(() => modal())
+      await waitFor(() => q('.tt_addMenu'))
+      await sleep(300)
+      window.__previewAssert = async () => {
+        if (tabs().length !== 0) return 'ask 模式不该自动建标签（实测 ' + String(tabs().length) + ' 个）'
+        const menu = q('.tt_addMenu')
+        if (menu === null) return 'ask 模式下没有弹出「+」菜单'
+        if (menu.getBoundingClientRect().height <= 0) return '「+」菜单弹出来了但没有高度'
+        return null
+      }
+    },
+    /* 启动行为：`book:<条目名>` 打开面板直接连该条目（不经「+」菜单） */
+    async 'startup-book'() {
+      window.__PREVIEW_CONFIG.startup = 'book:prod-web-01'
+      await openPanel()
+      await sleep(300)
+      window.__previewAssert = async () => {
+        if (tabs().length !== 1) return '指定条目模式下标签数应为 1，实测 ' + String(tabs().length)
+        const text = (q('.tt_tab')?.textContent || '').trim()
+        if (!text.includes('prod-web-01')) return '标签标题不是该连接簿条目：' + text
+        return null
+      }
+    },
     /* 服务器状态条关闭（statsEnabled=false）：整条收起，WS 也不该收到订阅 */
     async 'stats-off'() {
       // 必须在开面板（拉配置）之前改：客户端按 config 决定订阅与显隐

@@ -27,7 +27,10 @@ the “Terminal Panel” card lets you change the configuration (**saving takes 
 
 ## How to use
 
-- Opening the panel automatically creates the first terminal (default `$SHELL`, usually zsh on macOS);
+- What opens with the panel follows the `startup` setting (default `local`): the first terminal is created
+  automatically (default `$SHELL`, usually zsh on macOS); with `ask` the panel shows its “+” menu first and
+  waits for a choice; with `book:<entry name>` it connects straight to that connection-book entry (see
+  [§ Startup behavior when the panel opens](#startup-behavior-when-the-panel-opens-0400));
 - **Multi-tab**: “+” in the tab bar is a menu (local terminal / SSH connection book (entries have ✎ to edit) /
   SSH connection…), ✕ closes a tab, and **double-clicking a tab renames it** (persisted with the tab); each
   tab is an independent session (local PTY or SSH channel); when the tab bar runs out of room it
@@ -441,6 +444,32 @@ disconnects and even a host restart:
 - **Degradation**: when tmux is not installed locally/remotely, a persistent spawn falls back to an ordinary
   session and prints one gray line in the terminal.
 
+## Startup behavior when the panel opens (0.40.0)
+
+`startup` decides what opens **the moment the panel is opened and there is nothing to restore** (issue #29):
+
+| Value | Behavior |
+| --- | --- |
+| `local` (default) | Opens a local terminal — byte for byte the old behavior, so an upgrade **never** silently changes anyone’s setup |
+| `ask` | Creates no session and shows the panel’s own “+” menu first (local terminal / connection-book entry / new SSH); dismissing it leaves an empty panel (the “+” is still there) |
+| `book:<entry name>` | Opens the SSH tab for that connection-book entry directly (a bare entry name also works: `kb-target` equals `book:kb-target`) |
+
+Rules and boundaries:
+
+- **Only at the moment the panel is opened**: existing tabs, minimize/restore, and a socket blip reconnect never
+  trigger it again — otherwise the menu would pop up while you did nothing;
+- **Only this panel’s own tabs count**: a session another plugin mounted through `ttyTerminal.mount`
+  (dsh-docker and friends) lives in that caller’s own DOM, takes no tab slot here, and does not enter the
+  decision; sessions the agent opened explicitly through `tty_open` / `tty_run` never go through this path;
+- **Unrecognized values fall back to `local` and say so**: when the entry was deleted or the name was mistyped,
+  a local terminal is opened and a toast names the missing entry. The settings-card dropdown also lists that
+  stale value verbatim (“(entry no longer exists: …)”) instead of silently showing “local terminal” — silently
+  replacing the user’s intent is the hardest thing to debug;
+- **The `book:` prefix exists for entries literally named `local` / `ask`**: a bare name is necessarily ambiguous
+  on those two words, while the prefix is always reachable (`book:local` = that entry, `local` = local terminal);
+- With `ask` / `book:` the panel **no longer takes a `maxSessions` slot unconditionally** — no session created,
+  no slot taken.
+
 ## SSH connections
 
 Besides local terminals, the tab bar’s “+” also opens **SSH tabs**: the host half establishes the connection
@@ -641,6 +670,7 @@ per-generation landing spots and the four registration contracts live in
 | `tunnels` | `[]` | Port-forwarding tunnels `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`; `bookName` references a connection-book entry |
 | `sftpStyle` | `dialog` | SFTP UI style: `dialog` single pane / `dual` two panes (local left / remote right, inline `⇨/⇦` server-side transfer); applied when SFTP is reopened |
 | `persistence` | `off` | Session persistence: `off` sessions live and die with the host; `tmux` makes **every new tab tmux-managed by default**, restorable across host restarts |
+| `startup` | `local` | What opens when the panel opens: `local` opens a local terminal (same as before) / `ask` shows the “+” menu first / `book:<entry name>` connects straight to that connection-book entry (a bare entry name works too). Applies only to the moment the panel is opened with nothing to restore, see [§ Startup behavior when the panel opens](#startup-behavior-when-the-panel-opens-0400) |
 | `endOnPageClose` | `false` | When the page disconnects and the keep-alive window expires, whether to end tmux persistent sessions too. Default `false` = keep them restorable |
 | `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP transfer limits (browser-side protection, **0 = unlimited**); use dual-pane `⇨/⇦` for large files |
 | `allowProxyCommand` | `false` | Allow a book entry’s **proxy command to execute locally**. Off by default: with it off, a connection carrying a proxy command **fails explicitly**, and `~/.ssh/config` import **never** brings the field in. The docker container panel reads the same switch. **Two elevation paths**: (1) the startup environment variable `DSH_TTY_ALLOW_PROXY_COMMAND=1` (only the host’s startup environment snapshot counts); (2) **in-place elevation** (no restart). Authorization is persistent (`<DSH home>/dsh-kit/capability-grants.json`) and applies after a restart (see [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么)) |

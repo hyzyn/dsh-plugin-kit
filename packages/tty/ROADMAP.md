@@ -310,6 +310,34 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 
 ## 已完成（落点 + 门槛）
 
+### 2026-11-27（0.40.0）：打开面板时的启动行为（`startup`：local / ask / 连接簿条目 → [issue #29](https://github.com/hyzyn/dsh-plugin-kit/issues/29)）
+
+**诉求**（issue #29）：日常 90% 的会话连的是同一台测试机（连接簿里的一条），但每次打开面板都先自动建
+一个本机 shell——要么先关掉它、再去「+」菜单里选条目，要么在标签之间来回切；本机标签还会先占掉
+`maxSessions` 的一个名额。用户自己替换 client.js 里的两处锚点验证过行为可行，缺的是一个官方开关。
+
+**落点**：新增配置项 `startup`（string，默认 `local`）——
+- 宿主 `src/index.ts`：`Config` + schema（volatile）、`sanitizeStartup`、`ConfigSnapshot.startup`、
+  `normalizePatch`（只校验类型与长度，**不判条目是否存在**：「先配启动行为、再建条目」是正常顺序）、
+  启动合并（**不套「非默认值才覆盖」那条启发式**——`local` 是用户会显式选回来的值，跳过它会让
+  「基础层写 ask、卡片改回本机终端」卡在 ask 上）；
+- 客户端 `client-src/startup-intent.js`（新纯模块，客户端硬规矩 ②）：`parseStartupIntent`（`local` /
+  `ask` / `book:<条目名>`；关键字不区分大小写、条目名区分，`book:` 前缀给「条目名恰好叫 local / ask」留
+  一条可达路径）与 `planStartup`（五个出口：`none` / `local` / `ask` / `book` / `missing`）；
+- `client-src/index.js`：`afterSocketOpenInner()` 末尾原先的 `addTab()` 换成按 `planStartup` 分流；
+  `startupPending` 由 `openModal()` 置位、用一次即清（socket 抖动重连与最小化恢复都不再触发）；
+  `connectBookEntry()` 把「+」菜单连接项与 `startup=book` 的持久化规则收成**同一条路径**；设置卡片
+  「会话」段加下拉（本机终端 / 每次询问 / 各连接簿条目，失效值原样列出）；i18n zh/en 各 7 条。
+
+**判据**：只在「面板刚打开、且恢复流程走完仍没有本面板自己的标签」那一拍生效（`ttyTerminal.mount`
+挂在调用方 DOM 里的会话不占本面板标签位、不参与判据）；`tty_open` / `tty_run` 完全不经过这条路径；
+条目被删或写错名字 → 回落 `local` + toast 点名；`ask` / `book:` 不再占 `maxSessions` 名额；默认
+`local` 保证升级零行为变化。
+
+**门槛**：`test/startup-intent.test.ts`（五个出口 + 解析边界：大小写、`book:` 空前缀、`book:local`
+可达、裸条目名、非法条目表）+ `test/config-roundtrip.test.ts`（默认 `local` / 三档往返 / 空串清空 /
+非字符串 400）+ 全仓闸门（typecheck / build / test / aggregate），`client.js` 已重建。
+
 ### ✅ 收起动画期间入口先于宿主切 rail（2026-11-14）
 
 **现场**（用户报告，桌面端点「收起」）：kit 的四个侧栏入口已经只剩图标、还被居中推到冻结宽度的

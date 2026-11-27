@@ -154,6 +154,17 @@ export interface Config {
   sftpStyle?: 'dialog' | 'dual'
   /** 会话持久化：off = 会话随宿主生死（默认）；tmux = 「持久终端」标签由 tmux server 托管，可跨宿主重启恢复。 */
   persistence?: 'off' | 'tmux'
+  /**
+   * 打开终端面板时的启动行为（0.40.0，默认 `local` = 与旧版完全一致）：
+   *
+   * - `local`：没有可恢复标签时自动开一个本机终端；
+   * - `ask`：不创建任何会话，只弹面板自己的「+」菜单（本机终端 / 连接簿条目 / 新建 SSH）等用户选；
+   * - `book:<条目名>`：直接按该连接簿条目开 SSH 标签（**裸条目名也认**，见 client-src/startup-intent.js）。
+   *
+   * 只在「面板刚打开、且恢复流程走完仍没有自己的标签」那一拍生效：已有标签 / 最小化再恢复 /
+   * socket 抖动重连都不重复触发；`tty_open` / `tty_run` 这类显式创建路径完全不受影响。
+   */
+  startup?: string
   /** 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束（默认 false = 留存可恢复）。 */
   endOnPageClose?: boolean
   /** SFTP 传输限制（0 = 不限）。 */
@@ -308,6 +319,13 @@ export const Config: z = z.object({
   shellIntegration: z.boolean().default(true).volatile(),
   sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog').volatile(),
   persistence: z.union([z.const('off'), z.const('tmux')]).default('off').volatile(),
+  /*
+   * 打开面板时的启动行为（0.40.0，issue #29）：`local` = 自动开一个本机终端（默认，
+   * 升级零变化）/ `ask` = 弹「+」菜单等用户选 / `book:<条目名>` = 直接开该连接簿条目
+   * （裸条目名也认）。刻意用 string 而不是 enum：条目名是用户数据，枚举会逼着每次
+   * 改连接簿都回写配置；留给客户端解析（`client-src/startup-intent.js`），宿主只存原值。
+   */
+  startup: z.string().default('local').volatile(),
   endOnPageClose: z.boolean().default(false).volatile(),
   statsEnabled: z.boolean().default(true).volatile(),
   /*
@@ -962,6 +980,20 @@ function sanitizeTerminalLineHeight(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number.NaN
   if (!Number.isFinite(numeric)) return 1.35
   return Math.min(2, Math.max(1, numeric))
+}
+
+/**
+ * 启动行为清洗（0.40.0）：非空字符串原样保留（`book:` 前缀与条目名的解析在客户端，见
+ * `client-src/startup-intent.js`），空串 / 非字符串回落到默认 `local`。
+ *
+ * 长度上限只防「有人往 profile 里塞一整页」，不是白名单——条目名是用户自己的数据，
+ * 宿主不替它判合法性（保存时条目可能还没建好，反过来在这里拒会使「先写启动行为、再建条目」
+ * 这条正常顺序不可用）。
+ */
+function sanitizeStartup(value: unknown): string {
+  if (typeof value !== 'string') return 'local'
+  const trimmed = value.trim()
+  return trimmed === '' ? 'local' : trimmed.slice(0, 200)
 }
 
 /** 可热更新的运行时配置（loader 的 volatile 更新事件动态应用）。 */
@@ -4753,6 +4785,11 @@ interface ConfigSnapshot {
   sftpStyle: 'dialog' | 'dual'
   /** 会话持久化模式（客户端渲染「+」菜单与 SSH 对话框用）。 */
   persistence: 'off' | 'tmux'
+  /**
+   * 打开面板时的启动行为（0.40.0，issue #29）：`local` / `ask` / `book:<条目名>`（裸条目名亦可）。
+   * 客户端在 `client-src/startup-intent.js` 解析；宿主只存原值并原样回给卡片。
+   */
+  startup: string
   /** 页面断开且保活期结束时是否结束 tmux 持久会话。 */
   endOnPageClose: boolean
   /** 服务器状态条开关（客户端据此隐藏/显示状态条）。 */
@@ -4930,7 +4967,7 @@ const plugin = definePlugin<Config>({
         console.warn('[dsh-tty] 隧道配置回写失败: ' + (error instanceof Error ? error.message : String(error)))
       })
     })
-    const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' as 'dialog' | 'dual' }
+    const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' as 'dialog' | 'dual', startup: sanitizeStartup(config?.startup) }
     let settingsScope: SettingsEntryScope | undefined
     // 工具/公告的重注册钩子：真正的实现由各自的注入 effect 挂载时回填。
     // applyPatch 定义在注入之前，只能先拿 noop——启动顺序无论是 settings 先行
@@ -4955,6 +4992,7 @@ const plugin = definePlugin<Config>({
       shellIntegrationSupported: shellIntegrationSupported(live.shell),
       sftpStyle: stateRef.sftpStyle,
       persistence: live.persistence,
+      startup: stateRef.startup,
       endOnPageClose: live.endOnPageClose,
       statsEnabled: live.statsEnabled,
       terminalFontFamily: live.terminalFontFamily,
@@ -5017,6 +5055,8 @@ const plugin = definePlugin<Config>({
       if (typeof section.enabled === 'boolean') stateRef.enabled = section.enabled
       if (typeof section.announceToAgent === 'boolean') stateRef.announceToAgent = section.announceToAgent
       if (section.sftpStyle === 'dialog' || section.sftpStyle === 'dual') stateRef.sftpStyle = section.sftpStyle
+      // 启动行为（0.40.0）：只影响「面板打开那一拍」的客户端决策，宿主侧不消费，存起来即可
+      if (typeof section.startup === 'string') stateRef.startup = sanitizeStartup(section.startup)
       // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）。
       // 禁用态清空目标列表（拆掉活跃转发），重新启用后的下一次对齐自动恢复
       tunnelManager.reconcile(stateRef.enabled ? live.tunnels : [])
@@ -5031,13 +5071,13 @@ const plugin = definePlugin<Config>({
       server.setWsGate(stateRef.enabled)
       // 状态条开关热生效：关的时候停掉全部采集（本地定时器 + 远端 exec channel）
       server.setStatsEnabled(live.statsEnabled)
-      console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue}, sshHosts=${live.sshHosts.length}, allowProxyCommand=${String(live.allowProxyCommand)}, enabled=${String(stateRef.enabled)})`)
+      console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue}, sshHosts=${live.sshHosts.length}, startup=${stateRef.startup}, allowProxyCommand=${String(live.allowProxyCommand)}, enabled=${String(stateRef.enabled)})`)
     }
 
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
     const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
       const patch: Record<string, unknown> = {}
-      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'sftpLimits', 'allowProxyCommand', 'assistEnabled', 'assistProvider', 'assistModel', 'terminalFontFamily', 'terminalFontSize', 'terminalCursorStyle', 'terminalCursorBlink', 'terminalLineHeight', 'sidebarHostAlign'])
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'startup', 'endOnPageClose', 'statsEnabled', 'sftpLimits', 'allowProxyCommand', 'assistEnabled', 'assistProvider', 'assistModel', 'terminalFontFamily', 'terminalFontSize', 'terminalCursorStyle', 'terminalCursorBlink', 'terminalLineHeight', 'sidebarHostAlign'])
       for (const key of Object.keys(input)) {
         if (!known.has(key)) return { error: '未知配置项: ' + key }
       }
@@ -5070,6 +5110,16 @@ const plugin = definePlugin<Config>({
       if (input.persistence !== undefined) {
         if (input.persistence !== 'off' && input.persistence !== 'tmux') return { error: 'persistence 必须是 off 或 tmux' }
         patch.persistence = input.persistence
+      }
+      /*
+       * 启动行为（0.40.0，issue #29）：**不在这里判条目是否存在**——「先写启动行为、再建条目」
+       * 是正常顺序（卡片上是两个控件，条目由同一张卡片另一处维护）。认不出 / 条目已删的回落
+       * 由客户端做（`client-src/startup-intent.js`，回落 local + toast），宿主只存原值。
+       * 空串 = 回到默认 local（与上面 shell 一类「空串 = 不修改」不同：这里清空是真实意图）。
+       */
+      if (input.startup !== undefined) {
+        if (typeof input.startup !== 'string') return { error: 'startup 必须是字符串（local / ask / book:<连接簿条目名>）' }
+        patch.startup = sanitizeStartup(input.startup)
       }
       if (input.endOnPageClose !== undefined) {
         if (typeof input.endOnPageClose !== 'boolean') return { error: 'endOnPageClose 必须是布尔值' }
@@ -6016,6 +6066,13 @@ const plugin = definePlugin<Config>({
         if (stored.shellIntegration === false) startup.shellIntegration = false
         if (stored.sftpStyle === 'dual') startup.sftpStyle = 'dual'
         if (stored.persistence === 'tmux') startup.persistence = 'tmux'
+        /*
+         * 启动行为（0.40.0）：**刻意不套「非默认值才覆盖」那条启发式**（maxSessions / 布尔字段用的
+         * 那条）。`local` 本身就是用户会显式选回来的值：profile 基础层写着 `ask`、卡片上改回
+         * 「本机终端」时，served 的 resolved 值就是 `local`——按启发式跳过它会让这一改卡住不生效，
+         * 正是本仓最忌讳的「配了没反应」。resolved 已经包含基础层，这里原样采用即可（幂等）。
+         */
+        if (typeof stored.startup === 'string') startup.startup = sanitizeStartup(stored.startup)
         if (stored.endOnPageClose === true) startup.endOnPageClose = true
         const storedPersistSessions = sanitizePersistSessions(stored.persistSessions)
         if (storedPersistSessions !== undefined && storedPersistSessions.length > 0) startup.persistSessions = storedPersistSessions

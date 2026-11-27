@@ -114,6 +114,17 @@ export interface Config {
     sftpStyle?: 'dialog' | 'dual';
     /** 会话持久化：off = 会话随宿主生死（默认）；tmux = 「持久终端」标签由 tmux server 托管，可跨宿主重启恢复。 */
     persistence?: 'off' | 'tmux';
+    /**
+     * 打开终端面板时的启动行为（0.40.0，默认 `local` = 与旧版完全一致）：
+     *
+     * - `local`：没有可恢复标签时自动开一个本机终端；
+     * - `ask`：不创建任何会话，只弹面板自己的「+」菜单（本机终端 / 连接簿条目 / 新建 SSH）等用户选；
+     * - `book:<条目名>`：直接按该连接簿条目开 SSH 标签（**裸条目名也认**，见 client-src/startup-intent.js）。
+     *
+     * 只在「面板刚打开、且恢复流程走完仍没有自己的标签」那一拍生效：已有标签 / 最小化再恢复 /
+     * socket 抖动重连都不重复触发；`tty_open` / `tty_run` 这类显式创建路径完全不受影响。
+     */
+    startup?: string;
     /** 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束（默认 false = 留存可恢复）。 */
     endOnPageClose?: boolean;
     /** SFTP 传输限制（0 = 不限）。 */
