@@ -338,7 +338,7 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 可达、裸条目名、非法条目表）+ `test/config-roundtrip.test.ts`（默认 `local` / 三档往返 / 空串清空 /
 非字符串 400）+ 全仓闸门（typecheck / build / test / aggregate），`client.js` 已重建。
 
-**真机补充（同日，`persistence=tmux` 的 profile）**：`startup=ask` 看起来「没生效」——不是打包问题
+**真机补充（同日，`persistence=tmux` 的 profile → [D109](./DEFECTS.md)）**：`startup=ask` 看起来「没生效」——不是打包问题
 （测试 profile 的 `client.js` / `lib/index.js` 与本仓构建字节一致，宿主日志也有 `startup=ask`），
 而是既有的持久化链路漏了最后一步：持久标签规格存在 `localStorage['dsh-tty:persist-specs']`，规格
 **只随「标签被主动关闭」淘汰**（`closeTab` → `persistTabs()`），而关掉**最后一个**标签 / 面板 ✕ 走的是

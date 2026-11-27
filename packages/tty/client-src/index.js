@@ -10835,7 +10835,7 @@ function closeModal() {
     tabs.delete(sid)
   }
   /*
-   * 跨窗口的持久规格一起作废（0.40.0，真机现场：`persistence=tmux` 的 profile）。
+   * 跨窗口的持久规格一起作废（D109，0.40.0 真机发现：`persistence=tmux` 的 profile）。
    *
    * 关面板 = 上面逐个 kill 过、自己的会话**全部结束**，规格留着就是「已结束却还能恢复」。
    * 漏了这一句的形状：用户按 ✕（或关掉最后一个标签）→ 下次打开按 localStorage 里的规格
