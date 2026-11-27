@@ -10834,6 +10834,17 @@ function closeModal() {
     }
     tabs.delete(sid)
   }
+  /*
+   * 跨窗口的持久规格一起作废（0.40.0，真机现场：`persistence=tmux` 的 profile）。
+   *
+   * 关面板 = 上面逐个 kill 过、自己的会话**全部结束**，规格留着就是「已结束却还能恢复」。
+   * 漏了这一句的形状：用户按 ✕（或关掉最后一个标签）→ 下次打开按 localStorage 里的规格
+   * 把刚关掉的会话「恢复」回来——`startup=ask` / `book:` 永远轮不到，看起来像启动行为没生效。
+   *
+   * 只在 closeModal 里清：正常关标签走 `closeTab` 的 `persistTabs()`（规格按剩余标签重算），
+   * 页面刷新/关闭**不经过这里**（那时会话在宿主保活，规格正是恢复的依据）。
+   */
+  syncPersistSpecStore([])
   activeSid = null
   // 胶囊归属一并清空：不变式是「statusSid ∈ {null, activeSid}」，
   // 只清 activeSid 会让它悬垂在一个已经关掉的标签上

@@ -338,6 +338,16 @@ agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_s
 可达、裸条目名、非法条目表）+ `test/config-roundtrip.test.ts`（默认 `local` / 三档往返 / 空串清空 /
 非字符串 400）+ 全仓闸门（typecheck / build / test / aggregate），`client.js` 已重建。
 
+**真机补充（同日，`persistence=tmux` 的 profile）**：`startup=ask` 看起来「没生效」——不是打包问题
+（测试 profile 的 `client.js` / `lib/index.js` 与本仓构建字节一致，宿主日志也有 `startup=ask`），
+而是既有的持久化链路漏了最后一步：持久标签规格存在 `localStorage['dsh-tty:persist-specs']`，规格
+**只随「标签被主动关闭」淘汰**（`closeTab` → `persistTabs()`），而关掉**最后一个**标签 / 面板 ✕ 走的是
+`closeModal()`——那条路不调 `persistTabs()`，于是规格留了下来，下次打开按规格「恢复」出一个已经结束
+的会话，启动决策永远轮不到。修法一行：`closeModal()` 结束自己的会话之后 `syncPersistSpecStore([])`
+（空表 = 删键）。守住它的两处：preview 场景 `startup-ask-tmux`（改之前红、改之后绿）+ 源码形状守卫
+`test/panel-close-clears-specs.test.ts`（4 条，含两条反例）。另附一条**不是缺陷**的观察：最小化再打开、
+刷新页面恢复会话都不算「刚打开」，按设计不触发启动行为。
+
 ### ✅ 收起动画期间入口先于宿主切 rail（2026-11-14）
 
 **现场**（用户报告，桌面端点「收起」）：kit 的四个侧栏入口已经只剩图标、还被居中推到冻结宽度的

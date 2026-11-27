@@ -390,6 +390,41 @@
         return null
       }
     },
+    /*
+     * 启动行为 × tmux 持久化（0.40.0）：**关掉面板 = 结束全部会话**，localStorage 里的持久
+     * 规格必须跟着作废。漏了这一句，下次打开会按规格「恢复」出一个本机标签——用户明明按 ✕
+     * 结束了它，而 ask / book: 永远轮不到（真机现场：测试 profile 就是 persistence=tmux）。
+     */
+    async 'startup-ask-tmux'() {
+      window.__PREVIEW_CONFIG.persistence = 'tmux'
+      window.__PREVIEW_CONFIG.startup = 'ask'
+      const specKey = 'dsh-tty:persist-specs'
+      await waitFor(() => entry())
+      entry().click()
+      await waitFor(() => modal())
+      await waitFor(() => q('.tt_addMenu'))
+      await clickMenuItem('本地终端', 'Local terminal')
+      await waitFor(() => tabs().length === 1)
+      await sleep(200)
+      if (localStorage.getItem(specKey) === null) throw new Error('持久标签没有被写进 localStorage 规格表')
+      q('.tt_close').click()
+      await waitFor(() => q('.tt_confirmLayer'))
+      q('.tt_confirmOk').click()
+      await waitFor(() => modal() === null, 4000)
+      await sleep(200)
+      const leftover = localStorage.getItem(specKey)
+      entry().click()
+      await waitFor(() => modal())
+      await sleep(500)
+      const tabCount = tabs().length
+      const menu = q('.tt_addMenu')
+      window.__previewAssert = async () => {
+        if (leftover !== null) return '关面板后持久规格没有作废（下次打开会「恢复」出一个本机标签）'
+        if (tabCount !== 0) return '重新打开后自动建了 ' + String(tabCount) + ' 个标签（ask 被恢复流程顶掉）'
+        if (menu === null) return '重新打开后没有弹「+」菜单'
+        return null
+      }
+    },
     /* 启动行为：`book:<条目名>` 打开面板直接连该条目（不经「+」菜单） */
     async 'startup-book'() {
       window.__PREVIEW_CONFIG.startup = 'book:prod-web-01'

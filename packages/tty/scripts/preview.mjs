@@ -78,6 +78,7 @@ const SCENARIOS = [
   ['menu', '「+」新建菜单'],
   ['startup-ask', '启动行为 ask：打开面板先弹「+」菜单，不自动建标签（issue #29）'],
   ['startup-ask-menu', '启动行为 ask：空面板 + 「+」菜单（停在选择前，issue #29）'],
+  ['startup-ask-tmux', '启动行为 ask × tmux 持久化：关面板后规格作废，重开仍是菜单（issue #29）'],
   ['startup-book', '启动行为 book:<条目名>：打开面板直接连该连接簿条目（issue #29）'],
   ['ssh', 'SSH 连接对话框'],
   ['ssh-probe', 'SSH 连接对话框（试连结果）'],
