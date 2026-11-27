@@ -9351,7 +9351,9 @@ window.__ModuleLoader__.load({
       } catch { /* 契约变动时不连累面板渲染 */ }
       const closeTab = () => {
         // 用户明确关掉标签 → 撤掉粘性意图：切会话时别再自己冒出来
+        // 并持久化：否则宿主恢复标签会把意图重新点亮，切到任意带标签记录的会话又会冒出来
         dockerPanelWanted = false
+        setAutoReopen(false)
         try {
           info?.tab?.actions?.close?.()
         } catch { /* 标签已关 */ }
@@ -10283,6 +10285,33 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /*
+     * 「关一次就到处生效」：粘性意图只在内存里，而标签体挂载时的自愈会把意图重新点亮，
+     * 于是用户关掉标签后，切到任意仍带标签记录的会话就会恢复意图，之后所有会话又开始
+     * 自动重开——关闭看起来完全无效（issue #30）。
+     *
+     * 把「用户显式关闭过」持久化成 localStorage 标记：关闭跨会话、跨刷新都算数，
+     * 只有用户重新从显式入口打开面板时才清掉。
+     *   localStorage.removeItem('dsh-docker:autoReopen')   // 恢复自动重开（默认）
+     */
+    const AUTO_REOPEN_KEY = 'dsh-docker:autoReopen'
+
+    function autoReopenEnabled() {
+      try {
+        return window.localStorage.getItem(AUTO_REOPEN_KEY) !== 'off'
+      } catch {
+        // 隐私模式 / 存储被禁：读不到就按默认（开启）走，不改变既有行为
+        return true
+      }
+    }
+
+    function setAutoReopen(enabled) {
+      try {
+        if (enabled) window.localStorage.removeItem(AUTO_REOPEN_KEY)
+        else window.localStorage.setItem(AUTO_REOPEN_KEY, 'off')
+      } catch { /* 存储不可用：退化为当前的内存态行为 */ }
+    }
+
     /**
      * 「用户希望容器面板开着吗」——粘性意图，模块级。
      *
@@ -10306,6 +10335,8 @@ window.__ModuleLoader__.load({
      * @returns 是否应当重开。
      */
     function shouldReopenTab(wanted, previousId, nextId, apiAvailable) {
+      // 用户显式关闭过 → 关闭优先于内存里的粘性意图（它会被挂载自愈重新点亮）
+      if (!autoReopenEnabled()) return false
       if (wanted !== true || apiAvailable !== true) return false
       if (typeof nextId !== 'string' || nextId === '') return false
       // 列表快照因标题变化 / 新会话等原因也会变，只在**当前会话真的换了**时动作
@@ -10328,7 +10359,9 @@ window.__ModuleLoader__.load({
           if (typeof options?.target === 'string' && options.target !== '') params.target = options.target
           if (options?.sessionHint !== undefined) params.sessionHint = options.sessionHint
           // 用户明确要开它 → 记下粘性意图：切会话时在新会话里自动重开
+          // 显式打开同时清掉「用户关闭过」的持久标记
           dockerPanelWanted = true
+          setAutoReopen(true)
           // page type 在同一 pane 内去重：已在则聚焦，不会开出第二个「Docker 容器」标签
           dockerTabApi.openTab(DOCKER_TAB_KIND, { params })
           return
@@ -11031,7 +11064,7 @@ window.__ModuleLoader__.load({
          * （那时只有面板自己的 ✕ 能撤销），拿不到就保持原行为。
          */
         const disposeCloseIntent = typeof tabCtx.sidebarRight?.registerCloseHandler === 'function'
-          ? tabCtx.sidebarRight.registerCloseHandler(DOCKER_TAB_KIND, () => { dockerPanelWanted = false })
+          ? tabCtx.sidebarRight.registerCloseHandler(DOCKER_TAB_KIND, () => { dockerPanelWanted = false; setAutoReopen(false) })
           : null
 
         return () => {
