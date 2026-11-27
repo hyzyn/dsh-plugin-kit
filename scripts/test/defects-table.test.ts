@@ -82,6 +82,17 @@ function danglingRef(pkg: string) {
 
 const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
 
+/**
+ * 某包**现算**的最大号。反例里凡是「当前上界」出现的地方都必须走它：
+ * 写死字面量时，下一次往台账加号就把 fixture 变成「把对的值改成对的值」——变异没生效，
+ * 用例反而恒绿（codegraph 那条反例的注释记着同一课）。
+ */
+function maxOf(pkg: string): number {
+  const fact = facts.get(pkg)
+  if (fact === undefined) throw new Error(`没有 ${pkg} 的现算事实`)
+  return fact.max
+}
+
 describe('缺陷台账：现算（唯一真值来源）', () => {
   it('每个登记的包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
     expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'loglens', 'rss'])
@@ -141,12 +152,13 @@ describe('缺陷台账：现算（唯一真值来源）', () => {
 })
 
 describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
-  it('把 docker 那行的上界从 D171 改回 D138 → conventions.row 差异', () => {
-    const fixture = mutate(real.conventions, '| `docker` | `D` | `D01`–`D171` |', '| `docker` | `D` | `D01`–`D138` |')
+  it('把 docker 那行的上界改回旧号 → conventions.row 差异', () => {
+    const upper = String(maxOf('docker'))
+    const fixture = mutate(real.conventions, `| \`docker\` | \`D\` | \`D01\`–\`D${upper}\` |`, '| `docker` | `D` | `D01`–`D138` |')
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.row')
     const diff = diffs.find((item) => item.kind === 'conventions.row')
-    expect(diff?.expected).toBe('171')
+    expect(diff?.expected).toBe(upper)
     expect(diff?.actual).toBe('138')
     expect(diff?.message).toContain('D138')
   })
@@ -174,8 +186,8 @@ describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
     expect(kinds(diffs)).toContain('conventions.kit.own')
   })
 
-  it('命名表举例用**上界号**（docker D171）→ conventions.example 差异', () => {
-    const fixture = mutate(real.conventions, '| 缺陷编号 | 见上 | `docker D03` |', '| 缺陷编号 | 见上 | `docker D171` |')
+  it('命名表举例用**上界号** → conventions.example 差异', () => {
+    const fixture = mutate(real.conventions, '| 缺陷编号 | 见上 | `docker D03` |', `| 缺陷编号 | 见上 | \`docker D${String(maxOf('docker'))}\` |`)
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.example')
     expect(diffs.find((item) => item.kind === 'conventions.example')?.message).toContain('上界号')
@@ -232,14 +244,15 @@ describe('反例 3：跨包互称的范围写错（C 类，最容易飘）→ �
   })
 
   it('tty 文件头把 docker 写成 D01–D138 → ledger.crossRef 差异', () => {
+    const upper = String(maxOf('docker'))
     const fixture = mutate(
       real.ledgers.tty,
-      '与 `packages/docker/DEFECTS.md` 的\n> `D01–D171` **不共享**',
+      `与 \`packages/docker/DEFECTS.md\` 的\n> \`D01–D${upper}\` **不共享**`,
       '与 `packages/docker/DEFECTS.md` 的\n> `D01–D138` **不共享**',
     )
     const diffs = checkWithLedger('tty', fixture)
     expect(kinds(diffs)).toContain('ledger.crossRef')
-    expect(diffs.find((item) => item.kind === 'ledger.crossRef')?.expected).toBe('171')
+    expect(diffs.find((item) => item.kind === 'ledger.crossRef')?.expected).toBe(upper)
   })
 
   it('把跨包那句整句删掉 → **报缺失**（C 类不许静默消失）', () => {
@@ -264,7 +277,8 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
   })
 
   it('现状行的「编号至」落后于表内 → ledger.status.until 差异', () => {
-    const fixture = mutate(real.ledgers.docker, '**已修 171 / 待修 0**，编号至 `D171`。', '**已修 156 / 待修 0**，编号至 `D139`。')
+    const upper = String(maxOf('docker'))
+    const fixture = mutate(real.ledgers.docker, `**已修 ${upper} / 待修 0**，编号至 \`D${upper}\`。`, '**已修 156 / 待修 0**，编号至 `D139`。')
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
@@ -357,7 +371,8 @@ describe('守卫的边界：拿不到文本 / 表被整段删掉时也要报，�
   })
 
   it('整条加粗现状行被删掉 → ledger.status.absent（不靠匹配失败兜）', () => {
-    const fixture = mutate(real.ledgers.docker, '**已修 171 / 待修 0**，编号至 `D171`。', '')
+    const upper = String(maxOf('docker'))
+    const fixture = mutate(real.ledgers.docker, `**已修 ${upper} / 待修 0**，编号至 \`D${upper}\`。`, '')
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.absent')
   })
 

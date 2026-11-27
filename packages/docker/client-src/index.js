@@ -9351,7 +9351,9 @@ window.__ModuleLoader__.load({
       } catch { /* 契约变动时不连累面板渲染 */ }
       const closeTab = () => {
         // 用户明确关掉标签 → 撤掉粘性意图：切会话时别再自己冒出来
+        // 并持久化（D172）：否则宿主恢复标签会把意图重新点亮，切到任意带标签记录的会话又会冒出来
         dockerPanelWanted = false
+        setAutoReopen(false)
         try {
           info?.tab?.actions?.close?.()
         } catch { /* 标签已关 */ }
@@ -9384,9 +9386,23 @@ window.__ModuleLoader__.load({
           dockerTabClosers.delete(handle)
         }
       }, [])
-      // 标签体挂载 == 面板确实开着 → 把粘性意图对齐为 true
-      // （宿主恢复标签之类的路径下自愈；关标签只走 closeTab，不会被这里重新点亮）
-      useEffect(() => { dockerPanelWanted = true }, [])
+      /*
+       * 标签体挂载 == 面板确实开着。按用户意图分两种（D172）：
+       *   - 没关过（默认）→ 把粘性意图对齐为 true（宿主恢复标签 / 刷新之后自愈）；
+       *   - 显式关闭过 → 这次挂载只可能来自宿主的**会话 layout 还原**（切到别的会话，
+       *     那台会话当年记录过这个标签）。关闭是全局意图，所以主动收掉它：每个旧会话在
+       *     第一次被切到时自清一次，「关一次」才真的到处生效。
+       * 读的是持久标记而不是内存意图——内存意图会被本节的自愈本身点亮。
+       */
+      useEffect(() => {
+        if (autoReopenEnabled()) {
+          dockerPanelWanted = true
+          return
+        }
+        try {
+          tabCloseRef.current?.()
+        } catch { /* 标签已关 */ }
+      }, [])
       /*
        * 入口带进来的导航参数（S2）：带 target 就用它当面板 key —— 换目标即重挂，
        * 面板状态归零（这正是「从连接栏点某台主机」的预期）；不带 target 的入口
@@ -10283,6 +10299,35 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /*
+     * 「关一次就到处生效」：粘性意图只在内存里，而标签体挂载时的自愈会把意图重新点亮，
+     * 于是用户关掉标签后，切到任意仍带标签记录的会话就会恢复意图，之后所有会话又开始
+     * 自动重开——关闭看起来完全无效（D172 / issue #30）。
+     *
+     * 把「用户显式关闭过」持久化成 localStorage 标记：关闭跨会话、跨刷新都算数，
+     * 只有用户重新从显式入口打开面板时才清掉。
+     *   localStorage.removeItem('dsh-docker:autoReopen')   // 恢复自动重开（默认）
+     *
+     * 与 `dsh-docker:carrier` 同一形态（临时 / 排障开关，刻意不进 settings）。
+     */
+    const AUTO_REOPEN_KEY = 'dsh-docker:autoReopen'
+
+    function autoReopenEnabled() {
+      try {
+        return window.localStorage.getItem(AUTO_REOPEN_KEY) !== 'off'
+      } catch {
+        // 隐私模式 / 存储被禁：读不到就按默认（开启）走，不改变既有行为
+        return true
+      }
+    }
+
+    function setAutoReopen(enabled) {
+      try {
+        if (enabled) window.localStorage.removeItem(AUTO_REOPEN_KEY)
+        else window.localStorage.setItem(AUTO_REOPEN_KEY, 'off')
+      } catch { /* 存储不可用：退化为当前的内存态行为 */ }
+    }
+
     /**
      * 「用户希望容器面板开着吗」——粘性意图，模块级。
      *
@@ -10292,7 +10337,8 @@ window.__ModuleLoader__.load({
      * 用户是纯损失。所以记下意图：切会话时自动在新会话里重开（见 shouldReopenTab）。
      *
      * 用户在标签上点 ✕ 时置 false（那是明确说「我不要了」）；标签体挂载时置 true
-     * （宿主恢复标签之类的路径下自愈）。
+     * （宿主恢复标签之类的路径下自愈）。**自愈只对齐内存态**：用户关过的持久标记
+     * （D172）压过它，否则「关闭」会被这次自愈重新点亮。
      */
     let dockerPanelWanted = false
 
@@ -10306,6 +10352,8 @@ window.__ModuleLoader__.load({
      * @returns 是否应当重开。
      */
     function shouldReopenTab(wanted, previousId, nextId, apiAvailable) {
+      // 用户显式关闭过（D172）→ 关闭优先于内存里的粘性意图（它会被挂载自愈重新点亮）
+      if (!autoReopenEnabled()) return false
       if (wanted !== true || apiAvailable !== true) return false
       if (typeof nextId !== 'string' || nextId === '') return false
       // 列表快照因标题变化 / 新会话等原因也会变，只在**当前会话真的换了**时动作
@@ -10328,7 +10376,9 @@ window.__ModuleLoader__.load({
           if (typeof options?.target === 'string' && options.target !== '') params.target = options.target
           if (options?.sessionHint !== undefined) params.sessionHint = options.sessionHint
           // 用户明确要开它 → 记下粘性意图：切会话时在新会话里自动重开
+          // 显式打开同时清掉「用户关闭过」的持久标记（D172：这是恢复粘性的唯一入口）
           dockerPanelWanted = true
+          setAutoReopen(true)
           // page type 在同一 pane 内去重：已在则聚焦，不会开出第二个「Docker 容器」标签
           dockerTabApi.openTab(DOCKER_TAB_KIND, { params })
           return
@@ -10353,6 +10403,10 @@ window.__ModuleLoader__.load({
        * 时这里退化成 no-op —— 与 D95 之前的行为一致，不会更糟。
        */
       const wantedBeforeClose = dockerPanelWanted
+      // 持久标记同样要在收标签**之前**取走（D172）：宿主会把这次由我们发起的移除也报给
+      // registerCloseHandler，而那一路会写「用户关闭过」——不还原它，从连接栏换承载之后就再也
+      // 不会自动重开（与上面 wantedBeforeClose 同一个坑，只是这次跨刷新还带着记忆）。
+      const autoReopenBeforeClose = autoReopenEnabled()
       // 先复制一份再收：close() 可能同步卸载 body（从集合里摘掉句柄），边遍历边改集合会漏项
       for (const close of [...dockerTabClosers]) {
         try {
@@ -10364,8 +10418,10 @@ window.__ModuleLoader__.load({
        * 说不要了」，而这一次是我们自己要收掉并存的实例——面板只是换了承载（换成 dock /
        * 模态），用户并没有关掉它。不放回去会让连接栏这条路顺带撤销重开意图：
        * 之后再切会话，右侧栏标签就不会回来了（修复前那条标签一直在，行为不该变）。
+       * 持久标记同理（D172）。
        */
       dockerPanelWanted = wantedBeforeClose
+      setAutoReopen(autoReopenBeforeClose)
       ensureStyle()
       const panelProps = {
         onClose: closePanel,
@@ -10603,6 +10659,13 @@ window.__ModuleLoader__.load({
       shouldReopen: shouldReopenTab,
       /** 投递（测试缝）：成功 / 失败的回执行为要能回归。 */
       deliver: deliverToSession,
+      /**
+       * 「用户关闭过」的持久标记（D172）：判定读它、显式入口清它。挂出来是为了让离线冒烟
+       * 能用可写的 localStorage 桩走「关闭 → 刷新 → 不重开 → 显式打开恢复」整条路。
+       */
+      autoReopen: { key: AUTO_REOPEN_KEY, enabled: autoReopenEnabled, set: setAutoReopen },
+      /** 直接按承载挂面板（测试缝）：连接栏那条路会先收掉并存的标签，D172 要能回归这次收标签。 */
+      openDock: openPanel,
     }
     /*
      * 渲染期守卫的测试缝：桩里 JSX 创建**不会执行组件体**（`jsx(Comp, ...)` 只是造个对象，
@@ -11031,7 +11094,7 @@ window.__ModuleLoader__.load({
          * （那时只有面板自己的 ✕ 能撤销），拿不到就保持原行为。
          */
         const disposeCloseIntent = typeof tabCtx.sidebarRight?.registerCloseHandler === 'function'
-          ? tabCtx.sidebarRight.registerCloseHandler(DOCKER_TAB_KIND, () => { dockerPanelWanted = false })
+          ? tabCtx.sidebarRight.registerCloseHandler(DOCKER_TAB_KIND, () => { dockerPanelWanted = false; setAutoReopen(false) })
           : null
 
         return () => {

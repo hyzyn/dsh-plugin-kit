@@ -114,8 +114,13 @@ refills itself.
 **Stickiness across sessions**: right-sidebar tab records are **session-scoped**, so a tab opened in session A
 does not exist in session B — yet the panel inspects hosts, so losing it on a session switch is pure loss. The
 plugin therefore keeps a "the user wants this open" intent: **switching sessions reopens the tab in the new
-session**, and only clicking the ✕ stops that (that ✕ is executed by the **host**, so it must be registered
-through `registerCloseHandler` — a panel-level `onClose` alone would miss it).
+session**, and only clicking the ✕ stops that. That "closed" state is persisted in
+`localStorage['dsh-docker:autoReopen'] = 'off'`, so it **survives session switches and page reloads** (a
+host-restored tab is not mistaken for "the user wants it open everywhere"); a Docker tab that *another*
+session recorded earlier closes itself when that session is first switched to, so one close covers every
+session. Opening the panel again from the sidebar "Containers" entry restores stickiness. Reset manually:
+`localStorage.removeItem('dsh-docker:autoReopen')`. The ✕ is executed by the **host**, so it must be registered
+through `registerCloseHandler` — a panel-level `onClose` alone would miss it.
 
 **Dock fallback carrier** (right of the terminal):
 

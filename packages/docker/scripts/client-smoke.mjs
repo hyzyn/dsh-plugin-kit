@@ -780,6 +780,134 @@ await test('粘性：老宿主（没有 registerCloseHandler）不因缺 API 报
   assert.equal(state.openTabs.length, 2, '拿不到钩子时保持既有行为（切会话仍带过去）')
 })
 
+/* ------------------------------------------------------------------ *
+ * D172：「关闭」是持久意图，不是一次内存操作
+ * ------------------------------------------------------------------ */
+
+/**
+ * 可写 localStorage 桩（D172）：跨刷新那条路必须真的**存下来**——只给 `getItem` 的桩
+ * 会把写入吞掉，于是「关掉后刷新还记得」这条判据会退化成恒绿。
+ */
+function makeStorageStub() {
+  const data = new Map()
+  return {
+    data,
+    getItem: (key) => (data.has(key) ? data.get(key) : null),
+    setItem: (key, value) => { data.set(String(key), String(value)) },
+    removeItem: (key) => { data.delete(key) },
+  }
+}
+
+/**
+ * 每次调用都是一份**新的模块实例**（= 浏览器刷新），但可以共享同一份 localStorage。
+ * `window.localStorage` 整个不传时等价于隐私模式（数组越界读取会抛、被实现兜住）。
+ */
+function loadBundle(storage) {
+  let reg = null
+  const win = { __ModuleLoader__: { load: (entry) => { reg = entry } } }
+  if (storage !== undefined) win.localStorage = storage
+  new Function('window', 'document', 'MutationObserver', 'fetch', code)(
+    win,
+    documentStub,
+    class { observe() {} disconnect() {} },
+    fetchStub,
+  )
+  return reg
+}
+
+/** 让 `useEffect` 真的跑：标签体的「挂载自愈」与关闭句柄登记都只发生在 effect 里。 */
+const reactWithEffects = { ...ReactStub, useEffect: (fn) => { fn() } }
+
+await test('粘性（D172）：关掉标签的记忆跨刷新，挂载自愈不再把它点亮', () => {
+  const storage = makeStorageStub()
+
+  // 第一轮：显式打开清标记；用户点标签栏 ✕ 落持久标记
+  const exports1 = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx: ctx1, state: state1 } = makeClientCtx({ sidebarRightTabs: true })
+  exports1.apply(ctx1)
+  assert.equal(exports1.__carrier.autoReopen.enabled(), true, '默认应自动重开')
+  exports1.__carrier.open({})
+  assert.equal(storage.getItem(exports1.__carrier.autoReopen.key), null, '显式打开必须清掉「用户关闭过」')
+  const closeHook = state1.closeHandlers.get('docker')
+  assert.equal(typeof closeHook, 'function', '没登记关闭钩子：这条用例测不到标签 ✕')
+  closeHook('session-smoke', { id: 'tab', kind: 'docker' })
+  assert.equal(storage.getItem(exports1.__carrier.autoReopen.key), 'off', '用户点 ✕ 必须落持久标记')
+  assert.equal(exports1.__carrier.shouldReopen(true, 'a', 'b', true), false, '关掉后即使内存意图被点亮也不重开')
+
+  // 刷新：新模块实例（内存意图归零）+ 同一份 localStorage；宿主恢复标签 → body 挂载
+  const exports2 = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx: ctx2, state: state2 } = makeClientCtx({ sidebarRightTabs: true })
+  exports2.apply(ctx2)
+  const tabBody = state2.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  assert.ok(tabBody !== undefined, '标签体没注册：这条用例测不到挂载自愈')
+  let closedByMount = 0
+  tabBody.component({ useTabInfo: () => ({ tab: { navigation: {}, visible: true, actions: { close: () => { closedByMount += 1 } } } }) })
+  assert.equal(closedByMount, 1, '用户关闭过 → 宿主恢复出来的旧标签应在挂载时自收（D172 的全局收尾）')
+  state2.sessionCurrent = 'session-two'
+  for (const notify of state2.sessionListeners) notify()
+  assert.equal(state2.openTabs.length, 0, '关掉过 → 旧标签自收之后，切会话也不该重开')
+
+  // 显式入口重开 → 清标记 → 粘性恢复
+  exports2.__carrier.open({})
+  assert.equal(storage.getItem(exports2.__carrier.autoReopen.key), null, '显式打开应恢复自动重开')
+  state2.sessionCurrent = 'session-three'
+  for (const notify of state2.sessionListeners) notify()
+  assert.equal(state2.openTabs.length, 2, '显式打开后切会话应重新粘住')
+})
+
+await test('粘性（D172）：没关过时，宿主恢复出来的标签仍点亮粘性（自愈回归）', () => {
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  exports_.apply(ctx)
+  // 模拟「刷新后宿主把标签恢复出来」：没有 open() 调用，只有 body 挂载
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  assert.ok(tabBody !== undefined, '标签体没注册')
+  let closed = 0
+  tabBody.component({ useTabInfo: () => ({ tab: { navigation: {}, visible: true, actions: { close: () => { closed += 1 } } } }) })
+  assert.equal(closed, 0, '没关过 → 不许自收（否则刷新一次就把用户开着的标签收掉了）')
+  state.sessionCurrent = 'session-two'
+  for (const notify of state.sessionListeners) notify()
+  assert.equal(state.openTabs.length, 1, '宿主恢复的标签应把粘性带过去')
+})
+
+await test('粘性（D172）：连接栏换承载收掉标签，不许写成「用户关闭过」', () => {
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  exports_.apply(ctx)
+  exports_.__carrier.open({})
+  assert.equal(state.openTabs.length, 1, '显式打开应开标签')
+
+  // 挂载标签体，登记「关掉本标签」句柄：openPanel 收标签走的就是它
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  assert.ok(tabBody !== undefined, '标签体没注册')
+  let hostClosed = 0
+  tabBody.component({
+    useTabInfo: () => ({
+      tab: {
+        navigation: {},
+        visible: true,
+        // 宿主的真实行为：任何显式移除都会通知 registerCloseHandler
+        actions: { close: () => { hostClosed += 1; state.closeHandlers.get('docker')?.() } },
+      },
+    }),
+  })
+
+  // 连接栏那条路：先收掉并存的标签，再停靠到终端右侧
+  exports_.__carrier.openDock({})
+  assert.equal(hostClosed, 1, 'openPanel 应已收掉并存的标签（否则这条用例测不到还原）')
+  assert.equal(storage.getItem(exports_.__carrier.autoReopen.key), null, '我们自己收标签不该算「用户关闭过」')
+  assert.equal(exports_.__carrier.shouldReopen(true, 'a', 'b', true), true, '换承载后粘性应保持')
+})
+
+await test('粘性（D172）：存储不可用（隐私模式）退回内存行为，读写都不抛', () => {
+  const carrier = carrierApi()
+  assert.equal(carrier.autoReopen.enabled(), true, '读不到标记时按默认（开启）走')
+  assert.doesNotThrow(() => carrier.autoReopen.set(false), '写失败不能冒泡（否则关标签会把异常抛给宿主）')
+  assert.equal(carrier.shouldReopen(true, 'a', 'b', true), true, '没有存储时保持既有粘性行为')
+})
+
 await test('日志过滤对齐：级别门槛的「续行继承」对行对象与纯文本行是同一套', () => {
   const pick = aggLogsApi()
   const rows = [
