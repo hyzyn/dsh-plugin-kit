@@ -111,16 +111,52 @@ inside a container detail belong to that container and are not kept. **Collapsin
 stream** (handing the SSH channels back) and expanding reconnects — the streams open with `tail`, so history
 refills itself.
 
-**Stickiness across sessions**: right-sidebar tab records are **session-scoped**, so a tab opened in session A
-does not exist in session B — yet the panel inspects hosts, so losing it on a session switch is pure loss. The
-plugin therefore keeps a "the user wants this open" intent: **switching sessions reopens the tab in the new
-session**, and only clicking the ✕ stops that. That "closed" state is persisted in
-`localStorage['dsh-docker:autoReopen'] = 'off'`, so it **survives session switches and page reloads** (a
-host-restored tab is not mistaken for "the user wants it open everywhere"); a Docker tab that *another*
-session recorded earlier closes itself when that session is first switched to, so one close covers every
-session. Opening the panel again from the sidebar "Containers" entry restores stickiness. Reset manually:
-`localStorage.removeItem('dsh-docker:autoReopen')`. The ✕ is executed by the **host**, so it must be registered
-through `registerCloseHandler` — a panel-level `onClose` alone would miss it.
+**Cross-session scope (configurable)**: right-sidebar tab records are **session-scoped**, so a tab opened in
+session A does not exist in session B. Whether it is carried over is decided by “On session switch” in the
+settings card:
+
+- **Do not follow (default)**: the panel only appears in **the sessions where you opened it**; other sessions
+  stay clean (real-machine feedback: following everywhere by default is too noisy);
+- **Follow within the same workspace**: switching to another session of the same workspace carries the panel
+  over; switching across workspaces does not. The scope comes from the host's **workspace grouping** (not from a
+  `cwd` prefix guess: one directory may hold several workspaces, and symlinks break the guess); when the
+  ownership is unknown the plugin does not follow.
+
+In both modes only the ✕ on the tab counts as “closed” — it is remembered in
+`localStorage['dsh-docker:autoReopen'] = 'off'` and survives both session switches and page reloads. That "closed" state is persisted in
+`localStorage['dsh-docker:autoReopen'] = 'off'`, so it **survives session switches and page reloads**.
+
+Three implementation details (all learned the hard way):
+
+- **The reopen is driven by the right sidebar's on-screen session** (`sidebarRight.mounted`) and only happens in the “follow within the same workspace” mode: `openTab` lands
+  on the session that surface is showing, while the sessions list snapshot's `mainView` retention count is
+  published *before* that switch — judging by the list opens the tab in the **previous** session (invisible in
+  the new one, duplicated in the old one).
+- **Restores must be closed by layout**: the host restores old tabs from each session's saved layout by
+  itself, so merely stopping the auto-reopen does not clear them. On switching to a session that recorded a
+  Docker tab, the plugin closes Docker tabs listed in that session's **committed** layout
+  (`sidebarRight.tabsIn`) — only those already present at that moment, so anything you open afterwards gets a
+  fresh id and is left alone.
+- **“Restored” vs “the user opened it” is judged by where the tab id came from**: *before* switching to a
+  session, the plugin reads that session's persisted sidebar layout
+  (`localStorage['dsh.sidebar-right.v1.<session id>']`) and remembers which Docker tab ids it lists. When a tab
+  body mounts, its id being in that snapshot means the host restored an old tab (a restore is **closed again**
+  when the user has closed it — that is what makes one close cover every session); an id that is not there is a
+  new open (the **“Docker container” card on the Start page** takes this path, and the plugin never sees that
+  gesture) → clear the marker and restore stickiness. It must be read *before* the switch: `openTab` commits the
+  layout first, so a later read would already contain the freshly opened tab.
+- **Retry when first switching to a never-visited session**: the moment `mounted` changes the target session's
+  store may not be adopted yet and `openTab` throws “no committed occurrence” — so retry with a 50ms backoff
+  (up to 1s, re-checking that the on-screen session is still the target).
+
+Opening the panel again from the sidebar "Containers" entry, the connection bar's "Containers" button or the
+Start-page card restores stickiness. Reset manually: `localStorage.removeItem('dsh-docker:autoReopen')`. The ✕
+is executed by the **host**, so it must be registered through `registerCloseHandler` — a panel-level `onClose`
+alone would miss it.
+
+> The two entries' tab semantics are the host's call: the sidebar "Containers" entry **appends** a tab, while
+> the Start-page card **replaces** the “Start” tab (the guide page's placement rule) — not a drift between two
+> of our behaviours.
 
 **Dock fallback carrier** (right of the terminal):
 
@@ -554,6 +590,7 @@ keys below (unknown keys return 400).
 | `pollIntervalSec` | 5 | stats refresh interval for the panel, in seconds (1–60) |
 | `logTailDefault` | 200 | default log tail line count (1–5000) |
 | `maxOutputKb` | 512 | output cap for a single command (KB, 1–8192); anything beyond is truncated and marked `truncated` |
+| `reopenAcrossSessions` | `off` | How the container tab follows a session switch: `off` **does not follow** (the panel only appears in sessions where you opened it) / `workspace` **follows within the same workspace** (never opens across workspaces). The scope comes from the host’s workspace grouping; when it is unknown the plugin does not follow |
 | `targets` | `[]` | target list, see below |
 | `hostKeys` | `[]` | SSH host fingerprint records (TOFU, maintained automatically) |
 

@@ -47,6 +47,12 @@ export interface Config {
     logTailDefault?: number;
     /** 单次命令输出上限（KB，1~8192）。默认 512。 */
     maxOutputKb?: number;
+    /**
+     * 切换会话时容器标签怎么跟随（0.17.4）：
+     * - `off`（默认）：**不跟随**——面板只出现在你打开过它的会话里，别的会话什么都不开；
+     * - `workspace`：**同一工作区内跟随**——只在同一个工作区的会话之间把标签带过去。
+     */
+    reopenAcrossSessions?: 'off' | 'workspace';
     /** 目标列表（本机 / SSH）。 */
     targets?: DockerTarget[];
     /** SSH 主机指纹记录（TOFU，随 settings 落盘）。 */
@@ -72,6 +78,7 @@ interface LiveConfig {
     pollIntervalSec: number;
     logTailDefault: number;
     maxOutputKb: number;
+    reopenAcrossSessions: 'off' | 'workspace';
     targets: DockerTarget[];
     hostKeys: HostKeyRecord[];
 }

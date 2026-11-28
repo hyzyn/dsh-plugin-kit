@@ -88,6 +88,11 @@ export const Config = z.object({
     pollIntervalSec: z.natural().max(60).default(5).volatile(),
     logTailDefault: z.natural().max(5000).default(200).volatile(),
     maxOutputKb: z.natural().max(8192).default(512).volatile(),
+    /*
+     * 切换会话时的跟随范围（0.17.4）：`off` = 不跟随（默认）/ `workspace` = 同一工作区内跟随。
+     * 刻意**不是**「跟随 everywhere」——真机反馈：打开一次就每个会话都弹出来太吵。
+     */
+    reopenAcrossSessions: z.union([z.const('off'), z.const('workspace')]).default('off').volatile(),
     targets: z.array(TARGET_SCHEMA).default([]).volatile(),
     hostKeys: z.array(HOST_KEY_SCHEMA).default([]).volatile(),
 });
@@ -102,6 +107,7 @@ const KNOWN_CONFIG_KEYS = new Set([
     'pollIntervalSec',
     'logTailDefault',
     'maxOutputKb',
+    'reopenAcrossSessions',
     'targets',
     'hostKeys',
     /** 显式清空全部目标的确认位（见 POST /config 的空数组防丢保护）。 */
@@ -787,6 +793,8 @@ export function normalizeConfig(section) {
         pollIntervalSec: clampInt(section.pollIntervalSec, 1, 60, 5),
         logTailDefault: clampInt(section.logTailDefault, 1, 5000, 200),
         maxOutputKb: clampInt(section.maxOutputKb, 1, 8192, 512),
+        // 只有显式 workspace 才跟随；其余（含旧配置 / 非法值）一律「不跟随」
+        reopenAcrossSessions: section.reopenAcrossSessions === 'workspace' ? 'workspace' : 'off',
         targets: targets ?? [],
         hostKeys: hostKeys ?? [],
     };
@@ -1538,6 +1546,7 @@ const plugin = definePlugin({
                 pollIntervalSec: live.pollIntervalSec,
                 logTailDefault: live.logTailDefault,
                 maxOutputKb: live.maxOutputKb,
+                reopenAcrossSessions: live.reopenAcrossSessions,
                 targets: targetsNow().map(snapshotTarget),
                 hostKeys: live.hostKeys,
                 // 只读复用 tty 连接簿：卡片用它渲染「从连接簿选择」下拉

@@ -171,6 +171,8 @@ const FAKE_CONFIG = {
   pollIntervalSec: 5,
   logTailDefault: 200,
   maxOutputKb: 512,
+  // 切换会话时的跟随范围（0.17.4）：默认不跟随；用例可改成 'workspace'
+  reopenAcrossSessions: 'off',
   targets: [
     { name: '本机', kind: 'local', book: '', host: '', port: 22, username: '', auth: 'agent', keyPath: '', agentForward: false, passwordSet: false, passphraseSet: false },
     { name: 'prod', kind: 'ssh', book: 'prod-a', host: '', port: 22, username: '', auth: 'agent', keyPath: '', agentForward: false, passwordSet: false, passphraseSet: false },
@@ -263,6 +265,17 @@ function makeClientCtx(options = {}) {
     notices: [],
     /** 宿主侧的标签关闭钩子（registerCloseHandler）：用例用它模拟用户点标签栏的 ✕。 */
     closeHandlers: new Map(),
+    /** 右侧栏「在屏会话」（sidebarRight.mounted）：D172 第二轮的重开与收还原都按它走。 */
+    mountedSession: null,
+    mountedListeners: [],
+    /** 用例里 sidebarRight.close(tabId) 的调用记录（收掉宿主还原出来的旧标签）。 */
+    closedTabs: [],
+    /** 前 N 次 openTab 抛错（模拟「在屏会话刚变、目标会话 store 还没 adopt」，D172 第三轮）。 */
+    openTabFails: options.openTabFails ?? 0,
+    /** 每台会话 layout 里**已记录**的标签（tabsIn 的返回；还原出来的就是它们）。 */
+    layouts: {},
+    /** 宿主工作区分组（0.17.4「同一工作区内跟随」的判据来源）。 */
+    workspaces: options.workspaces ?? [],
     /** locale 目录的清理函数（传 locale: 'en' 时才有）：用例收尾要调它，别把 en 泄漏给后续用例。 */
     localeCleanup: null,
   }
@@ -312,6 +325,13 @@ function makeClientCtx(options = {}) {
         }
         const cleanup = callback({ locale })
         state.localeCleanup = typeof cleanup === 'function' ? cleanup : null
+      }
+      if (names.includes('workspaces') && options.workspaces !== undefined) {
+        callback({
+          workspaces: {
+            list: { getSnapshot: () => ({ items: state.workspaces }) },
+          },
+        })
       }
       if (names.includes('ttyConnbar') && options.ttyConnbar === true) {
         callback({
@@ -405,7 +425,33 @@ function makeClientCtx(options = {}) {
           slots: ctx.slots,
           sidebarRightTabs: { register: () => () => {} },
           sidebarRight: {
-            openTab: (kind, openOptions) => { state.openTabs.push({ kind, options: openOptions ?? {} }) },
+            openTab: (kind, openOptions) => {
+              // 真机行为：目标会话的 store 还没 adopt 时 openTab 会抛（没有已提交的 occurrence）
+              if (state.openTabFails > 0) {
+                state.openTabFails -= 1
+                throw new Error('sidebarRight: no committed occurrence for the mounted session')
+              }
+              state.openTabs.push({ kind, options: openOptions ?? {} })
+            },
+            /*
+             * D172 第二轮：在屏会话是可观察的（`mounted`），且 `openTab` 落在**它**身上。
+             * 桩必须提供这两个能力，否则「切会话把标签带过去」这条只能用列表快照去模拟——
+             * 而真机证明列表快照先于在屏切换发布，那会把标签开在上一个会话里（P1）。
+             */
+            mounted: {
+              getSnapshot: () => state.mountedSession,
+              subscribe: (fn) => {
+                state.mountedListeners.push(fn)
+                return () => {
+                  const i = state.mountedListeners.indexOf(fn)
+                  if (i >= 0) state.mountedListeners.splice(i, 1)
+                }
+              },
+            },
+            /** 读一台会话**已提交**的 layout 标签（宿主还原出来的就是这批 id）。 */
+            tabsIn: (sessionId) => (Array.isArray(state.layouts[sessionId]) ? state.layouts[sessionId] : []),
+            /** 收掉一个标签（我们收「宿主还原出来的旧标签」时走这条）。 */
+            close: (tabId) => { state.closedTabs.push(tabId) },
             /*
              * 宿主关闭标签时先回收插件资源（sidebarRight 的 closeIn → removeAfterCleanup）。
              * 用例用它模拟「用户点了标签栏上的 ✕」——真实宿主里这是**唯一**能把关闭
@@ -422,6 +468,12 @@ function makeClientCtx(options = {}) {
     },
   }
   return { ctx, state }
+}
+
+/** 模拟「用户切换到另一台会话」：改 mounted 并通报订阅者（真实宿主先 adopt 再渲染）。 */
+function switchScreen(state, sessionId) {
+  state.mountedSession = sessionId
+  for (const notify of [...state.mountedListeners]) notify()
 }
 
 await test('apply 注册设置卡片与配置入口（settings.plugin.item / settings.kit.item / plugins.bundle.config）并挂载侧边栏入口', () => {
@@ -725,18 +777,27 @@ await test('粘性：切会话时自动把容器标签带过去（判定抽成�
   assert.equal(carrier.shouldReopen(true, null, 'b', true), true, '首个会话 id 到达也算一次切换')
 })
 
-await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不重复开）', () => {
+await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不重复开）', async () => {
+  /*
+   * D172 第二轮：重开的时机改成「右侧栏在屏会话」（sidebarRight.mounted），不再用 sessions
+   * 列表快照——列表的 mainView 保留计数先于在屏切换发布，按它 openTab 会把标签开在**上一个**
+   * 会话里（真机实测 0.2.2-rc.5）。
+   */
+  FAKE_CONFIG.reopenAcrossSessions = 'workspace'
   const exports_ = registration.factory((spec) => SEED[spec])
-  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  const { ctx, state } = makeClientCtx({
+    sidebarRightTabs: true,
+    workspaces: [{ workspaceId: 'w1', sessionIds: ['session-smoke', 'session-two'] }],
+  })
+  state.mountedSession = 'session-smoke'
   exports_.apply(ctx)
-  assert.equal(state.sessionListeners.length, 1, '应订阅一次会话列表')
+  assert.equal(state.mountedListeners.length, 1, '应订阅一次「在屏会话」')
+  await new Promise((resolve) => setTimeout(resolve, 20)) // 等 config（跟随范围读它）
   exports_.__carrier.open({})
   assert.equal(state.openTabs.length, 1, '打开时应开标签')
-  // 模拟切会话：改 current 再通报订阅者
-  state.sessionCurrent = 'session-two'
-  for (const notify of state.sessionListeners) notify()
+  switchScreen(state, 'session-two')
   assert.equal(state.openTabs.length, 2, '切会话应在新的会话里重开标签')
-  for (const notify of state.sessionListeners) notify()
+  switchScreen(state, 'session-two')
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
@@ -760,24 +821,29 @@ await test('粘性：关掉标签后切会话不再把它带回来（标签 ✕ 
   )
   closeHook('session-smoke', { id: 'tab', kind: 'docker' })
 
-  state.sessionCurrent = 'session-two'
-  for (const notify of state.sessionListeners) notify()
+  switchScreen(state, 'session-two')
   assert.equal(state.openTabs.length, 1, '用户已经关掉了，切会话不该再开')
   // 再切一次也不该复活
-  state.sessionCurrent = 'session-three'
-  for (const notify of state.sessionListeners) notify()
+  switchScreen(state, 'session-three')
   assert.equal(state.openTabs.length, 1, '切第三次也不该复活')
 })
 
-await test('粘性：老宿主（没有 registerCloseHandler）不因缺 API 报错，行为保持原样', () => {
+await test('粘性：老宿主（没有 registerCloseHandler）不因缺 API 报错，行为保持原样', async () => {
+  FAKE_CONFIG.reopenAcrossSessions = 'workspace'
   const exports_ = registration.factory((spec) => SEED[spec])
-  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true, sidebarRightCloseHook: false })
+  const { ctx, state } = makeClientCtx({
+    sidebarRightTabs: true,
+    sidebarRightCloseHook: false,
+    workspaces: [{ workspaceId: 'w1', sessionIds: ['session-smoke', 'session-two'] }],
+  })
+  state.mountedSession = 'session-smoke'
   assert.doesNotThrow(() => exports_.apply(ctx))
+  await new Promise((resolve) => setTimeout(resolve, 20))
   exports_.__carrier.open({})
   assert.equal(state.openTabs.length, 1, '打开照常')
-  state.sessionCurrent = 'session-two'
-  for (const notify of state.sessionListeners) notify()
+  switchScreen(state, 'session-two')
   assert.equal(state.openTabs.length, 2, '拿不到钩子时保持既有行为（切会话仍带过去）')
+  FAKE_CONFIG.reopenAcrossSessions = 'off'
 })
 
 /* ------------------------------------------------------------------ *
@@ -818,57 +884,170 @@ function loadBundle(storage) {
 /** 让 `useEffect` 真的跑：标签体的「挂载自愈」与关闭句柄登记都只发生在 effect 里。 */
 const reactWithEffects = { ...ReactStub, useEffect: (fn) => { fn() } }
 
-await test('粘性（D172）：关掉标签的记忆跨刷新，挂载自愈不再把它点亮', () => {
-  const storage = makeStorageStub()
+/** 把「这台会话持久 layout 里记着哪些标签」写进 localStorage 桩（D172 第三轮的判据数据源）。 */
+function seedPersistedLayout(storage, sessionId, tabs) {
+  const byId = {}
+  for (const tab of tabs) byId[tab.id] = tab
+  // 键 = `dsh.sidebar-right.v1.` + 会话 id 原样（会话 id 自己就以 `session-` 开头）
+  storage.setItem(
+    'dsh.sidebar-right.v1.' + sessionId,
+    JSON.stringify({ bySession: { [sessionId]: { layout: { nodes: { pane1: { id: 'pane1', kind: 'pane' } }, tabs: byId } } } }),
+  )
+}
 
-  // 第一轮：显式打开清标记；用户点标签栏 ✕ 落持久标记
-  const exports1 = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
-  const { ctx: ctx1, state: state1 } = makeClientCtx({ sidebarRightTabs: true })
-  exports1.apply(ctx1)
-  assert.equal(exports1.__carrier.autoReopen.enabled(), true, '默认应自动重开')
-  exports1.__carrier.open({})
-  assert.equal(storage.getItem(exports1.__carrier.autoReopen.key), null, '显式打开必须清掉「用户关闭过」')
-  const closeHook = state1.closeHandlers.get('docker')
-  assert.equal(typeof closeHook, 'function', '没登记关闭钩子：这条用例测不到标签 ✕')
-  closeHook('session-smoke', { id: 'tab', kind: 'docker' })
-  assert.equal(storage.getItem(exports1.__carrier.autoReopen.key), 'off', '用户点 ✕ 必须落持久标记')
-  assert.equal(exports1.__carrier.shouldReopen(true, 'a', 'b', true), false, '关掉后即使内存意图被点亮也不重开')
-
-  // 刷新：新模块实例（内存意图归零）+ 同一份 localStorage；宿主恢复标签 → body 挂载
-  const exports2 = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
-  const { ctx: ctx2, state: state2 } = makeClientCtx({ sidebarRightTabs: true })
-  exports2.apply(ctx2)
-  const tabBody = state2.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
-  assert.ok(tabBody !== undefined, '标签体没注册：这条用例测不到挂载自愈')
-  let closedByMount = 0
-  tabBody.component({ useTabInfo: () => ({ tab: { navigation: {}, visible: true, actions: { close: () => { closedByMount += 1 } } } }) })
-  assert.equal(closedByMount, 1, '用户关闭过 → 宿主恢复出来的旧标签应在挂载时自收（D172 的全局收尾）')
-  state2.sessionCurrent = 'session-two'
-  for (const notify of state2.sessionListeners) notify()
-  assert.equal(state2.openTabs.length, 0, '关掉过 → 旧标签自收之后，切会话也不该重开')
-
-  // 显式入口重开 → 清标记 → 粘性恢复
-  exports2.__carrier.open({})
-  assert.equal(storage.getItem(exports2.__carrier.autoReopen.key), null, '显式打开应恢复自动重开')
-  state2.sessionCurrent = 'session-three'
-  for (const notify of state2.sessionListeners) notify()
-  assert.equal(state2.openTabs.length, 2, '显式打开后切会话应重新粘住')
-})
-
-await test('粘性（D172）：没关过时，宿主恢复出来的标签仍点亮粘性（自愈回归）', () => {
+await test('粘性（D172）：关掉后切到旧会话，宿主还原出来的标签在挂载时自收（标记不动）', () => {
+  /*
+   * issue #30 的正题。判据 = **标签 id 的来源**：切换前先把目标会话**已持久化**的 layout 里
+   * 的 docker 标签 id 记下来；挂载时标签 id 在缓存里 = 宿主还原出来的旧标签。试过、被真机
+   * 推翻的两版：只看持久标记（吃掉开始页卡片）/ 看 `navigation.revision`（访问过的会话里
+   * 还原出来的记录 revision 仍是 ≥1）。
+   */
   const storage = makeStorageStub()
   const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
   const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  state.mountedSession = 'session-one'
   exports_.apply(ctx)
-  // 模拟「刷新后宿主把标签恢复出来」：没有 open() 调用，只有 body 挂载
+  exports_.__carrier.open({})
+  state.closeHandlers.get('docker')('session-smoke', { id: 'tab', kind: 'docker' })
+  assert.equal(storage.getItem(exports_.__carrier.autoReopen.key), 'off', '用户点 ✕ 必须落持久标记')
+
+  // 目标会话在**我们切进去之前**就已经记录着一个 docker 标签
+  seedPersistedLayout(storage, 'session-two', [{ id: 'tab-old', kind: 'docker' }, { id: 'tab-chat', kind: 'conversation' }])
+  switchScreen(state, 'session-two')
+  assert.equal(state.openTabs.length, 1, '关掉过 → 切会话不该重开')
+
+  // 宿主把那台会话 layout 里记录的容器标签还原出来 → 挂载
   const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
   assert.ok(tabBody !== undefined, '标签体没注册')
+  let selfClosed = 0
+  tabBody.component({
+    useTabInfo: () => ({ tab: { id: 'tab-old', navigation: { revision: 2 }, visible: true, actions: { close: () => { selfClosed += 1 } } } }),
+  })
+  assert.equal(selfClosed, 1, '切换前就在 layout 里的标签 = 还原 → 用户关过就自收（关一次就到处生效）')
+  assert.equal(storage.getItem(exports_.__carrier.autoReopen.key), 'off', '自收还原不许把「关闭」标记清掉（D172 复发形态）')
+})
+
+await test('粘性（D172 第三轮）：切换后才出现的标签 id = 新的打开（开始页卡片），不许自收且清标记', () => {
+  const storage = makeStorageStub()
+  storage.setItem('dsh-docker:autoReopen', 'off')
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  state.mountedSession = 'session-one'
+  exports_.apply(ctx)
+  // 这台会话切换前**没有** docker 记录（空 layout）
+  seedPersistedLayout(storage, 'session-one', [{ id: 'tab9', kind: 'conversation' }])
+  switchScreen(state, 'session-two')
+  seedPersistedLayout(storage, 'session-two', [])
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
   let closed = 0
-  tabBody.component({ useTabInfo: () => ({ tab: { navigation: {}, visible: true, actions: { close: () => { closed += 1 } } } }) })
-  assert.equal(closed, 0, '没关过 → 不许自收（否则刷新一次就把用户开着的标签收掉了）')
-  state.sessionCurrent = 'session-two'
-  for (const notify of state.sessionListeners) notify()
-  assert.equal(state.openTabs.length, 1, '宿主恢复的标签应把粘性带过去')
+  // 卡片打开：标签 id 是新造的，切换前的快照里当然没有它
+  tabBody.component({
+    useTabInfo: () => ({ tab: { id: 'tab-new', navigation: { revision: 1 }, visible: true, actions: { close: () => { closed += 1 } } } }),
+  })
+  assert.equal(closed, 0, '新的打开 → 不许自收（否则「点卡片没反应」）')
+  assert.equal(storage.getItem(exports_.__carrier.autoReopen.key), null, '显式打开应清掉「用户关闭过」')
+})
+
+await test('粘性（D172）：没关过时，切会话把标签带过去（时机 = 在屏会话）', async () => {
+  FAKE_CONFIG.reopenAcrossSessions = 'workspace'
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({
+    sidebarRightTabs: true,
+    workspaces: [{ workspaceId: 'w1', sessionIds: ['session-one', 'session-two'] }],
+  })
+  state.mountedSession = 'session-one'
+  exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 20)) // 等 config 拉回来（follow 范围读它）
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  assert.ok(tabBody !== undefined, '标签体没注册')
+  // 面板确实开着（我们的入口打开时带 params）
+  tabBody.component({ useTabInfo: () => ({ tab: { id: 'tab1', navigation: { params: {}, revision: 1 }, visible: true, actions: { close: () => {} } } }) })
+  switchScreen(state, 'session-two')
+  assert.equal(state.openTabs.length, 1, '切会话应在新会话里重开（按 mounted，不是列表快照）')
+  assert.equal(state.openTabs[0].kind, 'docker', 'kind 必须是注册的 kind')
+})
+
+await test('粘性（D172 第三轮）：首次切到没访问过的会话时 openTab 会抛，必须重试到成功', async () => {
+  /*
+   * 真机事故（用户报告）：A 会话开着容器面板 → 切到 B（本页面从没访问过）→ B 里**没打开**；
+   * 切回 A 再回 B，这次开了。原因是「在屏会话刚变」那一刻 B 的 store 还没 adopt，
+   * `openTab` 抛「没有已提交的 occurrence」——旧实现 catch 掉就没了，第二次 B 已 adopt 才成功。
+   */
+  FAKE_CONFIG.reopenAcrossSessions = 'workspace'
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({
+    sidebarRightTabs: true,
+    openTabFails: 3,
+    workspaces: [{ workspaceId: 'w1', sessionIds: ['session-one', 'session-two'] }],
+  })
+  state.mountedSession = 'session-one'
+  exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  tabBody.component({ useTabInfo: () => ({ tab: { id: 'tab1', navigation: { params: {}, revision: 1 }, visible: true, actions: { close: () => {} } } }) })
+  switchScreen(state, 'session-two')
+  assert.equal(state.openTabs.length, 0, '第一次调用应当失败（模拟 store 还没 adopt）')
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  assert.equal(state.openTabs.length, 1, '重试之后必须真的开出来（这是用户报的那条）')
+})
+
+await test('跟随范围（0.17.4）：默认 off —— 切会话不弹面板（只保留最初的打开）', async () => {
+  FAKE_CONFIG.reopenAcrossSessions = 'off'
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({
+    sidebarRightTabs: true,
+    workspaces: [{ workspaceId: 'w1', sessionIds: ['session-one', 'session-two'] }],
+  })
+  state.mountedSession = 'session-one'
+  exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  exports_.__carrier.open({})
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  tabBody.component({ useTabInfo: () => ({ tab: { id: 'tab1', navigation: { params: {}, revision: 1 }, visible: true, actions: { close: () => {} } } }) })
+  switchScreen(state, 'session-two')
+  assert.equal(state.openTabs.length, 1, '默认「不跟随」：切到同一工作区也不许自动开（这是真机反馈的那条）')
+})
+
+await test('跟随范围（0.17.4）：workspace —— 同一工作区跟随、跨工作区不跟', async () => {
+  FAKE_CONFIG.reopenAcrossSessions = 'workspace'
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({
+    sidebarRightTabs: true,
+    workspaces: [
+      { workspaceId: 'w1', sessionIds: ['session-one', 'session-two'] },
+      { workspaceId: 'w2', sessionIds: ['session-three'] },
+    ],
+  })
+  state.mountedSession = 'session-one'
+  exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  exports_.__carrier.open({})
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  tabBody.component({ useTabInfo: () => ({ tab: { id: 'tab1', navigation: { params: {}, revision: 1 }, visible: true, actions: { close: () => {} } } }) })
+  switchScreen(state, 'session-two')
+  assert.equal(state.openTabs.length, 2, '同一工作区 → 应跟随重开')
+  switchScreen(state, 'session-three')
+  assert.equal(state.openTabs.length, 2, '跨工作区 → 不许重开')
+})
+
+await test('跟随范围（0.17.4）：workspace 模式但拿不到工作区分组 → 退化成不跟随', async () => {
+  FAKE_CONFIG.reopenAcrossSessions = 'workspace'
+  const storage = makeStorageStub()
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  state.mountedSession = 'session-one'
+  exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  exports_.__carrier.open({})
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  tabBody.component({ useTabInfo: () => ({ tab: { id: 'tab1', navigation: { params: {}, revision: 1 }, visible: true, actions: { close: () => {} } } }) })
+  switchScreen(state, 'session-two')
+  assert.equal(state.openTabs.length, 1, '不知道工作区归属 → 宁可不开（不许在用户没预期的会话里弹面板）')
+  FAKE_CONFIG.reopenAcrossSessions = 'off'
 })
 
 await test('粘性（D172）：连接栏换承载收掉标签，不许写成「用户关闭过」', () => {
@@ -886,7 +1065,7 @@ await test('粘性（D172）：连接栏换承载收掉标签，不许写成「�
   tabBody.component({
     useTabInfo: () => ({
       tab: {
-        navigation: {},
+        navigation: { params: {}, revision: 1 },
         visible: true,
         // 宿主的真实行为：任何显式移除都会通知 registerCloseHandler
         actions: { close: () => { hostClosed += 1; state.closeHandlers.get('docker')?.() } },
@@ -899,6 +1078,28 @@ await test('粘性（D172）：连接栏换承载收掉标签，不许写成「�
   assert.equal(hostClosed, 1, 'openPanel 应已收掉并存的标签（否则这条用例测不到还原）')
   assert.equal(storage.getItem(exports_.__carrier.autoReopen.key), null, '我们自己收标签不该算「用户关闭过」')
   assert.equal(exports_.__carrier.shouldReopen(true, 'a', 'b', true), true, '换承载后粘性应保持')
+})
+
+await test('粘性（D172 第二轮）：开始页卡片（宿主 openTab，不带 params）→ 不自收、清掉标记', () => {
+  /*
+   * 真机事故（用户截图）：先点过标签 ✕（标记 off），再点会话右侧「开始」页的「Docker 容器」
+   * 卡片 —— 点了没反应。那张卡片走宿主的 `openTab(kind)`（插件拿不到手势），第一轮「有标记
+   * 就自收」把它吃掉了。判据改成导航快照：params 有值 = 我们的入口；params 为空但 revision=1
+   * = 宿主按地址打开（卡片）；params 为空且 revision 为 0/≥2 = layout 还原。
+   */
+  const storage = makeStorageStub()
+  storage.setItem('dsh-docker:autoReopen', 'off')
+  const exports_ = loadBundle(storage).factory((spec) => (spec === 'react' ? reactWithEffects : SEED[spec]))
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  exports_.apply(ctx)
+  const tabBody = state.cards.find((card) => card.options.name === 'sidebar.right.pane.tab')
+  assert.ok(tabBody !== undefined, '标签体没注册')
+  let closed = 0
+  tabBody.component({
+    useTabInfo: () => ({ tab: { navigation: { revision: 1 }, visible: true, actions: { close: () => { closed += 1 } } } }),
+  })
+  assert.equal(closed, 0, '按地址打开（开始页卡片）→ 不许自收，否则「点卡片没反应」')
+  assert.equal(storage.getItem(exports_.__carrier.autoReopen.key), null, '显式打开应清掉「用户关闭过」')
 })
 
 await test('粘性（D172）：存储不可用（隐私模式）退回内存行为，读写都不抛', () => {
@@ -1132,7 +1333,7 @@ await test('注入清单快照：本插件注入过的服务全集（加可选�
   const dispose = exports_.apply(ctx)
   // locale 是 i18n 的动态注入（docs/i18n.md）：夹具**刻意不为它回调** = 老宿主那条路，
   // 渲染走 zh 兜底，所以本文件里的中文断言照旧成立。
-  assert.deepEqual(state.injected.sort(), ['locale', 'sessions', 'sidebarRight', 'sidebarRightTabs', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  assert.deepEqual(state.injected.sort(), ['locale', 'sessions', 'sidebarRight', 'sidebarRightTabs', 'ttyConnbar', 'ttyPanel', 'ttyTerminal', 'workspaces'])
   dispose()
 })
 

@@ -568,6 +568,10 @@ const I18N_ZH = {
   'check.announce': '向 agent 公告能力',
   'hint.dockerBin': '默认 docker；podman 可填 podman',
   'field.pollInterval': '统计刷新间隔（秒）',
+  'field.reopenAcrossSessions': '切换会话时',
+  'option.reopenOff': '不跟随（默认）— 只在你打开过它的会话里出现',
+  'option.reopenWorkspace': '同一工作区内跟随 — 跨工作区不自动打开',
+  'hint.reopenAcrossSessions': '关掉面板请点标签上的 ✕：那一下会记住「你关过」，之后切到记录过容器标签的会话也不会再把它带回来。选「同一工作区内跟随」时，切到同一工作区的另一个会话会自动把面板带过去（跨工作区不弹）；跟随范围只看宿主的工作区分组，拿不到归属时按「不跟随」处理',
   'field.logTailDefault': '日志默认行数',
   'hint.logTailDefault': '面板日志页 LINES 的初始值（面板内可临时改）；它只是「行数」上限——快照还要过下面那道字节闸，所以不保证一定拿得到这么多行',
   'field.maxOutput': '输出上限（KB）',
@@ -1136,6 +1140,10 @@ const I18N_EN = {
   'check.announce': 'Announce capabilities to the agent',
   'hint.dockerBin': 'docker by default; for podman put podman',
   'field.pollInterval': 'Stats refresh interval (seconds)',
+  'field.reopenAcrossSessions': 'On session switch',
+  'option.reopenOff': 'Do not follow (default) — only appears in sessions where you opened it',
+  'option.reopenWorkspace': 'Follow within the same workspace — never opens across workspaces',
+  'hint.reopenAcrossSessions': 'Close the panel with the ✕ on its tab: that click is remembered, so switching to a session that recorded the tab will not bring it back. With “follow within the same workspace”, switching to another session of the same workspace carries the panel over (never across workspaces). The scope comes from the host’s workspace grouping; when it is unknown the plugin does not follow',
   'field.logTailDefault': 'Default log rows',
   'hint.logTailDefault': 'Initial value of LINES on the panel\'s log page (adjustable there); it is only a “row” cap — the snapshot also has to pass the byte gate below, so this many rows is not guaranteed',
   'field.maxOutput': 'Output limit (KB)',
@@ -9387,21 +9395,59 @@ window.__ModuleLoader__.load({
         }
       }, [])
       /*
-       * 标签体挂载 == 面板确实开着。按用户意图分两种（D172）：
-       *   - 没关过（默认）→ 把粘性意图对齐为 true（宿主恢复标签 / 刷新之后自愈）；
-       *   - 显式关闭过 → 这次挂载只可能来自宿主的**会话 layout 还原**（切到别的会话，
-       *     那台会话当年记录过这个标签）。关闭是全局意图，所以主动收掉它：每个旧会话在
-       *     第一次被切到时自清一次，「关一次」才真的到处生效。
-       * 读的是持久标记而不是内存意图——内存意图会被本节的自愈本身点亮。
+       * 标签体挂载 = 面板确实开着（D172 第二轮：这里**不再自杀式关闭**）。
+       *
+       * 第一轮按「持久标记为 off ⇒ 这次挂载一定是 layout 还原」判，并把标签自收——结果把
+       * **开始页卡片**（宿行走 `openTab(kind)`，插件拿不到那个手势）也吃掉了：点卡片没反应。
+       * 第二轮先改成看 `navigation.revision`，真机又证明宿主还原出来的记录 revision 可以是
+       * ≥1（那台会话在本次页面生命周期里访问过、occurrence 还留着），判据同样不可靠。
+       *
+       * 现在分工：
+       *   - **还原**由「在屏会话切换」那一侧收（见 onScreenSession：切到一台用户关过的会话时，
+       *     按那台会话**已记录**的 layout 把容器标签关掉）；
+       *   - **挂载这一侧**只做一件事：判断「这次挂载是不是用户自己点的」（判据见下面的
+       *     导航快照表），是就清标记并点亮粘性；**绝不在这里自收**。
        */
       useEffect(() => {
         if (autoReopenEnabled()) {
           dockerPanelWanted = true
           return
         }
-        try {
-          tabCloseRef.current?.()
-        } catch { /* 标签已关 */ }
+        /*
+         * 「这次挂载是宿主的 layout 还原，还是用户自己点的？」（D172 第三轮判据）
+         *
+         * 试过、都被真机推翻的两版：① 只看持久标记 → 把开始页卡片也吃了（点卡片没反应）；
+         * ② 看 `navigation.revision`（0 = 还原）→ 切回**访问过**的会话时还原出来的记录
+         * revision 仍是 ≥1，判据失效。
+         *
+         * 现在按**标签 id 的来源**判：切到一台会话前，先读它**已持久化**的 layout
+         * （`localStorage['dsh.sidebar-right.v1.session-<id>']`）里记录着哪些 docker 标签 id
+         * （`recordedDockerTabs`，见 onScreenSession）。挂载时这个标签的 id 在缓存里 = 宿主把
+         * 旧标签还原出来了；不在缓存里 = 这就是一次新的打开（开始页卡片 / 我们自己的入口）。
+         *
+         * 为什么必须在**切换前**读：`openTab` 会先提交 layout，等挂载时再读，新开的标签也
+         * 已经写进去了 —— 那份「已记录」就分不出新旧。
+         *
+         * 判据取不到（老宿主没这个存储 / 信息缺失）时按**新打开**处理：宁可漏收一个旧标签，
+         * 也不能再把用户的显式入口吃掉。
+         */
+        const recorded = recordedTabIdsFor(screenSessionId())
+        const tabId = typeof info?.tab?.id === 'string' ? info.tab.id : null
+        const restoredByLayout = recorded !== null && tabId !== null && recorded.has(tabId)
+        if (restoredByLayout) {
+          // 宿主还原出来的旧标签 + 用户关过 → 自收（「关一次就到处生效」）。
+          if (!autoReopenEnabled()) {
+            try {
+              tabCloseRef.current?.()
+            } catch { /* 标签已关 */ }
+            return
+          }
+          dockerPanelWanted = true
+          return
+        }
+        // 新的打开（卡片 / 侧栏 / 连接栏 / 我们自己的跟随）：算用户要它开着
+        if (!autoReopenEnabled()) setAutoReopen(true)
+        dockerPanelWanted = true
       }, [])
       /*
        * 入口带进来的导航参数（S2）：带 target 就用它当面板 key —— 换目标即重挂，
@@ -9665,6 +9711,12 @@ window.__ModuleLoader__.load({
         pollIntervalSec: source.pollIntervalSec,
         logTailDefault: source.logTailDefault,
         maxOutputKb: source.maxOutputKb,
+        /*
+         * 归一与宿主 normalizeConfig 同口径：只有显式 workspace 才算跟随。
+         * **这一行漏不得**：卡片是「整表提交」——payload 里没有的键，宿主就按默认值写回，
+         * 于是界面上改完、保存后又被响应快照弹回，看着像「保存了但不生效」。
+         */
+        reopenAcrossSessions: source.reopenAcrossSessions === 'workspace' ? 'workspace' : 'off',
         targets: source.targets.map((item) => ({
           name: item.name,
           kind: item.kind,
@@ -10121,6 +10173,20 @@ window.__ModuleLoader__.load({
           field(t('field.logTailDefault'), numberInput('logTailDefault', 1, 5000), t('hint.logTailDefault')),
           field(t('field.maxOutput'), numberInput('maxOutputKb', 1, 8192), t('hint.maxOutput')),
           field(t('field.execTimeout'), numberInput('execTimeoutSec', 1, 120)),
+          field(
+            t('field.reopenAcrossSessions'),
+            jsxs('select', {
+              className: 'dk_select',
+              value: form.reopenAcrossSessions === 'workspace' ? 'workspace' : 'off',
+              onChange: (event) => patch({ reopenAcrossSessions: event.target.value }),
+              children: [
+                jsx('option', { value: 'off', children: t('option.reopenOff') }),
+                jsx('option', { value: 'workspace', children: t('option.reopenWorkspace') }),
+              ],
+            }),
+            t('hint.reopenAcrossSessions'),
+            2,
+          ),
         ] }),
 
         sectionTitle(t('section.capabilities')),
@@ -10341,6 +10407,123 @@ window.__ModuleLoader__.load({
      * （D172）压过它，否则「关闭」会被这次自愈重新点亮。
      */
     let dockerPanelWanted = false
+
+    /** 「面板此刻确实开着」——挂载时对齐的内存粘性（持久标记仍压过它，见 DockerTabBody）。 */
+    /**
+     * 「在屏会话」监听是否已装（D172 第二轮）：装了就以它为准，sessions 列表那条只做老宿主兜底。
+     * 两条并存会让同一次切换重开两次（宿主的同 kind 去重能挡住标签重复，但没必要）。
+     */
+    let screenWatcherActive = false
+
+    /**
+     * 每台会话**切换进来之前**已持久化的 docker 标签 id（D172 第三轮判据的数据源）。
+     *
+     * 为什么要「切换前」快照：`openTab` 会先提交 layout 再渲染 body，等挂载时再读存储，
+     * 新开的标签也已经写进去了——那份「已记录」就分不出新旧。所以切到一台会话时先把
+     * 它的持久 layout 读一份存这里（`recordedTabIdsFor`），标签体挂载时拿 `tab.id` 比对：
+     * 在里面 = 宿主还原出来的旧标签；不在 = 这一次是新的打开。
+     *
+     * 读的是宿主的持久化键 `dsh.sidebar-right.v1.session-<sid>`（**不是公开契约**）：
+     * 解析失败 / 存储不可用一律返回 `null`，调用方按「新打开」处理（fail-open：
+     * 宁可漏收一个旧标签，也不能把用户的显式入口吃掉）。
+     */
+    const recordedDockerTabs = new Map()
+
+    /** 读一台会话持久 layout 里记录的 docker 标签 id；读不到返回 null（≠ 空集合）。 */
+    function readRecordedDockerTabIds(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return null
+      try {
+        /*
+         * 键是 `dsh.sidebar-right.v1.` + **会话 id 原样**——会话 id 自己就以 `session-` 开头，
+         * 再手写一个 `session-` 前缀会拼成 `…session-session-…`（真机实测：读出来恒 null，
+         * 结果所有挂载都被当成「新的打开」，关闭标记被悄悄清掉）。
+         */
+        const raw = window.localStorage.getItem('dsh.sidebar-right.v1.' + sessionId)
+        if (raw === null) return null
+        const parsed = JSON.parse(raw)
+        const bySession = parsed !== null && typeof parsed === 'object' ? parsed.bySession : undefined
+        const surface = bySession !== null && typeof bySession === 'object' ? bySession[sessionId] : undefined
+        const tabs = surface !== null && typeof surface === 'object' && surface.layout !== null && typeof surface.layout === 'object'
+          ? surface.layout.tabs
+          : undefined
+        if (tabs === null || typeof tabs !== 'object') return null
+        const ids = new Set()
+        for (const [key, tab] of Object.entries(tabs)) {
+          if (tab === null || typeof tab !== 'object') continue
+          if (tab.kind !== DOCKER_TAB_KIND) continue
+          ids.add(typeof tab.id === 'string' && tab.id !== '' ? tab.id : String(key))
+        }
+        return ids
+      } catch {
+        return null
+      }
+    }
+
+    /** 切换时记一份「这台会话原来记着哪些 docker 标签」。 */
+    function rememberRestorableTabs(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return
+      const ids = readRecordedDockerTabIds(sessionId)
+      if (ids === null) recordedDockerTabs.delete(sessionId)
+      else recordedDockerTabs.set(sessionId, ids)
+    }
+
+    /** 当前挂着的会话 id：优先 sidebarRight 的在屏会话，退回 sessions 列表的 mainView 判据。 */
+    function screenSessionId() {
+      try {
+        const fromSidebar = dockerTabApi?.mounted?.getSnapshot?.()
+        if (typeof fromSidebar === 'string' && fromSidebar !== '') return fromSidebar
+      } catch { /* 契约变动时不连累渲染 */ }
+      try {
+        return currentSessionIdOf(sessionsSvc?.list?.getSnapshot?.()) ?? null
+      } catch {
+        return null
+      }
+    }
+
+    /** 挂载时查「这个标签是不是切换前就已经在 layout 里」。拿不到判据时返回 null。 */
+    function recordedTabIdsFor(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return null
+      return recordedDockerTabs.get(sessionId) ?? null
+    }
+
+    /**
+     * `ctx.workspaces`（可选）：判断两台会话是否在**同一个工作区**（0.17.4「同一工作区内跟随」）。
+     * 拿不到就退回「不跟随」——宁可少开一次，也不要在用户没预期的会话里弹面板。
+     */
+    let workspacesApi = null
+
+    /** 「切换会话时的跟随范围」：`off`（默认）/ `workspace`。读 configCache；卡片保存后 publishConfig 会同步。 */
+    function reopenAcrossSessions() {
+      const value = configCache !== null && typeof configCache === 'object' ? configCache.reopenAcrossSessions : undefined
+      return value === 'workspace' ? 'workspace' : 'off'
+    }
+
+    /** 一台会话属于哪个工作区（宿主权威快照 `workspaces.list`）。找不到返回 null。 */
+    function workspaceIdOf(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return null
+      try {
+        const snapshot = workspacesApi?.list?.getSnapshot?.()
+        const items = snapshot !== null && typeof snapshot === 'object' && Array.isArray(snapshot.items) ? snapshot.items : []
+        for (const workspace of items) {
+          if (workspace === null || typeof workspace !== 'object') continue
+          if (!Array.isArray(workspace.sessionIds)) continue
+          if (workspace.sessionIds.includes(sessionId)) return typeof workspace.workspaceId === 'string' ? workspace.workspaceId : null
+        }
+      } catch { /* 契约变动：当作「不知道」 */ }
+      return null
+    }
+
+    /**
+     * 两台会话是否同一工作区（0.17.4「同一工作区内跟随」的判据）。
+     *
+     * 用宿主的工作区分组成员关系，不拿 cwd 前缀猜（同一目录下可能有多个工作区、软链也会猜错）。
+     * 任一侧不在任何工作区（未分组）→ 返回 false：不给「未分组」造一个共享归属。
+     */
+    function sameWorkspace(previousId, nextId) {
+      const a = workspaceIdOf(previousId)
+      const b = workspaceIdOf(nextId)
+      return a !== null && b !== null && a === b
+    }
 
     /**
      * 会话切换时要不要自动重开容器标签（纯函数，便于回归）。
@@ -11038,6 +11221,9 @@ window.__ModuleLoader__.load({
         let lastSessionId = readCurrentId()
         const stopWatch = (typeof sessionsSvc?.list?.subscribe === 'function')
           ? sessionsSvc.list.subscribe(() => {
+            // 有 sidebarRight.mounted 时以它为准（D172 第二轮）：列表的 mainView 保留计数**先于**
+            // 在屏会话切换发布，按它重开会把标签开在上一个会话里（真机实测 0.2.2-rc.5）。
+            if (screenWatcherActive) return
             const current = readCurrentId()
             if (shouldReopenTab(dockerPanelWanted, lastSessionId, current, dockerTabApi !== null)) {
               try {
@@ -11055,6 +11241,15 @@ window.__ModuleLoader__.load({
           // 卸载 / 禁用时清掉粘性意图：免得重新启用后在别的会话里自己冒出来
           dockerPanelWanted = false
         }
+      })
+
+      /*
+       * 工作区归属（可选依赖，0.17.4）：只服务「同一工作区内跟随」这一个判据。
+       * 拿不到时 `workspaceIdOf` 恒 null → sameWorkspace 恒 false → 退化成「不跟随」。
+       */
+      ctx.inject(['workspaces'], (workspaceCtx) => {
+        workspacesApi = workspaceCtx.workspaces ?? null
+        return () => { workspacesApi = null }
       })
 
       // 右侧栏标签承载（S1）：注册 page type 与 body。入口见 S2 的 openContainerPanel()。
@@ -11096,9 +11291,74 @@ window.__ModuleLoader__.load({
         const disposeCloseIntent = typeof tabCtx.sidebarRight?.registerCloseHandler === 'function'
           ? tabCtx.sidebarRight.registerCloseHandler(DOCKER_TAB_KIND, () => { dockerPanelWanted = false; setAutoReopen(false) })
           : null
+        /*
+         * 「在屏会话」是重开的**时机**（D172 第二 / 三轮）：`openTab` 落在 sidebarRight 当前在屏
+         * 的那个会话上，而 sessions 列表快照里的 `mainView` 保留计数**先于**在屏切换发布——
+         * 真机实测（0.2.2-rc.5）按列表判，标签会被开在**上一个**会话里（新会话看不到、旧会话
+         * 多一个）。`mounted` 的契约正是「在 React 渲染选中项之前变」。
+         *
+         * 但「在屏会话刚变」这一刻**目标会话的 store 可能还没 adopt**：真机现场——首次切到一台
+         * 本页面生命周期里从没打开过的会话时，`openTab` 抛「没有已提交的 occurrence」，
+         * 标签根本不开；第二次切回来（store 已 adopt）才开。所以这里**带重试**：每 50ms 再试，
+         * 最多 1s；每次试之前确认「还在那台会话上」，切走了就放弃。
+         *
+         * 「关闭过就真的别回来」不在这里做——收还原靠标签体挂载（见 DockerTabBody）：那边是
+         * adoption 之后的第一个可靠信号，而切换回调这一拍 `tabsIn` 还是空表。
+         */
+        const mountedObs = tabCtx.sidebarRight?.mounted
+        let stopScreen = null
+        if (mountedObs !== undefined && typeof mountedObs.subscribe === 'function' && typeof mountedObs.getSnapshot === 'function') {
+          /** 目标会话的 store 一 adopt 就开；没 adopt（openTab 抛）就 50ms 后再试，最多 1s。 */
+          const openWhenReady = (sessionId, attempt = 0) => {
+            // 又切走了就别再开（否则会开在一台已经离开的会话上）
+            if (mountedObs.getSnapshot() !== sessionId) return
+            try {
+              dockerTabApi?.openTab(DOCKER_TAB_KIND, {})
+            } catch {
+              if (attempt >= 20) return
+              setTimeout(() => openWhenReady(sessionId, attempt + 1), 50)
+            }
+          }
+          const onScreenSession = (next, previous) => {
+            if (typeof next !== 'string' || next === '') return
+            /*
+             * 先记下这台会话**切换前**已持久化的 docker 标签 id（D172 第三轮）：标签体挂载时
+             * 用它判「这是宿主还原出来的旧标签」还是「用户刚刚打开的新标签」。必须在这一拍读，
+             * 因为 `openTab` 会先提交 layout，之后读就把新标签也算进「已记录」了。
+             */
+            rememberRestorableTabs(next)
+            // 用户关过 → 不跟随；那台会话里被宿主还原出来的标签由 DockerTabBody 挂载时自收
+            if (!autoReopenEnabled()) return
+            /*
+             * 跟随范围（0.17.4，卡片可配）：
+             *   - `off`（默认）：**不跟随**——面板只出现在你打开过它的会话里；
+             *   - `workspace`：只在**同一个工作区**的会话之间带过去（跨工作区不弹）。
+             * 真机反馈：默认「每个会话都跟随」太吵。
+             */
+            if (reopenAcrossSessions() !== 'workspace') return
+            if (!sameWorkspace(previous, next)) return
+            if (shouldReopenTab(dockerPanelWanted, previous, next, dockerTabApi !== null)) openWhenReady(next)
+          }
+          let lastScreenId = mountedObs.getSnapshot() ?? null
+          screenWatcherActive = true
+          // 首帧也当成一次切换：刷新页面时宿主会把会话的 layout 还原出来，这里就是它的出口
+          onScreenSession(lastScreenId, null)
+          stopScreen = mountedObs.subscribe(() => {
+            const next = mountedObs.getSnapshot() ?? null
+            if (next === lastScreenId) return
+            const previous = lastScreenId
+            lastScreenId = next
+            onScreenSession(next, previous)
+          })
+        }
 
         return () => {
           dockerTabApi = null
+          screenWatcherActive = false
+          if (stopScreen !== null) {
+            try { stopScreen() } catch { /* 已释放 */ }
+            stopScreen = null
+          }
           if (disposeCloseIntent !== null) {
             try { disposeCloseIntent() } catch { /* 已释放 */ }
           }

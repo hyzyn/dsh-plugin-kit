@@ -130,6 +130,43 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 
 ## 已完成（落点 + 门槛）
 
+### 2026-11-28（0.17.4）：跨会话范围做成可配（默认不跟随）
+
+**真机反馈**：D172 之后的行为是「打开一次，之后**每个会话**都弹出容器面板」——用户原话
+「现在怎么每个会话打开都会弹出 docker 面板了」。跟随本身不是错，错在它是**唯一**语义且默认开启；
+而产品的默认应该是「面板只出现在你打开过它的会话里」。
+
+**落点**：
+- 新配置项 `reopenAcrossSessions`：`off`（默认，不跟随）/ `workspace`（同一工作区内跟随）；
+- 宿主 `src/index.ts`：Config + schema（volatile）+ `KNOWN_CONFIG_KEYS` + `LiveConfig` +
+  `normalizeConfig`（非法值归一成 `off`）+ 快照；
+- 客户端 `client-src/index.js`：`reopenAcrossSessions()` 读 `configCache`；`sameWorkspace()` 取宿主的
+  **工作区分组**（`ctx.workspaces.list.getSnapshot()` 的 `items[].sessionIds`，可选注入，拿不到就按不跟随）；
+  `onScreenSession` 里先过范围门再决定是否 `openTab`；
+- 设置卡片：基础段新增「切换会话时」下拉（两档）+ 说明；i18n zh/en 各 4 条。
+
+**判据**：`off` 下切会话**一律不主动开**（无论同不同工作区）；`workspace` 下只在同一工作区跟随、
+跨工作区不开；工作区归属拿不到时按不跟随（宁可少开一次，也不要在用户没预期的会话里弹面板）。
+「关一次就到处生效」的语义不变——它由标签 ✕ 的持久标记 + 挂载时按 layout 自收实现，与本开关无关。
+
+**门槛**：`scripts/client-smoke.mjs` 130/130（新增三条：默认 off 不跟随 / workspace 同工作区跟随而跨工作区
+不跟随 / 无工作区分组退化）；`test/config-route.test.ts` 补三条（默认 off / workspace 往返 / 非法值归一化）。
+**真机**（computer-use，3082 test profile，0.2.2-rc.5）：off 下 A→同一工作区 B 不出现；改成 workspace 后
+A→同工作区 B 出现、再切到另一工作区的会话不出现。顺手清掉了验证期间在 10 个会话 layout 里留下的 docker
+标签记录（只删 docker 那一条，别的标签没动）。
+
+**补记（同日）：这个开关一开始「存不上」**。真机反馈「选项没法保存」——界面上把「切换会话时」改成
+「不跟随」、保存回执照常写着已保存，重开设置又是「同一工作区内跟随」。真因**不在宿主**：`POST /config`
+的白名单与 `normalizeConfig` 都认这个键（`config-route` 的三条用例一直绿）。问题在卡片的
+`toPayload()`——它是**整表**提交，payload 里没有的键宿主按默认值写回，响应快照再把控件弹回原值：
+服务端从头到尾没收到过这个字段，界面表现为「改了但不生效」。落点：`toPayload` 补
+`reopenAcrossSessions`，归一与宿主同口径（只有显式 `workspace` 才算跟随）。
+**守卫**：`test/config-payload-covers-keys.test.ts` 把宿主的 `KNOWN_CONFIG_KEYS` 与客户端的 `toPayload`
+各自从源码里抽出来做集合覆盖比对（唯一例外是 `hostKeys`——它刻意不整表回传，见 D10；例外表本身也校验，
+宿主改名会一起红），反例「删掉那一行」必须报红。**真机**（localhost:3082，0.2.2-rc.5）：改 `off` 保存 →
+请求体 `"reopenAcrossSessions":"off"`、服务端 `off`、控件不回弹、`cordis.patch.yml` 落盘为 `off`；
+反向改回 `workspace` 同样，刷新页面卡片读回 `workspace`。收尾留在默认 `off`。
+
 ### ✅ 容器标签的「关闭」跨会话 / 跨刷新生效（D172，2026-11-27 完成）
 
 **现场**（issue #30，docker 0.17.3 + DSH 0.2.2-rc.3）：点标签栏 ✕ 关掉「Docker 容器」后，切到任意会话
@@ -152,6 +189,33 @@ true——已经写进各会话 layout 的 docker 标签因此把「关闭」重
 0.2.2-rc.5，隔离 `DSH_HOME` + 复制的 test profile + 真 Chrome）：关闭后切到记录过标签的会话，旧标签
 自收且不再回来；显式打开后标签回来。`client.js` 按仓内 `scripts/build-client.mjs` 重建（CI 产物闸门），
 `typecheck` / `client-lint` / 全仓 `pnpm test` 绿。
+
+**第二～四轮（同日真机复测：用户截图 + computer-use 驱动真实 Chrome 0.2.2-rc.5）**：判据迭代了四次，前
+三版都被真机推翻——
+
+1. 「持久标记为 off ⇒ 挂载只可能是还原 ⇒ 自收」把**开始页卡片**吃掉了（卡片走宿主的 `openTab(kind)`，
+   插件拿不到手势）→「点卡片直接无效」。
+2. 改用 `navigation.revision === 0` 判还原——切回**访问过**的会话时，宿主还原出来的记录 revision 仍是
+   `≥2`（occurrence 还在），判据失效：标签不自收、标记反被清回 null（D172 复发形态）。
+3. 把「收还原」挪到「在屏会话切换」那一侧、按 `tabsIn` 收——`mounted` 刚变那一刻目标会话的 store 还
+   没 adopt，`tabsIn` 空表、`openTab` 抛「没有已提交的 occurrence」：表现为**首次切到没访问过的会话不跟
+   过去、第二次才跟**（用户报的就是这条）。
+
+**最终设计**（两件事各归各位）：
+
+- **跟随重开**挂 `sidebarRight.mounted`（在屏会话），并**带重试**：50ms 退避、最多 1s，每次重试前确认
+  「还在那台会话上」。
+- **「还原」vs「用户点的」按标签 id 的来源判**：切进一台会话**之前**先读它已持久化的侧栏 layout
+  （`localStorage['dsh.sidebar-right.v1.<会话 id>']`）记下其中的 docker 标签 id；标签体挂载时，自己的 id
+  在快照里 = 宿主还原出来的旧标签（用户关过就**自收**），不在 = 这一次是新的打开（卡片 / 侧栏 / 连接栏 /
+  跟随）→ 清标记、恢复粘性。必须**切换前**读：`openTab` 会先提交 layout，之后再读新标签也进去了。
+  （坑：键是 `dsh.sidebar-right.v1.` + **会话 id 原样**——id 自己就以 `session-` 开头，手写前缀会拼成
+  `…session-session-…`，读出来恒 null，全部挂载被当成新打开。）
+
+**最终真机实测**：① 打开 → 切到一台**从未访问、也没有记录**的会话 → 标签**跟过去**；② 关掉（标记 off）→
+切到**记录过**容器标签的会话 → 标签不留下、标记保持 off；③ off 下点开始页卡片 → 打开且标记清回 null；
+④ off + 刷新（当前会话有记录）→ 不回来。冒烟 `client-smoke` **127/127**（新增：按 id 来源判还原 / 卡片是
+新打开 / 首访重试 / 按 mounted 重开）。
 
 ### ✅ 收起动画期间入口先于宿主切 rail（2026-11-14）
 

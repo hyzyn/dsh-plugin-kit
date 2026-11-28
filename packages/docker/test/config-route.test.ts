@@ -388,3 +388,35 @@ describe('能力开关的宿主侧授权（capability）', () => {
     expect((json?.config as { allowMutationsGranted?: boolean } | undefined)?.allowMutationsGranted).toBe(true)
   })
 })
+
+describe('reopenAcrossSessions：切换会话时的跟随范围（0.17.4）', () => {
+  /*
+   * 真机反馈：原来的行为是「打开一次，之后每个会话都弹出来」。做成可配的两档：
+   * `off`（默认，不跟随）/ `workspace`（同一工作区内跟随）。宿主只负责存与回，
+   * 判据在客户端；这里钉三件事：默认值、合法值往返、非法值**被归一化**成默认而不是报 500。
+   */
+  it('缺省就是 off（老配置升级后不会突然开始跟随）', async () => {
+    const harness = mountPlugin()
+    const res = makeRes()
+    await harness.route.handler(makeReq('/api/dsh-docker/config', 'GET'), res)
+    const config = JSON.parse(res.endBody ?? '{}').config
+    expect(config.reopenAcrossSessions).toBe('off')
+  })
+
+  it('workspace 能存下并读回', async () => {
+    const harness = mountPlugin()
+    const { status, json } = await postConfig(harness, { reopenAcrossSessions: 'workspace' })
+    expect(status, JSON.stringify(json)).toBe(200)
+    expect(json?.config?.reopenAcrossSessions).toBe('workspace')
+    const res = makeRes()
+    await harness.route.handler(makeReq('/api/dsh-docker/config', 'GET'), res)
+    expect(JSON.parse(res.endBody ?? '{}').config.reopenAcrossSessions).toBe('workspace')
+  })
+
+  it('非法值归一化成 off（不抛、不落非法值）', async () => {
+    const harness = mountPlugin()
+    const { status, json } = await postConfig(harness, { reopenAcrossSessions: 'always' })
+    expect(status, JSON.stringify(json)).toBe(200)
+    expect(json?.config?.reopenAcrossSessions).toBe('off')
+  })
+})

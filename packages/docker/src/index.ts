@@ -150,6 +150,12 @@ export interface Config {
   logTailDefault?: number
   /** 单次命令输出上限（KB，1~8192）。默认 512。 */
   maxOutputKb?: number
+  /**
+   * 切换会话时容器标签怎么跟随（0.17.4）：
+   * - `off`（默认）：**不跟随**——面板只出现在你打开过它的会话里，别的会话什么都不开；
+   * - `workspace`：**同一工作区内跟随**——只在同一个工作区的会话之间把标签带过去。
+   */
+  reopenAcrossSessions?: 'off' | 'workspace'
   /** 目标列表（本机 / SSH）。 */
   targets?: DockerTarget[]
   /** SSH 主机指纹记录（TOFU，随 settings 落盘）。 */
@@ -199,6 +205,11 @@ export const Config: z = z.object({
   pollIntervalSec: z.natural().max(60).default(5).volatile(),
   logTailDefault: z.natural().max(5000).default(200).volatile(),
   maxOutputKb: z.natural().max(8192).default(512).volatile(),
+  /*
+   * 切换会话时的跟随范围（0.17.4）：`off` = 不跟随（默认）/ `workspace` = 同一工作区内跟随。
+   * 刻意**不是**「跟随 everywhere」——真机反馈：打开一次就每个会话都弹出来太吵。
+   */
+  reopenAcrossSessions: z.union([z.const('off'), z.const('workspace')]).default('off').volatile(),
   targets: z.array(TARGET_SCHEMA).default([]).volatile(),
   hostKeys: z.array(HOST_KEY_SCHEMA).default([]).volatile(),
 })
@@ -214,6 +225,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'pollIntervalSec',
   'logTailDefault',
   'maxOutputKb',
+  'reopenAcrossSessions',
   'targets',
   'hostKeys',
   /** 显式清空全部目标的确认位（见 POST /config 的空数组防丢保护）。 */
@@ -233,6 +245,7 @@ interface LiveConfig {
   pollIntervalSec: number
   logTailDefault: number
   maxOutputKb: number
+  reopenAcrossSessions: 'off' | 'workspace'
   targets: DockerTarget[]
   hostKeys: HostKeyRecord[]
 }
@@ -1297,6 +1310,8 @@ export function normalizeConfig(section: Record<string, unknown>): LiveConfig {
     pollIntervalSec: clampInt(section.pollIntervalSec, 1, 60, 5),
     logTailDefault: clampInt(section.logTailDefault, 1, 5000, 200),
     maxOutputKb: clampInt(section.maxOutputKb, 1, 8192, 512),
+    // 只有显式 workspace 才跟随；其余（含旧配置 / 非法值）一律「不跟随」
+    reopenAcrossSessions: section.reopenAcrossSessions === 'workspace' ? 'workspace' : 'off',
     targets: targets ?? [],
     hostKeys: hostKeys ?? [],
   }
@@ -2085,6 +2100,7 @@ const plugin = definePlugin<Config>({
         pollIntervalSec: live.pollIntervalSec,
         logTailDefault: live.logTailDefault,
         maxOutputKb: live.maxOutputKb,
+        reopenAcrossSessions: live.reopenAcrossSessions,
         targets: targetsNow().map(snapshotTarget),
         hostKeys: live.hostKeys,
         // 只读复用 tty 连接簿：卡片用它渲染「从连接簿选择」下拉
